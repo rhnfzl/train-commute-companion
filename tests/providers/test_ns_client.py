@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -5,7 +6,13 @@ import httpx
 import pytest
 from builders import AMS
 
-from train_commute_companion.providers.base import AuthError, ProviderError, Query, RateLimited
+from train_commute_companion.providers.base import (
+    AuthError,
+    Provider,
+    ProviderError,
+    Query,
+    RateLimited,
+)
 from train_commute_companion.providers.ns import NsProvider
 
 NOW = datetime(2026, 10, 27, 7, 0, tzinfo=AMS)
@@ -105,3 +112,20 @@ async def test_stations_maps():
         lambda req: httpx.Response(200, content=(DATA / "stations.json").read_bytes())
     ).stations()
     assert s
+
+
+async def test_request_deadline_is_provider_error() -> None:
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(5)
+        return httpx.Response(200, json={})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(slow))
+    p = NsProvider("secret-key", client, lambda: NOW, deadline=0.01)
+    with pytest.raises(ProviderError) as e:
+        await p.stations()
+    assert "secret-key" not in str(e.value)
+
+
+def test_ns_provider_satisfies_provider_protocol() -> None:
+    client = httpx.AsyncClient()
+    _: Provider = NsProvider("k", client, lambda: NOW)  # checked by mypy --strict

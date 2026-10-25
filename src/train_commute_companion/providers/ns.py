@@ -1,5 +1,6 @@
 """NS Reisinformatie mapping. The only place that knows NS field names."""
 
+import asyncio
 import re
 from collections.abc import Callable
 from datetime import datetime
@@ -238,10 +239,19 @@ def map_stations(payload: object) -> frozenset[str]:
 BASE_URL = "https://gateway.apiportal.ns.nl/reisinformatie-api/api"
 
 
+# Hard cap per request (7.1); the runtime's per-poll deadline (plan Task 18) wraps whole polls.
+REQUEST_DEADLINE_S = 90.0
+
+
 class NsProvider:
     def __init__(
-        self, api_key: str, client: httpx.AsyncClient, clock: Callable[[], datetime]
+        self,
+        api_key: str,
+        client: httpx.AsyncClient,
+        clock: Callable[[], datetime],
+        deadline: float = REQUEST_DEADLINE_S,
     ) -> None:
+        self._deadline = deadline
         self._key = api_key
         self._client = client
         self._clock = clock
@@ -249,11 +259,14 @@ class NsProvider:
     async def _get(self, path: str, params: dict[str, str] | None = None) -> object:
         # Messages are fixed text: the key and the request URL never enter an exception.
         try:
-            r = await self._client.get(
-                BASE_URL + path,
-                params=params,
-                headers={"Ocp-Apim-Subscription-Key": self._key},
-            )
+            async with asyncio.timeout(self._deadline):
+                r = await self._client.get(
+                    BASE_URL + path,
+                    params=params,
+                    headers={"Ocp-Apim-Subscription-Key": self._key},
+                )
+        except TimeoutError:
+            raise ProviderError("NS request exceeded the deadline") from None
         except httpx.HTTPError as e:
             raise ProviderError(f"NS request failed: {type(e).__name__}") from None
         code = r.status_code
