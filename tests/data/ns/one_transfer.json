@@ -1,0 +1,126 @@
+{
+ "trips": [
+  {
+   "idx": 0,
+   "ctxRecon": "ctx-1",
+   "status": "NORMAL",
+   "transfers": 1,
+   "legs": [
+    {
+     "name": "IC 1111",
+     "cancelled": false,
+     "partCancelled": false,
+     "changePossible": true,
+     "reachable": true,
+     "alternativeTransport": false,
+     "origin": {
+      "name": "Alpha",
+      "uicCode": "1000001",
+      "stationCode": "AAA",
+      "plannedDateTime": "2026-10-27T08:12:00+0100",
+      "plannedTrack": "1",
+      "actualDateTime": "2026-10-27T08:12:00+0100",
+      "actualTrack": "1"
+     },
+     "destination": {
+      "name": "Utrecht Centraal",
+      "uicCode": "1000002",
+      "stationCode": "UT",
+      "plannedDateTime": "2026-10-27T08:40:00+0100",
+      "plannedTrack": "1",
+      "actualDateTime": "2026-10-27T08:40:00+0100",
+      "actualTrack": "1"
+     },
+     "product": {
+      "number": "1111",
+      "categoryCode": "IC",
+      "type": "TRAIN"
+     },
+     "stops": [
+      {
+       "uicCode": "1000001",
+       "name": "Alpha",
+       "cancelled": false,
+       "passing": false,
+       "plannedDepartureTrack": "1",
+       "plannedArrivalTrack": "1",
+       "plannedDepartureDateTime": "2026-10-27T08:12:00+0100",
+       "actualDepartureDateTime": "2026-10-27T08:12:00+0100"
+      },
+      {
+       "uicCode": "1000002",
+       "name": "Utrecht Centraal",
+       "cancelled": false,
+       "passing": false,
+       "plannedDepartureTrack": "1",
+       "plannedArrivalTrack": "1",
+       "plannedArrivalDateTime": "2026-10-27T08:40:00+0100",
+       "actualArrivalDateTime": "2026-10-27T08:40:00+0100"
+      }
+     ],
+     "transferTimeToNextLeg": 2,
+     "crossPlatformTransfer": true
+    },
+    {
+     "name": "IC 2222",
+     "cancelled": false,
+     "partCancelled": false,
+     "changePossible": true,
+     "reachable": true,
+     "alternativeTransport": false,
+     "origin": {
+      "name": "Utrecht Centraal",
+      "uicCode": "1000002",
+      "stationCode": "UT",
+      "plannedDateTime": "2026-10-27T08:42:00+0100",
+      "plannedTrack": "1",
+      "actualDateTime": "2026-10-27T08:42:00+0100",
+      "actualTrack": "1"
+     },
+     "destination": {
+      "name": "Beta",
+      "uicCode": "1000003",
+      "stationCode": "BBB",
+      "plannedDateTime": "2026-10-27T09:30:00+0100",
+      "plannedTrack": "1",
+      "actualDateTime": "2026-10-27T09:30:00+0100",
+      "actualTrack": "1"
+     },
+     "product": {
+      "number": "2222",
+      "categoryCode": "IC",
+      "type": "TRAIN"
+     },
+     "stops": [
+      {
+       "uicCode": "1000002",
+       "name": "Utrecht Centraal",
+       "cancelled": false,
+       "passing": false,
+       "plannedDepartureTrack": "1",
+       "plannedArrivalTrack": "1",
+       "plannedDepartureDateTime": "2026-10-27T08:42:00+0100",
+       "actualDepartureDateTime": "2026-10-27T08:42:00+0100"
+      },
+      {
+       "uicCode": "1000003",
+       "name": "Beta",
+       "cancelled": false,
+       "passing": false,
+       "plannedDepartureTrack": "1",
+       "plannedArrivalTrack": "1",
+       "plannedArrivalDateTime": "2026-10-27T09:30:00+0100",
+       "actualArrivalDateTime": "2026-10-27T09:30:00+0100"
+      }
+     ],
+     "transferMessages": [
+      {
+       "type": "TRANSFER_TIME",
+       "message": "3 min. overstaptijd"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

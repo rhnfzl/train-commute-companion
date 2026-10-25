@@ -1,0 +1,28 @@
+{
+ "payload": [
+  {
+   "code": "AAA",
+   "namen": {
+    "lang": "Alpha"
+   }
+  },
+  {
+   "code": "BBB",
+   "namen": {
+    "lang": "Beta"
+   }
+  },
+  {
+   "code": "UT",
+   "namen": {
+    "lang": "Utrecht Centraal"
+   }
+  },
+  {
+   "code": "RTD",
+   "namen": {
+    "lang": "Rotterdam Centraal"
+   }
+  }
+ ]
+}

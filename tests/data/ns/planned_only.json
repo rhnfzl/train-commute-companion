@@ -1,0 +1,59 @@
+{
+ "trips": [
+  {
+   "idx": 0,
+   "ctxRecon": "ctx-1",
+   "status": "NORMAL",
+   "transfers": 0,
+   "legs": [
+    {
+     "name": "IC 1234",
+     "cancelled": false,
+     "partCancelled": false,
+     "changePossible": true,
+     "reachable": true,
+     "alternativeTransport": false,
+     "origin": {
+      "name": "Alpha",
+      "uicCode": "1000001",
+      "stationCode": "AAA",
+      "plannedDateTime": "2026-10-27T08:12:00+0100",
+      "plannedTrack": "1"
+     },
+     "destination": {
+      "name": "Beta",
+      "uicCode": "1000003",
+      "stationCode": "BBB",
+      "plannedDateTime": "2026-10-27T09:03:00+0100",
+      "plannedTrack": "1"
+     },
+     "product": {
+      "number": "1234",
+      "categoryCode": "IC",
+      "type": "TRAIN"
+     },
+     "stops": [
+      {
+       "uicCode": "1000001",
+       "name": "Alpha",
+       "cancelled": false,
+       "passing": false,
+       "plannedDepartureTrack": "1",
+       "plannedArrivalTrack": "1",
+       "plannedDepartureDateTime": "2026-10-27T08:12:00+0100"
+      },
+      {
+       "uicCode": "1000003",
+       "name": "Beta",
+       "cancelled": false,
+       "passing": false,
+       "plannedDepartureTrack": "1",
+       "plannedArrivalTrack": "1",
+       "plannedArrivalDateTime": "2026-10-27T09:03:00+0100"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
