@@ -174,3 +174,23 @@ def test_locked_not_travelling_still_advises_on_the_locked_train():
     s = replace(fresh(c), direction_state=DirectionState.LOCKED, lock=j)
     _, events = advise(s, c, answer(EARLY, SLOW), USUAL_ARRIVAL)
     assert [e.kind for e in events] == [EventKind.LEAVE_NOW]
+
+
+def test_no_baseline_picks_soonest_arrival_not_earliest_departure():
+    # usual is cancelled and nothing later runs: no baseline, so the soonest arrival wins
+    c = ctx(at("17:00"))
+    cancelled = conn("17:52", "18:26", "1234", cancelled=True)
+    slow_early = conn("17:22", "18:10", "1000")
+    fast_later = conn("17:30", "17:56", "1001")
+    rec, events = advise(fresh(c), c, answer(slow_early, fast_later, cancelled), USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.LEAVE_NOW]
+    assert rec.advised_train == fast_later.legs[0].train
+
+
+def test_text_names_stations_and_live_departure():
+    c = ctx(at("17:00"))
+    delayed = conn("17:22", "17:56", "1000", delay_dep=3)  # planned 17:22, live 17:25
+    _, events = advise(fresh(c), c, answer(delayed, SLOW), USUAL_ARRIVAL)
+    text = events[0].text
+    assert "17:25" in text and "17:22" not in text
+    assert "UT" in text and "AAA" in text
