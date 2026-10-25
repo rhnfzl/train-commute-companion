@@ -90,3 +90,24 @@ def test_stations():
     assert "UT" in map_stations(fixture("stations.json"))
     with pytest.raises(MalformedAnswer):
         map_stations({"payload": []})
+
+
+@pytest.mark.parametrize(
+    "sections",
+    [
+        [{"consequence": "x"}],
+        [{"section": "x"}],
+        [{"section": {"stations": "x"}}],
+        [{"consequence": {"section": {"stations": 5}}}],
+        ["x"],
+        "x",
+    ],
+)
+def test_disruption_nested_malformed_is_unknown_coverage(sections):
+    d = {
+        "type": "MAINTENANCE",
+        "start": "2026-01-01T00:00:00+0100",
+        "end": "2026-01-02T00:00:00+0100",
+        "publicationSections": sections,
+    }
+    assert map_disruptions([d]).coverage == "unknown"

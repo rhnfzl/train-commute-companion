@@ -179,11 +179,26 @@ def map_disruptions(payload: object) -> PlannedWorks:
             continue
         start, end = _dt(d.get("start")), _dt(d.get("end"))
         stations: set[str] = set()
-        for ps in d.get("publicationSections") or []:
-            if not isinstance(ps, dict):
-                continue
-            for part in (ps.get("section"), (ps.get("consequence") or {}).get("section")):
-                for s in (part or {}).get("stations") or []:
+        sections = d.get("publicationSections") or []
+        if not isinstance(sections, list):
+            complete = False
+            sections = []
+        for ps in sections:
+            cons = ps.get("consequence") if isinstance(ps, dict) else None
+            parts = (
+                ps.get("section") if isinstance(ps, dict) else None,
+                cons.get("section") if isinstance(cons, dict) else None,
+            )
+            if not isinstance(ps, dict) or not (cons is None or isinstance(cons, dict)):
+                complete = False
+            for part in parts:
+                if part is None:
+                    continue
+                st = part.get("stations") if isinstance(part, dict) else None
+                if not isinstance(part, dict) or not (st is None or isinstance(st, list)):
+                    complete = False
+                    continue
+                for s in st or []:
                     if isinstance(s, dict) and s.get("stationCode"):
                         stations.add(str(s["stationCode"]))
         if start is None or end is None:
