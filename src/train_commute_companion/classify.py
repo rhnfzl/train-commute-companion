@@ -1,12 +1,15 @@
 """Per-leg classification and train identity (6.1, 6.2). Pure functions, no clock."""
 
+from collections.abc import Iterable
 from datetime import UTC, datetime
 
 from train_commute_companion.model import (
     ClassifiedLeg,
+    Connection,
     Leg,
     LegKind,
     Observation,
+    Provenance,
     Stop,
     TimeObs,
     TrainId,
@@ -22,6 +25,22 @@ def _delay(obs: TimeObs | None) -> int | None:
     return max(0, int((obs.value - obs.planned).total_seconds() // 60))
 
 
+def _gone(s: Stop) -> bool:
+    # rule 14: a cancelled stop with a reported (actual) time was still served
+    reported = any(o and o.provenance is Provenance.REPORTED for o in (s.arrival, s.departure))
+    return s.cancelled and not reported
+
+
+def _expected_departure(conn: Connection) -> datetime:
+    d = conn.legs[0].board.departure
+    t = d.value if d and d.value else d.planned if d else None
+    return t or conn.legs[0].train.planned_departure
+
+
+def sort_by_expected_departure(conns: Iterable[Connection]) -> list[Connection]:
+    return sorted(conns, key=_expected_departure)
+
+
 def classify_leg(leg: Leg, alight_station: str) -> ClassifiedLeg:
     """Kind comes from the stops between boarding and `alight_station`, never from one flag."""
     stops = leg.stops
@@ -32,10 +51,10 @@ def classify_leg(leg: Leg, alight_station: str) -> ClassifiedLeg:
     chain = stops[: end + 1]
     kind = LegKind.OK
     last_served: Stop | None = None
-    if chain[0].cancelled:
+    if _gone(chain[0]):
         kind = LegKind.CANCELLED
-    elif chain[-1].cancelled:
-        served = [s for s in chain[1:] if not s.cancelled and not s.passing]
+    elif _gone(chain[-1]):
+        served = [s for s in chain[1:] if not _gone(s) and not s.passing]
         if served:
             kind, last_served = LegKind.CUT_SHORT, served[-1]
         else:

@@ -1,7 +1,9 @@
+from dataclasses import replace
+
 from builders import make_connection, make_leg
 
-from train_commute_companion.classify import classify_leg, find_leg
-from train_commute_companion.model import LegKind, Observation, TrainId
+from train_commute_companion.classify import classify_leg, find_leg, sort_by_expected_departure
+from train_commute_companion.model import LegKind, Observation, Provenance, TrainId
 from train_commute_companion.providers.base import ProviderAnswer, Query
 
 
@@ -86,3 +88,18 @@ def test_other_operating_date_is_uncertain():
     other = make_leg("UT", "RTD", "08:46", "09:24", number="1")
     want = TrainId(other.train.operating_date.replace(day=26), "1", other.train.planned_departure)
     assert find_leg(answer(other), want, "UT")[1] is Observation.UNCERTAIN
+
+
+def test_cancelled_last_stop_with_reported_arrival_still_served():
+    # rule 14: NS flags the final stop cancelled yet reports an actual arrival there
+    leg = make_leg("AAA", "RTD", "08:12", "09:00", stops=["UT"], cut_after="UT")
+    last = leg.stops[-1]
+    reported = replace(last.arrival, provenance=Provenance.REPORTED, value=last.arrival.planned)
+    leg = replace(leg, stops=(*leg.stops[:-1], replace(last, arrival=reported)))
+    assert classify_leg(leg, "RTD").kind is LegKind.OK
+
+
+def test_sort_by_expected_departure_uses_delay():
+    late = make_connection([make_leg("UT", "RTD", "08:00", "09:00", delay_dep=20)])
+    early = make_connection([make_leg("UT", "RTD", "08:10", "09:10")])
+    assert sort_by_expected_departure([late, early]) == [early, late]

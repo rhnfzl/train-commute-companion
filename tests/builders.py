@@ -33,12 +33,20 @@ def _stop(
     def obs(planned: datetime | None, delay: int) -> TimeObs | None:
         if planned is None:
             return None
-        value = None if provenance is Provenance.MISSING else planned + timedelta(minutes=delay)
-        return TimeObs(planned, value, provenance, planned)
+        prov = Provenance.PLANNED if cancelled else provenance  # a cancelled stop reports nothing
+        value = None if prov is Provenance.MISSING else planned + timedelta(minutes=delay)
+        return TimeObs(planned, value, prov, planned)
 
     return Stop(
         code, code, arr, dep, obs(arr, delay_arr), obs(dep, delay_dep), cancelled, False, None, None
     )
+
+
+def _cut(s: Stop) -> Stop:
+    def plan(o: TimeObs | None) -> TimeObs | None:
+        return o and TimeObs(o.planned, None, Provenance.PLANNED, o.observed_at)
+
+    return replace(s, cancelled=True, arrival=plan(s.arrival), departure=plan(s.departure))
 
 
 def make_leg(
@@ -67,7 +75,7 @@ def make_leg(
     if cut_after is not None:
         # stops after cut_after are cancelled
         idx = next(i for i, s in enumerate(chain) if s.code == cut_after)
-        chain = [s if i <= idx else replace(s, cancelled=True) for i, s in enumerate(chain)]
+        chain = [s if i <= idx else _cut(s) for i, s in enumerate(chain)]
     return Leg(
         train=TrainId(day, number, t_dep),
         category="IC",
