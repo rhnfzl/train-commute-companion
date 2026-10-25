@@ -1,5 +1,6 @@
 """Earlier-train advice over the whole journey (7.6, 7.12 rule 17). Pure, no clock."""
 
+import itertools
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -51,7 +52,7 @@ def _unrideable(c: Connection, answer: ProviderAnswer, profile_min: dict[str, in
         return True
     return any(
         check_transfer(a, b, a.leg.alight.code, profile_min).state is TransferState.BROKEN
-        for a, b in zip(cls, cls[1:], strict=False)
+        for a, b in itertools.pairwise(cls)
     )
 
 
