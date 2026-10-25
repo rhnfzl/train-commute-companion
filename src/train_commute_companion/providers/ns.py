@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import httpx
+
 from train_commute_companion.model import (
     Connection,
     Leg,
@@ -14,8 +16,6 @@ from train_commute_companion.model import (
     TimeObs,
     TrainId,
 )
-import httpx
-
 from train_commute_companion.providers.base import (
     AuthError,
     MalformedAnswer,

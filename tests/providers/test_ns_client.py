@@ -1,4 +1,3 @@
-import json
 from datetime import datetime
 from pathlib import Path
 
@@ -88,7 +87,6 @@ async def test_planned_works_maps_and_queries_inactive():
     pw = await provider(h).planned_works()
     assert seen[0].url.params["isActive"] == "false"
     assert pw.coverage in ("complete", "unknown")
-    assert json.loads((DATA / "disruptions.json").read_text()) is not None
 
 
 @pytest.mark.parametrize("handler", [status(500), status(429), status(200, body=b"nope")])
