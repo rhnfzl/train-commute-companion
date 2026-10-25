@@ -1,4 +1,4 @@
-from datetime import date, time
+from datetime import date, datetime, time
 from pathlib import Path
 
 import pytest
@@ -13,7 +13,6 @@ from train_commute_companion.profile import (
 )
 
 DATA = Path(__file__).parent / "data" / "profiles"
-HORIZON = (date(2026, 10, 26), date(2026, 11, 8))
 TODAY = date(2026, 10, 26)
 STATIONS = frozenset({"AAA", "UT", "RTD"})
 
@@ -56,11 +55,11 @@ def test_starter_file_valid_with_station_list():
 
 
 def test_two_profiles_different_days_ok():
-    assert find_overlaps(load("tue_wed_and_thu.yaml"), HORIZON) == []
+    assert find_overlaps(load("tue_wed_and_thu.yaml"), TODAY) == []
 
 
 def test_two_profiles_same_day_refused():
-    errs = find_overlaps(load("both_on_wed.yaml"), HORIZON)
+    errs = find_overlaps(load("both_on_wed.yaml"), TODAY)
     assert len(errs) == 1 and "office_a" in errs[0].message and "office_b" in errs[0].message
     assert "wed" in errs[0].message.lower()
 
@@ -70,7 +69,7 @@ def test_extra_date_overlaps_weekday():
     from dataclasses import replace
 
     b = replace(b, days=frozenset(), extra_dates=frozenset({date(2026, 10, 27)}))
-    assert len(find_overlaps([a, b], HORIZON)) == 1
+    assert len(find_overlaps([a, b], TODAY)) == 1
 
 
 def test_shared_weekday_overlaps_even_when_horizon_only_has_a_holiday():
@@ -82,7 +81,7 @@ def test_shared_weekday_overlaps_even_when_horizon_only_has_a_holiday():
         2026, 12, 25
     )  # a Friday and a holiday: both skip it, yet every other Friday collides
     assert a.skip_public_holidays and b.skip_public_holidays
-    assert len(find_overlaps([a, b], (holiday, holiday))) == 1
+    assert len(find_overlaps([a, b], holiday)) == 1
 
 
 def test_load_config_refuses_shared_weekday_that_is_a_holiday_this_week():
@@ -247,5 +246,107 @@ def test_shared_extra_date_beyond_a_year_is_refused():
 
 
 def test_night_windows_overlap_across_midnight_refused():
-    errs = find_overlaps(load("night_overlap.yaml"), HORIZON)
+    errs = find_overlaps(load("night_overlap.yaml"), TODAY)
     assert errs and "2026-10-28" in errs[0].message
+
+
+NIGHT = (DATA / "night_overlap.yaml").read_text()
+
+
+def refused(text: str, today: date = TODAY) -> list[ProfileError]:
+    """Errors from both a first start and a reload; both must refuse."""
+    first, errs = load_config(text, None, None, today)
+    reload, errs2 = load_config(text, None, GOOD_CFG, today)
+    assert reload is None and errs == errs2
+    assert first is None or all(p.id == "p3" for p in first.profiles)
+    return errs
+
+
+@pytest.mark.parametrize(
+    "value", ["2026-02-30", "2026-10-27T00:00:00", "'2026-02-30'", "20261027", "!!timestamp x"]
+)
+def test_bad_extra_date_is_a_profile_error(value: str):
+    text = one(("days: [tue, wed]", f"days: [tue, wed]\n    extra_dates: [{value}]"))
+    errs = refused(text)
+    assert [e.path for e in errs] == ["profiles[0].extra_dates[0]"]
+
+
+def test_unquoted_extra_date_still_loads():
+    text = one(("days: [tue, wed]", "days: [tue, wed]\n    extra_dates: [2026-11-05]"))
+    profiles, errs = parse_profiles(text, None)
+    assert errs == [] and profiles[0].extra_dates == frozenset({date(2026, 11, 5)})
+
+
+def test_explicit_bad_tag_is_a_profile_error():
+    _, errs = parse_profiles("profiles: [!!int abc]", None)
+    assert errs and errs[0].path == "file"
+
+
+def test_far_extra_date_on_another_profiles_weekday_is_refused():
+    text = (DATA / "tue_wed_and_thu.yaml").read_text()
+    text = text.replace("days: [thu]", "days: []\n    extra_dates: [2030-03-05]")  # a Tuesday
+    errs = refused(text)
+    assert len(errs) == 1 and "2030-03-05" in errs[0].message
+
+
+def test_adjacent_extra_dates_with_overlapping_night_windows_are_refused():
+    text = NIGHT.replace("days: [tue]", "days: []\n    extra_dates: [2030-03-05]")
+    text = text.replace("days: [wed]", "days: []\n    extra_dates: [2030-03-06]")
+    errs = refused(text)
+    assert len(errs) == 1 and "2030-03-06" in errs[0].message
+
+
+def test_recurring_night_overlap_hidden_by_holidays_this_week_is_refused():
+    # Fri 2026-12-25 and Fri 2027-01-01 are holidays, so the next week shows no collision
+    text = NIGHT.replace("[tue]", "[thu]").replace("[wed]", "[fri]")
+    errs = refused(text, date(2026, 12, 24))
+    assert len(errs) == 1 and "overlapping" in errs[0].message
+
+
+def test_overlap_only_on_the_autumn_dst_night_is_refused():
+    text = NIGHT.replace("[tue]", "[sat]").replace('"01:30"', '"02:30"')
+    text = text.replace("[wed]", "[sun]").replace(
+        'window: ["00:00", "05:00"]', 'window: ["02:45", "05:00"]'
+    )
+    # Sat window ends at the second 02:30, Sun window opens at the first 02:45: an hour of overlap
+    assert (
+        "2026-10-25" in find_overlaps(parse_profiles(text, None)[0], date(2026, 10, 20))[0].message
+    )
+    errs = refused(text, date(2026, 10, 26))  # this year's night is past, next year's still counts
+    assert len(errs) == 1 and "2027-10-31" in errs[0].message
+    ordinary = text.replace('"02:30"', '"01:30"')
+    assert find_overlaps(parse_profiles(ordinary, None)[0], date(2026, 10, 20)) == []
+
+
+def test_outbound_and_return_of_one_profile_must_not_overlap():
+    errs = refused(one(('"17:52"', '"08:12"')))
+    assert len(errs) == 1 and "office_a" in errs[0].message and "overlapping" in errs[0].message
+
+
+def test_next_day_return_overlapping_next_outbound_is_refused():
+    text = one(
+        ("return: {first_train", "return: {day_offset: 1, first_train"), ('"17:52"', '"08:12"')
+    )
+    errs = refused(text)
+    assert len(errs) == 1 and "2026-10-28" in errs[0].message  # Tue's return meets Wed's outbound
+
+
+def test_night_shift_return_next_morning_is_fine():
+    text = one(
+        ("return: {first_train", "return: {day_offset: 1, first_train"), ('"17:52"', '"04:00"')
+    )
+    profiles, errs = parse_profiles(text, None)
+    assert errs == [] and find_overlaps(profiles, TODAY) == []
+
+
+def test_touching_windows_are_allowed_and_only_the_later_one_is_active():
+    from train_commute_companion.calendar import TZ
+    from train_commute_companion.schedule import schedules_active
+
+    text = NIGHT.replace('window: ["00:00", "05:00"]', 'window: ["01:30", "05:00"]')
+    profiles, errs = parse_profiles(text, None)
+    assert errs == [] and find_overlaps(profiles, TODAY) == []
+    at = datetime(2026, 10, 28, 1, 30, tzinfo=TZ)  # Tue window ends, Wed window opens
+    assert [s.key.profile_id for s in schedules_active(Config(1, tuple(profiles)), {}, at)] == [
+        "p2"
+    ]

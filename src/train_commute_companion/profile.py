@@ -5,12 +5,12 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal, cast
 
 import yaml
 
-from train_commute_companion.calendar import is_commute_day
+from train_commute_companion.calendar import TZ, is_commute_day
 from train_commute_companion.model import (
     AlertSettings,
     Config,
@@ -26,6 +26,20 @@ FALLBACK_TRANSFER_MIN = 5
 _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 _TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 _SOURCES = ("ha", "telegram", "owntracks")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# a year and two weeks from two days back: every weekday pair meets both DST nights
+_SCAN_DAYS = 380
+
+
+class _Loader(yaml.SafeLoader):
+    """Leaves YAML timestamps as text, so _dates is the one place that turns text into dates."""
+
+
+def _as_text(loader: _Loader, node: yaml.Node) -> str:
+    return str(loader.construct_scalar(cast(yaml.ScalarNode, node)))
+
+
+_Loader.add_constructor("tag:yaml.org,2002:timestamp", _as_text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,8 +255,10 @@ def _dates(c: _Ctx, raw: object) -> frozenset[date] | None:
     ok = True
     for i, v in enumerate(raw):
         try:
-            out.add(v if isinstance(v, date) else date.fromisoformat(cast(str, v)))
-        except (TypeError, ValueError):
+            if not (isinstance(v, str) and _DATE_RE.match(v)):
+                raise ValueError(v)
+            out.add(date.fromisoformat(v))
+        except ValueError:
             c.err(f"extra_dates[{i}]", f"not a YYYY-MM-DD date: {v!r}")
             ok = False
     return frozenset(out) if ok else None
@@ -360,7 +376,7 @@ def _profile(
 
 def _load_yaml(text: str) -> tuple[Any, list[ProfileError]]:
     try:
-        return yaml.safe_load(text.lstrip("﻿")), []
+        return yaml.load(text.lstrip("﻿"), Loader=_Loader), []
     except yaml.YAMLError as e:
         mark = getattr(e, "problem_mark", None)
         where = f"line {mark.line + 1}: " if mark else ""
@@ -371,6 +387,8 @@ def _load_yaml(text: str) -> tuple[Any, list[ProfileError]]:
             else ""
         )
         return None, [ProfileError(None, "file", f"{where}{problem}{tab}", "fix the YAML syntax")]
+    except ValueError as e:  # an explicit tag such as !!int on text that is not one
+        return None, [ProfileError(None, "file", f"invalid value: {e}", "fix the YAML syntax")]
 
 
 def parse_profiles(
@@ -432,104 +450,124 @@ def parse_profiles(
     return profiles, errors
 
 
+@dataclass(frozen=True, slots=True)
+class _Occ:
+    day: date
+    direction: Direction
+    recurring: bool  # on one of the profile's weekdays, holidays ignored
+    real: bool  # an actual commute day
+    start: datetime  # UTC
+    end: datetime  # UTC
+
+
+def _occurrences(p: Profile, today: date, near: frozenset[date]) -> dict[date, list[_Occ]]:
+    first = today - timedelta(days=2)  # a commute day two days back can still have an open window
+    span = {first + timedelta(days=i) for i in range(_SCAN_DAYS)}
+    out: dict[date, list[_Occ]] = {}
+    for day in sorted(span | {d for d in near if d >= first}):
+        recurring = day.isoweekday() in p.days
+        real = is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays)
+        if recurring or real:
+            for d in Direction:
+                s = dated_schedule(p, d, day, None)
+                out.setdefault(day, []).append(
+                    _Occ(
+                        day,
+                        d,
+                        recurring,
+                        real,
+                        s.window_start.astimezone(UTC),
+                        s.window_end.astimezone(UTC),
+                    )
+                )
+    return out
+
+
+def _window_overlap(
+    oa: dict[date, list[_Occ]], ob: dict[date, list[_Occ]], floor: datetime
+) -> date | None:
+    """Earliest local date two windows overlap, half-open [start, end) like in_window."""
+    hits: list[datetime] = []
+    for day, xs in oa.items():
+        for k in range(-3, 4):  # a dated window lies within its commute day -1 .. +2
+            for y in ob.get(day + timedelta(days=k), ()):
+                for x in xs:
+                    if (x.day, x.direction) == (y.day, y.direction):
+                        continue  # the same occurrence when a profile is checked against itself
+                    # a weekly pattern collides in every non-holiday week, so holidays only
+                    # count when a one-off date is involved
+                    if not ((x.real and y.real) or (x.recurring and y.recurring)):
+                        continue
+                    lo, hi = max(x.start, y.start), min(x.end, y.end)
+                    if lo < hi and hi > floor:
+                        hits.append(lo)
+    return min(hits).astimezone(TZ).date() if hits else None
+
+
 def _overlap_pairs(
-    profiles: Sequence[Profile], horizon: tuple[date, date]
+    profiles: Sequence[Profile], today: date
 ) -> list[tuple[Profile, Profile, ProfileError]]:
     found: dict[tuple[str, str], tuple[Profile, Profile, ProfileError]] = {}
-    day = horizon[0]
-    while day <= horizon[1]:
-        active = [
-            p
-            for p in profiles
-            if is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays)
-        ]
-        for i, a in enumerate(active):
-            for b in active[i + 1 :]:
-                if (a.id, b.id) not in found:
-                    msg = (
-                        f"profiles {a.name!r} and {b.name!r} are both active on "
-                        f"{_DAYS[day.weekday()]} {day.isoformat()}"
-                    )
-                    found[(a.id, b.id)] = (
-                        a,
-                        b,
-                        ProfileError(
-                            a.id,
-                            "profiles",
-                            msg,
-                            "give them different days or remove the extra date",
-                        ),
-                    )
-        day += timedelta(days=1)
-    # a shared weekday collides on every non-holiday week, even if the horizon only shows a holiday
-    for i, a in enumerate(profiles):
-        for b in profiles[i + 1 :]:
-            shared = a.days & b.days
-            if shared and (a.id, b.id) not in found:
-                msg = (
-                    f"profiles {a.name!r} and {b.name!r} are both active on "
-                    f"{_DAYS[min(shared) - 1]}"
-                )
-                err = ProfileError(a.id, "profiles", msg, "give them different days")
-                found[(a.id, b.id)] = (a, b, err)
-    # a shared one-off date collides whatever the horizon
-    for i, a in enumerate(profiles):
-        for b in profiles[i + 1 :]:
-            d = min(a.extra_dates & b.extra_dates, default=None)
-            if d and (a.id, b.id) not in found:
-                msg = f"profiles {a.name!r} and {b.name!r} are both active on {d.isoformat()}"
-                found[(a.id, b.id)] = (
-                    a,
-                    b,
-                    ProfileError(a.id, "profiles", msg, "remove the extra date"),
-                )
-    # different commute days can still collide in real time (windows crossing midnight)
-    for i, a in enumerate(profiles):
-        for b in profiles[i + 1 :]:
-            if (a.id, b.id) in found:
-                continue
-            hit = _window_overlap(a, b, horizon)
+
+    def add(a: Profile, b: Profile, msg: str, hint: str) -> None:
+        found.setdefault((a.id, b.id), (a, b, ProfileError(a.id, "profiles", msg, hint)))
+
+    pairs = [(a, b) for i, a in enumerate(profiles) for b in profiles[i + 1 :]]
+    # a shared weekday collides on every non-holiday week
+    for a, b in pairs:
+        shared = a.days & b.days
+        if shared:
+            msg = f"profiles {a.name!r} and {b.name!r} are both active on {_DAYS[min(shared) - 1]}"
+            add(a, b, msg, "give them different days")
+    # a one-off date collides with any other profile active that day, however far ahead
+    for a, b in pairs:
+        hit = min(
+            (
+                d
+                for x, y in ((a, b), (b, a))
+                for d in x.extra_dates
+                if d >= today and is_commute_day(d, y.days, y.extra_dates, y.skip_public_holidays)
+            ),
+            default=None,
+        )
+        if hit:
+            msg = (
+                f"profiles {a.name!r} and {b.name!r} are both active on "
+                f"{_DAYS[hit.weekday()]} {hit.isoformat()}"
+            )
+            add(a, b, msg, "give them different days or remove the extra date")
+    # different commute days, or two directions of one profile, can still collide in real time
+    near = frozenset(
+        d + timedelta(days=k) for p in profiles for d in p.extra_dates for k in range(-3, 4)
+    )
+    occ = {p.id: _occurrences(p, today, near) for p in profiles}
+    floor = datetime.combine(today, time(), TZ).astimezone(UTC)
+    for p in profiles:
+        hit = _window_overlap(occ[p.id], occ[p.id], floor)
+        if hit:
+            msg = f"profile {p.name!r} has overlapping time windows on {hit.isoformat()}"
+            add(p, p, msg, "narrow the outbound or return window")
+    for a, b in pairs:
+        if (a.id, b.id) not in found:
+            hit = _window_overlap(occ[a.id], occ[b.id], floor)
             if hit:
                 msg = (
                     f"profiles {a.name!r} and {b.name!r} have overlapping time windows "
                     f"on {hit.isoformat()}"
                 )
-                err = ProfileError(a.id, "profiles", msg, "narrow a window or change the days")
-                found[(a.id, b.id)] = (a, b, err)
+                add(a, b, msg, "narrow a window or change the days")
     return list(found.values())
 
 
-def _window_overlap(a: Profile, b: Profile, horizon: tuple[date, date]) -> date | None:
-    def windows(p: Profile) -> list[tuple[datetime, datetime]]:
-        out = []
-        day = horizon[0] - timedelta(days=1)
-        while day <= horizon[1] + timedelta(days=1):
-            if is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays):
-                for d in Direction:
-                    s = dated_schedule(p, d, day, None)
-                    out.append((s.window_start, s.window_end))
-            day += timedelta(days=1)
-        return out
-
-    wb = windows(b)
-    starts = [max(s1, s2) for s1, e1 in windows(a) for s2, e2 in wb if max(s1, s2) < min(e1, e2)]
-    return min(starts).date() if starts else None
-
-
-def find_overlaps(profiles: Sequence[Profile], horizon: tuple[date, date]) -> list[ProfileError]:
-    return [e for _, _, e in _overlap_pairs(profiles, horizon)]
+def find_overlaps(profiles: Sequence[Profile], today: date) -> list[ProfileError]:
+    return [e for _, _, e in _overlap_pairs(profiles, today)]
 
 
 def load_config(
     text: str, known_stations: frozenset[str] | None, previous: Config | None, today: date
 ) -> tuple[Config | None, list[ProfileError]]:
     profiles, errors = parse_profiles(text, known_stations)
-    # weekday overlap shows within 7 days; one-off dates are checked up to a year ahead
-    end = max(
-        [today + timedelta(days=7)]
-        + [d for p in profiles for d in p.extra_dates if d <= today + timedelta(days=366)]
-    )
-    pairs = _overlap_pairs(profiles, (today, end))
+    pairs = _overlap_pairs(profiles, today)
     errors = errors + [e for _, _, e in pairs]
     if previous is not None:
         if errors:

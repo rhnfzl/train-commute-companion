@@ -111,3 +111,17 @@ def test_dst_lock_time_uses_first_instant_autumn_and_gap_spring():
     assert utc(a.auto_lock_at) == datetime(2026, 10, 25, 0, 30, tzinfo=UTC)  # first 02:30
     s = dated_schedule(p, Direction.OUTBOUND, date(2026, 3, 29), None)
     assert utc(s.auto_lock_at) == datetime(2026, 3, 29, 1, 0, tzinfo=UTC)  # 02:30 missing -> 03:00
+
+
+def test_active_compares_instants_in_the_repeated_autumn_hour():
+    cfg = Config(1, (profile(out=("00:05", ("22:00", "02:30"), 0)),))
+    first_0245 = datetime(2026, 10, 25, 2, 45, tzinfo=TZ, fold=0)  # before the second 02:30
+    second_0245 = datetime(2026, 10, 25, 2, 45, tzinfo=TZ, fold=1)
+    assert [s.key.direction for s in schedules_active(cfg, {}, first_0245)] == [Direction.OUTBOUND]
+    assert schedules_active(cfg, {}, second_0245) == []
+
+
+def test_window_is_half_open():
+    cfg = Config(1, (profile(),))
+    assert len(schedules_active(cfg, {}, dt("2026-10-27 07:12"))) == 1
+    assert schedules_active(cfg, {}, dt("2026-10-27 10:12")) == []

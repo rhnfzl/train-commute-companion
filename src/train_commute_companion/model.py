@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 from enum import StrEnum
 from typing import Literal
 
@@ -79,11 +79,21 @@ class TimeObs:
     observed_at: datetime
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class TrainId:
     operating_date: date
     train_number: str
     planned_departure: datetime
+
+    # same-zone datetime equality ignores fold, so compare instants (first and second 02:30 differ)
+    def _key(self) -> tuple[date, str, datetime]:
+        return (self.operating_date, self.train_number, self.planned_departure.astimezone(UTC))
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, TrainId) and self._key() == other._key()
+
+    def __hash__(self) -> int:
+        return hash(self._key())
 
 
 @dataclass(frozen=True, slots=True)

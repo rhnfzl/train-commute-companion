@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
-from train_commute_companion.calendar import is_commute_day, resolve_local
+from train_commute_companion.calendar import TZ, is_commute_day, resolve_local
 from train_commute_companion.model import (
     Config,
     DatedSchedule,
@@ -49,11 +49,17 @@ def dated_schedule(
     )
 
 
+def in_window(s: DatedSchedule, at: datetime) -> bool:
+    """Half-open [start, end), the same policy the overlap check uses."""
+    return s.window_start.astimezone(UTC) <= at < s.window_end.astimezone(UTC)
+
+
 def schedules_active(
     cfg: Config, baselines: Mapping[tuple[str, Direction], time], now: datetime
 ) -> list[DatedSchedule]:
     out: list[DatedSchedule] = []
-    today = now.date()
+    at = now.astimezone(UTC)  # same-zone comparison ignores fold; instants do not
+    today = now.astimezone(TZ).date()
     for p in cfg.profiles:
         for d in Direction:
             # a window can open the evening before and an offset return runs a day late
@@ -61,6 +67,6 @@ def schedules_active(
                 day = today - timedelta(days=back)
                 if is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays):
                     s = dated_schedule(p, d, day, baselines.get((p.id, d)))
-                    if s.window_start <= now <= s.window_end:
+                    if in_window(s, at):
                         out.append(s)
     return out
