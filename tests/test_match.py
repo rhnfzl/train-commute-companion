@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, datetime, time
+from datetime import UTC, date, datetime, time
 
 from builders import AMS, make_connection, make_leg
 
@@ -123,3 +123,41 @@ def test_signature_uses_local_date_when_first_departure_is_utc():
     )
     first = dt("2026-10-28 00:30").astimezone(UTC)
     assert usual_connection(answer(a, b), "AAA", first, ("UT",), sig) is b
+
+
+def without_arrival(c):
+    last = c.legs[-1]
+    end = replace(last.alight, planned_arrival=None, arrival=None)
+    return make_connection([*c.legs[:-1], replace(last, stops=(*last.stops[:-1], end))])
+
+
+def test_unknown_arrival_ranks_after_a_known_one():
+    known = one_transfer("09:24", "2000")
+    unknown = without_arrival(one_transfer("09:30", "2001"))
+    for order in ((unknown, known), (known, unknown)):
+        assert (
+            usual_connection(answer(*order), "AAA", dt("2026-10-27 08:12"), ("UT",), None) is known
+        )
+    locked = [known.legs[0].train]
+    detour = two_transfers()
+    for order in ((without_arrival(detour), detour), (detour, without_arrival(detour))):
+        assert route_changed(locked, answer(*order), ("UT",)) is detour
+
+
+def test_earliest_arrival_across_the_repeated_hour_uses_instants():
+    def late(arr, fold, num2):
+        return make_connection(
+            [
+                make_leg("AAA", "UT", "01:00", "01:20", number="1000", day=date(2026, 10, 24)),
+                make_leg(
+                    "UT", "BBB", "01:30", arr, number=num2, day=date(2026, 10, 24), fold_arr=fold
+                ),
+            ]
+        )
+
+    second_0210 = late("02:10", 1, "2000")  # CET, 01:10 UTC
+    first_0240 = late("02:40", 0, "2001")  # CEST, 00:40 UTC
+    first = datetime(2026, 10, 25, 1, 0, tzinfo=AMS)
+    assert (
+        usual_connection(answer(second_0210, first_0240), "AAA", first, ("UT",), None) is first_0240
+    )

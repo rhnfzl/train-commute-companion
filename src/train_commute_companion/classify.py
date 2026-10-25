@@ -22,19 +22,23 @@ DELAYED_AT_MIN = 3
 def _delay(obs: TimeObs | None) -> int | None:
     if obs is None or obs.planned is None or obs.value is None:
         return None
-    return max(0, int((obs.value - obs.planned).total_seconds() // 60))
+    # same-zone subtraction ignores the DST fold, so subtract instants
+    return max(
+        0, int((obs.value.astimezone(UTC) - obs.planned.astimezone(UTC)).total_seconds() // 60)
+    )
 
 
-def _gone(s: Stop) -> bool:
-    # rule 14: a cancelled stop with a reported (actual) time was still served
+def served(s: Stop) -> bool:
+    """The train calls here: not passing, and not cancelled unless it has a reported time
+    (rule 14: a cancelled stop with a reported, actual, time was still served)."""
     reported = any(o and o.provenance is Provenance.REPORTED for o in (s.arrival, s.departure))
-    return s.cancelled and not reported
+    return not s.passing and (not s.cancelled or reported)
 
 
 def _expected_departure(conn: Connection) -> datetime:
     d = conn.legs[0].board.departure
     t = d.value if d and d.value else d.planned if d else None
-    return t or conn.legs[0].train.planned_departure
+    return (t or conn.legs[0].train.planned_departure).astimezone(UTC)
 
 
 def sort_by_expected_departure(conns: Iterable[Connection]) -> list[Connection]:
@@ -42,21 +46,20 @@ def sort_by_expected_departure(conns: Iterable[Connection]) -> list[Connection]:
 
 
 def classify_leg(leg: Leg, alight_station: str) -> ClassifiedLeg:
-    """Kind comes from the stops between boarding and `alight_station`, never from one flag."""
+    """Kind comes from the stops between boarding and `alight_station`, never from one flag.
+    A train that does not call at `alight_station` (absent, passed or cancelled there) is cut
+    short at its last served stop, or cancelled when it serves none; never ok."""
     stops = leg.stops
-    # shortcut: a station the train never calls at falls back to its last stop
-    end = next(
-        (i for i, s in enumerate(stops) if i > 0 and s.code == alight_station), len(stops) - 1
-    )
-    chain = stops[: end + 1]
+    end = next((i for i, s in enumerate(stops) if i > 0 and s.code == alight_station), None)
+    chain = stops if end is None else stops[: end + 1]
     kind = LegKind.OK
     last_served: Stop | None = None
-    if _gone(chain[0]):
+    if not served(chain[0]):
         kind = LegKind.CANCELLED
-    elif _gone(chain[-1]):
-        served = [s for s in chain[1:] if not _gone(s) and not s.passing]
-        if served:
-            kind, last_served = LegKind.CUT_SHORT, served[-1]
+    elif end is None or not served(chain[-1]):
+        calls = [s for s in chain[1:] if served(s) and s.code != alight_station]
+        if calls:
+            kind, last_served = LegKind.CUT_SHORT, calls[-1]
         else:
             kind = LegKind.CANCELLED
     dep = _delay(chain[0].departure)

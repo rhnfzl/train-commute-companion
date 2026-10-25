@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from train_commute_companion.model import (
@@ -15,10 +15,10 @@ from train_commute_companion.model import (
 AMS = ZoneInfo("Europe/Amsterdam")
 
 
-def _at(day: date, hhmm: str) -> datetime:
+def _at(day: date, hhmm: str, fold: int = 0) -> datetime:
     h, m = (int(x) for x in hhmm.split(":"))
     d = day + timedelta(days=1) if h < 4 else day  # before 04:00 belongs to the next day
-    return datetime.combine(d, time(h, m), tzinfo=AMS)
+    return datetime.combine(d, time(h, m, fold=fold), tzinfo=AMS)  # fold=1: the second 02:xx
 
 
 def _stop(
@@ -34,7 +34,9 @@ def _stop(
         if planned is None:
             return None
         prov = Provenance.PLANNED if cancelled else provenance  # a cancelled stop reports nothing
-        value = None if prov is Provenance.MISSING else planned + timedelta(minutes=delay)
+        # add in UTC: local datetime arithmetic drops the DST fold
+        later = (planned.astimezone(UTC) + timedelta(minutes=delay)).astimezone(AMS)
+        value = None if prov is Provenance.MISSING else later
         return TimeObs(planned, value, prov, planned)
 
     return Stop(
@@ -64,8 +66,10 @@ def make_leg(
     stops: Sequence[str] = (),
     cut_after: str | None = None,
     transfer_time: int | None = None,
+    fold_dep: int = 0,
+    fold_arr: int = 0,
 ) -> Leg:
-    t_dep, t_arr = _at(day, dep), _at(day, arr)
+    t_dep, t_arr = _at(day, dep, fold_dep), _at(day, arr, fold_arr)
     mids = [_stop(c, t_dep, t_dep, delay_dep, delay_dep, provenance, cancelled) for c in stops]
     chain = [
         _stop(board, None, t_dep, 0, delay_dep, provenance, cancelled),

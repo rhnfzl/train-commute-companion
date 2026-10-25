@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from train_commute_companion.model import Observation, Provenance, TrainId
@@ -38,8 +38,12 @@ class WatchedLeg:
     last_seen_at: datetime | None  # last fresh healthy answer that contained this leg
 
 
+def _utc(t: datetime) -> datetime:
+    return t.astimezone(UTC)  # same-zone arithmetic and ordering ignore the DST fold
+
+
 def board_health(records: Sequence[PollRecord], now: datetime) -> BoardHealth:
-    ordered = sorted(records, key=lambda r: r.at)
+    ordered = sorted(records, key=lambda r: _utc(r.at))
     last_ok = next((r.at for r in reversed(ordered) if r.ok), None)
     failures = 0
     for r in reversed(ordered):
@@ -47,10 +51,12 @@ def board_health(records: Sequence[PollRecord], now: datetime) -> BoardHealth:
             break
         failures += 1
     auth = bool(ordered) and not ordered[-1].ok and ordered[-1].error == "auth"
-    return BoardHealth(last_ok is not None and now - last_ok < FRESH_FOR, last_ok, failures, auth)
+    fresh = last_ok is not None and _utc(now) - _utc(last_ok) < FRESH_FOR
+    return BoardHealth(fresh, last_ok, failures, auth)
 
 
 def cannot_see(legs: Sequence[WatchedLeg], health: BoardHealth, now: datetime) -> tuple[bool, str]:
+    now = _utc(now)
     board_reason = None
     if not health.fresh:
         board_reason = "the board is older than 5 minutes"
@@ -58,17 +64,18 @@ def cannot_see(legs: Sequence[WatchedLeg], health: BoardHealth, now: datetime) -
         board_reason = "the last polls failed"
     for leg in legs:
         # departed and neither ridden nor watched means finished (rule 13: unfinished legs only)
-        if not (leg.riding_or_watched or timedelta(0) <= leg.departure - now <= ZONE):
+        departure = _utc(leg.departure)
+        if not (leg.riding_or_watched or timedelta(0) <= departure - now <= ZONE):
             continue
         reason = board_reason
         if reason is None:
             if leg.observation is not Observation.SEEN:
                 reason = f"the train is {leg.observation.value} in the answer"
-            elif now < leg.departure and leg.dep_provenance is not Provenance.REPORTED:
+            elif now < departure and leg.dep_provenance is not Provenance.REPORTED:
                 reason = "no reported departure time"
             elif leg.riding_or_watched and leg.arr_provenance is not Provenance.REPORTED:
                 reason = "no reported arrival time"
-            elif leg.last_seen_at is None or now - leg.last_seen_at >= FRESH_FOR:
+            elif leg.last_seen_at is None or now - _utc(leg.last_seen_at) >= FRESH_FOR:
                 reason = "the train is not in a fresh answer"
         if reason:
             return True, reason

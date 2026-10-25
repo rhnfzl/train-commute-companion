@@ -16,13 +16,18 @@ def _minute(t: datetime) -> datetime:
     return t.astimezone(UTC).replace(second=0, microsecond=0)
 
 
+_UNKNOWN = datetime.max.replace(tzinfo=UTC)
+
+
 def _arrival(leg: Leg) -> datetime:
+    """Expected arrival as a UTC instant; an unknown arrival ranks after every known one."""
     o = leg.alight.arrival
-    return o.value if o and o.value else leg.alight.planned_arrival or leg.train.planned_departure
+    t = o.value if o and o.value else leg.alight.planned_arrival
+    return _UNKNOWN if t is None else t.astimezone(UTC)
 
 
 def _dep(leg: Leg) -> datetime:
-    return leg.board.planned_departure or leg.train.planned_departure
+    return (leg.board.planned_departure or leg.train.planned_departure).astimezone(UTC)
 
 
 def _fits(c: Connection, sig: Signature, first_departure: datetime) -> bool:
@@ -31,12 +36,14 @@ def _fits(c: Connection, sig: Signature, first_departure: datetime) -> bool:
     base = first_departure.astimezone(TZ).date()  # clock time and day_offset are Amsterdam-local
     for leg, s in zip(c.legs, sig.legs, strict=True):
         dep = _dep(leg).astimezone(TZ)
-        arr = (leg.alight.planned_arrival or dep).astimezone(TZ)
+        arr = leg.alight.planned_arrival
         if (
             (leg.board.code, leg.alight.code) != (s.board, s.alight)
             or dep.timetz().replace(tzinfo=None) != s.departure
             or (dep.date() - base).days != s.day_offset
-            or int((arr - dep).total_seconds() // 60) != s.duration_min
+            or arr is None
+            or int((arr.astimezone(UTC) - dep.astimezone(UTC)).total_seconds() // 60)
+            != s.duration_min
         ):
             return False
     return True

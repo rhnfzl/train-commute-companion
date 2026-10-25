@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import date
 
 from builders import make_connection, make_leg
 
@@ -103,3 +104,44 @@ def test_sort_by_expected_departure_uses_delay():
     late = make_connection([make_leg("UT", "RTD", "08:00", "09:00", delay_dep=20)])
     early = make_connection([make_leg("UT", "RTD", "08:10", "09:10")])
     assert sort_by_expected_departure([late, early]) == [early, late]
+
+
+def test_train_not_calling_at_alight_station_is_cut_short_at_its_last_stop():
+    cl = classify_leg(make_leg("AAA", "UT", "08:12", "08:40"), "RTD")
+    assert cl.kind is LegKind.CUT_SHORT and cl.arr_delay_min is None
+    assert cl.last_served is not None and cl.last_served.code == "UT"
+
+
+def test_passed_boarding_or_alighting_stop_is_never_ok():
+    leg = make_leg("AAA", "RTD", "08:12", "09:00", stops=["UT"])
+    passes_board = replace(leg, stops=(replace(leg.stops[0], passing=True), *leg.stops[1:]))
+    assert classify_leg(passes_board, "RTD").kind is LegKind.CANCELLED
+    passes_alight = replace(
+        leg, stops=(leg.stops[0], replace(leg.stops[1], passing=True), leg.stops[2])
+    )
+    assert classify_leg(passes_alight, "UT").kind is LegKind.CANCELLED
+    longer = make_leg("AAA", "RTD", "08:12", "09:00", stops=["BBB", "UT"])
+    passes = replace(
+        longer, stops=(*longer.stops[:2], replace(longer.stops[2], passing=True), longer.stops[3])
+    )
+    cl = classify_leg(passes, "UT")
+    assert cl.kind is LegKind.CUT_SHORT and cl.last_served is not None
+    assert cl.last_served.code == "BBB"
+
+
+def test_delay_across_the_repeated_hour_uses_instants():
+    # planned at the first 02:50 (CEST), expected at the second 02:05 (CET): 15 min late
+    leg = make_leg("AAA", "UT", "01:30", "02:50", day=date(2026, 10, 24))
+    last = leg.stops[-1]
+    late = replace(last.arrival, value=last.arrival.planned.replace(minute=5, fold=1))
+    leg = replace(leg, stops=(leg.stops[0], replace(last, arrival=late)))
+    cl = classify_leg(leg, "UT")
+    assert cl.arr_delay_min == 15 and cl.kind is LegKind.DELAYED
+
+
+def test_sort_across_the_repeated_hour_uses_instants():
+    second = make_connection(
+        [make_leg("UT", "RTD", "02:10", "03:00", day=date(2026, 10, 24), fold_dep=1)]
+    )
+    first = make_connection([make_leg("UT", "RTD", "02:40", "03:30", day=date(2026, 10, 24))])
+    assert sort_by_expected_departure([second, first]) == [first, second]

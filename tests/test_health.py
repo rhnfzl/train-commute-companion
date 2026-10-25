@@ -143,3 +143,25 @@ def test_rate_errors_count_as_failed_polls():  # 7.1: backoff on 429 counts towa
     rate = PollRecord(at=NOW - timedelta(minutes=2), ok=False, error="rate")
     h = health([ok(6), PollRecord(at=NOW - timedelta(minutes=4), ok=False, error="rate"), rate])
     assert h.consecutive_failures == 2
+
+
+def test_board_age_across_the_repeated_hour_uses_instants():
+    first = datetime(2026, 10, 25, 2, 1, tzinfo=AMS)  # 02:01 CEST
+    now = datetime(2026, 10, 25, 2, 3, fold=1, tzinfo=AMS)  # 02:03 CET, 62 min later
+    h = board_health([PollRecord(first, True, None)], now)
+    assert not h.fresh
+
+
+def test_departed_leg_across_the_repeated_hour_is_not_in_the_zone():
+    now = datetime(2026, 10, 25, 2, 10, fold=1, tzinfo=AMS)  # 02:10 CET
+    dep = datetime(2026, 10, 25, 2, 20, tzinfo=AMS)  # 02:20 CEST, 50 min ago
+    gone = WatchedLeg(
+        TrainId(date(2026, 10, 25), "1234", dep),
+        dep,
+        False,
+        Observation.SEEN,
+        REPORTED,
+        REPORTED,
+        None,
+    )
+    assert cannot_see([gone], board_health([], now), now) == (False, "")
