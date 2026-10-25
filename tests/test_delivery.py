@@ -119,3 +119,32 @@ def test_destination_zone_report_stops_repeat_silent_messages():
 
     assert not zone_report_stops_silent(arrived(), {"RTD", "work"})
     assert zone_report_stops_silent(report(arrived(), "work", "09:31"), {"RTD", "work"})
+
+
+def test_zone_report_helper_as_fact_holds_drops_silent_through_revalidate():
+    from test_lifecycle_end import arrived, report
+
+    zones = {"RTD", "work"}
+
+    @dataclass
+    class ZoneView(View):
+        state: object = None
+
+        def fact_holds(self, o: Obligation) -> bool:
+            return not zone_report_stops_silent(self.state, zones)  # type: ignore[arg-type]
+
+    o = ob(EventKind.DELAYED, Severity.SILENT)
+    assert revalidate(o, ZoneView(state=arrived()), NOW) == "send"
+    assert revalidate(o, ZoneView(state=report(arrived(), "work", "09:31")), NOW) == "drop"
+
+
+def test_look_ahead_obligation_skips_revision_check_and_relies_on_fact_holds():
+    # spec 7.12 rule 5(b): look-ahead facts die with their revision/baseline via fact_holds
+    o = ob(
+        EventKind.DELAYED,
+        Severity.SILENT,
+        occurrence=None,
+        look_ahead=("p", Direction.OUTBOUND, KEY.service_date),
+    )
+    assert revalidate(o, View(live=False), NOW) == "send"
+    assert revalidate(o, View(live=False, holds=False), NOW) == "drop"
