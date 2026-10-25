@@ -95,7 +95,8 @@ class LegProgress:
     accept_first_seen: datetime | None
     watch_until: datetime | None
     # expected arrival + transfer minimum at alight_stop, last observed: the earliest onward
-    # departure, so a broken change is searched from then on (7.4)
+    # departure, so a broken change is searched from then on (7.4). Persisted state: a store
+    # that drops it falls back to searching from the planned departure.
     onward_from: datetime | None = None
 
 
@@ -877,7 +878,9 @@ def _follow(
 
 def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
     """Apply one poll (7.4, rule 2). A result started under another generation is discarded
-    (rule 21). One lock change per poll; the next poll, at the new generation, sees the rest."""
+    (rule 21). One lock change per poll; the next poll, at the new generation, sees the rest.
+    Ongoing facts (`missing`, `transfer_at_risk`, retained ones keyed `...:retained:<n>`) repeat
+    every poll with a stable key: the news ledger (7.5) must drop repeats by key."""
     if board.started_generation != s.generation:
         return Transition(s, ())
     s = replace(s, poll_records=(*s.poll_records, *board.polls)[-_KEEP_POLLS:])
