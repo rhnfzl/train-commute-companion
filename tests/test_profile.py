@@ -350,3 +350,67 @@ def test_touching_windows_are_allowed_and_only_the_later_one_is_active():
     assert [s.key.profile_id for s in schedules_active(Config(1, tuple(profiles)), {}, at)] == [
         "p2"
     ]
+
+
+P3 = """
+  - id: "p3"
+    name: "office_c"
+    days: [fri]
+    home_station: "AAA"
+    work_station: "UT"
+    outbound: {first_train: "08:12", buffer_min: 10}
+    return: {first_train: "17:52", buffer_min: 5}
+"""
+
+
+@pytest.mark.parametrize(
+    ("leg", "window", "first"),
+    [
+        ("outbound", '["07:12", "08:12"]', "08:12"),
+        ("return", '["16:00", "17:52"]', "17:52"),
+        ("return", '["23:00", "00:10"]', "00:10"),  # crosses midnight
+    ],
+)
+def test_window_closing_at_first_train_is_refused(leg: str, window: str, first: str):
+    old = "08:12" if leg == "outbound" else "17:52"
+    text = one(
+        (f'{leg}: {{first_train: "{old}"', f'{leg}: {{window: {window}, first_train: "{first}"')
+    )
+    _, errs = parse_profiles(text, None)
+    assert [e.path for e in errs] == [f"profiles[0].{leg}.window"]
+
+
+def test_window_one_minute_past_first_train_contains_the_departure():
+    from train_commute_companion.schedule import dated_schedule, in_window
+
+    text = one(("outbound: {first_train", 'outbound: {window: ["07:12", "08:13"], first_train'))
+    profiles, errs = parse_profiles(text, None)
+    assert errs == []
+    s = dated_schedule(profiles[0], Direction.OUTBOUND, date(2026, 10, 27), None)
+    assert in_window(s, s.first_departure)
+
+
+def test_shared_past_extra_date_with_next_day_returns_still_open_is_refused():
+    text = (
+        (DATA / "tue_wed_and_thu.yaml")
+        .read_text()
+        .replace("days: [tue, wed]", "days: []\n    extra_dates: [2026-10-27]")
+    )
+    text = text.replace("return: {first_train", "return: {day_offset: 1, first_train")
+    text = text.replace("days: [thu]", "days: []") + P3
+    errs = refused(text, date(2026, 10, 28))  # both returns run on 2026-10-28
+    assert len(errs) == 1 and "office_a" in errs[0].message and "office_b" in errs[0].message
+
+
+@pytest.mark.parametrize("extreme", ["0001-01-01", "0001-01-03", "9999-12-29", "9999-12-31"])
+def test_extra_date_beyond_the_schedulable_range_is_a_profile_error(extreme: str):
+    text = (
+        (DATA / "tue_wed_and_thu.yaml")
+        .read_text()
+        .replace("days: [thu]", f"days: []\n    extra_dates: [{extreme}]")
+    )
+    first, errs = load_config(text + P3, None, None, TODAY)
+    reload, errs2 = load_config(text + P3, None, GOOD_CFG, TODAY)
+    assert reload is None and errs == errs2
+    assert [e.path for e in errs] == ["profiles[1].extra_dates[0]"]
+    assert first is not None and [p.id for p in first.profiles] == ["p1", "p3"]

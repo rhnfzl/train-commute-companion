@@ -29,6 +29,8 @@ _SOURCES = ("ha", "telegram", "owntracks")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # a year and two weeks from two days back: every weekday pair meets both DST nights
 _SCAN_DAYS = 380
+# room for the -3..+3 day scan and next-day returns without date overflow
+_DATE_MIN, _DATE_MAX = date(2, 1, 1), date(9998, 12, 31)
 
 
 class _Loader(yaml.SafeLoader):
@@ -167,6 +169,12 @@ def _journey(
         after = (_minutes(window[1]) - _minutes(first)) % 1440
         if before + after != (_minutes(window[1]) - _minutes(window[0])) % 1440:
             c.err(f"{name}.window", "window does not contain first_train")
+        elif after == 0:  # windows are half-open, so the end itself is outside
+            c.err(
+                f"{name}.window",
+                "window closes at first_train, so the train itself is outside it",
+                "close the window after first_train",
+            )
         elif before < buf + 15:
             c.err(
                 f"{name}.window",
@@ -257,9 +265,15 @@ def _dates(c: _Ctx, raw: object) -> frozenset[date] | None:
         try:
             if not (isinstance(v, str) and _DATE_RE.match(v)):
                 raise ValueError(v)
-            out.add(date.fromisoformat(v))
+            d = date.fromisoformat(v)
         except ValueError:
             c.err(f"extra_dates[{i}]", f"not a YYYY-MM-DD date: {v!r}")
+            ok = False
+            continue
+        if _DATE_MIN <= d <= _DATE_MAX:
+            out.add(d)
+        else:
+            c.err(f"extra_dates[{i}]", f"{v} is outside {_DATE_MIN} .. {_DATE_MAX}")
             ok = False
     return frozenset(out) if ok else None
 
@@ -484,7 +498,7 @@ def _occurrences(p: Profile, today: date, near: frozenset[date]) -> dict[date, l
 
 
 def _window_overlap(
-    oa: dict[date, list[_Occ]], ob: dict[date, list[_Occ]], floor: datetime
+    oa: dict[date, list[_Occ]], ob: dict[date, list[_Occ]], floor: datetime, same: bool
 ) -> date | None:
     """Earliest local date two windows overlap, half-open [start, end) like in_window."""
     hits: list[datetime] = []
@@ -492,7 +506,7 @@ def _window_overlap(
         for k in range(-3, 4):  # a dated window lies within its commute day -1 .. +2
             for y in ob.get(day + timedelta(days=k), ()):
                 for x in xs:
-                    if (x.day, x.direction) == (y.day, y.direction):
+                    if same and (x.day, x.direction) == (y.day, y.direction):
                         continue  # the same occurrence when a profile is checked against itself
                     # a weekly pattern collides in every non-holiday week, so holidays only
                     # count when a one-off date is involved
@@ -543,13 +557,13 @@ def _overlap_pairs(
     occ = {p.id: _occurrences(p, today, near) for p in profiles}
     floor = datetime.combine(today, time(), TZ).astimezone(UTC)
     for p in profiles:
-        hit = _window_overlap(occ[p.id], occ[p.id], floor)
+        hit = _window_overlap(occ[p.id], occ[p.id], floor, True)
         if hit:
             msg = f"profile {p.name!r} has overlapping time windows on {hit.isoformat()}"
             add(p, p, msg, "narrow the outbound or return window")
     for a, b in pairs:
         if (a.id, b.id) not in found:
-            hit = _window_overlap(occ[a.id], occ[b.id], floor)
+            hit = _window_overlap(occ[a.id], occ[b.id], floor, False)
             if hit:
                 msg = (
                     f"profiles {a.name!r} and {b.name!r} have overlapping time windows "
