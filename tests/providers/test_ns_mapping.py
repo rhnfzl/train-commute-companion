@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -301,3 +301,59 @@ def test_maintenance_elsewhere_does_not_list_trip_stops():
     leg = map_trips(fixture("on_time_direct.json"), Q, NOW).connections[0].legs[0]
     work = map_disruptions([_maint()]).items[0]
     assert not any(work.lists(s) for s in leg.stops)
+
+
+UIC_ONLY_WORK = _maint(publicationSections=[{"section": {"stations": [{"uicCode": "1000001"}]}}])
+
+
+def _code_only(p: dict) -> None:
+    p.pop("uicCode", None)
+    p["stationCode"] = "AAA"
+
+
+def test_code_only_stop_resolves_uic_from_trip_endpoint_alias():
+    raw = _direct()
+    _code_only(_leg0(raw)["stops"][0])
+    leg = map_trips(raw, Q, NOW).connections[0].legs[0]
+    assert leg.stops[0].uic == "1000001"
+    assert map_disruptions([UIC_ONLY_WORK]).items[0].lists(leg.stops[0])
+
+
+def test_code_only_endpoint_resolves_uic_from_trip_stop_alias():
+    raw = _direct()
+    leg_raw = _leg0(raw)
+    _code_only(leg_raw["origin"])
+    del leg_raw["stops"]
+    raw["trips"][0]["legs"].append(json.loads(json.dumps(_leg0(_direct()))))
+    raw["trips"][0]["legs"][1]["stops"][0]["stationCode"] = "AAA"
+    leg = map_trips(raw, Q, NOW).connections[0].legs[0]
+    assert leg.board.uic == "1000001"
+    assert map_disruptions([UIC_ONLY_WORK]).items[0].lists(leg.board)
+
+
+@pytest.mark.parametrize("where", ["stop", "endpoint"])
+def test_unresolved_stop_identity_is_never_clean(where):
+    raw = _direct()
+    leg_raw = _leg0(raw)
+    for p in (leg_raw["origin"], *leg_raw["stops"]):
+        _code_only(p)
+    if where == "endpoint":
+        del leg_raw["stops"]
+    stop = map_trips(raw, Q, NOW).connections[0].legs[0].stops[0]
+    assert stop.uic is None
+    elsewhere = _maint()  # names 1000002/UT only, yet cannot rule out a uic-less stop
+    assert map_disruptions([elsewhere]).items[0].lists(stop)
+
+
+def test_maintenance_end_before_start_across_dst_fold_is_unknown():
+    # 02:10+01:00 is 01:10 UTC, 02:50+02:00 is 00:50 UTC: reversed although the wall clock rises
+    item = _maint(start="2026-10-25T02:10:00+0100", end="2026-10-25T02:50:00+0200")
+    assert map_disruptions([item]).coverage == "unknown"
+
+
+def test_maintenance_crossing_the_repeated_hour_is_complete():
+    # 02:50+02:00 is 00:50 UTC, 02:10+01:00 is 01:10 UTC: valid although the wall clock falls
+    item = _maint(start="2026-10-25T02:50:00+0200", end="2026-10-25T02:10:00+0100")
+    w = map_disruptions([item])
+    assert w.coverage == "complete"
+    assert w.items[0].end - w.items[0].start == timedelta(minutes=20)

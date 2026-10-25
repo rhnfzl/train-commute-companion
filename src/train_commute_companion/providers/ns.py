@@ -3,7 +3,7 @@
 import asyncio
 import re
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -60,9 +60,16 @@ def _uic(raw: dict[str, Any]) -> str | None:
     return str(raw["uicCode"]) if raw.get("uicCode") else None
 
 
-def _stop(raw: dict[str, Any], codes: dict[str, str], at: datetime) -> Stop:
-    uic = _uic(raw)
-    code = raw.get("stationCode") or (codes.get(uic, uic) if uic else None)
+def _ids(raw: dict[str, Any], aliases: dict[str, str]) -> tuple[str | None, str | None]:
+    """(code, uic), each filled from the trip's aliases when the stop carries only the other."""
+    uic, code = _uic(raw), _str(raw.get("stationCode") or None)
+    uic = uic or (aliases.get(code) if code else None)
+    code = code or (aliases.get(uic, uic) if uic else None)
+    return code, uic
+
+
+def _stop(raw: dict[str, Any], aliases: dict[str, str], at: datetime) -> Stop:
+    code, uic = _ids(raw, aliases)
     if not code:
         raise MalformedAnswer("stop has no station identifier")
     pa, pd = _dt(raw.get("plannedArrivalDateTime")), _dt(raw.get("plannedDepartureDateTime"))
@@ -81,11 +88,10 @@ def _stop(raw: dict[str, Any], codes: dict[str, str], at: datetime) -> Stop:
     )
 
 
-def _end_stop(raw: dict[str, Any], *, depart: bool, at: datetime) -> Stop:
+def _end_stop(raw: dict[str, Any], aliases: dict[str, str], *, depart: bool, at: datetime) -> Stop:
     """Boarding or alighting stop built from a leg's origin or destination."""
     p, a = _dt(raw.get("plannedDateTime")), _dt(raw.get("actualDateTime"))
-    uic = _uic(raw)
-    code = str(raw.get("stationCode") or uic or "")
+    code, uic = _ids(raw, aliases)
     if not code:
         raise MalformedAnswer("leg end has no station identifier")
     o = _obs(p, a, at)
@@ -124,7 +130,7 @@ def _number(v: object) -> str | None:
     return v if isinstance(v, str) and v.strip() else None
 
 
-def _leg(raw: object, codes: dict[str, str], at: datetime) -> Leg:
+def _leg(raw: object, aliases: dict[str, str], at: datetime) -> Leg:
     if not isinstance(raw, dict):
         raise MalformedAnswer("leg is not an object")
     origin, dest, stops_raw = raw.get("origin"), raw.get("destination"), raw.get("stops")
@@ -132,9 +138,12 @@ def _leg(raw: object, codes: dict[str, str], at: datetime) -> Leg:
         # a present but broken stop list may hide a cancelled stop: never fall back over it
         if len(_objects(stops_raw, "stops")) < 2:
             raise MalformedAnswer("leg stop list has fewer than two stops")
-        stops = tuple(_stop(s, codes, at) for s in stops_raw)
+        stops = tuple(_stop(s, aliases, at) for s in stops_raw)
     elif isinstance(origin, dict) and isinstance(dest, dict):
-        stops = (_end_stop(origin, depart=True, at=at), _end_stop(dest, depart=False, at=at))
+        stops = (
+            _end_stop(origin, aliases, depart=True, at=at),
+            _end_stop(dest, aliases, depart=False, at=at),
+        )
     else:
         raise MalformedAnswer("leg has no stops and no origin/destination")
     planned_dep = stops[0].planned_departure
@@ -177,6 +186,21 @@ def _opt_bool(v: object) -> bool | None:
     return v if isinstance(v, bool) else None
 
 
+def _aliases(legs_raw: list[Any]) -> dict[str, str]:
+    """uic -> station code and station code -> uic, from every place in the trip naming both."""
+    out: dict[str, str] = {}
+    for lr in legs_raw:
+        if not isinstance(lr, dict):
+            continue
+        stops = lr.get("stops")
+        stops = stops if isinstance(stops, list) else []
+        for p in (lr.get("origin"), lr.get("destination"), *stops):
+            if isinstance(p, dict) and p.get("uicCode") and p.get("stationCode"):
+                uic, code = str(p["uicCode"]), str(p["stationCode"])
+                out[uic], out[code] = code, uic
+    return out
+
+
 def map_trips(payload: object, q: Query, fetched_at: datetime) -> ProviderAnswer:
     if not isinstance(payload, dict) or not isinstance(payload.get("trips"), list):
         raise MalformedAnswer("answer has no trips list")
@@ -185,12 +209,7 @@ def map_trips(payload: object, q: Query, fetched_at: datetime) -> ProviderAnswer
         legs_raw = trip.get("legs") if isinstance(trip, dict) else None
         if not isinstance(legs_raw, list) or not legs_raw:
             raise MalformedAnswer("trip has no legs")
-        codes: dict[str, str] = {}
-        for lr in legs_raw:
-            for end in (lr.get("origin"), lr.get("destination")) if isinstance(lr, dict) else ():
-                if isinstance(end, dict) and end.get("uicCode") and end.get("stationCode"):
-                    codes[str(end["uicCode"])] = str(end["stationCode"])
-        legs = tuple(_leg(lr, codes, fetched_at) for lr in legs_raw)
+        legs = tuple(_leg(lr, _aliases(legs_raw), fetched_at) for lr in legs_raw)
         ctx = trip.get("ctxRecon")
         conns.append(
             Connection(
@@ -216,9 +235,13 @@ def _station_ids(s: object) -> set[str] | None:
 def _work(d: dict[str, Any]) -> PlannedWork | None:
     """One MAINTENANCE item, or None when it cannot be evaluated."""
     start, end = _dt(d.get("start")), _dt(d.get("end"))
-    sections = d.get("publicationSections")
-    if start is None or end is None or end <= start:
+    if start is None or end is None:
         return None
+    # UTC: aware datetimes sharing one zone compare by wall clock, wrong in the repeated hour
+    start, end = start.astimezone(UTC), end.astimezone(UTC)
+    if end <= start:
+        return None
+    sections = d.get("publicationSections")
     if not isinstance(sections, list) or not sections:
         return None
     stations: set[str] = set()
@@ -325,7 +348,7 @@ class NsProvider:
         try:
             return r.json()
         except ValueError:
-            raise ProviderError("NS answer is not valid JSON") from None
+            raise MalformedAnswer("NS answer is not valid JSON") from None
 
     async def trips(self, q: Query) -> ProviderAnswer:
         params = {
@@ -340,7 +363,11 @@ class NsProvider:
 
     async def planned_works(self) -> PlannedWorks:
         # request failures raise (429/5xx feed shared backoff, 7.1); the caller treats them as unknown
-        return map_disruptions(await self._get("/v3/disruptions", {"isActive": "false"}))
+        try:
+            payload = await self._get("/v3/disruptions", {"isActive": "false"})
+        except MalformedAnswer:  # _get raises it only for an undecodable 200 body
+            return PlannedWorks((), "unknown")
+        return map_disruptions(payload)
 
     async def stations(self) -> frozenset[str]:
         return map_stations(await self._get("/v2/stations"))

@@ -119,6 +119,11 @@ async def test_5xx_on_trips_is_server_error_but_4xx_is_not():
     assert not isinstance(e.value, ServerError)
 
 
+async def test_planned_works_invalid_json_is_unknown_coverage():
+    pw = await provider(status(200, body=b"<html>")).planned_works()
+    assert pw.coverage == "unknown" and pw.items == ()
+
+
 async def test_planned_works_unreadable_answer_is_unknown_coverage():
     pw = await provider(status(200, body=b'{"x": 1}')).planned_works()
     assert pw.coverage == "unknown" and pw.items == ()

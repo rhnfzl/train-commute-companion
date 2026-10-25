@@ -52,7 +52,12 @@ class PlannedWork:
     title: str
 
     def lists(self, stop: Stop) -> bool:
-        return stop.code in self.stations or (stop.uic is not None and stop.uic in self.stations)
+        """True when the work lists the stop or cannot rule it out. Planned works only gate
+        clean probes (7.10), so a stop without a uic, which a uic-only work entry could name,
+        counts as listed: an unresolved identity never yields a clean probe."""
+        if stop.code in self.stations:
+            return True
+        return stop.uic is None or stop.uic in self.stations
 
 
 @dataclass(frozen=True, slots=True)
