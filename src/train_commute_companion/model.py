@@ -136,6 +136,16 @@ class Leg:
 
 
 @dataclass(frozen=True, slots=True)
+class ClassifiedLeg:
+    leg: Leg
+    kind: LegKind
+    observation: Observation
+    dep_delay_min: int | None  # None when no reported time; 0 for a cancelled train (planned time)
+    arr_delay_min: int | None  # None unless the train reaches the alight station
+    last_served: Stop | None  # set only for CUT_SHORT
+
+
+@dataclass(frozen=True, slots=True)
 class Connection:
     legs: tuple[Leg, ...]
     status: str
