@@ -1,0 +1,13 @@
+profiles:
+  - &p
+    id: "p1"
+    name: "office_a"
+    days: [tue, wed]
+    home_station: "AAA"
+    work_station: "UT"
+    outbound: {first_train: "08:12", buffer_min: 10}
+    return: {first_train: "17:52", buffer_min: 5}
+  - <<: *p
+    id: "p2"
+    name: "office_b"
+    days: [thu]

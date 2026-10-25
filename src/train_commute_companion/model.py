@@ -1,8 +1,10 @@
 """Core value types. All times are timezone-aware (Europe/Amsterdam)."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from enum import StrEnum
+from typing import Literal
 
 
 class Direction(StrEnum):
@@ -158,3 +160,60 @@ class AlertEvent:
     text: str
     key: str
     created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class UsualJourney:
+    first_train: time
+    transfers: tuple[str, ...]
+    window: tuple[time, time]
+    buffer_min: int
+    earlier_train_advice: bool
+    day_offset: int
+
+
+@dataclass(frozen=True, slots=True)
+class AlertSettings:
+    earlier_train_threshold_min: int = 10
+    earlier_train_min_saving_min: int = 5
+    latest_acceptable_arrival: time | None = None
+    quiet_hours: tuple[time, time] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LocationSettings:
+    source: Literal["ha", "telegram", "owntracks"]
+    entity: str | None
+    zones: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class Profile:
+    id: str
+    name: str
+    traveller: str
+    days: frozenset[int]
+    extra_dates: frozenset[date]
+    skip_public_holidays: bool
+    home_station: str
+    work_station: str
+    outbound: UsualJourney
+    return_: UsualJourney
+    transfer_min: Mapping[str, int]
+    alerts: AlertSettings
+    location: LocationSettings | None
+
+    def journey(self, d: Direction) -> UsualJourney:
+        return self.outbound if d is Direction.OUTBOUND else self.return_
+
+    def origin(self, d: Direction) -> str:
+        return self.home_station if d is Direction.OUTBOUND else self.work_station
+
+    def destination(self, d: Direction) -> str:
+        return self.work_station if d is Direction.OUTBOUND else self.home_station
+
+
+@dataclass(frozen=True, slots=True)
+class Config:
+    revision: int
+    profiles: tuple[Profile, ...]

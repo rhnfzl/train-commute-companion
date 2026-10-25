@@ -1,0 +1,50 @@
+# Starter profiles file. Copy it, edit it, check it with `tcc check-profile`.
+# Station codes are NS codes. AAA is a made-up placeholder; UT and RTD are examples.
+# Quote every time ("08:12"), otherwise YAML reads it as a number.
+profiles:
+  - id: "p1"                  # immutable, any unique string; never change it after first use
+    name: "office_a"          # editable; becomes the prefix of the Home Assistant entities
+    traveller: "me"           # fixed in v1, the only allowed value
+    days: [tue, wed]          # weekdays: mon tue wed thu fri sat sun
+    extra_dates: []           # optional one-off dates, YYYY-MM-DD
+    skip_public_holidays: true  # skip Dutch public holidays on the weekdays above
+    home_station: "AAA"       # NS station code of the home side
+    work_station: "RTD"       # NS station code of the work side
+    outbound:                 # home to work
+      first_train: "08:12"    # the train you normally take first
+      transfers: ["UT"]       # transfer stations in travel order; [] for a direct train
+      window: ["07:12", "10:12"]  # when to follow; default is first train -60 / +120 min
+      buffer_min: 10          # minutes from the door to the platform
+      earlier_train_advice: false  # suggest an earlier train when yours is late
+    return:                   # work to home
+      day_offset: 0           # 1 when you travel back the morning after (night shift)
+      first_train: "17:52"
+      transfers: ["UT"]
+      buffer_min: 5
+      earlier_train_advice: true
+    transfer_min: { UT: 4 }   # minutes you need to change trains, for every transfer station
+    alerts:
+      earlier_train_threshold_min: 10   # advise an earlier train from this much delay
+      earlier_train_min_saving_min: 5   # only if it saves at least this much
+      latest_acceptable_arrival: null   # optional "HH:MM"; later arrival makes delays loud
+      quiet_hours: ["19:52", "07:12"]   # quiet events wait; loud ones still go out
+    location: null            # optional; omit to run on times only
+  - id: "p2"
+    name: "office_b"
+    traveller: "me"
+    days: [thu]
+    extra_dates: []
+    skip_public_holidays: true
+    home_station: "AAA"
+    work_station: "UT"
+    outbound:
+      first_train: "08:12"
+      transfers: []
+      buffer_min: 10
+      earlier_train_advice: false
+    return:
+      first_train: "17:52"
+      transfers: []
+      buffer_min: 5
+      earlier_train_advice: true
+    transfer_min: {}
