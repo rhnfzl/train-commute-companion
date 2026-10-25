@@ -132,3 +132,14 @@ def test_offline_only_outside_zone_and_not_riding():
     assert offline(stale, False)
     assert not offline(stale, True)
     assert not offline(fresh(), False)
+
+
+def test_departed_leg_not_ridden_is_finished_and_ignored():
+    gone = leg(in_minutes=-3, riding=False)
+    assert not cannot_see([gone], health([ok(20)]), NOW)[0]
+
+
+def test_rate_errors_count_as_failed_polls():  # 7.1: backoff on 429 counts toward board health
+    rate = PollRecord(at=NOW - timedelta(minutes=2), ok=False, error="rate")
+    h = health([ok(6), PollRecord(at=NOW - timedelta(minutes=4), ok=False, error="rate"), rate])
+    assert h.consecutive_failures == 2

@@ -57,7 +57,8 @@ def cannot_see(legs: Sequence[WatchedLeg], health: BoardHealth, now: datetime) -
     elif health.consecutive_failures >= FAILED_POLLS:
         board_reason = "the last polls failed"
     for leg in legs:
-        if not (leg.riding_or_watched or leg.departure - now <= ZONE):
+        # departed and neither ridden nor watched means finished (rule 13: unfinished legs only)
+        if not (leg.riding_or_watched or timedelta(0) <= leg.departure - now <= ZONE):
             continue
         reason = board_reason
         if reason is None:
