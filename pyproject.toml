@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "train-commute-companion"
+version = "0.1.0"
+description = "Follows your usual NS train journey and alerts you when it changes."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = ["PyYAML>=6", "httpx>=0.27"]
+
+[project.scripts]
+tcc = "train_commute_companion.cli:main"
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "ruff", "mypy", "types-PyYAML"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/train_commute_companion"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["tests"]

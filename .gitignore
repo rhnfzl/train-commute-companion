@@ -2,3 +2,9 @@
 private/
 # Subagent-driven-development scratch. Never pushed.
 .superpowers/
+__pycache__/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
