@@ -150,6 +150,15 @@ def test_no_advice_when_earlier_train_cannot_be_caught():
     assert events == []
 
 
+def test_buffer_boundary_exactly_catchable_one_minute_short_not():
+    ok = ctx(at("17:17"))  # 17:22 minus 5 min buffer: exactly catchable
+    _, events = advise(fresh(ok), ok, answer(EARLY, SLOW), USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.LEAVE_NOW]
+    late = ctx(at("17:18"))  # 4 min before departure: inside the buffer
+    _, events = advise(fresh(late), late, answer(EARLY, SLOW), USUAL_ARRIVAL)
+    assert events == []
+
+
 def test_no_advice_when_travelling():
     c = ctx(at("17:00"))
     s = fresh(c)

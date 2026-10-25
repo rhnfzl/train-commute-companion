@@ -90,6 +90,9 @@ def _gate(s: OccurrenceState, ctx: Ctx) -> bool:
     )
 
 
+_FAR = datetime(2100, 1, 1, tzinfo=UTC)
+
+
 def advise(
     s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, usual_planned_arrival: datetime
 ) -> tuple[AdviceRecord, list[AlertEvent]]:
@@ -139,7 +142,7 @@ def advise(
             arr = _arrival(c)
             if arr is None or _departure(c) >= _departure(ride):
                 continue
-            saving = timedelta.max if ride_arr is None else ride_arr - arr
+            saving = (ride_arr or _FAR) - arr  # no baseline: soonest arrival wins
             if saving < need or not is_good(c, answer, **kw).ok:  # type: ignore[arg-type]
                 continue
             # largest saving; a tie goes to the earlier train
@@ -154,9 +157,12 @@ def advise(
         train = best[1].legs[0].train
         if advised == train:
             return record, []  # already told (also after a withdrawal: withdraw once)
+        first = best[1].legs[0]
+        dep_t = first.board.departure.value if first.board.departure else None
+        shown = (dep_t or first.train.planned_departure).astimezone(ctx.now.tzinfo)
         text = (
-            f"leave now, an earlier train leaves at {best[1].legs[0].train.planned_departure:%H:%M}"
-            f" and gets you there sooner than your usual journey"
+            f"leave now, an earlier train {first.board.code} to {best[1].legs[-1].alight.code}"
+            f" leaves at {shown:%H:%M} and gets you there sooner than your usual journey"
         )
         ev = _event(ctx, EventKind.LEAVE_NOW, Severity.LOUD, text, train)
         return AdviceRecord(train, ctx.now, False), [ev]
