@@ -73,14 +73,27 @@ def test_extra_date_overlaps_weekday():
     assert len(find_overlaps([a, b], HORIZON)) == 1
 
 
-def test_holiday_skip_removes_overlap_day_only():
+def test_shared_weekday_overlaps_even_when_horizon_only_has_a_holiday():
     from dataclasses import replace
 
     a, b = load("both_on_wed.yaml")
-    a, b = replace(a, days=frozenset({3})), replace(b, days=frozenset({3}))
-    holiday = date(2026, 12, 25)  # a Friday: no overlap there even when both listed
     a, b = replace(a, days=frozenset({5})), replace(b, days=frozenset({5}))
-    assert find_overlaps([a, b], (holiday, holiday)) == []
+    holiday = date(
+        2026, 12, 25
+    )  # a Friday and a holiday: both skip it, yet every other Friday collides
+    assert a.skip_public_holidays and b.skip_public_holidays
+    assert len(find_overlaps([a, b], (holiday, holiday))) == 1
+
+
+def test_load_config_refuses_shared_weekday_that_is_a_holiday_this_week():
+    text = (DATA / "both_on_wed.yaml").read_text()
+    cfg, errs = load_config(
+        text, None, GOOD_CFG, date(2026, 12, 21)
+    )  # Wed 23rd is fine; use Friday below
+    assert cfg is None and errs
+    fri = text.replace("[tue, wed]", "[fri]").replace("[wed]", "[fri]")
+    cfg, errs = load_config(fri, None, GOOD_CFG, date(2026, 12, 21))
+    assert cfg is None and len(errs) == 1 and "fri" in errs[0].message
 
 
 def test_every_error_is_reported():

@@ -455,6 +455,17 @@ def _overlap_pairs(
                         ),
                     )
         day += timedelta(days=1)
+    # a shared weekday collides on every non-holiday week, even if the horizon only shows a holiday
+    for i, a in enumerate(profiles):
+        for b in profiles[i + 1 :]:
+            shared = a.days & b.days
+            if shared and (a.id, b.id) not in found:
+                msg = (
+                    f"profiles {a.name!r} and {b.name!r} are both active on "
+                    f"{_DAYS[min(shared) - 1]}"
+                )
+                err = ProfileError(a.id, "profiles", msg, "give them different days")
+                found[(a.id, b.id)] = (a, b, err)
     return list(found.values())
 
 
