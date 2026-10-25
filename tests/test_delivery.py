@@ -54,6 +54,9 @@ class View:
     def in_quiet_hours(self, profile_id: str, now: datetime) -> bool:
         return self.quiet
 
+    def current(self, o: Obligation) -> AlertEvent:
+        return o.event
+
 
 def test_cancellation_told_after_lock_moved_to_good_replacement():
     assert revalidate(ob(EventKind.CANCELLED), View(holds=False, live=False), NOW) == "send"
@@ -148,3 +151,26 @@ def test_look_ahead_obligation_skips_revision_check_and_relies_on_fact_holds():
     )
     assert revalidate(o, View(live=False), NOW) == "send"
     assert revalidate(o, View(live=False, holds=False), NOW) == "drop"
+
+
+def test_send_regenerates_the_message_from_current_state():  # rule 5
+    frozen = ob(EventKind.CANCELLED)
+    now_text = "Office A: your train is cancelled. Next good connection: 09:05."
+
+    @dataclass
+    class Current(View):
+        def current(self, o: Obligation) -> AlertEvent:
+            return replace(o.event, text=now_text)  # the 08:44 named earlier has left
+
+    class Record:
+        def __init__(self) -> None:
+            self.sent: list[AlertEvent] = []
+
+        async def send(self, event: AlertEvent) -> bool:
+            self.sent.append(event)
+            return False
+
+    n = Record()
+    kept = asyncio.run(deliver(frozen, Current(), n, NOW))
+    assert [e.text for e in n.sent] == [now_text]
+    assert kept is not None and kept.event == frozen.event  # the stored fact stays as written

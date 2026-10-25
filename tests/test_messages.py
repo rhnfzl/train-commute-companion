@@ -62,3 +62,15 @@ def test_no_replacement_points_to_the_app():
 def test_every_kind_renders_without_em_dash():
     for k in EventKind:
         assert chr(0x2014) not in render(k, ctx(at("08:00")), leg=utrecht_rotterdam())
+
+
+def test_every_transfer_station_is_named_in_order():
+    l1 = make_leg("AAA", "UT", "08:12", "08:40")
+    l2 = make_leg("UT", "BBB", "08:50", "09:05", number="2")
+    l3 = make_leg("BBB", "RTD", "09:15", "09:30", number="3")
+    t = render(EventKind.ALL_GOOD, ctx(at("08:00")), legs=[l1, l2, l3])
+    assert "change at UT then BBB" in t
+    t = render(
+        EventKind.CANCELLED, ctx(at("08:00")), leg=l1, replacement=make_connection([l1, l2, l3])
+    )
+    assert "change at UT then BBB." in t

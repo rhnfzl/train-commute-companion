@@ -194,3 +194,57 @@ def test_text_names_stations_and_live_departure():
     text = events[0].text
     assert "17:25" in text and "17:22" not in text
     assert "UT" in text and "AAA" in text
+
+
+def test_renewed_disruption_after_withdrawal_advises_again_with_a_new_identity():  # 7.6
+    c = ctx(at("17:00"))
+    s = fresh(c)
+    rec, first = advise(s, c, answer(EARLY, SLOW, LATER), USUAL_ARRIVAL)
+    ok = conn("17:52", "18:26", "1234")
+    later = ctx(at("17:05"))
+    rec2, withdrawn = advise(replace(s, advice=rec), later, answer(EARLY, ok, LATER), USUAL_ARRIVAL)
+    assert [e.kind for e in withdrawn] == [EventKind.EARLIER_TRAIN_WITHDRAWN]
+    again = ctx(at("17:08"))
+    rec3, renewed = advise(
+        replace(s, advice=rec2), again, answer(EARLY, SLOW, LATER), USUAL_ARRIVAL
+    )
+    assert [e.kind for e in renewed] == [EventKind.LEAVE_NOW]
+    assert renewed[0].key != first[0].key  # the ledger does not drop it as a repeat
+    assert rec3.advised_train == EARLY.legs[0].train and not rec3.withdrawn
+    # and a second withdrawal is its own message too
+    _, w2 = advise(replace(s, advice=rec3), ctx(at("17:10")), answer(EARLY, ok), USUAL_ARRIVAL)
+    assert [e.kind for e in w2] == [EventKind.EARLIER_TRAIN_WITHDRAWN]
+    assert w2[0].key != withdrawn[0].key
+
+
+def test_boarding_locked_leg_does_not_stop_advice_before_travel():  # rule 17
+    from train_commute_companion.lifecycle import LegState
+
+    c = ctx(at("17:48"))  # SLOW 17:52 is within the 5 min buffer: BOARDING
+    j = journey_of(SLOW, LockSource.AUTO, Commitment.INTENDED)
+    j = replace(j, legs=(replace(j.legs[0], state=LegState.BOARDING),))
+    s = replace(fresh(c), direction_state=DirectionState.LOCKED, lock=j, at_station=True)
+    escape = conn("17:49", "18:20", "1003")  # catchable from the platform
+    _, events = advise(s, c, answer(escape, SLOW), USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.LEAVE_NOW]
+    _, events = advise(
+        replace(s, travelling=True, tap_at=at("17:40")), c, answer(escape, SLOW), USUAL_ARRIVAL
+    )
+    assert events == []  # a tap is travel evidence
+
+
+def test_usual_connection_gone_still_advises_against_the_next_good_one():  # 7.6, rule 2
+    c = ctx(at("17:00"))
+    rec, events = advise(fresh(c), c, answer(EARLY, LATER), USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.LEAVE_NOW]
+    assert rec.advised_train == EARLY.legs[0].train
+
+
+def test_lock_not_listed_as_one_connection_is_rebuilt_from_its_legs():
+    c = ctx(at("17:00"))
+    j = journey_of(SLOW, LockSource.AUTO, Commitment.INTENDED)
+    s = replace(fresh(c), direction_state=DirectionState.LOCKED, lock=j)
+    onward = make_leg("AAA", "BBB", "18:50", "19:00", number="3000")
+    spread = make_connection([SLOW.legs[0], onward])  # the locked train, listed with more
+    _, events = advise(s, c, answer(EARLY, spread), USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.LEAVE_NOW]

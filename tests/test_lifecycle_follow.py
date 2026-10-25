@@ -337,7 +337,7 @@ def test_retained_onward_leg_cancelled_alerts_without_relocking():  # spec 10.1 
     assert kinds(t) == [(EventKind.CANCELLED, Severity.LOUD)]
     e = t.events[0]
     assert e.train == L2.train and "if you are on the 08:12: your 08:50" in e.text
-    assert "Next good connection: 09:05" in e.text and e.key.endswith(":retained:1234")
+    assert "Next good connection: 09:05" in e.text and ":retained:1234@" in e.key
     trains = [[(x.train, x.state) for x in r.legs] for r in t.state.retained]
     assert trains == [[(x.train, x.state) for x in r.legs] for r in s.retained]
     assert numbers(t.state) == ["1300", "6666"]

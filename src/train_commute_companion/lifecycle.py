@@ -318,8 +318,16 @@ def _hhmm(t: datetime) -> str:
 
 
 def _event(
-    ctx: Ctx, kind: EventKind, severity: Severity, text: str, train: TrainId | None = None
+    ctx: Ctx,
+    kind: EventKind,
+    severity: Severity,
+    text: str,
+    train: TrainId | None = None,
+    facts: str | None = None,
 ) -> AlertEvent:
+    """The key carries the facts the message states (7.5): `facts` when given, else the text,
+    so a changed endpoint, replacement or revised arrival is news while a repeat is not.
+    Pass `facts` when the text holds a live time that drifts without being news."""
     key = ctx.schedule.key
     name = ctx.profile.name.replace("_", " ").title()
     ident = "" if train is None else f":{train.train_number}@{train.planned_departure.isoformat()}"
@@ -333,7 +341,7 @@ def _event(
         severity,
         train,
         f"{name}: {text}",
-        f"{kind.value}:{key.service_date.isoformat()}{ident}",
+        f"{kind.value}:{key.service_date.isoformat()}{ident}:{text if facts is None else facts}",
         ctx.now,
     )
 
@@ -856,13 +864,17 @@ def _relock(
             events.append(_event(ctx, EventKind.NO_CONNECTION, Severity.LOUD, nothing))
         return Transition(_progress(s, legs), tuple(events))
     via = ", ".join(c.transfer_stations) or "a direct train"
+    # the replacement by identity, not by its live time: a drifting estimate is not news (7.5)
+    facts = f"{text}|" + ",".join(
+        f"{x.train.train_number}@{x.train.planned_departure.isoformat()}" for x in c.legs
+    )
     text += f". Next good connection: {_hhmm(_departure(c))}" + (
         f", new route via {via}." if how == "new_route" else "."
     )
     written = _write(s, _journey(lock, legs[:j], c.legs, source))
     if history is not None and history.train not in {y.train for y in s.cancellation_history}:
         written = replace(written, cancellation_history=(*s.cancellation_history, history))
-    return Transition(written, (_event(ctx, kind, sev, text, train),))
+    return Transition(written, (_event(ctx, kind, sev, text, train, facts),))
 
 
 def _onward(
@@ -1191,7 +1203,7 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
         retained.append(t.state.lock)
         for e in t.events:
             head, _, body = e.text.partition(": ")
-            key = f"{e.key}:retained:{first.train_number}"
+            key = f"{e.key}:retained:{first.train_number}@{first.planned_departure.isoformat()}"
             events.append(replace(e, text=f"{head}: {on}{body}", key=key))
     s = replace(s, retained=tuple(retained))
     t = (_restore(s, ctx, pool) or _follow(s, ctx, pool, asked)) if live else Transition(s, ())

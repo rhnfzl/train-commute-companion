@@ -49,6 +49,11 @@ class LedgerView(Protocol):
     def newer_covers(self, o: Obligation) -> bool: ...
     def revision_live(self, key: OccurrenceKey, rev: int) -> bool: ...
     def in_quiet_hours(self, profile_id: str, now: datetime) -> bool: ...
+    def current(self, o: Obligation) -> AlertEvent:
+        """The message regenerated from the current state right before sending (rule 5): the
+        current profile name, a journey warning naming the current lock and its next good
+        connection now, never the replacement frozen when the obligation was written."""
+        ...
 
 
 def revalidate(o: Obligation, view: LedgerView, now: datetime) -> Literal["send", "drop", "hold"]:
@@ -92,6 +97,6 @@ async def deliver(
         return None
     if verdict == "hold":
         return o
-    if await notifier.send(o.event):
+    if await notifier.send(view.current(o)):
         return None
     return replace(o, attempts=o.attempts + 1)

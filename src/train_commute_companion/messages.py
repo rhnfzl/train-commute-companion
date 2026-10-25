@@ -26,6 +26,12 @@ def _name(leg: Leg) -> str:
     return f"{leg.board.name} to {leg.alight.name}"
 
 
+def _changes(legs: Sequence[Leg]) -> str:
+    """Every transfer station in order: a three-leg journey names both changes."""
+    names = [x.alight.name for x in legs[:-1]]
+    return f", change at {' then '.join(names)}" if names else ""
+
+
 def _next(rep: object) -> str:
     if not isinstance(rep, Connection):
         return f"No good connection found, {CHECK_APP}."
@@ -34,17 +40,14 @@ def _next(rep: object) -> str:
     track = first.board.actual_track or first.board.planned_track
     text = f"Next good connection: {when}"
     text += f", platform {track}" if track else ""
-    if len(rep.legs) > 1:
-        text += f", change at {rep.legs[0].alight.name}"
-    return text + "."
+    return text + _changes(rep.legs) + "."
 
 
 def _legs(legs: Sequence[Leg]) -> str:
     first, last = legs[0], legs[-1]
     when = _when(first)
     text = f"your {when} to {last.alight.name} is on time per NS"
-    if len(legs) > 1:
-        text += f", change at {legs[0].alight.name}"
+    text += _changes(legs)
     track = first.board.actual_track or first.board.planned_track
     return text + (f", platform {track}." if track else ".")
 
