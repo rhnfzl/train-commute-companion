@@ -3,7 +3,7 @@ Pure: `now` always comes from the caller."""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 
 from train_commute_companion.board import (
@@ -151,9 +151,12 @@ class NotTravelling:
 
 UserAction = Choose | Leaving | NotTravelling
 
-# a train counts as one the user may be on once it has departed and is not done (7.12 rule 7);
-# callers keep leg states current, so the writer needs no clock
+# a train the user may be on: departed and not done (7.12 rule 7). RIDING and MISSED say so by
+# state; a PENDING or BOARDING leg says so once its planned departure has passed, since leg
+# progress may lag the clock (a departed usual is auto-locked PENDING). A delayed train still at
+# the platform also counts: retaining it errs on the safe side.
 _MAY_BE_ON = (LegState.RIDING, LegState.MISSED)
+_MAY_HAVE_LEFT = (LegState.PENDING, LegState.BOARDING)
 _YIELDS_TO_CHOICE = (LockSource.AUTO, LockSource.STATION, LockSource.LOCATION)
 _NEEDS_EXPECT_OVER_CHOICE = (LockSource.RELOCK, LockSource.RESTORE)
 _UNRESOLVED_END = (DirectionState.DONE, DirectionState.EXPIRED)
@@ -180,16 +183,24 @@ def _unfinished(j: Journey) -> LegProgress | None:
     return next((x for x in j.legs if x.state is not LegState.DONE), None)
 
 
-def _rides(j: Journey | None, train: TrainId) -> bool:
+def _may_be_on(x: LegProgress, now: datetime | None) -> bool:
+    if x.state in _MAY_BE_ON:
+        return True
+    left = now is not None and x.train.planned_departure.astimezone(UTC) <= now.astimezone(UTC)
+    return left and x.state in _MAY_HAVE_LEFT
+
+
+def _rides(j: Journey | None, train: TrainId, now: datetime | None) -> bool:
     """The user may be on `train` as the first unfinished leg of `j`."""
     first = None if j is None else _unfinished(j)
-    return first is not None and first.train == train and first.state in _MAY_BE_ON
+    return first is not None and first.train == train and _may_be_on(first, now)
 
 
 def write_lock(
-    s: OccurrenceState, new: Journey, *, expect: Journey | None
+    s: OccurrenceState, new: Journey, *, expect: Journey | None, now: datetime
 ) -> OccurrenceState | None:
-    """Compare-and-set lock write. None when refused (stale `expect` or precedence)."""
+    """Compare-and-set lock write. None when refused (stale `expect` or precedence).
+    `now` decides whether a replaced train has departed, so it is retained (7.12 rule 7)."""
     old = s.lock
     if expect is not None and old != expect:
         return None
@@ -209,7 +220,7 @@ def write_lock(
             for i, x in enumerate(old.legs)
             if x.state is not LegState.DONE and x.train not in kept
         ]
-        if replaced and old.legs[replaced[0]].state in _MAY_BE_ON:
+        if replaced and _may_be_on(old.legs[replaced[0]], now):
             retained += (replace(old, legs=old.legs[replaced[0] :]),)
     state = s.direction_state
     return replace(
@@ -285,12 +296,21 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
     if s.lock is not None or s.not_travelling or now < ctx.schedule.auto_lock_at.astimezone(UTC):
         return unchanged
     p, d = ctx.profile, ctx.direction
+    q = answer.query
+    # provider failures raise, so any answer is healthy; one asked from elsewhere or after the
+    # usual departure cannot prove the usual is absent, so it is not judged (6.3, rule 2)
+    if (q.origin, q.destination) != (p.origin(d), p.destination(d)) or q.at.astimezone(
+        UTC
+    ) > ctx.schedule.first_departure.astimezone(UTC):
+        return unchanged
     usual = usual_connection(
         answer, p.origin(d), ctx.schedule.first_departure, p.journey(d).transfers, ctx.signature
     )
     events: list[AlertEvent] = []
     if usual is not None:
-        locked = write_lock(s, journey_of(usual, LockSource.AUTO, Commitment.INTENDED), expect=None)
+        locked = write_lock(
+            s, journey_of(usual, LockSource.AUTO, Commitment.INTENDED), expect=None, now=now
+        )
         assert locked is not None  # no lock existed
         if _departure(usual) < now:
             # the user may be on it; show where to go if not (7.12 rule 7)
@@ -317,13 +337,29 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
         text = "no connection found, check the NS app."
         events.append(_event(ctx, EventKind.NO_CONNECTION, Severity.LOUD, text))
         return Transition(s, tuple(events))
-    locked = write_lock(s, journey_of(nxt, LockSource.AUTO, Commitment.INTENDED), expect=None)
+    locked = write_lock(
+        s, journey_of(nxt, LockSource.AUTO, Commitment.INTENDED), expect=None, now=now
+    )
     assert locked is not None
     return Transition(locked, tuple(events))
 
 
-def _ridden_source(s: OccurrenceState, train: TrainId) -> Journey | None:
-    return next((j for j in (s.lock, *s.retained) if j is not None and _rides(j, train)), None)
+def _ridden_source(s: OccurrenceState, train: TrainId, now: datetime | None) -> Journey | None:
+    """The lock or retained remainder whose first unfinished leg is `train`, a train the user
+    may be on. A retained remainder holds such a train by construction, whatever its state."""
+    if _rides(s.lock, train, now):
+        return s.lock
+    return next((j for j in s.retained if (f := _unfinished(j)) and f.train == train), None)
+
+
+def whole_day_keys(p: Profile, key: OccurrenceKey) -> tuple[OccurrenceKey, ...]:
+    """Both directions' occurrence keys of the commute day `key` belongs to: the caller applies
+    a whole-day `NotTravelling` to each (7.8, 7.13), also to one whose window has not opened."""
+    commute_day = key.service_date - timedelta(days=p.journey(key.direction).day_offset)
+    return tuple(
+        OccurrenceKey(key.profile_id, d, commute_day + timedelta(days=p.journey(d).day_offset))
+        for d in Direction
+    )
 
 
 def target_occurrence(
@@ -340,7 +376,8 @@ def target_occurrence(
         return next(iter(open_), None)
     if isinstance(action, Choose):
         first = action.connection.legs[0].train
-        riding = next((x for x in open_ if _ridden_source(x, first) is not None), None)
+        # no clock here: a lock leg counts by its state (the user "rides" it, 7.13)
+        riding = next((x for x in open_ if _ridden_source(x, first, None) is not None), None)
         if riding is not None:
             return riding
     return next((x for x in open_ if x.direction_state is not DirectionState.RIDING), None)
@@ -355,7 +392,7 @@ def _choose(s: OccurrenceState, ctx: Ctx, c: Connection) -> Transition:
     p, d = ctx.profile, ctx.direction
     j = p.journey(d)
     done = () if s.lock is None else tuple(x for x in s.lock.legs if x.state is LegState.DONE)
-    source = _ridden_source(s, c.legs[0].train)
+    source = _ridden_source(s, c.legs[0].train, ctx.now)
     if source is not None and len(c.legs) == 1:
         check = GoodCheck(c.destination == p.destination(d), "does not arrive at the destination")
         if check.ok and len(done) > max_transfers(j.transfers):
@@ -387,7 +424,7 @@ def _choose(s: OccurrenceState, ctx: Ctx, c: Connection) -> Transition:
         have = {x.train: x for x in source.legs}
         new = replace(new, legs=tuple(have.get(x.train) or progress_of(x) for x in c.legs))
     # a choice ends every retained remainder; the writer retains the old lock if ridden
-    written = write_lock(replace(s, retained=()), new, expect=s.lock)
+    written = write_lock(replace(s, retained=()), new, expect=s.lock, now=ctx.now)
     assert written is not None  # a choice always writes over the lock it read
     return Transition(written, ())
 

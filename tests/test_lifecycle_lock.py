@@ -19,9 +19,16 @@ from train_commute_companion.lifecycle import (
     catch_from_state,
     journey_of,
     target_occurrence,
+    whole_day_keys,
     write_lock,
 )
-from train_commute_companion.model import Connection, Direction, EventKind, Severity
+from train_commute_companion.model import (
+    Connection,
+    Direction,
+    EventKind,
+    OccurrenceKey,
+    Severity,
+)
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import ProviderAnswer, Query
 from train_commute_companion.schedule import dated_schedule
@@ -111,13 +118,13 @@ def test_choose_beats_auto_and_auto_cannot_overwrite_choose():
     assert first_dep(s) == at("08:44")
     auto = journey_of(USUAL, LockSource.AUTO, Commitment.INTENDED)
     for src in (LockSource.AUTO, LockSource.STATION, LockSource.LOCATION):
-        assert write_lock(s, replace(auto, source=src), expect=None) is None
-        assert write_lock(s, replace(auto, source=src), expect=s.lock) is None
+        assert write_lock(s, replace(auto, source=src), expect=None, now=at("08:00")) is None
+        assert write_lock(s, replace(auto, source=src), expect=s.lock, now=at("08:00")) is None
     s2 = replace(s, lock=None)  # an auto lock run never touches an existing choice either
     assert auto_lock(s, ctx(at("08:00")), answer(USUAL)).state is s
     assert first_dep(auto_lock(s2, ctx(at("08:00")), answer(USUAL)).state) == at("08:12")
     for src in (LockSource.MISSED, LockSource.TIMEOUT):  # these override a choice
-        moved = write_lock(s, replace(auto, source=src), expect=None)
+        moved = write_lock(s, replace(auto, source=src), expect=None, now=at("08:00"))
         assert moved is not None and first_dep(moved) == at("08:12")
 
 
@@ -125,16 +132,18 @@ def test_cas_rejects_stale_expect():
     s = locked()
     stale = journey_of(LATER, LockSource.AUTO, Commitment.INTENDED)
     relock = journey_of(LATER, LockSource.RELOCK, Commitment.INTENDED)
-    assert write_lock(s, relock, expect=stale) is None
-    moved = write_lock(s, relock, expect=s.lock)
+    assert write_lock(s, relock, expect=stale, now=at("08:00")) is None
+    moved = write_lock(s, relock, expect=s.lock, now=at("08:00"))
     assert moved is not None and first_dep(moved) == at("08:44")
 
 
 def test_relock_moves_chosen_journey_when_expect_matches():
     s = chosen()
     relock = journey_of(USUAL, LockSource.RELOCK, Commitment.INTENDED)
-    assert write_lock(s, relock, expect=None) is None  # no expect: the choice stands
-    moved = write_lock(s, relock, expect=s.lock)
+    assert (
+        write_lock(s, relock, expect=None, now=at("08:00")) is None
+    )  # no expect: the choice stands
+    moved = write_lock(s, relock, expect=s.lock, now=at("08:00"))
     assert moved is not None and first_dep(moved) == at("08:12")
     assert moved.lock is not None and moved.lock.source is LockSource.RELOCK
 
@@ -145,7 +154,7 @@ def test_every_write_raises_generation():
     s2 = apply_action(s1, ctx(at("07:55")), Leaving(None, at("07:55"))).state
     s3 = apply_action(s2, ctx(at("08:00")), Choose(None, LATER)).state
     relock = journey_of(USUAL, LockSource.RELOCK, Commitment.COMMITTED)
-    s4 = write_lock(s3, relock, expect=s3.lock)
+    s4 = write_lock(s3, relock, expect=s3.lock, now=at("08:00"))
     assert s4 is not None
     s5 = apply_action(s4, ctx(at("08:01")), NotTravelling(None, False)).state
     assert [x.generation for x in (s0, s1, s2, s3, s4, s5)] == [0, 1, 2, 3, 4, 5]
@@ -264,7 +273,9 @@ def test_choose_retained_remainder_user_rides():  # review-codex-rev11 N3 (requi
 def test_relock_retains_a_train_the_user_may_be_on():
     s = riding_with_retained("08:12", "08:18")
     s = replace(s, lock=s.retained[0], retained=())  # riding the 08:12 as the lock
-    moved = write_lock(s, journey_of(LATER, LockSource.MISSED, Commitment.COMMITTED), expect=None)
+    moved = write_lock(
+        s, journey_of(LATER, LockSource.MISSED, Commitment.COMMITTED), expect=None, now=at("08:18")
+    )
     assert moved is not None and first_dep(moved) == at("08:44")
     assert [j.legs[0].train for j in moved.retained] == [s.lock.legs[0].train]
 
@@ -295,3 +306,40 @@ def test_target_occurrence_rules():
     assert target_occurrence(states, NotTravelling(date(2026, 10, 28), False)) is states[1]
     expired = [replace(states[0], direction_state=DirectionState.EXPIRED), states[1]]
     assert target_occurrence(expired, NotTravelling(None, False)) is expired[1]
+
+
+def test_relock_retains_a_departed_train_whose_leg_is_still_pending():
+    late = auto_lock(fresh(), ctx(at("08:20")), answer(USUAL, LATER)).state
+    assert late.lock is not None and late.lock.legs[0].state is LegState.PENDING
+    missed = journey_of(LATER, LockSource.MISSED, Commitment.COMMITTED)
+    moved = write_lock(late, missed, expect=None, now=at("08:20"))
+    assert moved is not None and [j.legs[0].train for j in moved.retained] == [
+        late.lock.legs[0].train
+    ]
+    # choosing that retained train back keeps it although its leg never reached RIDING
+    t = apply_action(moved, ctx(at("08:21")), Choose(None, connection_of(moved.retained[0])))
+    assert t.events == () and first_dep(t.state) == at("08:12")
+    # not yet departed: nothing to retain
+    early = write_lock(locked(), missed, expect=None, now=at("08:05"))
+    assert early is not None and early.retained == ()
+
+
+def test_auto_lock_does_not_judge_an_answer_that_cannot_contain_the_usual():
+    after = ProviderAnswer(Query("AAA", "UT", at("08:30")), (LATER,), at("08:30"))
+    elsewhere = ProviderAnswer(Query("BBB", "UT", at("07:12")), (LATER,), at("07:50"))
+    for a in (after, elsewhere):
+        t = auto_lock(fresh(), ctx(at("07:50")), a)
+        assert t.state == fresh() and t.events == ()
+
+
+def test_whole_day_keys_cover_both_directions_of_the_commute_day():
+    night = PROFILES.replace(
+        '{first_train: "17:52", buffer_min: 5}',
+        '{first_train: "06:30", buffer_min: 5, day_offset: 1}',
+    )
+    ps, errs = parse_profiles(night, None)
+    assert errs == []
+    ret = OccurrenceKey("p1", Direction.RETURN, date(2026, 10, 28))
+    keys = whole_day_keys(ps[0], ret)
+    assert keys == (OccurrenceKey("p1", Direction.OUTBOUND, DAY), ret)
+    assert whole_day_keys(ps[0], keys[0]) == keys
