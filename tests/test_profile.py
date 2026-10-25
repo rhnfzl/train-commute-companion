@@ -89,7 +89,7 @@ def test_load_config_refuses_shared_weekday_that_is_a_holiday_this_week():
     text = (DATA / "both_on_wed.yaml").read_text()
     cfg, errs = load_config(
         text, None, GOOD_CFG, date(2026, 12, 21)
-    )  # Wed 23rd is fine; use Friday below
+    )  # both profiles share Wednesday, so the file is refused
     assert cfg is None and errs
     fri = text.replace("[tue, wed]", "[fri]").replace("[wed]", "[fri]")
     cfg, errs = load_config(fri, None, GOOD_CFG, date(2026, 12, 21))
@@ -226,3 +226,21 @@ def test_profile_helpers():
 @pytest.mark.parametrize("name,expected", [("Office A!", "office_a"), ("  x-y ", "x_y")])
 def test_slug(name: str, expected: str):
     assert slug(name) == expected
+
+
+def test_duplicate_name_also_refuses_valid_twin_of_an_invalid_profile():
+    text = (DATA / "tue_wed_and_thu.yaml").read_text().replace("office_b", "office_a")
+    text = text.replace('home_station: "AAA"', 'home_station: "ZZZ"', 1)  # first entry only
+    profiles, errs = parse_profiles(text, STATIONS)
+    assert profiles == [] and any("duplicate name" in e.message for e in errs)
+
+
+def test_shared_extra_date_beyond_a_year_is_refused():
+    text = (
+        (DATA / "tue_wed_and_thu.yaml")
+        .read_text()
+        .replace("days: [thu]", "days: [thu]\n    extra_dates: [2030-03-05]")
+    )
+    text = text.replace("days: [tue, wed]", "days: [tue, wed]\n    extra_dates: [2030-03-05]")
+    cfg, errs = load_config(text, None, GOOD_CFG, TODAY)
+    assert cfg is None and any("2030-03-05" in e.message for e in errs)

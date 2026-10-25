@@ -421,7 +421,11 @@ def parse_profiles(
             seen_name[key] = i
     dup = {e.profile_id for e in errors if e.message.startswith("duplicate")}
     # a duplicate poisons every profile that shares the value
-    dup_names = {k for k in seen_name if sum(1 for p in profiles if slug(p.name) == k) > 1}
+    # counted over raw entries, so a valid profile sharing a name with an invalid one is refused too
+    names = [
+        slug(r["name"]) for r in items if isinstance(r, dict) and isinstance(r.get("name"), str)
+    ]
+    dup_names = {k for k in names if k and names.count(k) > 1}
     profiles = [p for p in profiles if p.id not in dup and slug(p.name) not in dup_names]
     return profiles, errors
 
@@ -466,6 +470,17 @@ def _overlap_pairs(
                 )
                 err = ProfileError(a.id, "profiles", msg, "give them different days")
                 found[(a.id, b.id)] = (a, b, err)
+    # a shared one-off date collides whatever the horizon
+    for i, a in enumerate(profiles):
+        for b in profiles[i + 1 :]:
+            d = min(a.extra_dates & b.extra_dates, default=None)
+            if d and (a.id, b.id) not in found:
+                msg = f"profiles {a.name!r} and {b.name!r} are both active on {d.isoformat()}"
+                found[(a.id, b.id)] = (
+                    a,
+                    b,
+                    ProfileError(a.id, "profiles", msg, "remove the extra date"),
+                )
     return list(found.values())
 
 
