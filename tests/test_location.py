@@ -5,11 +5,13 @@ from test_lifecycle_follow import (
     L1,
     L1X,
     L2,
+    L2X,
     LATER,
     R2,
     RIDE,
     ans,
     at,
+    board,
     conn,
     ctx,
     journey,
@@ -27,6 +29,7 @@ from train_commute_companion.lifecycle import (
     Transition,
     ends,
     on_location,
+    on_poll,
     on_tick,
 )
 from train_commute_companion.location import LocationEvent, Zone, resolve_zone
@@ -100,7 +103,8 @@ def test_missed_first_train_vs_missed_transfer_are_separate_events():  # spec fi
     assert "change at UT" in transfer.events[0].text
 
 
-def test_station_report_while_train_dwells_keeps_train_retained():  # safety fixture
+def test_station_report_while_train_dwells_keeps_train_retained():  # safety fixture, 10.1
+    # the spec's fourth context, across a restart, needs the store (Task 18)
     def retained_trains(s: OccurrenceState) -> list[list[str]]:
         return [[x.train.train_number for x in r.legs] for r in s.retained]
 
@@ -108,6 +112,9 @@ def test_station_report_while_train_dwells_keeps_train_retained():  # safety fix
     t = locate(occ(journey([L1, L2])), "08:14", event("AAA", "report", "08:13"), USUAL, LATER)
     assert retained_trains(t.state) == [["1234", "5678"]]
     assert t.state.retained[0].legs[0].state is LegState.MISSED
+    # and it keeps alerting: its original onward leg is cancelled while the new lock is healthy
+    a = poll(t.state, ctx(at("08:16")), ans("AAA", conn(L1, L2X), LATER, when="08:16"))
+    assert any("if you are on the 08:12" in e.text for e in a.events)
     # 2. missed transfer: the onward train and its legs stay
     s = occ(journey([L1, L2], RIDE))
     t = locate(s, "08:52", event("UT", "report", "08:51"), USUAL, conn(L1, R2))
@@ -153,3 +160,22 @@ def test_location_configured_but_silent_still_auto_locks():
     t = on_tick(occ(None), c, ans("AAA", USUAL, when="08:12"))
     assert t.state.lock is not None and t.state.lock.source is LockSource.AUTO
     assert numbers(t.state) == ["1234", "5678"]
+
+
+def test_repeat_origin_reports_keep_poll_in_flight_and_lock():  # rule 21
+    s = locate(occ(journey([L1, L2])), "08:00", event("AAA", "enter", "08:00"), USUAL, LATER).state
+    assert s.lock is not None and s.lock.source is LockSource.STATION
+    gen, lock = s.generation, s.lock
+    b = board(s, ans("AAA", conn(L1X, L2), LATER, when="08:01"))  # a poll starts at 08:01
+    for when in ("08:01", "08:02"):  # periodic platform reports while waiting
+        s = locate(s, when, event("AAA", "report", when), LATER, USUAL).state
+        assert s.generation == gen and s.lock == lock
+    t = on_poll(s, ctx(at("08:02")), b)  # the poll lands and is not discarded
+    assert (EventKind.CANCELLED, Severity.LOUD) in kinds(t)
+
+
+def test_station_commits_same_auto_train_with_one_generation_step():
+    s = occ(journey([L1, L2]))
+    t = locate(s, "08:00", event("AAA", "enter", "08:00"), USUAL)
+    assert t.state.generation == s.generation + 1 and numbers(t.state) == ["1234", "5678"]
+    assert t.state.lock is not None and t.state.lock.source is LockSource.STATION

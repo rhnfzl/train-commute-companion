@@ -21,7 +21,9 @@ from train_commute_companion.lifecycle import (
     DirectionState,
     Journey,
     LegState,
+    NotTravelling,
     OccurrenceState,
+    apply_action,
     ends,
     on_location,
     on_tick,
@@ -192,3 +194,9 @@ def test_not_travelling_ends_regardless_of_state():
     s = replace(occ(journey([L1, L2], RIDE)), not_travelling=True)
     assert ends(s, at("08:20"), 0)
     assert on_tick(s, ctx(at("12:00"))).events == ()
+
+
+def test_not_travelling_ends_retained_remainder():  # retained end on NotTravelling (7.12 rule 7)
+    s = retained_of(journey([L1, L2], (LegState.MISSED,)))
+    t = apply_action(s, ctx(at("08:20")), NotTravelling(None, False))
+    assert t.state.retained == () and ends(t.state, at("08:20"), 0)

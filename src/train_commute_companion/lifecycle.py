@@ -132,7 +132,9 @@ class OccurrenceState:
     alert_keys: Mapping[str, str] = field(default_factory=dict)
     advice: AdviceRecord | None = None
     poll_records: tuple[PollRecord, ...] = ()
-    # latest non-stale location time per zone: arrival evidence for a silent end (rule 6)
+    # latest non-stale location time per zone: arrival evidence for a silent end (rule 6), and
+    # what the news ledger reads to stop repeat silent messages. Persisted state: a store that
+    # drops it turns a silent end after a restart into a loud stopped_following.
     zone_reports: Mapping[str, datetime] = field(default_factory=dict)
 
 
@@ -178,6 +180,7 @@ UserAction = Choose | Leaving | NotTravelling
 _MAY_BE_ON = (LegState.RIDING, LegState.MISSED)
 _MAY_HAVE_LEFT = (LegState.PENDING, LegState.BOARDING)
 _YIELDS_TO_CHOICE = (LockSource.AUTO, LockSource.STATION, LockSource.LOCATION)
+_STATION_REPLACES = (LockSource.AUTO, LockSource.LOCATION)
 _NEEDS_EXPECT_OVER_CHOICE = (LockSource.RELOCK, LockSource.RESTORE)
 _UNRESOLVED_END = (DirectionState.DONE, DirectionState.EXPIRED)
 
@@ -1025,8 +1028,8 @@ def on_location(
     """Location only adds (7.2): leaving the origin zone sets a provisional lock, entering the
     first station zone a definitive one, a station report after a leg's expected departure is a
     missed leg (rule 7). `answer`: a fresh healthy answer from the origin; without it only the
-    travelling and station facts are kept. A stale event counts as unknown. Nothing here ends
-    or silences anything."""
+    travelling and station facts are kept, so the runtime passes the origin answer with every
+    event. A stale event counts as unknown. Nothing here ends or silences anything."""
     unchanged = Transition(s, ())
     if s.not_travelling or s.direction_state is DirectionState.DONE or event.zone is None:
         return unchanged
@@ -1067,25 +1070,27 @@ def _left_origin(
 
 
 def _at_first_station(s: OccurrenceState, ctx: Ctx, pool: ProviderAnswer | None) -> Transition:
+    """Commit the lock; an auto or location lock is replaced by a station lock (7.2). The
+    generation moves only when the lock changes, so repeat platform reports keep polls in flight
+    (rule 21)."""
     lock = s.lock
-    committed = None if lock is None else replace(lock, commitment=Commitment.COMMITTED)
-    s = replace(
-        s,
-        at_station=True,
-        travelling=True,
-        errand_deadline=None,
-        lock=committed,
-        generation=s.generation + (lock is not None),
-    )
-    if pool is None or (lock is not None and lock.source not in _YIELDS_TO_CHOICE):
+    s = replace(s, at_station=True, travelling=True, errand_deadline=None)
+    new = None if lock is None else replace(lock, commitment=Commitment.COMMITTED)
+    if pool is not None and (lock is None or lock.source in _STATION_REPLACES):
+        c = _next_good(s, ctx, pool)
+        if c is not None and (
+            lock is None or [x.train for x in c.legs] != [x.train for x in lock.legs]
+        ):
+            written = write_lock(
+                s, journey_of(c, LockSource.STATION, Commitment.COMMITTED), expect=lock, now=ctx.now
+            )
+            assert written is not None
+            return Transition(written, ())
+        if c is not None and new is not None:  # the same train: only the source changes
+            new = replace(new, source=LockSource.STATION)
+    if new is None or new == lock:
         return Transition(s, ())
-    c = _next_good(s, ctx, pool)
-    if c is None:
-        return Transition(s, ())  # nothing good: the old lock stays
-    new = journey_of(c, LockSource.STATION, Commitment.COMMITTED)
-    written = write_lock(s, new, expect=s.lock, now=ctx.now)
-    assert written is not None
-    return Transition(written, ())
+    return Transition(replace(s, lock=new, generation=s.generation + 1), ())
 
 
 def _missed(
@@ -1142,7 +1147,8 @@ def on_tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None = None) 
     """Time-driven steps: the errand timeout (45 min) clears a provisional lock, keeping a
     departed train retained; the auto lock when due (`answer` is the usual's query answer); a
     window closed with no lock; each journey's end by its last watch or its 150-min limit
-    (rules 6, 7). Arrival acceptance itself runs on each poll."""
+    (rules 6, 7). Arrival acceptance itself runs on each poll. The runtime passes the usual's
+    answer on every tick from `auto_lock_at` on; without it no auto lock is written."""
     if s.not_travelling:
         return Transition(s, ())
     now = _utc(ctx.now)
