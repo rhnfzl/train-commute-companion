@@ -125,3 +125,9 @@ def test_cancelled_second_leg_relocks_suffix_from_transfer_station():
         answer(cancelled, next_ok), usual_remaining=(), **kw(kept_incoming=kept)
     )
     assert (c, why) == (next_ok, "usual_pattern")
+
+
+def test_cut_short_candidate_fails_is_good():
+    cut = one_leg("UT", "RTD", "08:50", "09:20", stops=["XXX"], cut_after="XXX")
+    g = is_good(cut, **kw())
+    assert not g.ok and "cut_short" in g.reason.lower().replace(" ", "_")
