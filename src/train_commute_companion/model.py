@@ -146,6 +146,14 @@ class ClassifiedLeg:
 
 
 @dataclass(frozen=True, slots=True)
+class TransferCheck:
+    state: TransferState
+    margin_min: int | None  # None when a leg has no usable time
+    minimum: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class Connection:
     legs: tuple[Leg, ...]
     status: str
