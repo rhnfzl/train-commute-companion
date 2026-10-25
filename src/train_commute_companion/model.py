@@ -69,6 +69,8 @@ class EventKind(StrEnum):
     TIMETABLE_ADOPTED = "timetable_adopted"
     EARLIER_TRAIN_WITHDRAWN = "earlier_train_withdrawn"
     OFFLINE = "offline"
+    CHOOSE_REFUSED = "choose_refused"
+    NEXT_CONNECTION = "next_connection"
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +209,13 @@ class AlertEvent:
     text: str
     key: str
     created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AdviceRecord:
+    advised_train: TrainId | None
+    sent_at: datetime | None
+    withdrawn: bool
 
 
 @dataclass(frozen=True, slots=True)
