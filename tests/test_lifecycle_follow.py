@@ -105,7 +105,14 @@ def occ(lock: Journey | None, **kw: object) -> OccurrenceState:
         missing_sent=False,
         all_good_evaluated=False,
     )
-    return replace(base, **kw)  # type: ignore[arg-type]
+    s = replace(base, **kw)  # type: ignore[arg-type]
+    departed = s.retained or (lock and any(x.state in RIDDEN for x in lock.legs))
+    if departed and "direction_state" not in kw:  # a consistent state: riding once leg 1 left
+        s = replace(s, direction_state=DirectionState.RIDING)
+    return s
+
+
+RIDDEN = (LegState.RIDING, LegState.DONE)
 
 
 def numbers(s: OccurrenceState) -> list[str]:
@@ -240,7 +247,8 @@ def test_cut_short_alighting_stop_follows_endpoint_until_recovery_boarded():
     assert t3.state.lock is not None
     x = t3.state.lock.legs[0]
     assert (x.alight_stop, x.served_endpoint, x.alight_frozen) == ("UT", "BBB", True)
-    assert t3.events == ()
+    # shown, never moved: the boarded recovery is kept (7.4, 7.12 rule 7)
+    assert kinds(t3)[0] == (EventKind.TRANSFER_BROKEN, Severity.LOUD)
 
 
 def cut_at_ut(recovery: LegState) -> OccurrenceState:
@@ -330,7 +338,9 @@ def test_retained_onward_leg_cancelled_alerts_without_relocking():  # spec 10.1 
     e = t.events[0]
     assert e.train == L2.train and "if you are on the 08:12: your 08:50" in e.text
     assert "Next good connection: 09:05" in e.text and e.key.endswith(":retained:1234")
-    assert t.state.retained == s.retained and numbers(t.state) == ["1300", "6666"]
+    trains = [[(x.train, x.state) for x in r.legs] for r in t.state.retained]
+    assert trains == [[(x.train, x.state) for x in r.legs] for r in s.retained]
+    assert numbers(t.state) == ["1300", "6666"]
 
 
 def test_stale_generation_poll_is_discarded():  # spec safety fixture

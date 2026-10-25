@@ -1,7 +1,7 @@
 """The one `is_good` predicate and the replacement chooser (7.12 rule 1, 7.4, 6.3). Pure."""
 
 import itertools
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal, TypedDict, Unpack
@@ -104,11 +104,17 @@ def is_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) -> 
 
 
 def choose_replacement(
-    answer: ProviderAnswer, *, usual_remaining: tuple[str, ...], **kw: Unpack[GoodKwargs]
+    answer: ProviderAnswer,
+    *,
+    usual_remaining: tuple[str, ...],
+    candidates: Sequence[Connection] | None = None,
+    **kw: Unpack[GoodKwargs],
 ) -> tuple[Connection | None, Literal["usual_pattern", "new_route", "none"]]:
-    good = [
-        c for c in sort_by_expected_departure(answer.connections) if is_good(c, answer, **kw).ok
-    ]
+    """Ranks `candidates` (default: every connection in `answer`); identity is always judged
+    against the whole `answer`, so dropping a train from the ranking never hides that it shares
+    a minute with a candidate (6.1)."""
+    pool = answer.connections if candidates is None else candidates
+    good = [c for c in sort_by_expected_departure(pool) if is_good(c, answer, **kw).ok]
     for c in good:
         if matches_pattern(c, usual_remaining):
             return c, "usual_pattern"

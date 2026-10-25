@@ -95,6 +95,11 @@ def answer(*conns: Connection) -> ProviderAnswer:
     return ProviderAnswer(q, conns, q.at)
 
 
+def pick(c: Connection) -> Choose:
+    """A choice checked against a fresh answer that shows the connection."""
+    return Choose(None, c, (answer(c),))
+
+
 USUAL = direct("08:12", "08:46", "1234")
 LATER = direct("08:44", "09:24", "5678")
 
@@ -109,7 +114,7 @@ def first_dep(s: OccurrenceState) -> datetime:
 
 
 def chosen() -> OccurrenceState:
-    return apply_action(locked(), ctx(at("08:00")), Choose(None, LATER)).state
+    return apply_action(locked(), ctx(at("08:00")), pick(LATER)).state
 
 
 def test_choose_beats_auto_and_auto_cannot_overwrite_choose():
@@ -152,7 +157,7 @@ def test_every_write_raises_generation():
     s0 = fresh()
     s1 = auto_lock(s0, ctx(at("07:50")), answer(USUAL, LATER)).state
     s2 = apply_action(s1, ctx(at("07:55")), Leaving(None, at("07:55"))).state
-    s3 = apply_action(s2, ctx(at("08:00")), Choose(None, LATER)).state
+    s3 = apply_action(s2, ctx(at("08:00")), pick(LATER)).state
     relock = journey_of(USUAL, LockSource.RELOCK, Commitment.COMMITTED)
     s4 = write_lock(s3, relock, expect=s3.lock, now=at("08:00"))
     assert s4 is not None
@@ -207,7 +212,7 @@ def test_leaving_keeps_buffer():
 
 def test_not_travelling_expires_and_is_the_only_silencer():
     s = locked()
-    for action in (Leaving(None, at("07:55")), Choose(None, LATER)):
+    for action in (Leaving(None, at("07:55")), pick(LATER)):
         t = apply_action(s, ctx(at("07:55")), action)
         assert t.state.direction_state is not DirectionState.EXPIRED
         assert not t.state.not_travelling
@@ -225,12 +230,12 @@ def test_choose_over_cap_refused():
         make_leg("BBB", "RTD", "08:30", "08:40", number="2"),
         make_leg("RTD", "UT", "08:50", "09:24", number="3"),
     ]
-    t = apply_action(s, ctx(at("07:55")), Choose(None, make_connection(legs)))
+    t = apply_action(s, ctx(at("07:55")), pick(make_connection(legs)))
     assert t.state is s
     assert [(e.kind, e.severity) for e in t.events] == [(EventKind.CHOOSE_REFUSED, Severity.LOUD)]
     assert "refused" in t.events[0].text and "cap" in t.events[0].text
     # failing is_good is refused too: 08:12 cannot be caught at 08:05 with a 10-min buffer
-    uncatchable = apply_action(s, ctx(at("08:05")), Choose(None, USUAL))
+    uncatchable = apply_action(s, ctx(at("08:05")), pick(USUAL))
     assert uncatchable.state is s and "cannot be caught" in uncatchable.events[0].text
 
 
@@ -261,7 +266,7 @@ def test_choose_retained_remainder_user_rides():  # review-codex-rev11 N3 (requi
     s = riding_with_retained(
         retained_first="08:12", now="08:18"
     )  # lock moved to 08:44, user is on the 08:12
-    t = apply_action(s, ctx(now=dt("2026-10-27 08:18")), Choose(None, connection_of(s.retained[0])))
+    t = apply_action(s, ctx(now=dt("2026-10-27 08:18")), pick(connection_of(s.retained[0])))
     assert t.state.lock.legs[0].train.planned_departure == dt("2026-10-27 08:12")
     assert t.state.lock.legs[0].state is LegState.RIDING  # ridden prefix kept
     assert not any(e.kind is EventKind.CANCELLED for e in t.events)
@@ -294,17 +299,18 @@ def retained_connection() -> Connection:
 
 def test_choose_retained_targets_the_riding_occurrence():  # N3, 7.13
     states = [riding_occurrence_with_retained(), next_window_occurrence()]
-    assert target_occurrence(states, Choose(None, retained_connection())) is states[0]
+    assert target_occurrence(states, pick(retained_connection())) is states[0]
 
 
 def test_target_occurrence_rules():
     states = [riding_occurrence_with_retained(), next_window_occurrence()]
     other = direct("08:44", "09:24", "5678", day=date(2026, 10, 28))
-    assert target_occurrence(states, Choose(None, other)) is states[1]  # oldest not riding
+    assert target_occurrence(states, pick(other)) is states[1]  # oldest not riding
     assert target_occurrence(states, Leaving(None, at("08:00"))) is states[1]
     assert target_occurrence(states, NotTravelling(None, False)) is states[0]  # riding included
     assert target_occurrence(states, NotTravelling(date(2026, 10, 28), False)) is states[1]
-    expired = [replace(states[0], direction_state=DirectionState.EXPIRED), states[1]]
+    gone = replace(states[0], direction_state=DirectionState.EXPIRED, not_travelling=True)
+    expired = [replace(gone, retained=()), states[1]]
     assert target_occurrence(expired, NotTravelling(None, False)) is expired[1]
 
 
@@ -317,7 +323,7 @@ def test_relock_retains_a_departed_train_whose_leg_is_still_pending():
         late.lock.legs[0].train
     ]
     # choosing that retained train back keeps it although its leg never reached RIDING
-    t = apply_action(moved, ctx(at("08:21")), Choose(None, connection_of(moved.retained[0])))
+    t = apply_action(moved, ctx(at("08:21")), pick(connection_of(moved.retained[0])))
     assert t.events == () and first_dep(t.state) == at("08:12")
     # not yet departed: nothing to retain
     early = write_lock(locked(), missed, expect=None, now=at("08:05"))
