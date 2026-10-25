@@ -1,6 +1,6 @@
 from dataclasses import replace
 
-from builders import make_leg
+from builders import make_connection, make_leg
 from test_lifecycle_follow import L1, L2, at, board, ctx, journey, occ
 
 from train_commute_companion.classify import classify_leg
@@ -140,3 +140,21 @@ def test_all_good_judges_a_leg_on_the_newest_answer_that_shows_it():
     new = ProviderAnswer(q, (make_connection([late, L2]),), at("08:01"))
     for answers in ((old, new), (new, old)):
         assert all_good(s, replace(board(s), answers=answers), ctx(at("08:02"))) is None
+
+
+def test_all_good_withholds_on_stale_answer_even_with_fresh_poll():
+    s = occ(LOCK)
+    q = Query("AAA", "RTD", at("08:00"))
+    old = ProviderAnswer(q, (make_connection([L1, L2]),), at("08:00"))
+    b = replace(board(s), answers=(old,))
+    assert all_good(s, b, ctx(at("08:02"))) is not None
+    assert all_good(s, b, ctx(at("08:11"))) is None  # poll health may be fresh, the answer is not
+
+
+def test_all_good_not_rescued_by_older_answer_when_newest_is_uncertain():
+    s = occ(LOCK)
+    q = Query("AAA", "RTD", at("08:00"))
+    amb = replace(L1, train=replace(L1.train, train_number="other"))
+    old = ProviderAnswer(q, (make_connection([L1, L2]),), at("08:00"))
+    new = ProviderAnswer(q, (make_connection([L1, L2]), make_connection([amb, L2])), at("08:01"))
+    assert all_good(s, replace(board(s), answers=(old, new)), ctx(at("08:02"))) is None

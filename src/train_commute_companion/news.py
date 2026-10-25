@@ -2,10 +2,10 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
 
 from train_commute_companion.classify import classify_leg, find_leg
-from train_commute_companion.health import board_health
+from train_commute_companion.health import FRESH_FOR, board_health
 from train_commute_companion.lifecycle import Board, Ctx, Journey, OccurrenceState, _event
 from train_commute_companion.messages import body
 from train_commute_companion.model import (
@@ -117,6 +117,10 @@ def escalations(
     ]
 
 
+def _utc(t: datetime) -> datetime:
+    return t.astimezone(UTC)
+
+
 def unsent(ledger: Mapping[str, Severity], events: Sequence[AlertEvent]) -> list[AlertEvent]:
     """Ongoing facts repeat on every poll with the same key; only a key not yet sent is news."""
     out: dict[str, AlertEvent] = {}
@@ -133,19 +137,25 @@ def all_good(s: OccurrenceState, board: Board, ctx: Ctx) -> AlertEvent | None:
     if not board_health(board.polls, ctx.now).fresh:
         return None
     # newest answer first: a leg is judged on the latest answer that shows it, never an older one
-    answers = sorted(board.answers, key=lambda a: a.fetched_at.astimezone(UTC), reverse=True)
+    answers = sorted(board.answers, key=lambda a: _utc(a.fetched_at), reverse=True)
     seen: list[ClassifiedLeg] = []
     for x in s.lock.legs:
-        found = next(
+        # newest answer that mentions the leg decides: an uncertain one is not overruled by an older match
+        hit = next(
             (
-                leg
+                (leg, obs, a)
                 for a in answers
                 for leg, obs in [find_leg(a, x.train, x.board_station)]
-                if obs is Observation.SEEN and leg is not None
+                if obs is not Observation.MISSING
             ),
             None,
         )
-        if found is None:
+        if hit is None:
+            return None
+        found, obs, answer = hit
+        if found is None or obs is not Observation.SEEN:
+            return None
+        if _utc(ctx.now) - _utc(answer.fetched_at) >= FRESH_FOR:
             return None
         c = replace(classify_leg(found, x.alight_stop), observation=Observation.SEEN)
         times = (found.board.departure, found.alight.arrival)
