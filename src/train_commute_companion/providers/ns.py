@@ -1,6 +1,7 @@
 """NS Reisinformatie mapping. The only place that knows NS field names."""
 
 import re
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -13,12 +14,17 @@ from train_commute_companion.model import (
     TimeObs,
     TrainId,
 )
+import httpx
+
 from train_commute_companion.providers.base import (
+    AuthError,
     MalformedAnswer,
     PlannedWork,
     PlannedWorks,
     ProviderAnswer,
+    ProviderError,
     Query,
+    RateLimited,
 )
 
 AMS = ZoneInfo("Europe/Amsterdam")
@@ -227,3 +233,61 @@ def map_stations(payload: object) -> frozenset[str]:
     if not codes:
         raise MalformedAnswer("station list is empty")
     return frozenset(codes)
+
+
+BASE_URL = "https://gateway.apiportal.ns.nl/reisinformatie-api/api"
+
+
+class NsProvider:
+    def __init__(
+        self, api_key: str, client: httpx.AsyncClient, clock: Callable[[], datetime]
+    ) -> None:
+        self._key = api_key
+        self._client = client
+        self._clock = clock
+
+    async def _get(self, path: str, params: dict[str, str] | None = None) -> object:
+        # Messages are fixed text: the key and the request URL never enter an exception.
+        try:
+            r = await self._client.get(
+                BASE_URL + path,
+                params=params,
+                headers={"Ocp-Apim-Subscription-Key": self._key},
+            )
+        except httpx.HTTPError as e:
+            raise ProviderError(f"NS request failed: {type(e).__name__}") from None
+        code = r.status_code
+        if code in (401, 403):
+            raise AuthError(f"NS rejected the API key (HTTP {code})")
+        if code == 429:
+            ra = r.headers.get("Retry-After", "").strip()
+            raise RateLimited("NS rate limited", int(ra) if ra.isdigit() else None)
+        if code >= 400:
+            raise ProviderError(f"NS answered HTTP {code}")
+        try:
+            return r.json()
+        except ValueError:
+            raise ProviderError("NS answer is not valid JSON") from None
+
+    async def trips(self, q: Query) -> ProviderAnswer:
+        params = {
+            "fromStation": q.origin,
+            "toStation": q.destination,
+            "dateTime": q.at.isoformat(timespec="seconds"),
+        }
+        if q.via:
+            params["viaStation"] = q.via
+        payload = await self._get("/v3/trips", params)
+        return map_trips(payload, q, self._clock())
+
+    async def planned_works(self) -> PlannedWorks:
+        try:
+            payload = await self._get("/v3/disruptions", {"isActive": "false"})
+        except AuthError:
+            raise
+        except ProviderError:
+            return PlannedWorks((), "unknown")
+        return map_disruptions(payload)
+
+    async def stations(self) -> frozenset[str]:
+        return map_stations(await self._get("/v2/stations"))
