@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -8,10 +9,12 @@ from builders import AMS
 
 from train_commute_companion.providers.base import (
     AuthError,
+    MalformedAnswer,
     Provider,
     ProviderError,
     Query,
     RateLimited,
+    ServerError,
 )
 from train_commute_companion.providers.ns import NsProvider
 
@@ -96,10 +99,36 @@ async def test_planned_works_maps_and_queries_inactive():
     assert pw.coverage in ("complete", "unknown")
 
 
-@pytest.mark.parametrize("handler", [status(500), status(429), status(200, body=b"nope")])
-async def test_planned_works_failure_returns_unknown_coverage(handler):
-    pw = await provider(handler).planned_works()
+async def test_planned_works_429_raises_with_retry_after():
+    with pytest.raises(RateLimited) as e:
+        await provider(status(429, {"Retry-After": "480"})).planned_works()
+    assert e.value.retry_after == 480
+
+
+@pytest.mark.parametrize("code", [500, 503])
+async def test_planned_works_5xx_raises_server_error(code):
+    with pytest.raises(ServerError):
+        await provider(status(code)).planned_works()
+
+
+async def test_5xx_on_trips_is_server_error_but_4xx_is_not():
+    with pytest.raises(ServerError):
+        await provider(status(502)).trips(Q)
+    with pytest.raises(ProviderError) as e:
+        await provider(status(404)).trips(Q)
+    assert not isinstance(e.value, ServerError)
+
+
+async def test_planned_works_unreadable_answer_is_unknown_coverage():
+    pw = await provider(status(200, body=b'{"x": 1}')).planned_works()
     assert pw.coverage == "unknown" and pw.items == ()
+
+
+async def test_trips_malformed_messages_is_malformed_answer():
+    raw = json.loads((DATA / "on_time_direct.json").read_bytes())
+    raw["trips"][0]["legs"][0]["messages"] = 5
+    with pytest.raises(MalformedAnswer):
+        await provider(lambda req: httpx.Response(200, json=raw)).trips(Q)
 
 
 async def test_planned_works_auth_error_still_raises():

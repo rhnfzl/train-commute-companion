@@ -73,7 +73,7 @@ class EventKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class TimeObs:
-    planned: datetime
+    planned: datetime | None  # None when the provider reported a time without a planned one
     value: datetime | None
     provenance: Provenance
     observed_at: datetime
@@ -108,6 +108,7 @@ class Stop:
     passing: bool
     planned_track: str | None
     actual_track: str | None
+    uic: str | None = None  # provider station number; planned works list stations by it
 
 
 @dataclass(frozen=True, slots=True)

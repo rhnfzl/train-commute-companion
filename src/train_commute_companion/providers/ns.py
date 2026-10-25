@@ -26,6 +26,7 @@ from train_commute_companion.providers.base import (
     ProviderError,
     Query,
     RateLimited,
+    ServerError,
 )
 
 AMS = ZoneInfo("Europe/Amsterdam")
@@ -43,20 +44,27 @@ def _dt(v: object) -> datetime | None:
 
 
 def _obs(planned: datetime | None, actual: datetime | None, at: datetime) -> TimeObs | None:
-    if planned is None:
-        return None
+    # a reported time stands on its own, with or without a planned one (7.12 rule 20)
     if actual is not None:
         return TimeObs(planned, actual, Provenance.REPORTED, at)
-    return TimeObs(planned, None, Provenance.PLANNED, at)
+    if planned is not None:
+        return TimeObs(planned, None, Provenance.PLANNED, at)
+    return None
 
 
 def _str(v: object) -> str | None:
     return str(v) if v is not None else None
 
 
+def _uic(raw: dict[str, Any]) -> str | None:
+    return str(raw["uicCode"]) if raw.get("uicCode") else None
+
+
 def _stop(raw: dict[str, Any], codes: dict[str, str], at: datetime) -> Stop:
-    uic = str(raw.get("uicCode", ""))
-    code = raw.get("stationCode") or codes.get(uic, uic)
+    uic = _uic(raw)
+    code = raw.get("stationCode") or (codes.get(uic, uic) if uic else None)
+    if not code:
+        raise MalformedAnswer("stop has no station identifier")
     pa, pd = _dt(raw.get("plannedArrivalDateTime")), _dt(raw.get("plannedDepartureDateTime"))
     return Stop(
         code=str(code),
@@ -69,13 +77,17 @@ def _stop(raw: dict[str, Any], codes: dict[str, str], at: datetime) -> Stop:
         passing=bool(raw.get("passing", False)),
         planned_track=_str(raw.get("plannedDepartureTrack") or raw.get("plannedArrivalTrack")),
         actual_track=_str(raw.get("actualDepartureTrack") or raw.get("actualArrivalTrack")),
+        uic=uic,
     )
 
 
 def _end_stop(raw: dict[str, Any], *, depart: bool, at: datetime) -> Stop:
     """Boarding or alighting stop built from a leg's origin or destination."""
     p, a = _dt(raw.get("plannedDateTime")), _dt(raw.get("actualDateTime"))
-    code = str(raw.get("stationCode") or raw.get("uicCode") or "")
+    uic = _uic(raw)
+    code = str(raw.get("stationCode") or uic or "")
+    if not code:
+        raise MalformedAnswer("leg end has no station identifier")
     o = _obs(p, a, at)
     return Stop(
         code=code,
@@ -84,10 +96,11 @@ def _end_stop(raw: dict[str, Any], *, depart: bool, at: datetime) -> Stop:
         planned_departure=p if depart else None,
         arrival=None if depart else o,
         departure=o if depart else None,
-        cancelled=False,
+        cancelled=bool(raw.get("cancelled", False)),
         passing=False,
         planned_track=_str(raw.get("plannedTrack")),
         actual_track=_str(raw.get("actualTrack")),
+        uic=uic,
     )
 
 
@@ -96,11 +109,29 @@ def _int_in(text: object) -> int | None:
     return int(m.group()) if m else None
 
 
+def _objects(v: object, what: str) -> list[Any]:
+    """An optional list of objects: absent is empty, any other shape is malformed."""
+    if v is None:
+        return []
+    if not isinstance(v, list) or not all(isinstance(m, dict) for m in v):
+        raise MalformedAnswer(f"leg {what} is not a list of objects")
+    return v
+
+
+def _number(v: object) -> str | None:
+    if isinstance(v, int) and not isinstance(v, bool):
+        return str(v)
+    return v if isinstance(v, str) and v.strip() else None
+
+
 def _leg(raw: object, codes: dict[str, str], at: datetime) -> Leg:
     if not isinstance(raw, dict):
         raise MalformedAnswer("leg is not an object")
     origin, dest, stops_raw = raw.get("origin"), raw.get("destination"), raw.get("stops")
-    if isinstance(stops_raw, list) and stops_raw and all(isinstance(s, dict) for s in stops_raw):
+    if stops_raw is not None and stops_raw != []:
+        # a present but broken stop list may hide a cancelled stop: never fall back over it
+        if len(_objects(stops_raw, "stops")) < 2:
+            raise MalformedAnswer("leg stop list has fewer than two stops")
         stops = tuple(_stop(s, codes, at) for s in stops_raw)
     elif isinstance(origin, dict) and isinstance(dest, dict):
         stops = (_end_stop(origin, depart=True, at=at), _end_stop(dest, depart=False, at=at))
@@ -111,26 +142,30 @@ def _leg(raw: object, codes: dict[str, str], at: datetime) -> Leg:
         raise MalformedAnswer("leg has no planned departure at its boarding stop")
     prod = raw.get("product")
     prod = prod if isinstance(prod, dict) else {}
+    is_train = prod.get("type") == "TRAIN"
+    number = _number(prod.get("number"))
+    if is_train and number is None:
+        raise MalformedAnswer("train leg has no usable train number")
     tm = [
         _int_in(m.get("message"))
-        for m in raw.get("transferMessages") or []
-        if isinstance(m, dict) and m.get("type") == "TRANSFER_TIME"
+        for m in _objects(raw.get("transferMessages"), "transferMessages")
+        if m.get("type") == "TRANSFER_TIME"
     ]
     tt, cp = raw.get("transferTimeToNextLeg"), raw.get("crossPlatformTransfer")
     msgs = tuple(
         str(m.get("text") or m.get("message"))
-        for m in raw.get("messages") or []
-        if isinstance(m, dict) and (m.get("text") or m.get("message"))
+        for m in _objects(raw.get("messages"), "messages")
+        if m.get("text") or m.get("message")
     )
     return Leg(
-        train=TrainId(planned_dep.date(), str(prod.get("number", "")), planned_dep),
+        train=TrainId(planned_dep.date(), number or "", planned_dep),
         category=str(prod.get("categoryCode", "")),
         stops=stops,
         cancelled=bool(raw.get("cancelled", False)),
         part_cancelled=bool(raw.get("partCancelled", False)),
         change_possible=_opt_bool(raw.get("changePossible")),
         reachable=_opt_bool(raw.get("reachable")),
-        alternative_transport=prod.get("type") != "TRAIN",
+        alternative_transport=not is_train,
         messages=msgs,
         transfer_time_to_next=tt if isinstance(tt, int) and not isinstance(tt, bool) else None,
         transfer_message_min=next((m for m in tm if m is not None), None),
@@ -171,6 +206,43 @@ def _items(payload: object) -> list[Any] | None:
     return payload if isinstance(payload, list) else None
 
 
+def _station_ids(s: object) -> set[str] | None:
+    # uicCode is required: trip stops always carry it, intermediate stops often nothing else
+    if not isinstance(s, dict) or not s.get("uicCode"):
+        return None
+    return {str(s[k]) for k in ("uicCode", "stationCode") if s.get(k)}
+
+
+def _work(d: dict[str, Any]) -> PlannedWork | None:
+    """One MAINTENANCE item, or None when it cannot be evaluated."""
+    start, end = _dt(d.get("start")), _dt(d.get("end"))
+    sections = d.get("publicationSections")
+    if start is None or end is None or end <= start:
+        return None
+    if not isinstance(sections, list) or not sections:
+        return None
+    stations: set[str] = set()
+    for ps in sections:
+        if not isinstance(ps, dict):
+            return None
+        cons = ps.get("consequence")
+        if cons is not None and not isinstance(cons, dict):
+            return None
+        parts = [p for p in (ps.get("section"), (cons or {}).get("section")) if p is not None]
+        if not parts:
+            return None
+        for part in parts:
+            st = part.get("stations") if isinstance(part, dict) else None
+            if not isinstance(st, list) or not st:
+                return None
+            for raw in st:
+                ids = _station_ids(raw)
+                if ids is None:
+                    return None
+                stations |= ids
+    return PlannedWork(start, end, frozenset(stations), str(d.get("title", "")))
+
+
 def map_disruptions(payload: object) -> PlannedWorks:
     """Planned works only. Any unreadable item makes coverage unknown (no probe may call itself clean)."""
     raw = _items(payload)
@@ -179,46 +251,17 @@ def map_disruptions(payload: object) -> PlannedWorks:
     items: list[PlannedWork] = []
     complete = True
     for d in raw:
-        if not isinstance(d, dict):
+        kind = d.get("type") if isinstance(d, dict) else None
+        if not isinstance(kind, str) or not kind:
             complete = False
             continue
-        if d.get("type") != "MAINTENANCE":
+        if kind != "MAINTENANCE":
             continue
-        start, end = _dt(d.get("start")), _dt(d.get("end"))
-        stations: set[str] = set()
-        sections = d.get("publicationSections") or []
-        if not isinstance(sections, list):
+        w = _work(d)
+        if w is None:
             complete = False
-            sections = []
-        for ps in sections:
-            cons = ps.get("consequence") if isinstance(ps, dict) else None
-            parts = (
-                ps.get("section") if isinstance(ps, dict) else None,
-                cons.get("section") if isinstance(cons, dict) else None,
-            )
-            if not isinstance(ps, dict) or not (cons is None or isinstance(cons, dict)):
-                complete = False
-            for part in parts:
-                if part is None:
-                    continue
-                st = part.get("stations") if isinstance(part, dict) else None
-                if not isinstance(part, dict) or not (st is None or isinstance(st, list)):
-                    complete = False
-                    continue
-                for s in st or []:
-                    # uicCode too: unresolved intermediate stops keep their numeric uic as code
-                    ids = [
-                        str(s[k])
-                        for k in ("stationCode", "uicCode")
-                        if isinstance(s, dict) and s.get(k)
-                    ]
-                    if not ids:
-                        complete = False
-                    stations.update(ids)
-        if start is None or end is None:
-            complete = False
-            continue
-        items.append(PlannedWork(start, end, frozenset(stations), str(d.get("title", ""))))
+        else:
+            items.append(w)
     return PlannedWorks(tuple(items), "complete" if complete else "unknown")
 
 
@@ -275,6 +318,8 @@ class NsProvider:
         if code == 429:
             ra = r.headers.get("Retry-After", "").strip()
             raise RateLimited("NS rate limited", int(ra) if ra.isdigit() else None)
+        if code >= 500:
+            raise ServerError(f"NS answered HTTP {code}")
         if code >= 400:
             raise ProviderError(f"NS answered HTTP {code}")
         try:
@@ -294,13 +339,8 @@ class NsProvider:
         return map_trips(payload, q, self._clock())
 
     async def planned_works(self) -> PlannedWorks:
-        try:
-            payload = await self._get("/v3/disruptions", {"isActive": "false"})
-        except AuthError:
-            raise
-        except ProviderError:
-            return PlannedWorks((), "unknown")
-        return map_disruptions(payload)
+        # request failures raise (429/5xx feed shared backoff, 7.1); the caller treats them as unknown
+        return map_disruptions(await self._get("/v3/disruptions", {"isActive": "false"}))
 
     async def stations(self) -> frozenset[str]:
         return map_stations(await self._get("/v2/stations"))

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from builders import AMS
 
-from train_commute_companion.model import Provenance
+from train_commute_companion.model import Provenance, TrainId
 from train_commute_companion.providers.base import MalformedAnswer, Query
 from train_commute_companion.providers.ns import map_disruptions, map_stations, map_trips
 
@@ -124,3 +124,180 @@ def test_maintenance_station_matched_by_uic_code():
     }
     w = map_disruptions([d])
     assert w.coverage == "complete" and "1000002" in w.items[0].stations
+
+
+def _direct() -> dict:
+    return json.loads(json.dumps(fixture("on_time_direct.json")))
+
+
+def _leg0(raw: dict) -> dict:
+    return raw["trips"][0]["legs"][0]
+
+
+@pytest.mark.parametrize(
+    "stops",
+    [
+        [{"uicCode": "1000001", "cancelled": True}, None],
+        [{"uicCode": "1000001"}, "x"],
+        "x",
+        {"uicCode": "1000001"},
+        5,
+        [{"uicCode": "1000001", "plannedDepartureDateTime": "2026-10-27T08:12:00+0100"}],
+    ],
+)
+def test_malformed_stop_list_is_malformed_not_endpoint_fallback(stops):
+    raw = _direct()
+    _leg0(raw)["stops"] = stops
+    with pytest.raises(MalformedAnswer):
+        map_trips(raw, Q, NOW)
+
+
+def test_empty_stop_list_falls_back_to_endpoints():
+    raw = _direct()
+    _leg0(raw)["stops"] = []
+    assert map_trips(raw, Q, NOW).connections[0].legs[0].board.code == "AAA"
+
+
+def test_endpoint_fallback_keeps_cancelled_flag():
+    raw = _direct()
+    del _leg0(raw)["stops"]
+    _leg0(raw)["destination"]["cancelled"] = True
+    assert map_trips(raw, Q, NOW).connections[0].legs[0].alight.cancelled
+
+
+def test_stop_without_any_identifier_is_malformed():
+    raw = _direct()
+    del _leg0(raw)["stops"][1]["uicCode"]
+    with pytest.raises(MalformedAnswer):
+        map_trips(raw, Q, NOW)
+
+
+@pytest.mark.parametrize("number", [None, "", "  ", {}, [], True, 1.5])
+def test_train_without_usable_number_is_malformed(number):
+    raw = _direct()
+    _leg0(raw)["product"]["number"] = number
+    with pytest.raises(MalformedAnswer):
+        map_trips(raw, Q, NOW)
+
+
+def test_train_missing_number_is_malformed():
+    raw = _direct()
+    del _leg0(raw)["product"]["number"]
+    with pytest.raises(MalformedAnswer):
+        map_trips(raw, Q, NOW)
+
+
+def test_integer_train_number_maps_to_same_identity_as_string():
+    raw = _direct()
+    _leg0(raw)["product"]["number"] = 1234
+    a = map_trips(raw, Q, NOW).connections[0].legs[0].train
+    b = map_trips(fixture("on_time_direct.json"), Q, NOW).connections[0].legs[0].train
+    assert isinstance(a, TrainId) and a == b
+
+
+def test_bus_leg_without_number_still_maps():
+    c = map_trips(fixture("bus_leg.json"), Q, NOW).connections[0]
+    assert c.legs[1].alternative_transport
+
+
+def test_actual_only_times_are_reported_not_dropped():
+    raw = _direct()
+    stops = _leg0(raw)["stops"]
+    del stops[1]["plannedArrivalDateTime"]
+    leg = map_trips(raw, Q, NOW).connections[0].legs[0]
+    arr = leg.alight.arrival
+    assert arr is not None and arr.provenance is Provenance.REPORTED
+    assert arr.planned is None and arr.value is not None
+
+
+def test_actual_only_endpoint_time_is_reported():
+    raw = _direct()
+    del _leg0(raw)["stops"]
+    del _leg0(raw)["destination"]["plannedDateTime"]
+    arr = map_trips(raw, Q, NOW).connections[0].legs[0].alight.arrival
+    assert arr is not None and arr.provenance is Provenance.REPORTED and arr.planned is None
+
+
+@pytest.mark.parametrize("field", ["messages", "transferMessages"])
+@pytest.mark.parametrize("value", [5, True, "text", {"text": "x"}, ["text"], [5]])
+def test_malformed_message_collections_are_malformed(field, value):
+    raw = _direct()
+    _leg0(raw)[field] = value
+    with pytest.raises(MalformedAnswer):
+        map_trips(raw, Q, NOW)
+
+
+def test_null_message_collections_are_tolerated():
+    raw = _direct()
+    _leg0(raw)["messages"] = None
+    _leg0(raw)["transferMessages"] = None
+    assert map_trips(raw, Q, NOW).connections[0].legs[0].messages == ()
+
+
+GOOD_SECTION = {"section": {"stations": [{"uicCode": "1000002", "stationCode": "UT"}]}}
+
+
+def _maint(**over: object) -> dict:
+    d = {
+        "type": "MAINTENANCE",
+        "start": "2026-01-01T00:00:00+0100",
+        "end": "2026-01-02T00:00:00+0100",
+        "publicationSections": [GOOD_SECTION],
+    }
+    d.update(over)
+    return {k: v for k, v in d.items() if v is not None}
+
+
+def test_well_formed_maintenance_is_complete():
+    w = map_disruptions([_maint()])
+    assert w.coverage == "complete" and w.items[0].stations == {"1000002", "UT"}
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"title": "no type"},
+        {"type": None},
+        {"type": 5},
+        {"type": ""},
+        _maint(publicationSections=None),
+        _maint(publicationSections=[]),
+        _maint(publicationSections=[{}]),
+        _maint(publicationSections=[{"consequence": {"description": "x"}}]),
+        _maint(publicationSections=[{"section": {}}]),
+        _maint(publicationSections=[{"section": {"stations": []}}]),
+        _maint(publicationSections=[{"section": {"stations": [{"stationCode": "UT"}]}}]),
+        _maint(end="2025-12-31T00:00:00+0100"),
+        _maint(end="2026-01-01T00:00:00+0100"),
+    ],
+)
+def test_unreadable_maintenance_item_is_unknown_coverage(item):
+    assert map_disruptions([item]).coverage == "unknown"
+
+
+def test_other_typed_items_are_skipped_and_complete():
+    assert map_disruptions([{"type": "CALAMITY"}]) == map_disruptions([])
+
+
+def test_maintenance_by_uic_finds_intermediate_trip_stop_without_station_code():
+    raw = _direct()
+    stops = _leg0(raw)["stops"]
+    stops.insert(1, {"uicCode": "1000002", "name": "Utrecht Centraal"})
+    stop = map_trips(raw, Q, NOW).connections[0].legs[0].stops[1]
+    work = map_disruptions(
+        [_maint(publicationSections=[{"section": {"stations": [{"uicCode": "1000002"}]}}])]
+    ).items[0]
+    assert work.lists(stop)
+
+
+def test_maintenance_with_both_ids_finds_trip_endpoint_by_station_code():
+    leg = map_trips(fixture("on_time_direct.json"), Q, NOW).connections[0].legs[0]
+    w = map_disruptions(fixture("disruptions.json"))
+    assert w.coverage == "complete" and w.items[0].lists(leg.board) and w.items[0].lists(leg.alight)
+    assert leg.board.code == "AAA" and leg.board.uic == "1000001"
+
+
+def test_maintenance_elsewhere_does_not_list_trip_stops():
+    leg = map_trips(fixture("on_time_direct.json"), Q, NOW).connections[0].legs[0]
+    work = map_disruptions([_maint()]).items[0]
+    assert not any(work.lists(s) for s in leg.stops)
