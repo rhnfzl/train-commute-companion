@@ -1,0 +1,15 @@
+profiles:
+  - id: "p1"
+    name: "night_a"
+    days: [tue]
+    home_station: "AAA"
+    work_station: "UT"
+    outbound: {first_train: "23:40", window: ["22:00", "01:30"], buffer_min: 10}
+    return: {first_train: "17:52", buffer_min: 5}
+  - id: "p2"
+    name: "night_b"
+    days: [wed]
+    home_station: "AAA"
+    work_station: "UT"
+    outbound: {first_train: "04:00", window: ["00:00", "05:00"], buffer_min: 0}
+    return: {first_train: "17:52", buffer_min: 5}

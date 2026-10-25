@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any, Literal, cast
 
 import yaml
@@ -14,10 +14,12 @@ from train_commute_companion.calendar import is_commute_day
 from train_commute_companion.model import (
     AlertSettings,
     Config,
+    Direction,
     LocationSettings,
     Profile,
     UsualJourney,
 )
+from train_commute_companion.schedule import dated_schedule
 
 ALLOWED_TRAVELLER = "me"
 FALLBACK_TRANSFER_MIN = 5
@@ -481,11 +483,40 @@ def _overlap_pairs(
                     b,
                     ProfileError(a.id, "profiles", msg, "remove the extra date"),
                 )
+    # different commute days can still collide in real time (windows crossing midnight)
+    for i, a in enumerate(profiles):
+        for b in profiles[i + 1 :]:
+            if (a.id, b.id) in found:
+                continue
+            hit = _window_overlap(a, b, horizon)
+            if hit:
+                msg = (
+                    f"profiles {a.name!r} and {b.name!r} have overlapping time windows "
+                    f"on {hit.isoformat()}"
+                )
+                err = ProfileError(a.id, "profiles", msg, "narrow a window or change the days")
+                found[(a.id, b.id)] = (a, b, err)
     return list(found.values())
 
 
+def _window_overlap(a: Profile, b: Profile, horizon: tuple[date, date]) -> date | None:
+    def windows(p: Profile) -> list[tuple[datetime, datetime]]:
+        out = []
+        day = horizon[0] - timedelta(days=1)
+        while day <= horizon[1] + timedelta(days=1):
+            if is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays):
+                for d in Direction:
+                    s = dated_schedule(p, d, day, None)
+                    out.append((s.window_start, s.window_end))
+            day += timedelta(days=1)
+        return out
+
+    wb = windows(b)
+    starts = [max(s1, s2) for s1, e1 in windows(a) for s2, e2 in wb if max(s1, s2) < min(e1, e2)]
+    return min(starts).date() if starts else None
+
+
 def find_overlaps(profiles: Sequence[Profile], horizon: tuple[date, date]) -> list[ProfileError]:
-    # real-time window overlap is added in Task 4
     return [e for _, _, e in _overlap_pairs(profiles, horizon)]
 
 

@@ -163,6 +163,22 @@ class AlertEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class OccurrenceKey:
+    profile_id: str
+    direction: Direction
+    service_date: date
+
+
+@dataclass(frozen=True, slots=True)
+class DatedSchedule:
+    key: OccurrenceKey
+    first_departure: datetime
+    window_start: datetime
+    window_end: datetime
+    auto_lock_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class UsualJourney:
     first_train: time
     transfers: tuple[str, ...]

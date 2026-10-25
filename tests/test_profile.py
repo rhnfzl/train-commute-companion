@@ -244,3 +244,8 @@ def test_shared_extra_date_beyond_a_year_is_refused():
     text = text.replace("days: [tue, wed]", "days: [tue, wed]\n    extra_dates: [2030-03-05]")
     cfg, errs = load_config(text, None, GOOD_CFG, TODAY)
     assert cfg is None and any("2030-03-05" in e.message for e in errs)
+
+
+def test_night_windows_overlap_across_midnight_refused():
+    errs = find_overlaps(load("night_overlap.yaml"), HORIZON)
+    assert errs and "2026-10-28" in errs[0].message

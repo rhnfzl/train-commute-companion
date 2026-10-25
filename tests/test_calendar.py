@@ -5,8 +5,13 @@ from train_commute_companion.calendar import is_commute_day, nl_public_holidays,
 
 def test_nl_holidays_2026():
     assert nl_public_holidays(2026) == {
-        date(2026, 1, 1), date(2026, 4, 6), date(2026, 4, 27),
-        date(2026, 5, 14), date(2026, 5, 25), date(2026, 12, 25), date(2026, 12, 26),
+        date(2026, 1, 1),
+        date(2026, 4, 6),
+        date(2026, 4, 27),
+        date(2026, 5, 14),
+        date(2026, 5, 25),
+        date(2026, 12, 25),
+        date(2026, 12, 26),
     }
 
 
@@ -16,7 +21,9 @@ def test_kings_day_moves_when_sunday():
 
 
 def test_extra_date_counts_and_holiday_skipped():
-    assert is_commute_day(date(2026, 10, 31), frozenset({2, 3}), frozenset({date(2026, 10, 31)}), True)
+    assert is_commute_day(
+        date(2026, 10, 31), frozenset({2, 3}), frozenset({date(2026, 10, 31)}), True
+    )
     assert not is_commute_day(date(2026, 12, 25), frozenset({5}), frozenset(), True)
     assert is_commute_day(date(2026, 12, 25), frozenset({5}), frozenset(), False)
 
