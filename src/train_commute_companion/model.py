@@ -177,6 +177,24 @@ class Connection:
 
 
 @dataclass(frozen=True, slots=True)
+class SignatureLeg:
+    board: str
+    alight: str
+    departure: time  # local clock time
+    day_offset: int  # days after the service date
+    duration_min: int
+
+
+@dataclass(frozen=True, slots=True)
+class Signature:
+    legs: tuple[SignatureLeg, ...]
+
+    @property
+    def transfers(self) -> tuple[str, ...]:
+        return tuple(leg.alight for leg in self.legs[:-1])
+
+
+@dataclass(frozen=True, slots=True)
 class AlertEvent:
     profile_id: str
     profile_name: str
