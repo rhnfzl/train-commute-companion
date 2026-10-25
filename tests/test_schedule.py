@@ -103,3 +103,11 @@ def test_active_uses_baseline():
     assert len(schedules_active(cfg, {}, dt("2026-10-27 07:13"))) == 1
     assert schedules_active(cfg, adopted, dt("2026-10-27 07:13")) == []
     assert len(schedules_active(cfg, adopted, dt("2026-10-27 07:15"))) == 1
+
+
+def test_dst_lock_time_uses_first_instant_autumn_and_gap_spring():
+    p = profile(out=("02:55", ("00:00", "04:00"), 0))
+    a = dated_schedule(p, Direction.OUTBOUND, date(2026, 10, 25), None)
+    assert utc(a.auto_lock_at) == datetime(2026, 10, 25, 0, 30, tzinfo=UTC)  # first 02:30
+    s = dated_schedule(p, Direction.OUTBOUND, date(2026, 3, 29), None)
+    assert utc(s.auto_lock_at) == datetime(2026, 3, 29, 1, 0, tzinfo=UTC)  # 02:30 missing -> 03:00
