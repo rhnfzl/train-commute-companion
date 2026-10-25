@@ -1,0 +1,167 @@
+from dataclasses import replace
+from datetime import date, datetime
+
+from builders import AMS, make_connection, make_leg
+
+from train_commute_companion.advice import advise
+from train_commute_companion.lifecycle import (
+    Commitment,
+    Ctx,
+    DirectionState,
+    LockSource,
+    OccurrenceState,
+    journey_of,
+)
+from train_commute_companion.model import Connection, Direction, EventKind, Severity
+from train_commute_companion.profile import parse_profiles
+from train_commute_companion.providers.base import ProviderAnswer, Query
+from train_commute_companion.schedule import dated_schedule
+
+PROFILES = """
+profiles:
+  - id: "p1"
+    name: "office_a"
+    days: [mon, tue, wed, thu, fri]
+    home_station: "AAA"
+    work_station: "UT"
+    outbound: {first_train: "08:12", buffer_min: 10}
+    return: {first_train: "17:52", buffer_min: 5}
+"""
+DAY = date(2026, 10, 27)
+USUAL_ARRIVAL = datetime(2026, 10, 27, 18, 26, tzinfo=AMS)
+
+
+def at(hhmm: str) -> datetime:
+    h, m = hhmm.split(":")
+    return datetime(2026, 10, 27, int(h), int(m), tzinfo=AMS)
+
+
+def ctx(now: datetime, direction: Direction = Direction.RETURN) -> Ctx:
+    ps, errs = parse_profiles(PROFILES, None)
+    assert errs == []
+    p = ps[0]
+    return Ctx(p, direction, dated_schedule(p, direction, DAY, None), None, now)
+
+
+def fresh(c: Ctx) -> OccurrenceState:
+    return OccurrenceState(
+        key=c.schedule.key,
+        generation=0,
+        route_revision=1,
+        settings_revision=1,
+        baseline_version=None,
+        direction_state=DirectionState.IDLE,
+        lock=None,
+        retained=(),
+        travelling=False,
+        tap_at=None,
+        at_station=False,
+        errand_deadline=None,
+        not_travelling=False,
+        cancellation_history=(),
+        missing_sent=False,
+        all_good_evaluated=False,
+    )
+
+
+def conn(dep: str, arr: str, number: str, **k: object) -> Connection:
+    return make_connection([make_leg("UT", "AAA", dep, arr, number=number, **k)])  # type: ignore[arg-type]
+
+
+def answer(*conns: Connection) -> ProviderAnswer:
+    q = Query("UT", "AAA", at("17:00"))
+    return ProviderAnswer(q, conns, q.at)
+
+
+EARLY = conn("17:22", "17:56", "1000")
+SLOW = conn("17:52", "18:42", "1234")  # planned 16 min slower than usual
+LATER = conn("18:22", "18:56", "2000")
+
+
+def test_planned_slower_journey_triggers_advice():
+    c = ctx(at("17:00"))
+    rec, events = advise(fresh(c), c, answer(EARLY, SLOW, LATER), USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.LEAVE_NOW]
+    assert events[0].severity is Severity.LOUD
+    assert rec.advised_train == EARLY.legs[0].train and rec.sent_at == at("17:00")
+
+
+def test_healthy_usual_gives_no_advice():
+    c = ctx(at("17:00"))
+    ok = conn("17:52", "18:26", "1234")
+    rec, events = advise(fresh(c), c, answer(EARLY, ok), USUAL_ARRIVAL)
+    assert events == [] and rec.advised_train is None
+
+
+def test_cancellation_with_good_replacement_still_advises():
+    c = ctx(at("17:00"))
+    cancelled = conn("17:52", "18:26", "1234", cancelled=True)
+    rec, events = advise(fresh(c), c, answer(EARLY, cancelled, LATER), USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.LEAVE_NOW]
+    assert rec.advised_train == EARLY.legs[0].train
+
+
+def test_saving_measured_against_replacement():
+    # the replacement arrives 18:56; an earlier train arriving 18:53 saves only 3 min: no advice
+    c = ctx(at("17:00"))
+    cancelled = conn("17:52", "18:26", "1234", cancelled=True)
+    near = conn("17:30", "18:53", "1001")
+    _, events = advise(fresh(c), c, answer(near, cancelled, LATER), USUAL_ARRIVAL)
+    assert events == []
+    # measured against the cancelled usual arrival (18:26) it would look like a loss as well
+    far = conn("17:30", "18:50", "1002")
+    _, events = advise(fresh(c), c, answer(far, cancelled, LATER), USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.LEAVE_NOW]
+
+
+def test_off_by_default_outbound():
+    c = ctx(at("07:00"), Direction.OUTBOUND)
+    usual = make_connection([make_leg("AAA", "UT", "08:12", "08:46", number="1", cancelled=True)])
+    early = make_connection([make_leg("AAA", "UT", "07:42", "08:16", number="2")])
+    q = Query("AAA", "UT", at("07:00"))
+    rec, events = advise(fresh(c), c, ProviderAnswer(q, (early, usual), q.at), at("08:46"))
+    assert events == [] and rec.advised_train is None
+
+
+def test_withdrawn_once():
+    c = ctx(at("17:00"))
+    s = fresh(c)
+    rec, _ = advise(s, c, answer(EARLY, SLOW, LATER), USUAL_ARRIVAL)
+    s = replace(s, advice=rec)
+    ok = conn("17:52", "18:26", "1234")
+    rec2, events = advise(s, c, answer(EARLY, ok, LATER), USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.EARLIER_TRAIN_WITHDRAWN]
+    assert events[0].severity is Severity.SILENT and rec2.withdrawn
+    rec3, again = advise(replace(s, advice=rec2), c, answer(EARLY, ok, LATER), USUAL_ARRIVAL)
+    assert again == [] and rec3 == rec2
+
+
+def test_advice_is_not_repeated_for_the_same_train():
+    c = ctx(at("17:00"))
+    s = fresh(c)
+    rec, _ = advise(s, c, answer(EARLY, SLOW), USUAL_ARRIVAL)
+    _, events = advise(replace(s, advice=rec), c, answer(EARLY, SLOW), USUAL_ARRIVAL)
+    assert events == []
+
+
+def test_no_advice_when_earlier_train_cannot_be_caught():
+    c = ctx(at("17:20"))  # 17:22 train is inside the 5 min buffer
+    _, events = advise(fresh(c), c, answer(EARLY, SLOW), USUAL_ARRIVAL)
+    assert events == []
+
+
+def test_no_advice_when_travelling():
+    c = ctx(at("17:00"))
+    s = fresh(c)
+    j = journey_of(SLOW, LockSource.AUTO, Commitment.INTENDED)
+    s = replace(s, direction_state=DirectionState.LOCKED, lock=j, travelling=True)
+    _, events = advise(s, c, answer(EARLY, SLOW), USUAL_ARRIVAL)
+    assert events == []
+
+
+def test_locked_not_travelling_still_advises_on_the_locked_train():
+    c = ctx(at("17:00"))
+    j = journey_of(SLOW, LockSource.AUTO, Commitment.INTENDED)
+    s = replace(fresh(c), direction_state=DirectionState.LOCKED, lock=j)
+    _, events = advise(s, c, answer(EARLY, SLOW), USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.LEAVE_NOW]
