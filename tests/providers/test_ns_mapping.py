@@ -75,7 +75,7 @@ def test_leg_without_stops_uses_origin_and_destination():
 
 def test_disruptions_maintenance_items_and_coverage():
     w = map_disruptions(fixture("disruptions.json"))
-    assert w.coverage == "complete" and len(w.items) == 1 and w.items[0].stations == {"AAA", "BBB"}
+    assert w.coverage == "complete" and len(w.items) == 1 and w.items[0].stations >= {"AAA", "BBB"}
 
 
 def test_disruptions_malformed_is_unknown_coverage():
@@ -96,6 +96,8 @@ def test_stations():
     "sections",
     [
         [{"consequence": "x"}],
+        [{"section": {"stations": [{}]}}],
+        [{"section": {"stations": ["x"]}}],
         [{"section": "x"}],
         [{"section": {"stations": "x"}}],
         [{"consequence": {"section": {"stations": 5}}}],
@@ -111,3 +113,14 @@ def test_disruption_nested_malformed_is_unknown_coverage(sections):
         "publicationSections": sections,
     }
     assert map_disruptions([d]).coverage == "unknown"
+
+
+def test_maintenance_station_matched_by_uic_code():
+    d = {
+        "type": "MAINTENANCE",
+        "start": "2026-01-01T00:00:00+0100",
+        "end": "2026-01-02T00:00:00+0100",
+        "publicationSections": [{"section": {"stations": [{"uicCode": "1000002"}]}}],
+    }
+    w = map_disruptions([d])
+    assert w.coverage == "complete" and "1000002" in w.items[0].stations

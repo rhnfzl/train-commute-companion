@@ -199,8 +199,15 @@ def map_disruptions(payload: object) -> PlannedWorks:
                     complete = False
                     continue
                 for s in st or []:
-                    if isinstance(s, dict) and s.get("stationCode"):
-                        stations.add(str(s["stationCode"]))
+                    # uicCode too: unresolved intermediate stops keep their numeric uic as code
+                    ids = [
+                        str(s[k])
+                        for k in ("stationCode", "uicCode")
+                        if isinstance(s, dict) and s.get(k)
+                    ]
+                    if not ids:
+                        complete = False
+                    stations.update(ids)
         if start is None or end is None:
             complete = False
             continue
