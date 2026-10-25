@@ -10,6 +10,7 @@ from test_lifecycle_follow import (
     DIRECT,
     FROM_BBB,
     L1,
+    L1X,
     L2,
     L2X,
     LATER,
@@ -17,6 +18,7 @@ from test_lifecycle_follow import (
     RIDE,
     T_BBB,
     T_FULL,
+    T_UT,
     ans,
     at,
     conn,
@@ -378,3 +380,91 @@ def test_late_acceptance_stops_at_the_150_minute_limit():  # rules 6, 7
     r = retained_of(replace(j, legs=(first, last)))
     t = on_tick(r, ctx(at("11:54")))
     assert [e.kind for e in t.events] == [EventKind.STOPPED_FOLLOWING] and t.state.retained == ()
+
+
+TWIN = make_leg("UT", "RTD", "08:50", "09:30", number="7777")
+
+
+def test_uncertain_onward_stays_at_risk_after_its_planned_departure():  # 6.1, 7.3
+    answers = (ans("AAA", conn(L1, L2)), ans("UT", conn(L2), conn(TWIN)))
+    s = occ(journey([L1, L2], RIDE))
+    for _ in range(2):
+        t = poll(s, ctx(at("08:51")), *answers)
+        assert (EventKind.TRANSFER_AT_RISK, Severity.LOUD) in kinds(t)
+        s = t.state
+    assert s.lock is not None and s.lock.legs[1].state is LegState.PENDING  # no evidence
+    # already riding it by evidence: still never reported as fine
+    s = occ(journey([L1, L2], (LegState.RIDING, LegState.RIDING)))
+    assert (EventKind.TRANSFER_AT_RISK, Severity.LOUD) in kinds(poll(s, ctx(at("08:51")), *answers))
+
+
+def test_missing_recovery_answer_does_not_freeze_the_alighting_stop():  # 7.4
+    t = poll(cut_at_ut(LegState.PENDING), ctx(at("08:31"), DIRECT), ans("AAA", conn(T_UT)))
+    assert t.state.lock is not None
+    assert t.state.lock.legs[1].state is LegState.PENDING  # not seen: no departure evidence
+    assert not t.state.lock.legs[0].alight_frozen
+    late_rec = make_leg("UT", "RTD", "08:30", "09:00", number="8888", delay_dep=30)
+    answers = (ans("AAA", conn(T_BBB)), ans("BBB", conn(FROM_BBB)), ans("UT", conn(late_rec)))
+    t = poll(t.state, ctx(at("08:35"), DIRECT), *answers)
+    assert numbers(t.state) == ["1234", "9999"]
+    assert t.state.lock is not None and t.state.lock.legs[0].alight_stop == "BBB"
+
+
+def test_newer_cancellation_in_the_second_dst_hour_beats_the_first():  # 7.13
+    from train_commute_companion.health import PollRecord
+    from train_commute_companion.lifecycle import Board
+    from train_commute_companion.providers.base import ProviderAnswer
+
+    night = date(2026, 10, 24)
+    runs = make_leg("AAA", "RTD", "03:10", "03:50", number="1111", day=night)
+    gone = make_leg("AAA", "RTD", "03:10", "03:50", number="1111", day=night, cancelled=True)
+
+    def answer(c, f):
+        t = fold("02:30", f)
+        return ProviderAnswer(Query("AAA", "RTD", t), (c,), t)
+
+    s = occ(journey([runs]))
+    now = fold("02:31", 1)
+    b = Board((answer(conn(runs), 0), answer(conn(gone), 1)), (PollRecord(now, True, None),), 1)
+    t = on_poll(s, ctx(now, DIRECT), b)
+    assert (EventKind.CANCELLED, Severity.LOUD) in kinds(t)
+
+
+def test_ridden_cancellation_still_reports_a_later_onward_cancellation():  # 7.4
+    s = occ(journey([L1, L2], RIDE))
+    t = poll(s, ctx(at("08:20")), ans("AAA", conn(L1X, L2X)), ans("UT", conn(L2X), conn(R2)))
+    cancelled = [e.train for e in t.events if e.kind is EventKind.CANCELLED]
+    assert cancelled == [L1.train, L2.train]
+    assert numbers(t.state) == ["1234", "5678"]  # nothing relocked on top of the ridden break
+
+
+def test_late_auto_lock_keeps_an_onward_train_that_may_be_ridden():  # 7.2, 7.4, rule 7
+    late = make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_arr=15)  # 08:55
+    s = occ(None, direction_state=DirectionState.IDLE)
+    t = on_tick(s, ctx(at("08:52")), ans("AAA", conn(late, L2), LATER, when="08:12"))
+    assert numbers(t.state) == ["1234", "5678"]
+    assert t.state.lock is not None
+    assert [x.state for x in t.state.lock.legs] == [LegState.RIDING, LegState.RIDING]
+    assert t.state.direction_state is DirectionState.RIDING
+    assert (EventKind.TRANSFER_BROKEN, Severity.LOUD) in kinds(t)
+
+
+def test_writer_retains_from_any_replaced_train_that_may_be_ridden():  # rule 7
+    j = journey([L1, L2], (LegState.CANCELLED, LegState.RIDING))
+    w = write_lock(occ(j), journey(LATER.legs), expect=None, now=at("08:55"))
+    assert w is not None and [[x.train for x in r.legs] for r in w.retained] == [[L2.train]]
+
+
+def test_promoted_retained_journey_is_followed_and_keeps_the_occurrence():  # rule 7
+    s = occ(
+        journey(LATER.legs, DONE),
+        retained=(journey([L1, L2], RIDE),),
+        direction_state=DirectionState.DONE,
+    )
+    pick = conn(L1, R2)
+    t = apply_action(s, ctx(at("08:20")), Choose(None, pick, (ans("AAA", pick),)))
+    assert t.events == () and t.state.direction_state is DirectionState.RIDING
+    assert not ends(t.state, at("08:21"), 0)
+    r2x = make_leg("UT", "RTD", "09:05", "09:39", number="6666", cancelled=True)
+    p = poll(t.state, ctx(at("08:30")), ans("AAA", conn(L1, r2x)), ans("UT", conn(r2x)))
+    assert (EventKind.CANCELLED, Severity.LOUD) in kinds(p)

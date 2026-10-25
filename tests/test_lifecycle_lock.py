@@ -315,7 +315,7 @@ def test_target_occurrence_rules():
 
 
 def test_relock_retains_a_departed_train_whose_leg_is_still_pending():
-    late = auto_lock(fresh(), ctx(at("08:20")), answer(USUAL, LATER)).state
+    late = locked()  # locked at 07:50; no poll has moved its progress by 08:20
     assert late.lock is not None and late.lock.legs[0].state is LegState.PENDING
     missed = journey_of(LATER, LockSource.MISSED, Commitment.COMMITTED)
     moved = write_lock(late, missed, expect=None, now=at("08:20"))

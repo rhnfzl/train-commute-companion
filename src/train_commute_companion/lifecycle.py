@@ -297,8 +297,11 @@ def write_lock(
             for i, x in enumerate(old.legs)
             if x.state is not LegState.DONE and x.train not in kept
         ]
-        if replaced and _may_be_on(old.legs[replaced[0]], now):
-            retained += (replace(old, legs=old.legs[replaced[0] :]),)
+        # from the first replaced train the user may be on: an earlier replaced one (say a
+        # cancelled train never boarded) does not hide a later one that may be ridden
+        on = next((i for i in replaced if _may_be_on(old.legs[i], now)), None)
+        if on is not None:
+            retained += (replace(old, legs=old.legs[on:]),)
     state = s.direction_state
     return replace(
         s,
@@ -399,8 +402,13 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
             events.append(
                 _event(ctx, EventKind.NEXT_CONNECTION, Severity.SILENT, text, first.train)
             )
-        # 7.2: a usual already broken now is relocked at once, with its warning, from this answer
-        t = _follow(locked, ctx, _pool((answer,)), (answer.query,))
+        # 7.2: a usual already broken now is relocked at once, with its warning, from this
+        # answer; departure progress comes first, so a train the user may already be on is
+        # warned about, never relocked away (7.4, rule 7). The first train has its note above.
+        pool = _pool((answer,))
+        locked, left = _advance_all(locked, ctx, pool, live=True)
+        events += [e for e in left if e.train != first.train]
+        t = _follow(locked, ctx, pool, (answer.query,))
         return Transition(t.state, (*events, *t.events))
     if not s.missing_sent:
         events.append(
@@ -511,6 +519,8 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
     # a choice ends every retained remainder; the writer retains the old lock if ridden
     written = write_lock(replace(s, retained=()), new, expect=s.lock, now=ctx.now)
     assert written is not None  # a choice always writes over the lock it read
+    if source is not None:  # a ridden journey, also one promoted after the main one ended
+        written = replace(written, direction_state=DirectionState.RIDING)
     return Transition(written, ())
 
 
@@ -668,7 +678,8 @@ def _observe(
         for g in c.legs
         if g.train == leg.train and g.board.code == x.board_station
     ]
-    newest = [r for r in runs if r[0] == runs[0][0]]
+    # by instant: two local 02:30s of the DST fold are an hour apart (7.13)
+    newest = [r for r in runs if _utc(r[0]) == _utc(runs[0][0])]
 
     def far(r: tuple[datetime, ClassifiedLeg]) -> tuple[bool, int]:
         return r[1].kind not in _BAD, len(r[1].leg.stops)
@@ -902,10 +913,15 @@ def _follow(
     rc = route_changed([x.train for x in legs[k:]], pool, expected) if plain else None
     events: list[AlertEvent] = []
 
-    def act(t: Transition, ridden: bool = False) -> Transition:
+    def act(t: Transition, ridden: bool = False) -> Transition | None:
+        """The relock `t` when allowed; else None, keeping its warnings, and every later leg
+        is still checked and reported but never relocked on top of the kept break (7.4)."""
+        nonlocal relock
         if relock and not ridden:
             return Transition(t.state, (*events, *t.events))
-        return Transition(_progress(s, legs), (*events, *t.events))
+        relock = False
+        events.extend(t.events)
+        return None
 
     def over(j: int) -> Connection | None:
         """The actual route of the boarded kept leg legs[j - 1], if NS reroutes it."""
@@ -927,9 +943,9 @@ def _follow(
         ncl = obs[i + 1] if nxt is not None else None
         # at risk warns before a change; once the onward train left, only broken is news
         ahead = nxt is not None and nxt.state not in _DEPARTED
-        if ahead and Observation.UNCERTAIN in (seen[i][1], seen[i + 1][1]):
-            assert nxt is not None
-            # 6.1, 7.3: an uncertain leg makes its change at risk, never fine
+        # 6.1, 7.3: an uncertain leg makes its change at risk, never fine, whatever progress says
+        unsure = Observation.UNCERTAIN in (seen[i][1], seen[i + 1][1]) if nxt else False
+        if nxt is not None and nxt.state is not LegState.DONE and unsure:
             events.append(_at_risk(ctx, x, nxt, "a train is not reliably identified"))
         if cl is None:  # missing or uncertain: reported, never relocked on
             continue
@@ -951,7 +967,9 @@ def _follow(
                 None,
                 since(i) if i else None,
             )
-            return act(t, ridden=x.state is LegState.RIDING)
+            if (r := act(t, ridden=x.state is LegState.RIDING)) is not None:
+                return r
+            continue
         cut = cl.kind is LegKind.CUT_SHORT or x.alight_stop != x.intended_alight
         before = x
         if cut:
@@ -991,28 +1009,31 @@ def _follow(
                 new = _journey(lock, legs[: i + 1], (), LockSource.RESTORE)
                 kind, sev, text, train = cause
                 note = _event(ctx, kind, sev, f"{text}.", train)
-                return act(Transition(_write(s, new), (note,)))
+                if (r := act(Transition(_write(s, new), (note,)))) is not None:
+                    return r
+                continue
             if (nxt is None and end != dest) or (nxt is not None and nxt.board_station != end):
                 original = (
                     nxt if nxt is not None and nxt.board_station == x.intended_alight else None
                 )
                 asked_from = before.onward_from if before.alight_stop == end else None
-                return act(
-                    _relock(
-                        s,
-                        ctx,
-                        pool,
-                        asked,
-                        legs,
-                        i + 1,
-                        end,
-                        cl,
-                        cause,
-                        original,
-                        over(i + 1),
-                        _since(x.onward_from, asked_from),
-                    )
+                t = _relock(
+                    s,
+                    ctx,
+                    pool,
+                    asked,
+                    legs,
+                    i + 1,
+                    end,
+                    cl,
+                    cause,
+                    original,
+                    over(i + 1),
+                    _since(x.onward_from, asked_from),
                 )
+                if (r := act(t)) is not None:
+                    return r
+                continue
         if nxt is None or ncl is None or ncl.kind is LegKind.CANCELLED:
             continue  # a cancelled next leg is handled as a cancellation on its own turn
         tc = check_transfer(cl, ncl, x.alight_stop, p.transfer_min)
@@ -1033,7 +1054,9 @@ def _follow(
                 over(i + 1),
                 since(i + 1),
             )
-            return act(t, ridden=nxt.state in _DEPARTED)
+            if (r := act(t, ridden=nxt.state in _DEPARTED)) is not None:
+                return r
+            continue
         if tc.state is TransferState.AT_RISK and ahead:
             events.append(_at_risk(ctx, x, nxt, tc.reason))
     if rc is not None and obs[k] is not None:
@@ -1050,26 +1073,32 @@ def _follow(
                 note = _event(
                     ctx, EventKind.ROUTE_CHANGED, Severity.LOUD, f"{text}, following it.", x.train
                 )
-                return act(Transition(_write(s, new), (note,)))
-            return act(_relock(s, ctx, pool, asked, legs, k, x.board_station, kept, cause))
-        # a boarded train is never dropped: relock what follows from where NS changes
-        end = rc.legs[0].alight.code
-        legs[k] = _move_stop(x, end, end)
-        return act(_relock(s, ctx, pool, asked, legs, k + 1, end, obs[k], cause, None, rc))
+                r = act(Transition(_write(s, new), (note,)))
+            else:
+                r = act(_relock(s, ctx, pool, asked, legs, k, x.board_station, kept, cause))
+        else:
+            # a boarded train is never dropped: relock what follows from where NS changes
+            end = rc.legs[0].alight.code
+            legs[k] = _move_stop(x, end, end)
+            r = act(_relock(s, ctx, pool, asked, legs, k + 1, end, obs[k], cause, None, rc))
+        if r is not None:
+            return r
     return Transition(_progress(s, legs), tuple(events))
 
 
-def _departs(x: LegProgress, cl: ClassifiedLeg | None) -> datetime:
-    """Expected departure; a train not identified counts by its planned time (it may have left)."""
-    d = None if cl is None else cl.leg.board.departure
+def _departs(x: LegProgress, cl: ClassifiedLeg) -> datetime:
+    """Expected departure, by the observed time when there is one."""
+    d = cl.leg.board.departure
     t = d.value if d is not None and d.value is not None else x.train.planned_departure
     return _utc(t)
 
 
 def _advance(ctx: Ctx, pool: _Pool, j: Journey) -> tuple[Journey, list[int]]:
     """Leg progress (7.7): boarding within the buffer of the expected departure, riding once it
-    has departed. A train cancelled at its boarding stop is never boarded. Returns the journey
-    and the indexes of the legs that departed now."""
+    has departed. A train cancelled at its boarding stop is never boarded. A train not
+    identified in this poll gets no progress: RIDING is departure evidence (it freezes an
+    alighting stop, 7.4), while `_may_be_on` already retains it by its planned time. Returns
+    the journey and the indexes of the legs that departed now."""
     now = _utc(ctx.now)
     buffer = timedelta(minutes=ctx.profile.journey(ctx.direction).buffer_min)
     legs, left = list(j.legs), list[int]()
@@ -1077,7 +1106,7 @@ def _advance(ctx: Ctx, pool: _Pool, j: Journey) -> tuple[Journey, list[int]]:
         if x.state not in _MAY_HAVE_LEFT:
             continue
         cl = _observe(pool, x)[0]
-        if cl is not None and cl.kind is LegKind.CANCELLED:
+        if cl is None or cl.kind is LegKind.CANCELLED:
             continue
         dep = _departs(x, cl)
         if now >= dep:
