@@ -174,6 +174,23 @@ def test_broken_transfer_by_delay_relocks_suffix():  # owner fixture
     assert t.state.cancellation_history == ()  # a missed change is not a reinstatable train
 
 
+def test_broken_transfer_searches_from_expected_arrival_plus_minimum():
+    late = make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_arr=12)  # 08:52 at UT
+    s = occ(journey([L1, L2], RIDE))
+    c = ctx(at("08:20"))
+    # the answer asked at the planned 08:50 lists nothing later: not yet proof of no connection
+    t1 = poll(s, c, ans("AAA", conn(late, L2)), ans("UT", conn(L2), when="08:50"))
+    assert kinds(t1) == [(EventKind.TRANSFER_BROKEN, Severity.LOUD)]
+    assert numbers(t1.state) == ["1234", "5678"] and t1.state.generation == s.generation
+    assert Query("UT", "RTD", at("08:56")) in queries_needed(t1.state, c)  # 08:52 + 4
+    # the next poll asks from 08:56 and finds the later train
+    t2 = poll(t1.state, c, ans("AAA", conn(late, L2)), ans("UT", conn(R2), when="08:56"))
+    assert numbers(t2.state) == ["1234", "6666"]
+    # asked from 08:56 with nothing there: now it is loud
+    t3 = poll(t1.state, c, ans("AAA", conn(late, L2)), ans("UT", when="08:56"))
+    assert kinds(t3)[-1] == (EventKind.NO_CONNECTION, Severity.LOUD)
+
+
 B1 = make_leg("BBB", "UT", "08:30", "08:45", number="2001")
 L1_CUT = make_leg("AAA", "UT", "08:12", "08:40", number="1234", stops=["BBB"], cut_after="BBB")
 
@@ -304,6 +321,16 @@ def test_retained_leg_missing_while_new_lock_healthy_is_missing():
     assert [e.train for e in t.events] == [L1.train, L2.train]
     assert all("if you are on the 08:12" in e.text for e in t.events)
     assert numbers(t.state) == ["1300", "6666"]
+
+
+def test_retained_onward_leg_cancelled_alerts_without_relocking():  # spec 10.1 safety fixture
+    s = occ(journey(LATER.legs), retained=(journey([L1, L2], RIDE),))
+    t = poll(s, ctx(at("08:20")), ans("AAA", conn(L1, L2X), LATER), ans("UT", conn(R2)))
+    assert kinds(t) == [(EventKind.CANCELLED, Severity.LOUD)]
+    e = t.events[0]
+    assert e.train == L2.train and "if you are on the 08:12: your 08:50" in e.text
+    assert "Next good connection: 09:05" in e.text and e.key.endswith(":retained:1234")
+    assert t.state.retained == s.retained and numbers(t.state) == ["1300", "6666"]
 
 
 def test_stale_generation_poll_is_discarded():  # spec safety fixture

@@ -94,6 +94,9 @@ class LegProgress:
     accept_value: datetime | None
     accept_first_seen: datetime | None
     watch_until: datetime | None
+    # expected arrival + transfer minimum at alight_stop, last observed: the earliest onward
+    # departure, so a broken change is searched from then on (7.4)
+    onward_from: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -508,6 +511,14 @@ def _restorable(s: OccurrenceState, ctx: Ctx, h: LegProgress) -> bool:
     return h.train.planned_departure.astimezone(UTC) >= nb
 
 
+def _late_onward(x: LegProgress, nxt: LegProgress | None) -> datetime | None:
+    """`x.onward_from` when it is after the planned departure of the next leg not done."""
+    t = x.onward_from
+    if t is None or nxt is None or nxt.state is LegState.DONE:
+        return None
+    return t if t.astimezone(UTC) > nxt.train.planned_departure.astimezone(UTC) else None
+
+
 def queries_needed(s: OccurrenceState, ctx: Ctx) -> list[Query]:
     """Rule 2. Each query carries a full date-time, so a leg after midnight is asked on its own
     date (7.13). The first query is from the first leg not done."""
@@ -533,6 +544,10 @@ def queries_needed(s: OccurrenceState, ctx: Ctx) -> list[Query]:
                 add(x.board_station, x.train.planned_departure)
                 if x.alight_stop != x.intended_alight:  # recovery search from a served endpoint
                     add(x.alight_stop, x.train.planned_departure)
+            nxt = j.legs[i + 1] if i + 1 < len(j.legs) else None
+            late = _late_onward(x, nxt)
+            if late is not None:  # a delay broke the change: search after the expected arrival
+                add(x.alight_stop, late)
     for h in s.cancellation_history:
         if _restorable(s, ctx, h):
             add(h.board_station, h.train.planned_departure)
@@ -601,7 +616,13 @@ def _progress(s: OccurrenceState, legs: Sequence[LegProgress]) -> OccurrenceStat
     assert s.lock is not None
     if tuple(legs) == s.lock.legs:
         return s
-    return replace(s, lock=replace(s.lock, legs=tuple(legs)), generation=s.generation + 1)
+
+    def plan(xs: Sequence[LegProgress]) -> list[LegProgress]:
+        return [replace(x, onward_from=None) for x in xs]
+
+    # a new observed time alone is not a lock change, so polls in flight stay valid (rule 21)
+    moved = plan(legs) != plan(s.lock.legs)
+    return replace(s, lock=replace(s.lock, legs=tuple(legs)), generation=s.generation + moved)
 
 
 def _write(s: OccurrenceState, new: Journey) -> OccurrenceState:
@@ -660,7 +681,7 @@ def _relock(
     s: OccurrenceState,
     ctx: Ctx,
     pool: ProviderAnswer,
-    asked: frozenset[str],
+    asked: tuple[Query, ...],
     legs: Sequence[LegProgress],
     j: int,
     station: str,
@@ -668,9 +689,11 @@ def _relock(
     cause: Cause,
     history: LegProgress | None = None,
     over_cap: Connection | None = None,
+    since: datetime | None = None,
 ) -> Transition:
     """Replace legs[j:] by the next good connection from `station` (7.4). `over_cap` is the
-    actual route of the boarded train legs[j - 1], followed when nothing good fits (6.3)."""
+    actual route of the boarded train legs[j - 1], followed when nothing good fits (6.3).
+    `since`: only an answer asked from `station` at or after it proves there is no connection."""
     lock = s.lock
     assert lock is not None
     p, d = ctx.profile, ctx.direction
@@ -692,7 +715,7 @@ def _relock(
         return Transition(_write(s, new), (_event(ctx, kind, sev, f"{text}.", train), reroute))
     if c is None:
         events = [_event(ctx, kind, sev, f"{text}.", train)]
-        if station in asked:  # an answer asked from there proves there is none
+        if any(q.origin == station and (since is None or q.at >= since) for q in asked):
             nothing = "no connection found, check the NS app."
             events.append(_event(ctx, EventKind.NO_CONNECTION, Severity.LOUD, nothing))
         return Transition(_progress(s, legs), tuple(events))
@@ -707,7 +730,7 @@ def _relock(
 
 
 def _follow(
-    s: OccurrenceState, ctx: Ctx, pool: ProviderAnswer, asked: frozenset[str]
+    s: OccurrenceState, ctx: Ctx, pool: ProviderAnswer, asked: tuple[Query, ...]
 ) -> Transition:
     lock = s.lock
     assert lock is not None
@@ -793,12 +816,34 @@ def _follow(
         if nxt is None or ncl is None or ncl.kind is LegKind.CANCELLED:
             continue  # a cancelled next leg is handled as a cancellation on its own turn
         tc = check_transfer(cl, ncl, x.alight_stop, p.transfer_min)
+        asked_late = _late_onward(x, nxt)  # what this poll's queries asked for
+        dep = ncl.leg.board.departure
+        dep_at = None if dep is None else dep.value or dep.planned
+        if tc.margin_min is not None and dep_at is not None:
+            # margin is out departure - in arrival, floored: this errs a minute early, the safe way
+            onward = dep_at + timedelta(minutes=tc.minimum - tc.margin_min)
+            x = legs[i] = replace(x, onward_from=onward)
         if tc.state is TransferState.BROKEN and not _may_be_on(nxt, now):
             text = f"your change at {x.alight_stop} is broken: {tc.reason}"
             cause = (EventKind.TRANSFER_BROKEN, Severity.LOUD, text, nxt.train)
+            # "no connection" only once the station was asked after the expected arrival; the
+            # query from the last poll's time counts, so a drifting delay does not keep it quiet
+            late = _late_onward(x, nxt)
+            since = late if late is None or asked_late is None else min(late, asked_late)
             return with_events(
                 _relock(
-                    s, ctx, pool, asked, legs, i + 1, x.alight_stop, cl, cause, None, over(i + 1)
+                    s,
+                    ctx,
+                    pool,
+                    asked,
+                    legs,
+                    i + 1,
+                    x.alight_stop,
+                    cl,
+                    cause,
+                    None,
+                    over(i + 1),
+                    since,
                 )
             )
         if tc.state is TransferState.AT_RISK:
@@ -848,6 +893,16 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
             if _observed(x, ctx.now) and _observe(pool, x)[1] is Observation.MISSING:
                 text = f"{on}your {_name(x)} train is not in NS data."
                 events.append(_event(ctx, EventKind.MISSING, Severity.LOUD, text, x.train))
-    asked = frozenset(a.query.origin for a in board.answers)
+    asked = tuple(a.query for a in board.answers)
     t = _restore(s, ctx, pool) or _follow(s, ctx, pool, asked)
+    for r in s.retained:
+        # rule 7: a retained remainder gets the locked-journey checks but is never relocked, so
+        # only what they say is kept, with the next good connection from where it breaks
+        first = r.legs[0].train
+        on = f"if you are on the {_hhmm(first.planned_departure)}: "
+        alone = replace(s, lock=r, retained=(), cancellation_history=())
+        for e in _follow(alone, ctx, pool, asked).events:
+            head, _, body = e.text.partition(": ")
+            key = f"{e.key}:retained:{first.train_number}"
+            events.append(replace(e, text=f"{head}: {on}{body}", key=key))
     return Transition(t.state, (*events, *t.events))

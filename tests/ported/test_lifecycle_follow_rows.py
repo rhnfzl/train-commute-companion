@@ -74,3 +74,17 @@ def test_chosen_future_train_missing_from_the_answer_is_not_substituted():
     assert kinds(t) == [(EventKind.MISSING, Severity.LOUD)] * 2
     assert t.state.lock == s.lock
     assert t.state.lock is not None and t.state.lock.legs[0].state is LegState.PENDING
+
+
+def test_rerouted_journey_later_leg_cancelled_keeps_the_ridden_train():
+    via_bbb = [
+        make_leg("AAA", "BBB", "08:12", "08:30", number="1234"),
+        make_leg("BBB", "RTD", "08:40", "09:20", number="2222"),
+    ]
+    cancelled = make_leg("BBB", "RTD", "08:40", "09:20", number="2222", cancelled=True)
+    other = make_leg("BBB", "RTD", "08:55", "09:35", number="3333")
+    s = occ(journey(via_bbb, RIDE, LockSource.RELOCK))
+    t = poll(s, ctx(at("08:20")), ans("AAA", conn(via_bbb[0], cancelled)), ans("BBB", conn(other)))
+    assert numbers(t.state) == ["1234", "3333"]
+    assert t.state.lock is not None and t.state.lock.legs[0].state is LegState.RIDING
+    assert kinds(t)[0] == (EventKind.CANCELLED, Severity.LOUD)
