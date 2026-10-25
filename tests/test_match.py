@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import datetime, time
+from datetime import UTC, datetime, time
 
 from builders import AMS, make_connection, make_leg
 
@@ -102,3 +102,24 @@ def test_route_changed_on_suffix():
     assert route_changed(locked, answer(two_transfers(), one_transfer()), ("UT",)) is None
     assert route_changed(locked, answer(direct()), ("UT",)) is None  # other train: not offered
     assert route_changed([], answer(one_transfer()), ("UT",)) is None
+
+
+def test_signature_uses_local_date_when_first_departure_is_utc():
+    # 00:30 local is the previous day in UTC; day_offset must still be measured locally
+    def late(second, num2):
+        return make_connection(
+            [
+                make_leg("AAA", "UT", "00:30", "00:50", number="1000"),
+                make_leg("UT", "BBB", "00:56", second, number=num2),
+            ]
+        )
+
+    a, b = late("01:30", "2000"), late("01:40", "2001")
+    sig = Signature(
+        (
+            SignatureLeg("AAA", "UT", time(0, 30), 0, 20),
+            SignatureLeg("UT", "BBB", time(0, 56), 0, 44),
+        )
+    )
+    first = dt("2026-10-28 00:30").astimezone(UTC)
+    assert usual_connection(answer(a, b), "AAA", first, ("UT",), sig) is b

@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
+from train_commute_companion.calendar import TZ
 from train_commute_companion.model import Connection, Leg, Signature, TrainId
 from train_commute_companion.providers.base import ProviderAnswer
 
@@ -27,10 +28,10 @@ def _dep(leg: Leg) -> datetime:
 def _fits(c: Connection, sig: Signature, first_departure: datetime) -> bool:
     if len(c.legs) != len(sig.legs):
         return False
-    base = first_departure.date()
+    base = first_departure.astimezone(TZ).date()  # clock time and day_offset are Amsterdam-local
     for leg, s in zip(c.legs, sig.legs, strict=True):
-        dep = _dep(leg)
-        arr = leg.alight.planned_arrival or dep
+        dep = _dep(leg).astimezone(TZ)
+        arr = (leg.alight.planned_arrival or dep).astimezone(TZ)
         if (
             (leg.board.code, leg.alight.code) != (s.board, s.alight)
             or dep.timetz().replace(tzinfo=None) != s.departure
