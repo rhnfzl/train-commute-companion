@@ -128,3 +128,15 @@ def test_no_all_good_when_one_leg_stale_or_planned_or_transfer_at_risk():
 def test_no_all_good_later_when_data_turns_good():
     s = occ(LOCK, all_good_evaluated=True)  # the first lock found it not proven
     assert all_good(s, good_board(s, L1, L2), ctx(at("08:02"))) is None
+
+
+def test_all_good_judges_a_leg_on_the_newest_answer_that_shows_it():
+    from builders import make_connection
+
+    s = occ(LOCK)
+    late = make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_dep=4, delay_arr=4)
+    q = Query("AAA", "RTD", at("08:00"))
+    old = ProviderAnswer(q, (make_connection([L1, L2]),), at("08:00"))
+    new = ProviderAnswer(q, (make_connection([late, L2]),), at("08:01"))
+    for answers in ((old, new), (new, old)):
+        assert all_good(s, replace(board(s), answers=answers), ctx(at("08:02"))) is None

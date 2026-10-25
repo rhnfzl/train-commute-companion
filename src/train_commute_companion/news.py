@@ -132,12 +132,14 @@ def all_good(s: OccurrenceState, board: Board, ctx: Ctx) -> AlertEvent | None:
         return None
     if not board_health(board.polls, ctx.now).fresh:
         return None
+    # newest answer first: a leg is judged on the latest answer that shows it, never an older one
+    answers = sorted(board.answers, key=lambda a: a.fetched_at.astimezone(UTC), reverse=True)
     seen: list[ClassifiedLeg] = []
     for x in s.lock.legs:
         found = next(
             (
                 leg
-                for a in board.answers
+                for a in answers
                 for leg, obs in [find_leg(a, x.train, x.board_station)]
                 if obs is Observation.SEEN and leg is not None
             ),

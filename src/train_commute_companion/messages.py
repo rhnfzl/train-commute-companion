@@ -2,10 +2,13 @@
 
 from collections.abc import Sequence
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from train_commute_companion.calendar import TZ
-from train_commute_companion.lifecycle import Ctx
 from train_commute_companion.model import Connection, EventKind, Leg, Stop
+
+if TYPE_CHECKING:  # runtime import would cycle once lifecycle emits through messages
+    from train_commute_companion.lifecycle import Ctx
 
 CHECK_APP = "check the NS app"
 
@@ -46,7 +49,7 @@ def _legs(legs: Sequence[Leg]) -> str:
     return text + (f", platform {track}." if track else ".")
 
 
-def render(kind: EventKind, ctx: Ctx, **facts: object) -> str:
+def render(kind: EventKind, ctx: "Ctx", **facts: object) -> str:
     """Starts with the title-cased profile name and names legs by station names."""
     return f"{ctx.profile.name.replace('_', ' ').title()}: {body(kind, **facts)}"
 
