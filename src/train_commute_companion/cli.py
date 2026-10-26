@@ -154,16 +154,18 @@ async def _run(args: argparse.Namespace, key: str) -> int:
             clock=SystemClock(),
             known_stations=None,
         )
-        # through the runtime's request budget (rule 14); never run with codes unchecked (5.3)
+        # through the runtime's request budget (rule 14); never accept codes unchecked (5.3)
         cache = Path(args.store).with_suffix(".stations.json")
         known = _station_list(cache, await rt.stations())
-        if known is None:
+        rt.require_stations = True
+        rt.on_stations = lambda codes: _station_list(cache, codes)  # saves the fresh list
+        if known is None:  # 5.2: the saved configuration still runs; edits wait for the list
             print(
-                f"the NS station list is unavailable and {cache} holds no saved copy; "
-                "refusing to start, station codes cannot be checked",
+                f"warning: the NS station list is unavailable and {cache} holds no saved copy; "
+                "running the last valid configuration, profile changes wait until station "
+                "codes can be checked",
                 flush=True,
             )
-            return 1
         rt.known_stations = known
         print(ATTRIBUTION, flush=True)
         await rt.run_forever()

@@ -2,7 +2,7 @@
 
 import itertools
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 
 from train_commute_companion.board import choose_replacement, is_good, max_transfers
 from train_commute_companion.classify import classify_leg, find_leg
@@ -25,6 +25,7 @@ from train_commute_companion.model import (
     LegKind,
     Observation,
     Severity,
+    TrainId,
     TransferState,
 )
 from train_commute_companion.providers.base import ProviderAnswer
@@ -129,40 +130,95 @@ def _gate(s: OccurrenceState, ctx: Ctx) -> bool:
 _FAR = datetime(2100, 1, 1, tzinfo=UTC)
 
 
-def advise(
-    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, usual_planned_arrival: datetime
-) -> tuple[AdviceRecord, list[AlertEvent]]:
-    """`answer` is a healthy board from the occurrence's origin. The earlier first train must
-    pass `is_good` (which also enforces catching it with the buffer, so advice ends by itself
-    at the escape train's departure minus buffer)."""
-    record = s.advice or AdviceRecord(None, None, False)
-    if not _gate(s, ctx):
-        return record, []
+def _kw(s: OccurrenceState, ctx: Ctx) -> dict[str, object]:
     prof, d = ctx.profile, ctx.direction
     usual = prof.journey(d)
-    ride = _ridden(s, ctx, answer)
-    # what waiting means: the lock's first train, else the effective usual first departure
-    wait_from = (
-        s.lock.legs[0].train.planned_departure if s.lock else ctx.schedule.first_departure
-    ).astimezone(UTC)
-    catch = catch_from_state(s, usual.buffer_min, ctx.now)
-    kw = {
+    return {
         "board_station": prof.origin(d),
         "destination": prof.destination(d),
-        "catch": catch,
+        "catch": catch_from_state(s, usual.buffer_min, ctx.now),
         "kept_incoming": None,
         "done_transfers": 0,
         "max_transfers": max_transfers(usual.transfers),
         "profile_min": prof.transfer_min,
     }
+
+
+def _judge(
+    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, reference: datetime | None
+) -> tuple[Connection | None, bool, bool]:
+    """(the journey ridden by waiting, broken, bad) (7.6). Lateness needs the usual's planned
+    arrival; a journey that is not there or not rideable is bad without one."""
+    prof = ctx.profile
+    ride = _ridden(s, ctx, answer)
     # not seen in a healthy answer: the journey the user waits for is not there, so waiting
     # means the first later good train, like after a cancellation (7.6, rule 2)
     ride_arr = None if ride is None else _arrival(ride)
     broken = ride is None or _unrideable(ride, answer, dict(prof.transfer_min))
-    slow = ride_arr is not None and ride_arr >= usual_planned_arrival.astimezone(UTC) + timedelta(
-        minutes=prof.alerts.earlier_train_threshold_min
+    limit = timedelta(minutes=prof.alerts.earlier_train_threshold_min)
+    slow = (
+        ride_arr is not None
+        and reference is not None
+        and ride_arr >= reference.astimezone(UTC) + limit
     )
-    bad = broken or slow
+    return ride, broken, broken or slow
+
+
+def needed(
+    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, reference: datetime | None
+) -> bool:
+    """Whether waiting is bad now (7.6): what a withdrawal says no longer holds once it is."""
+    return _judge(s, ctx, answer, reference)[2]
+
+
+def still_advised(
+    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, train: TrainId
+) -> Connection | None:
+    """Rule 5(b): the advised train's connection as `answer` shows it now, while advice is
+    still gated and the connection still passes `is_good` with the current catch."""
+    if not _gate(s, ctx):
+        return None
+    kw = _kw(s, ctx)
+    return next(
+        (
+            c
+            for c in answer.connections
+            if c.legs[0].train == train and is_good(c, answer, **kw).ok  # type: ignore[arg-type]
+        ),
+        None,
+    )
+
+
+def leave_now_text(c: Connection, tz: tzinfo | None) -> str:
+    first = c.legs[0]
+    dep_t = first.board.departure.value if first.board.departure else None
+    shown = (dep_t or first.train.planned_departure).astimezone(tz)
+    return (
+        f"leave now, an earlier train {first.board.code} to {c.legs[-1].alight.code}"
+        f" leaves at {shown:%H:%M} and gets you there sooner than your usual journey"
+    )
+
+
+def advise(
+    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, usual_planned_arrival: datetime | None
+) -> tuple[AdviceRecord, list[AlertEvent]]:
+    """`answer` is a healthy board from the occurrence's origin. The earlier first train must
+    pass `is_good` (which also enforces catching it with the buffer, so advice ends by itself
+    at the escape train's departure minus buffer). Without the usual's planned arrival only
+    lateness is not judged: an absent or unrideable journey is still bad."""
+    record = s.advice or AdviceRecord(None, None, False)
+    if not _gate(s, ctx):
+        return record, []
+    prof, d = ctx.profile, ctx.direction
+    usual = prof.journey(d)
+    # what waiting means: the lock's first train, else the effective usual first departure
+    wait_from = (
+        s.lock.legs[0].train.planned_departure if s.lock else ctx.schedule.first_departure
+    ).astimezone(UTC)
+    kw = _kw(s, ctx)
+    catch = catch_from_state(s, usual.buffer_min, ctx.now)
+    ride, broken, bad = _judge(s, ctx, answer, usual_planned_arrival)
+    ride_arr = None if ride is None else _arrival(ride)
     if ride is not None:
         wait_from = _departure(ride)
     if broken:
@@ -198,13 +254,7 @@ def advise(
         if advised == train and not record.withdrawn:
             return record, []  # already told
         # renewed after a withdrawal: a new episode with its own delivery identity (7.6)
-        first = best[1].legs[0]
-        dep_t = first.board.departure.value if first.board.departure else None
-        shown = (dep_t or first.train.planned_departure).astimezone(ctx.now.tzinfo)
-        text = (
-            f"leave now, an earlier train {first.board.code} to {best[1].legs[-1].alight.code}"
-            f" leaves at {shown:%H:%M} and gets you there sooner than your usual journey"
-        )
+        text = leave_now_text(best[1], ctx.now.tzinfo)
         ev = _event(ctx, EventKind.LEAVE_NOW, Severity.LOUD, text, train, ctx.now.isoformat())
         return AdviceRecord(train, ctx.now, False), [ev]
     if advised is None or record.withdrawn or bad:

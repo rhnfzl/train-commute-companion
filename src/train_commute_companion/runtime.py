@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Literal, Protocol
 
-from train_commute_companion.advice import advise
+from train_commute_companion.advice import advise, leave_now_text, needed, still_advised
 from train_commute_companion.calendar import TZ, resolve_local
 from train_commute_companion.classify import find_leg
 from train_commute_companion.delivery import (
@@ -26,10 +26,13 @@ from train_commute_companion.lifecycle import (
     Choose,
     Ctx,
     DirectionState,
+    LegProgress,
     LegState,
     NotTravelling,
     OccurrenceState,
     UserAction,
+    _left_note,
+    _pool,
     apply_action,
     ends,
     on_location,
@@ -107,6 +110,18 @@ _ONGOING = frozenset(
     }
 )
 _DELAY_NEWS = frozenset({EventKind.DELAYED, EventKind.NEARLY_ON_TIME, EventKind.BACK_TO_NORMAL})
+# judged on the latest healthy answers (rule 5b): held while an occurrence has none yet
+_OBSERVED = frozenset(
+    {
+        EventKind.ALL_GOOD,
+        EventKind.LEAVE_NOW,
+        EventKind.EARLIER_TRAIN_WITHDRAWN,
+        EventKind.NEXT_CONNECTION,
+    }
+)
+# loud warnings with a "next good connection" clause, written against the lock of their time
+_NAMES_LOCK = JOURNEY_WARNINGS | {EventKind.MISSED_FIRST_TRAIN, EventKind.MISSED_TRANSFER}
+_BREAKS = ("cancelled:", "cut_short:", "missing:")
 _GONE = (LegState.DONE, LegState.CANCELLED, LegState.RELOCKED)
 _APP = "app"  # profile name on application warnings, which belong to no profile
 
@@ -284,25 +299,61 @@ class _View:
         return True
 
     def _still(self, o: Obligation, s: OccurrenceState) -> bool:
-        """Rule 5(b): the message's fact, regenerated from the current state."""
-        e, k = o.event, _okey(s.key)
+        """Rule 5(b): the message's fact, regenerated from the current state and the latest
+        healthy answers."""
+        rt, e, k = self._rt, o.event, _okey(s.key)
+        legs = [x for j in (*((s.lock,) if s.lock else ()), *s.retained) for x in j.legs]
+        unfinished = any(x.train == e.train and x.state not in _GONE for x in legs)
+        if e.kind in _DELAY_NEWS:  # the delay memory still says what the message stated
+            if not _states_current(o.fact_key, e.kind, s.alert_keys):
+                return False
+            if e.kind is EventKind.DELAYED:
+                return _SENT + o.fact_key in s.alert_keys
+            return unfinished
         if e.kind in _ONGOING:  # a healthy poll that stopped reporting it ended it
             return _SENT + o.fact_key in s.alert_keys
         if e.kind is EventKind.CANNOT_SEE_TRAIN:
-            return k in self._rt._blind
+            return k in rt._blind
         if e.kind is EventKind.CAN_SEE_TRAIN_AGAIN:
-            return k not in self._rt._blind
+            return k not in rt._blind
         if e.kind is EventKind.OFFLINE:
-            return k in self._rt._offline
-        legs = [x for j in (*((s.lock,) if s.lock else ()), *s.retained) for x in j.legs]
+            return k in rt._offline
+        if e.kind is EventKind.RESTORED:  # back in the lock, and not broken again since
+            t = e.train
+            on = s.lock is not None and any(
+                x.train == t and x.state not in (LegState.CANCELLED, LegState.RELOCKED)
+                for x in s.lock.legs
+            )
+            ident = "" if t is None else f":{t.train_number}@{t.planned_departure.isoformat()}:"
+            broken = any(
+                key.startswith(_LIVE + b) and ident in key for key in s.alert_keys for b in _BREAKS
+            )
+            return on and not broken
+        if e.kind in (EventKind.MISSED_FIRST_TRAIN, EventKind.MISSED_TRANSFER):
+            return any(x.train == e.train and x.state is LegState.MISSED for x in legs)
         if e.kind is EventKind.NEXT_CONNECTION:  # "if you are not on it": while it is unfinished
-            return any(x.train == e.train and x.state not in _GONE for x in legs)
-        if e.kind is EventKind.LEAVE_NOW:
-            a = s.advice
-            return a is not None and a.advised_train == e.train and not a.withdrawn
-        if e.kind is EventKind.EARLIER_TRAIN_WITHDRAWN:
-            return s.advice is not None and s.advice.withdrawn
-        return True
+            return unfinished
+        ctx, answers = rt._ctx(s, rt._clock.now()), rt._boards.get(k, ())
+        if e.kind is EventKind.ALL_GOOD:  # still proven now, on the same terms as the first time
+            if ctx is None or not answers or k in rt._blind or s.lock is None:
+                return False
+            if s.lock.legs[0].train != e.train:  # it named the journey a relock replaced
+                return False
+            board = Board(answers, (), s.generation)
+            return all_good(replace(s, all_good_evaluated=False), board, ctx) is not None
+        if e.kind in (EventKind.LEAVE_NOW, EventKind.EARLIER_TRAIN_WITHDRAWN):
+            a, origin = s.advice, None if ctx is None else _origin_answer(answers, ctx)
+            if a is None or ctx is None or origin is None:
+                return False
+            if e.kind is EventKind.LEAVE_NOW:
+                return (
+                    e.train is not None
+                    and a.advised_train == e.train
+                    and not a.withdrawn
+                    and still_advised(s, ctx, origin, e.train) is not None
+                )
+            return a.withdrawn and not needed(s, ctx, origin, rt._usual_arrival(s, ctx, origin))
+        return True  # choose_refused: the answer to a command the user gave, true as said
 
     def newer_covers(self, o: Obligation) -> bool:
         if o.occurrence is None:
@@ -338,7 +389,7 @@ class _View:
         return p is not None and _in_quiet(p.alerts.quiet_hours, now)
 
     def current(self, o: Obligation) -> AlertEvent:
-        e = self._relocked(o, o.event)
+        e = self._regenerated(o, self._relocked(o, o.event))
         p = _find(self._rt._st.config, e.profile_id)
         if p is None or p.name == e.profile_name:
             return e
@@ -346,35 +397,98 @@ class _View:
         text = new + e.text[len(old) :] if e.text.startswith(old + ":") else e.text
         return replace(e, profile_name=p.name, text=text)
 
+    def _regenerated(self, o: Obligation, e: AlertEvent) -> AlertEvent:
+        """Rule 5(b): an instruction states its connection as the latest answers show it."""
+        rt = self._rt
+        s = None if o.occurrence is None else rt._st.occurrences.get(_okey(o.occurrence))
+        if s is None or e.train is None:
+            return e
+        k = _okey(s.key)
+        ctx, answers = rt._ctx(s, rt._clock.now()), rt._boards.get(k, ())
+        if ctx is None or not answers:
+            return e
+        body = None
+        if e.kind is EventKind.LEAVE_NOW:
+            origin = _origin_answer(answers, ctx)
+            c = None if origin is None else still_advised(s, ctx, origin, e.train)
+            body = None if c is None else leave_now_text(c, ctx.now.tzinfo)
+        elif e.kind is EventKind.NEXT_CONNECTION:
+            pool = _pool(answers)
+            for j in (*((s.lock,) if s.lock else ()), *s.retained):
+                i = next((i for i, x in enumerate(j.legs) if x.train == e.train), None)
+                if i is not None:
+                    body = _left_note(s, ctx, pool, j, i).text.partition(": ")[2]
+                    break
+        if body is None:
+            return e
+        head, tail = _twin(e.text)
+        return replace(e, text=f"{head.partition(': ')[0]}: {body}{tail}")
+
     def _relocked(self, o: Obligation, e: AlertEvent) -> AlertEvent:
         """Rule 5(a): a journey warning names the current lock, not the replacement frozen at
         write time. Kept as written while the lock still holds the warned train (nothing better
-        to name) or still holds the replacement the text names. Otherwise the stale clause is
-        replaced: the lock's first train as the next good connection while it is ahead, else
-        the journey now followed."""
-        s = None if o.occurrence is None else self._rt._st.occurrences.get(_okey(o.occurrence))
-        if e.kind not in JOURNEY_WARNINGS or e.train is None or s is None or s.lock is None:
+        to name) or still ends in the whole replacement the text names. Otherwise the stale
+        clause is replaced: the lock's first train as the next good connection while nothing
+        of it has left, else the train now followed and every onward leg still ahead."""
+        rt = self._rt
+        s = None if o.occurrence is None else rt._st.occurrences.get(_okey(o.occurrence))
+        if e.kind not in _NAMES_LOCK or e.train is None or s is None or s.lock is None:
             return e
         live = [x for x in s.lock.legs if x.state not in (LegState.CANCELLED, LegState.RELOCKED)]
         if not live or e.train in {x.train for x in live}:
             return e
-        # the replacement it names (by identity in its key) is still part of the lock
-        if any(f"{x.train.train_number}@{x.train.planned_departure.isoformat()}" in e.key
-               for x in live):  # fmt: skip
+        named = _named(e.key)
+        if named and [_ident(x.train) for x in live][-len(named) :] == named:
             return e
-        t = live[0].train
-        head, tail = e.text, ""
-        if (i := head.find(" (service date ")) >= 0:  # the 7.13 twin suffix stays last
-            head, tail = head[:i], head[i:]
+        head, tail = _twin(e.text)
         if (i := head.find(" Next good connection:")) >= 0:
             head = head[:i]
-        # planned time: the lock carries no live estimate (the next poll's news states it). Only
-        # the lock's first leg is a "connection"; once it is past, the text names the journey
-        # now followed instead of a replacement that is no longer the lock
-        hhmm = f"{t.planned_departure.astimezone(TZ):%H:%M}"
-        ahead = live[0].state in (LegState.PENDING, LegState.BOARDING)
-        nxt = f"Next good connection: {hhmm}." if ahead else f"Now following your {hhmm} train."
+        k = _okey(s.key)
+        ahead = [x for x in live if x.state in (LegState.PENDING, LegState.BOARDING)]
+        left = [x for x in live if x not in ahead]
+        if not left:
+            nxt = "Next good connection: {}{}.".format(*rt._leg_now(k, ahead[0]))
+        else:
+            now = f"{left[-1].train.planned_departure.astimezone(TZ):%H:%M}"
+            onward = "".join(
+                f", then the {t} from {x.board_station}{pl}"
+                for x in ahead
+                for t, pl in (rt._leg_now(k, x),)
+            )
+            nxt = f"Now following your {now} train{onward}."
         return replace(e, text=f"{head.rstrip()} {nxt}{tail}")
+
+
+def _ident(t: TrainId) -> str:
+    return f"{t.train_number}@{t.planned_departure.isoformat()}"
+
+
+def _named(key: str) -> list[str]:
+    """The replacement a journey warning names, by identity, from its key (`_relock`)."""
+    part = next((x for x in key.split("|")[1:] if "@" in x and not x.startswith("stated")), "")
+    return [x for x in part.split(":retained:")[0].split(",") if x]
+
+
+def _twin(text: str) -> tuple[str, str]:
+    """The text and its 7.13 twin suffix, which stays last."""
+    i = text.find(" (service date ")
+    return (text, "") if i < 0 else (text[:i], text[i:])
+
+
+def _states_current(key: str, kind: EventKind, keys: Mapping[str, str]) -> bool:
+    """A delay message whose stated values are still the ones remembered (`_stated`)."""
+    base, sep, vals = key.rpartition("|stated+")
+    if not sep:
+        return True
+    base = EventKind.DELAYED.value + base[len(kind.value) :]
+    said = vals.split(",")
+    slots = [base + t for t in ("#d", "#a")] if len(said) == 2 else [base]
+    return [keys.get(x) for x in slots] == said
+
+
+def _origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> ProviderAnswer | None:
+    origin = ctx.profile.origin(ctx.direction)
+    return next((a for a in answers if a.query.origin == origin), None)
 
 
 async def every(clock: Clock, seconds: float, step: Callable[[], Awaitable[None]]) -> None:
@@ -427,6 +541,14 @@ class Runtime:
         self.requests = 0  # NS publishes no quota (7.1): counted and logged
         # set while start() reconciles: messages stored before it wait for the fresh poll
         self._since: datetime | None = None
+        # per occurrence: the latest healthy answers, what rule 5(b) regenerates messages from
+        self._boards: dict[str, tuple[ProviderAnswer, ...]] = {}
+        # 5.2, 5.3: with no station list at all, the stored configuration runs and an edit
+        # waits until the list can be fetched again (retried, under the shared budget)
+        self.require_stations = False
+        self.on_stations: Callable[[frozenset[str]], object] | None = None
+        self._unchecked = False
+        self._stations_tried: datetime | None = None
 
     # --- configuration and context ---
 
@@ -450,10 +572,36 @@ class Runtime:
         own = s.baseline_signature
         if own is not None and len(own.legs) == len(p.journey(d).transfers) + 1:
             sig: Signature | None = own
+        elif s.baseline_frozen:
+            sig = None  # it started with no baseline: a later one never moves it (rule 19)
         else:
             sig = self._signature(p, d, s.key.service_date, s.baseline_version)
         first = sig.legs[0].departure if sig else None
         return Ctx(p, d, dated_schedule(p, d, commute_day, first), sig, now)
+
+    def _frozen(self, s: OccurrenceState) -> OccurrenceState:
+        """The occurrence with its own schedule fixed from the history it runs on now, before
+        anything replaces that history (rules 10, 19). Unchanged when already fixed or when its
+        profile is unknown."""
+        if s.baseline_frozen:
+            return s
+        if s.baseline_signature is not None:
+            return replace(s, baseline_frozen=True)
+        p = self._profile_for(s)
+        if p is None:
+            return s
+        sig = self._signature(p, s.key.direction, s.key.service_date, s.baseline_version)
+        return replace(s, baseline_signature=sig, baseline_frozen=True)
+
+    def _leg_now(self, k: str, x: LegProgress) -> tuple[str, str]:
+        """A locked leg as the latest answers show it: departure (expected, else planned) and
+        its platform, for a message naming it."""
+        answers = self._boards.get(k, ())
+        leg = find_leg(_pool(answers), x.train, x.board_station)[0] if answers else None
+        dep = None if leg is None else leg.board.departure
+        t = dep.value if dep is not None and dep.value is not None else x.train.planned_departure
+        track = None if leg is None else leg.board.actual_track or leg.board.planned_track
+        return f"{t.astimezone(TZ):%H:%M}", f" (platform {track})" if track else ""
 
     def _signature(
         self, p: Profile, d: Direction, sd: date, version: int | None = None
@@ -568,6 +716,7 @@ class Runtime:
             if closed and ends(s, now, pending_journey_warnings(self._st.obligations, s.key)):
                 self._seen.pop(k, None)
                 self._before.pop(k, None)
+                self._boards.pop(k, None)
                 self._blind.pop(k, None)
                 self._offline.discard(k)
                 continue
@@ -609,6 +758,9 @@ class Runtime:
         for o in self._st.obligations:
             if self._since is not None and _utc(o.event.created_at) < _utc(self._since):
                 continue  # written before this start: judged once the reconcile poll ran (r11)
+            k = None if o.occurrence is None else _okey(o.occurrence)
+            if o.event.kind in _OBSERVED and k in self._st.occurrences and k not in self._boards:
+                continue  # judged on observations: waits for a healthy answer (rule 5b)
             # a fresh clock per message: a slow send must not leave the next one judged early
             r = await deliver(o, view, self._notifier, self._clock.now())
             if r is None:
@@ -725,7 +877,8 @@ class Runtime:
                 hist = self._st.baselines.get(_dkey(sch.key.profile_id, sch.key.direction))
                 v = hist.in_force(sch.key.service_date) if hist else None
                 fresh = _fresh_state(sch.key, cfg.revision, v.version if v else None)
-                occs[k] = replace(fresh, baseline_signature=v.signature if v else None)
+                own = v.signature if v else None
+                occs[k] = replace(fresh, baseline_signature=own, baseline_frozen=True)
         self._st = replace(self._st, occurrences=occs)
 
     async def poll_once(self) -> None:
@@ -770,14 +923,16 @@ class Runtime:
                 good = all_good(st, board, ctx)  # Q4: judged once, at the first poll with a lock
                 st = replace(st, all_good_evaluated=True)
                 events += [good] if good else []
-            arrival = self._usual_arrival(st, ctx, usual)
-            if usual is not None and arrival is not None:
+            if usual is not None:
+                # no reference: an absent or broken usual still makes waiting bad (7.6)
+                arrival = self._usual_arrival(st, ctx, usual)
                 record, more = advise(st, ctx, usual, arrival)
-                if ctx.signature is None:  # kept, so a relock never becomes the reference
+                if ctx.signature is None and arrival is not None:  # never a relock's arrival
                     record = replace(record, usual_arrival=arrival)
                 st, events = replace(st, advice=record), [*events, *more]
             if answers:
                 self._remember(k, st, answers)
+                self._boards[k] = answers
         self._apply({k: (st, events)}, polled=current and bool(answers))
 
     def _usual_arrival(
@@ -964,7 +1119,7 @@ class Runtime:
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
         for key in keys:
             k = _okey(key)
-            s = self._st.occurrences.get(k) or _fresh_state(key, cfg.revision, None)
+            s = self._st.occurrences.get(k) or self._frozen(_fresh_state(key, cfg.revision, None))
             ctx = self._ctx(s, now)
             if ctx is not None:
                 t = apply_action(s, ctx, action)
@@ -1017,20 +1172,53 @@ class Runtime:
         except (OSError, UnicodeDecodeError) as e:
             self._refuse(f"cannot read {self._path.name} ({e})", now)
         else:
-            old = self._st.config
-            cfg, errors = load_config(text, self.known_stations, old, now.astimezone(TZ).date())
-            if errors:
-                self._refuse(errors, now)
-            if cfg is not None and cfg is not old:
-                self._apply_config(cfg, now)
+            old, today = self._st.config, now.astimezone(TZ).date()
+            if self.require_stations and self.known_stations is None:
+                await self._fetch_stations()
+            cfg, errors = load_config(text, self.known_stations, old, today)
+            unchecked = self.require_stations and self.known_stations is None
+            if unchecked and not errors and cfg is not old:
+                # 5.3: an edit (or a first configuration) whose codes cannot be checked waits;
+                # the last valid configuration keeps running meanwhile (5.2)
+                if not self._unchecked:
+                    self._refuse(
+                        "the NS station list is unavailable, so station codes cannot be checked;"
+                        " the last valid configuration keeps running and the change is tried"
+                        " again",
+                        now,
+                    )
+                self._unchecked = True
+            else:
+                self._unchecked = False
+                if errors:
+                    self._refuse(errors, now)
+                if cfg is not None and cfg is not old:
+                    self._apply_config(cfg, now)
         self._apply({})
         await self._deliver()
+
+    def _stations_due(self) -> bool:
+        last = self._stations_tried
+        gap = timedelta(seconds=POLL_EVERY_S)
+        return last is None or _utc(self._clock.now()) - _utc(last) >= gap
+
+    async def _fetch_stations(self) -> None:
+        """At most once per poll interval: the station list through the shared budget."""
+        if not self._stations_due():
+            return
+        self._stations_tried = self._clock.now()
+        got = await self.stations()
+        if got:  # an empty list checks nothing
+            self.known_stations = got
+            if self.on_stations is not None:
+                self.on_stations(got)
 
     def _apply_config(self, new: Config, now: datetime) -> None:
         old, today = self._st.config, now.astimezone(TZ).date()
         snaps = {**self._st.config_snapshots, new.revision: new}
         occs = {}
         for k, s in self._st.occurrences.items():
+            s = self._frozen(s)  # its schedule, read before the history is re-seeded below
             route = _find(snaps.get(s.route_revision) or old, s.key.profile_id)
             p = _find(new, s.key.profile_id)
             if route is not None and p is not None and _same_route(route, p):
@@ -1066,7 +1254,7 @@ class Runtime:
             mtime: int | None = self._path.stat().st_mtime_ns
         except OSError:
             mtime = None
-        if mtime != self._mtime:
+        if mtime != self._mtime or (self._unchecked and self._stations_due()):  # tried again
             self._mtime = mtime
             await self.reload()
 
@@ -1197,7 +1385,7 @@ class Runtime:
         except StorageError as e:
             loaded, lost = None, str(e)
         if loaded is not None:
-            self._st = loaded
+            self._st = self._migrated(loaded)
         self._st = replace(self._st, started_before=True)
         if lost is not None:  # rule 22: fresh state, loud, and a write clears "state lost"
             self._app_warning(EventKind.STORAGE_FAILED, f"saved state was lost ({lost}).", now)
@@ -1210,6 +1398,20 @@ class Runtime:
         # deterministic reconcile: one fresh poll per unarchived occurrence (rule 11)
         for k in sorted(self._st.occurrences):
             await self._poll(k)
+
+    def _migrated(self, st: PersistedState) -> PersistedState:
+        """A stored state brought into the current model (rule 11): every delivered fact of an
+        older store counts as last reported, so the reconcile poll ends the ones that ended (a
+        recurrence is news again), and every occurrence gets its own fixed schedule."""
+        self._st = st
+        occs = {}
+        for k, s in st.occurrences.items():
+            keys = dict(s.alert_keys)
+            for x in s.alert_keys:
+                if x.startswith(_SENT):
+                    keys.setdefault(_LIVE + x[len(_SENT) :], "1")
+            occs[k] = self._frozen(replace(s, alert_keys=keys))
+        return replace(st, occurrences=occs)
 
     async def run_forever(self, *, started: bool = False) -> None:
         """Starts (unless `started`) with the watchdog already running, so a slow reconcile is

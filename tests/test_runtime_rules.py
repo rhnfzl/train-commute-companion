@@ -9,7 +9,7 @@ from datetime import UTC, date, time, timedelta
 
 import pytest
 from builders import make_connection, make_leg
-from test_lifecycle_follow import L1, L1X, L2, LATER
+from test_lifecycle_follow import L1, L1X, L2, L2X, LATER
 from test_runtime import (
     DAY,
     PROFILE,
@@ -472,3 +472,308 @@ def test_replay_times_follow_the_core_resolver():
     assert second.astimezone(UTC).isoformat() == "2026-10-25T01:30:00+00:00"
     with pytest.raises(ReplayError):
         _local("2026-10-25 02:30+05:00", date.min, "t")
+
+
+# --- second Codex pass on the runtime group ---
+
+
+def tracked(leg, planned: str, actual: str):
+    b = replace(leg.stops[0], planned_track=planned, actual_track=actual)
+    return replace(leg, stops=(b, *leg.stops[1:]))
+
+
+async def test_platform_back_to_the_planned_track_is_told(tmp_path):
+    rig = await started(tmp_path)
+    for hhmm, track in (("07:52", "5"), ("07:54", "1"), ("07:56", "1"), ("07:58", "5")):
+        rig.clock.set(hhmm)
+        rig.provider.world = [make_connection([tracked(L1, "1", track), L2])]
+        await rig.rt.poll_once()
+    pc = [e.text for e in rig.rt.events_log if e.kind is EventKind.PLATFORM_CHANGE]
+    assert len(pc) == 3
+    assert "platform 5 (was 1)" in pc[0] and "platform 1 again" in pc[1]
+    assert "platform 5 (was 1)" in pc[2]
+
+
+async def test_unchanged_platform_says_nothing(tmp_path):
+    rig = await started(tmp_path)
+    rig.clock.set("07:52")
+    rig.provider.world = [make_connection([tracked(L1, "1", "1"), L2])]
+    await rig.rt.poll_once()
+    assert EventKind.PLATFORM_CHANGE not in kinds(rig.rt.events_log)
+
+
+async def test_boarding_cut_short_train_keeps_its_platform_change(tmp_path):
+    rig = await started(tmp_path)
+    cut = make_leg("AAA", "UT", "08:12", "08:40", number="1234", stops=["BBB"], cut_after="BBB")
+    rig.clock.set("07:58")  # boarding zone; nothing onward from BBB, so the train stays locked
+    rig.provider.world = [make_connection([tracked(cut, "1", "4"), L2])]
+    await rig.rt.poll_once()
+    got = kinds(rig.rt.events_log)
+    assert EventKind.CUT_SHORT in got
+    pc = [e for e in rig.rt.events_log if e.kind is EventKind.PLATFORM_CHANGE]
+    assert len(pc) == 1 and "platform 4 (was 1)" in pc[0].text
+    assert pc[0].severity is Severity.LOUD  # within 15 min of its departure
+
+
+async def test_older_store_cancel_restore_restart_cancel_alerts_twice(tmp_path):
+    rig = await started(tmp_path)
+
+    def as_older_store() -> None:  # written before `live:` markers existed
+        s = rig.occ()
+        keys = {k: v for k, v in s.alert_keys.items() if not k.startswith("live:")}
+        rig.occ_set(replace(s, alert_keys=keys))
+        rig.rt._save()
+
+    for hhmm, world in (("07:52", [make_connection([L1X, L2]), LATER]), ("07:54", [USUAL, LATER])):
+        rig.clock.set(hhmm)
+        rig.provider.world = world
+        await rig.rt.poll_once()
+        as_older_store()
+    rig.clock.set("07:56")
+    rt = await rig.restart()  # reconcile poll: the cancellation is over
+    rig.clock.set("07:58")
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    await rt.poll_once()
+    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 2
+
+
+def escape_world(escape_cancelled: bool = False) -> list:
+    return [
+        make_connection([make_leg("RTD", "AAA", "17:22", "18:00", number="7922",
+                                  cancelled=escape_cancelled)]),
+        make_connection([make_leg("RTD", "AAA", "18:22", "19:00", number="7982")]),
+    ]  # fmt: skip
+
+
+async def test_first_day_advice_when_the_usual_is_absent(tmp_path):
+    rig = Rig(tmp_path, "16:54")
+    rig.provider.world = escape_world()  # no 17:52 at all and no baseline yet
+    await rig.rt.start()
+    s = rig.occ("p1|return|2026-10-27")
+    assert s is not None and s.lock is None
+    leave = [e for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW]
+    assert len(leave) == 1 and "17:22" in leave[0].text
+
+
+async def test_held_leave_now_dropped_once_its_escape_train_is_cancelled(tmp_path):
+    rig = Rig(tmp_path, "16:54")
+    rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
+    rig.provider.world = escape_world()
+    await rig.rt.start()
+    assert any(o.event.kind is EventKind.LEAVE_NOW for o in rig.rt.state.obligations)
+    rig.clock.set("16:56")
+    rig.provider.world = escape_world(escape_cancelled=True)
+    await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    assert EventKind.LEAVE_NOW not in kinds(rig.rt.events_log)
+    assert not any(o.event.kind is EventKind.LEAVE_NOW for o in rig.rt.state.obligations)
+
+
+async def test_held_leave_now_states_the_current_departure(tmp_path):
+    rig = Rig(tmp_path, "16:54")
+    rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
+    rig.provider.world = escape_world()
+    await rig.rt.start()
+    rig.clock.set("16:56")
+    late = make_leg("RTD", "AAA", "17:22", "18:00", number="7922", delay_dep=4, delay_arr=4)
+    rig.provider.world = [make_connection([late]), *escape_world()[1:]]
+    await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    leave = [e.text for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW]
+    assert len(leave) == 1 and "leaves at 17:26" in leave[0]
+
+
+async def test_held_all_good_dropped_once_a_train_is_cancelled(tmp_path):
+    rig = Rig(tmp_path)
+    rig.notifier.fails = lambda e: e.kind is EventKind.ALL_GOOD
+    await rig.rt.start()
+    assert any(o.event.kind is EventKind.ALL_GOOD for o in rig.rt.state.obligations)
+    rig.clock.set("07:52")
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    got = kinds(rig.rt.events_log)
+    assert EventKind.CANCELLED in got and EventKind.ALL_GOOD not in got
+
+
+async def test_held_all_good_still_sent_while_it_holds(tmp_path):
+    rig = Rig(tmp_path)
+    rig.notifier.fails = lambda e: e.kind is EventKind.ALL_GOOD
+    await rig.rt.start()
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    assert kinds(rig.rt.events_log).count(EventKind.ALL_GOOD) == 1
+
+
+async def test_held_warning_names_the_whole_onward_suffix_with_platforms(tmp_path):
+    rig = await started(tmp_path)
+    rig.notifier.fails = lambda e: e.kind is EventKind.CANCELLED
+    first = make_leg("UT", "RTD", "08:58", "09:32", number="5800")
+    then = tracked(make_leg("UT", "RTD", "09:10", "09:44", number="5900"), "5", "5")
+    rig.clock.set("08:20")  # the 08:12 is being ridden
+    rig.provider.world = [make_connection([L1, L2X]), make_connection([L1, first]),
+                          make_connection([L1, then])]  # fmt: skip
+    await rig.rt.poll_once()
+    held = [o.event.text for o in rig.rt.state.obligations if o.event.kind is EventKind.CANCELLED]
+    assert held and "Next good connection: 08:58" in held[0]
+    rig.clock.set("08:22")  # the 08:58 is cancelled too: the onward lock moves to 09:10
+    first_x = make_leg("UT", "RTD", "08:58", "09:32", number="5800", cancelled=True)
+    rig.provider.world = [make_connection([L1, L2X]), make_connection([L1, first_x]),
+                          make_connection([L1, then])]  # fmt: skip
+    await rig.rt.poll_once()
+    assert [x.train.train_number for x in rig.occ().lock.legs][-1] == "5900"
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
+    old = next(t for t in told if "08:50" in t)
+    assert "08:58" not in old
+    assert old.endswith("Now following your 08:12 train, then the 09:10 from UT (platform 5).")
+
+
+async def test_older_store_occurrence_keeps_its_schedule_through_a_reseed(tmp_path):
+    rig = Rig(tmp_path, "07:56")
+    hist = BaselineHistory((BaselineVersion(1, sig(time(8, 20), time(8, 50)), date(2026, 10, 1),
+                            True),))  # fmt: skip
+    rig.store.save(PersistedState(None, {}, {"p1|outbound": hist}, {}, {}, (), True))
+    rig.provider.world = every_day("08:20")
+    await rig.rt.start()
+    s = rig.occ()
+    rig.occ_set(replace(s, baseline_signature=None, baseline_frozen=False))  # an older store
+    rig.rt._save()
+    rt = await rig.restart()
+    rig.write(text=PROFILE.replace("NAME", "office_a").replace('"08:12"', '"08:05"'))
+    await rt.reload()  # a route edit that re-seeds the outbound baseline
+    assert rt.state.baselines["p1|outbound"].versions == ()
+    ctx = rt._ctx(rig.occ(), rig.clock.now())
+    assert ctx is not None and ctx.schedule.first_departure == at("08:20")
+
+
+async def test_occurrence_started_without_a_baseline_never_takes_a_later_one(tmp_path):
+    rig = await started(tmp_path)
+    s = rig.occ()
+    assert s.baseline_frozen and s.baseline_signature is None
+    hist = BaselineHistory((BaselineVersion(1, sig(time(8, 20), time(8, 50)), date(2026, 10, 1),
+                            True),))  # fmt: skip
+    rig.rt._st = replace(rig.rt._st, baselines={"p1|outbound": hist})
+    ctx = rig.rt._ctx(rig.occ(), rig.clock.now())
+    assert ctx is not None and ctx.schedule.first_departure == at("08:12")
+
+
+async def test_falling_delay_still_past_the_limit_stays_loud(tmp_path):
+    rig = Rig(tmp_path)
+    limit = '    alerts: {latest_acceptable_arrival: "09:24", quiet_hours: ["07:00", "10:00"]}\n'
+    rig.write(text=PROFILE.replace("NAME", "office_a").replace(
+        '    return: {first_train: "17:52"', limit + '    return: {first_train: "17:52"', 1))  # fmt: skip
+    await rig.rt.start()
+    rig.notifier.fails = lambda e: e.kind is EventKind.DELAYED
+    rig.clock.set("07:52")
+    rig.provider.world = [make_connection([L1, late_l2(7)])]  # arrives 09:31, limit 09:24
+    await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    rig.clock.set("07:54")
+    rig.provider.world = [make_connection([L1, late_l2(1)])]  # 09:25: still past the limit
+    await rig.rt.poll_once()
+    told = [e for e in rig.rt.events_log if e.kind in (EventKind.DELAYED, EventKind.BACK_TO_NORMAL)]
+    assert [(e.kind, e.severity) for e in told] == [(EventKind.DELAYED, Severity.LOUD)]
+    assert "delayed 1 min" in told[0].text
+
+
+async def test_delay_memory_is_every_value_the_message_stated(tmp_path):
+    rig = await started(tmp_path)
+    for hhmm, (dep, arr) in (("07:52", (7, 7)), ("07:54", (6, 10)), ("07:56", (9, 10))):
+        rig.clock.set(hhmm)
+        leg = make_leg("UT", "RTD", "08:50", "09:24", number="5678", delay_dep=dep,
+                       delay_arr=arr)  # fmt: skip
+        rig.provider.world = [make_connection([L1, leg])]
+        await rig.rt.poll_once()
+    delayed = [e.text for e in rig.rt.events_log if e.kind is EventKind.DELAYED]
+    assert len(delayed) == 3
+    assert "leaves 6 min late and arrives 10 min late" in delayed[1]
+    assert "leaves 9 min late" in delayed[2]
+
+
+class NoStations(Exception):
+    pass
+
+
+async def test_no_station_list_runs_the_saved_configuration_and_waits_on_edits(tmp_path):
+    from train_commute_companion.providers.base import ProviderError
+
+    rig = await started(tmp_path)  # a validated configuration in the store
+    rt = rig.new()
+    rt.require_stations = True
+    saved: list[frozenset[str]] = []
+    rt.on_stations = saved.append
+
+    async def down() -> frozenset[str]:
+        raise ProviderError("station endpoint down")
+
+    rig.provider.stations = down  # type: ignore[method-assign]
+    rig.rt = rt
+    await rt.start()
+    assert rt.config is not None and rig.occ() is not None and rig.occ().lock is not None
+    assert EventKind.PROFILE_REFUSED not in kinds(rt.events_log)  # nothing unchecked to refuse
+    rig.write("office_x")
+    await rt.check_file()
+    assert rt.config.profiles[0].name == "office_a"
+    assert kinds(rt.events_log).count(EventKind.PROFILE_REFUSED) == 1
+    await rt.check_file()  # retried only once per poll interval: no second request or warning
+    assert kinds(rt.events_log).count(EventKind.PROFILE_REFUSED) == 1
+
+    async def up() -> frozenset[str]:
+        return frozenset({"AAA", "UT", "RTD"})
+
+    rig.provider.stations = up  # type: ignore[method-assign]
+    rig.clock.jump(2)
+    await rt.check_file()
+    assert rt.config.profiles[0].name == "office_x" and saved == [frozenset({"AAA", "UT", "RTD"})]
+
+
+def test_run_starts_without_a_station_list(tmp_path, monkeypatch):
+    from train_commute_companion import cli
+
+    ran: list[cli.Runtime] = []
+
+    async def none(self) -> None:
+        return None
+
+    async def forever(self, *, started: bool = False) -> None:
+        ran.append(self)
+
+    monkeypatch.setattr(cli.Runtime, "stations", none)
+    monkeypatch.setattr(cli.Runtime, "run_forever", forever)
+    monkeypatch.setenv("NS_API_KEY", "k")
+    store = tmp_path / "state.json"
+    assert cli.main(["run", str(tmp_path / "profiles.yaml"), "--store", str(store)]) == 0
+    assert len(ran) == 1 and ran[0].require_stations and ran[0].known_stations is None
+
+
+async def test_held_back_to_normal_dropped_once_the_delay_returns(tmp_path):
+    rig = await started(tmp_path)
+    rig.notifier.fails = lambda e: e.kind is EventKind.BACK_TO_NORMAL
+    for hhmm, late in (("07:52", 7), ("07:54", 0), ("07:56", 7)):
+        rig.clock.set(hhmm)
+        rig.provider.world = [make_connection([L1, late_l2(late)])]
+        await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    got = kinds(rig.rt.events_log)
+    assert got.count(EventKind.DELAYED) == 2 and EventKind.BACK_TO_NORMAL not in got
+
+
+async def test_held_restored_dropped_once_the_train_is_cancelled_again(tmp_path):
+    rig = await started(tmp_path)
+    rig.notifier.fails = lambda e: e.kind is EventKind.RESTORED
+    for hhmm, world in (("07:52", [make_connection([L1X, L2]), LATER]),
+                        ("07:54", [USUAL, LATER]),
+                        ("07:56", [make_connection([L1X, L2]), LATER])):  # fmt: skip
+        rig.clock.set(hhmm)
+        rig.provider.world = world
+        await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    got = kinds(rig.rt.events_log)
+    assert got.count(EventKind.CANCELLED) == 2 and EventKind.RESTORED not in got

@@ -645,10 +645,11 @@ async def test_held_warning_names_the_journey_followed_once_the_locks_first_leg_
     rig.notifier.fails = lambda e: False
     await rig.rt.watchdog_once()
     told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
-    assert told and all("09:20" not in t and "connection: 08:25" not in t for t in told)
-    # the obsolete 08:25 replacement is not named; the journey now followed is
+    assert told and all("connection: 08:25" not in t and "connection: 09:20" not in t for t in told)
+    # the obsolete 08:25 replacement is not named; the train now followed and its onward leg
+    # are, while the warning that already named the whole 08:40 journey stays as written
     assert sorted(t.rsplit(". ", 1)[-1] for t in told) == [
         "Next good connection: 08:40.",
-        "Now following your 08:40 train.",
+        "Now following your 08:40 train, then the 09:20 from UT.",
     ]
     assert len(held) == 2

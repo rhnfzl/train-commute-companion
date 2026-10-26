@@ -140,6 +140,9 @@ class OccurrenceState:
     # the baseline signature this occurrence started on (rule 10): a later re-seed of the
     # direction's history must not move a locked occurrence's schedule
     baseline_signature: Signature | None = None
+    # True once `baseline_signature` is this occurrence's own (None then means it started with
+    # no baseline); False only in stores written before it existed, hydrated at start
+    baseline_frozen: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,15 +343,19 @@ def announced(last: int | None, now: int | None) -> int | None:
 # a live delay in a key, before `_stated` announces it: `|~N`, or tagged `|d~N` / `|a~N`
 # (departure, arrival); `?` is a delay NS did not report, which keeps the last stated one
 _STATED = re.compile(r"\|(\w?)~(-?\d+|\?)")
+# a platform in a key: `track N`, with `|planned` when N is the planned platform again
+_TRACK = re.compile(r"track [^|:]+(\|planned)?")
 
 
 def _recovery(e: AlertEvent, before: Sequence[int], said: Sequence[int]) -> AlertEvent | None:
     """A stated delay falling to on time is "back to normal" (1 min or less), one falling
     under the 3-min step is "nearly on time" (7.5); an on-time train never stated late says
-    nothing. A loud delay (past the arrival limit) stays a delay."""
+    nothing. A loud delay (past the arrival limit) stays a loud delay: the limit still binds."""
+    if e.severity is Severity.LOUD:
+        return e
     if max(said) <= ON_TIME_MAX_MIN:
         if max(before) <= ON_TIME_MAX_MIN:
-            return e if e.severity is Severity.LOUD else None
+            return None
         kind, tail = EventKind.BACK_TO_NORMAL, "is back to normal, on time per NS."
     elif max(said) < DELAY_STEP_MIN and max(before) > max(said):
         kind, tail = EventKind.NEARLY_ON_TIME, "is nearly on time."
@@ -366,21 +373,31 @@ def _stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
     keys = dict(s.alert_keys)
     out = []
     for e in events:
+        if e.kind is EventKind.PLATFORM_CHANGE:
+            # per boarding segment: a train back on its planned platform is news only once a
+            # change was announced for it (1 -> 5 -> 1 says so, an unchanged 1 says nothing)
+            slot = "moved#" + _TRACK.sub("track", e.key)
+            if (m := _TRACK.search(e.key)) is not None and m[1]:
+                if slot not in keys:
+                    continue
+            else:
+                keys[slot] = "1"
+            out.append(e)
+            continue
         ms = list(_STATED.finditer(e.key))
         if not ms:
             out.append(e)
             continue
         base = _STATED.sub("", e.key)
-        said, before = [], []
-        for m in ms:
-            slot = base + (f"#{m[1]}" if m[1] else "")
-            last = keys.get(slot)
-            was = None if last is None else int(last)
-            now = None if m[2] == "?" else int(m[2])
-            told = announced(was, now) or 0
-            keys[slot] = str(told)
-            said.append(told)
-            before.append(was or 0)
+        slots = [base + (f"#{m[1]}" if m[1] else "") for m in ms]
+        was = [None if keys.get(x) is None else int(keys[x]) for x in slots]
+        live = [None if m[2] == "?" else int(m[2]) for m in ms]
+        told = [announced(w, n) for w, n in zip(was, live, strict=True)]
+        if told != was:  # news: the message states every live value, so each is remembered
+            told = [t if n is None else n for t, n in zip(told, live, strict=True)]
+        said = [t or 0 for t in told]
+        before = [w or 0 for w in was]
+        keys.update({x: str(t) for x, t in zip(slots, said, strict=True)})
         e = replace(e, key=f"{base}|stated+{','.join(map(str, said))}")
         ev = _recovery(e, before, said) if e.kind is EventKind.DELAYED else e
         if ev is not None:
@@ -1024,14 +1041,17 @@ def _platform(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
     """7.9 `platform_change` for a leg not yet left: loud within 15 min of its expected
     departure, else silent (escalated once it enters the zone, rule 4)."""
     b = cl.leg.board
-    if not b.actual_track or not b.planned_track or b.actual_track == b.planned_track:
+    if not b.actual_track or not b.planned_track:
         return None
     soon = _departs(x, cl) - _utc(ctx.now) <= _PLATFORM_LOUD
-    text = (
-        f"your {_name(x)} train now leaves from platform {b.actual_track} (was {b.planned_track})."
-    )
     sev = Severity.LOUD if soon else Severity.SILENT
-    return _event(ctx, EventKind.PLATFORM_CHANGE, sev, text, x.train, f"track {b.actual_track}")
+    if b.actual_track == b.planned_track:  # `_stated` keeps it only after an announced change
+        text = f"your {_name(x)} train leaves from platform {b.planned_track} again, as planned."
+        facts = f"track {b.actual_track}|planned"
+    else:
+        text = f"your {_name(x)} train now leaves from platform {b.actual_track} (was {b.planned_track})."
+        facts = f"track {b.actual_track}"
+    return _event(ctx, EventKind.PLATFORM_CHANGE, sev, text, x.train, facts)
 
 
 def _follow(
@@ -1065,7 +1085,10 @@ def _follow(
         is still checked and reported but never relocked on top of the kept break (7.4)."""
         nonlocal relock
         if relock and not ridden:
-            return Transition(t.state, (*events, *t.events))
+            # a platform of a train relocked away is no longer the user's platform
+            kept = {y.train for y in t.state.lock.legs} if t.state.lock else set()
+            mine = [e for e in events if e.kind is not EventKind.PLATFORM_CHANGE or e.train in kept]
+            return Transition(t.state, (*mine, *t.events))
         relock = False
         events.extend(t.events)
         return None
@@ -1117,7 +1140,8 @@ def _follow(
             if (r := act(t, ridden=x.state is LegState.RIDING)) is not None:
                 return r
             continue
-        if cl.kind in _RUNS and x.state in _MAY_HAVE_LEFT and (pc := _platform(ctx, x, cl)):
+        usable = cl.kind in _RUNS or cl.kind is LegKind.CUT_SHORT
+        if usable and x.state in _MAY_HAVE_LEFT and (pc := _platform(ctx, x, cl)):
             events.append(pc)
         cut = cl.kind is LegKind.CUT_SHORT or x.alight_stop != x.intended_alight
         before = x
