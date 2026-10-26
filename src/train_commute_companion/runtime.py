@@ -14,6 +14,7 @@ from train_commute_companion.advice import advise
 from train_commute_companion.calendar import TZ, resolve_local
 from train_commute_companion.classify import find_leg
 from train_commute_companion.delivery import (
+    JOURNEY_WARNINGS,
     Obligation,
     deliver,
     pending_journey_warnings,
@@ -297,13 +298,36 @@ class _View:
         return p is not None and _in_quiet(p.alerts.quiet_hours, now)
 
     def current(self, o: Obligation) -> AlertEvent:
-        e = o.event
+        e = self._relocked(o, o.event)
         p = _find(self._rt._st.config, e.profile_id)
         if p is None or p.name == e.profile_name:
             return e
         old, new = _title(e.profile_name), _title(p.name)
         text = new + e.text[len(old) :] if e.text.startswith(old + ":") else e.text
         return replace(e, profile_name=p.name, text=text)
+
+    def _relocked(self, o: Obligation, e: AlertEvent) -> AlertEvent:
+        """Rule 5(a): a journey warning names the current lock, not the replacement frozen at
+        write time. Kept as written while the lock still holds the warned train (nothing better
+        to name) or its next train is the one the text already names."""
+        s = None if o.occurrence is None else self._rt._st.occurrences.get(_okey(o.occurrence))
+        if e.kind not in JOURNEY_WARNINGS or e.train is None or s is None or s.lock is None:
+            return e
+        live = [x for x in s.lock.legs if x.state not in (LegState.CANCELLED, LegState.RELOCKED)]
+        ahead = [x for x in live if x.state in (LegState.PENDING, LegState.BOARDING)]
+        if not ahead or e.train in {x.train for x in live}:
+            return e
+        t = ahead[0].train
+        if f"{t.train_number}@{t.planned_departure.isoformat()}" in e.key:
+            return e
+        head, tail = e.text, ""
+        if (i := head.find(" (service date ")) >= 0:  # the 7.13 twin suffix stays last
+            head, tail = head[:i], head[i:]
+        if (i := head.find(" Next good connection:")) >= 0:
+            head = head[:i]
+        # planned time: the lock carries no live estimate (the next poll's news states it)
+        nxt = f"Next good connection: {t.planned_departure.astimezone(TZ):%H:%M}."
+        return replace(e, text=f"{head.rstrip()} {nxt}{tail}")
 
 
 class Runtime:
@@ -335,6 +359,7 @@ class Runtime:
         self._offline: set[str] = set()
         # per occurrence and train: what the last healthy poll showed of it (rule 13)
         self._seen: dict[str, dict[TrainId, WatchedLeg]] = {}
+        self._sending = asyncio.Lock()
         self.requests = 0  # NS publishes no quota (7.1): counted and logged
 
     # --- configuration and context ---
@@ -487,7 +512,12 @@ class Runtime:
 
     async def _deliver(self) -> None:
         """Every pending obligation, revalidated right before sending (rule 5). Merges by id,
-        so obligations added by another task while a send awaited are kept."""
+        so obligations added by another task while a send awaited are kept. Serialised: the
+        poll, watchdog and file watch all deliver, and two passes would send one alert twice."""
+        async with self._sending:
+            await self._deliver_pass()
+
+    async def _deliver_pass(self) -> None:
         view, now = _View(self), self._clock.now()
         finished: set[str] = set()
         kept: dict[str, Obligation] = {}

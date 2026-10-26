@@ -1,10 +1,11 @@
+import asyncio
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from builders import AMS, make_connection, make_leg
-from test_lifecycle_follow import L1, L1X, L2, L2X, LATER, journey, occ
+from test_lifecycle_follow import L1, L1X, L2, L2X, LATER, conn, journey, occ
 
 from train_commute_companion.lifecycle import Choose, DirectionState, LegState, NotTravelling
 from train_commute_companion.lookahead import BaselineHistory
@@ -569,3 +570,48 @@ async def test_delivered_adoption_leaves_lookahead_pending(tmp_path):
     await rig.rt.lookahead_once()
     restored = [e for e in rig.rt.events_log if e.kind is EventKind.RESTORED]
     assert len(restored) == 1 and "stays as it was" in restored[0].text
+
+
+async def test_concurrent_delivery_passes_send_each_alert_once(tmp_path):
+    rig = Rig(tmp_path)
+    rig.provider.world = [make_connection([L1X, L2])]
+    rig.notifier.fails = lambda e: e.kind is EventKind.CANCELLED
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    plain = rig.notifier.send
+
+    async def slow(event: AlertEvent) -> bool:
+        await asyncio.sleep(0.01)  # a slow Telegram call: the other pass starts meanwhile
+        return await plain(event)
+
+    rig.notifier.send = slow  # type: ignore[method-assign]
+    before = kinds(rig.notifier.attempts).count(EventKind.CANCELLED)
+    await asyncio.gather(rig.rt.watchdog_once(), rig.rt.watchdog_once(), rig.rt.check_file())
+    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == before + 1
+
+
+async def test_held_cancellation_names_the_current_lock_when_sent(tmp_path):
+    rig = await started(tmp_path)
+    rig.notifier.fails = lambda e: e.kind is EventKind.CANCELLED
+    rig.clock.set("07:52")
+    later_x = conn(
+        make_leg("AAA", "UT", "08:25", "08:53", number="1300", cancelled=True), LATER.legs[1]
+    )
+    last = conn(
+        make_leg("AAA", "UT", "08:40", "09:08", number="1400"),
+        make_leg("UT", "RTD", "09:20", "09:54", number="7777"),
+    )
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    await rig.rt.poll_once()
+    assert "Next good connection: 08:25." in rig.notifier.attempts[-1].text
+    rig.clock.set("07:54")  # the replacement is cancelled too: the lock moves on to 08:40
+    rig.provider.world = [make_connection([L1X, L2]), later_x, last]
+    await rig.rt.poll_once()
+    assert rig.occ().lock.legs[0].train == last.legs[0].train
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
+    assert told and all(
+        "08:25." not in t and t.endswith("Next good connection: 08:40.") for t in told
+    )
