@@ -980,3 +980,163 @@ async def test_window_edit_keeps_an_undelivered_works_warning_told_later(tmp_pat
     await rig.rt.watchdog_once()
     got = [e.text for e in rig.notifier.attempts if e.kind is EventKind.WORKS_AHEAD]
     assert any("28 Oct" in t for t in got)
+
+
+# --- rule 5(b): a held look-ahead message that no longer holds is dropped ---
+
+
+def _world_with(day: date, l2: object) -> list:
+    """Every usual journey, the outbound on `day` with `l2` as its second leg."""
+    l1 = make_leg("AAA", "UT", "08:12", "08:40", number="1234", day=day)
+    return [
+        *(c for c in every_day() if c.legs[0].train.operating_date != day),
+        make_connection([l1, l2]),
+        *returns_every_day("17:52"),
+    ]
+
+
+def _cancelled_l2(day: date) -> list:
+    l2x = make_leg("UT", "RTD", "08:50", "09:24", number="5678", day=day, cancelled=True)
+    return _world_with(day, l2x)
+
+
+def _clean() -> list:
+    return [*every_day(), *returns_every_day("17:52")]
+
+
+def _ahead(rig: Rig, kind: EventKind) -> list[AlertEvent]:
+    return [e for e in rig.notifier.attempts if e.kind is kind and e.profile_id == "p1"]
+
+
+async def _held_warning(tmp_path, day: date) -> Rig:
+    """05:40 on DAY: the look-ahead tells works on `day`; every delivery fails."""
+    rig = Rig(tmp_path, "05:40")
+    rig.provider.world = _cancelled_l2(day)
+    rig.notifier.fails = lambda e: True
+    await rig.rt.start()
+    await rig.rt.lookahead_once()
+    assert any(o.event.kind is EventKind.WORKS_AHEAD for o in rig.rt.state.obligations)
+    return rig
+
+
+async def _back(rig: Rig) -> None:
+    rig.notifier.fails = lambda e: False
+    rig.notifier.attempts.clear()
+    await rig.rt.watchdog_once()
+
+
+def _set_facts(rig: Rig, kind: EventKind, facts: tuple) -> None:
+    """Rewrites the held look-ahead message's stored facts (and its kind)."""
+    st = rig.rt._st
+    o = next(o for o in st.obligations if o.look_ahead is not None)
+    led = st.lookahead["p1|outbound"]
+    ob = replace(o, event=replace(o.event, kind=kind))
+    rig.rt._st = replace(
+        st,
+        obligations=tuple(ob if x.id == o.id else x for x in st.obligations),
+        lookahead={
+            **st.lookahead,
+            "p1|outbound": replace(
+                led,
+                pending=tuple(ob if x.id == o.id else x for x in led.pending),
+                facts={**led.facts, o.id: facts},
+            ),
+        },
+    )
+
+
+async def test_undelivered_works_warning_is_dropped_after_its_date(tmp_path):
+    rig = await _held_warning(tmp_path, DAY + timedelta(days=1))
+    await rig.rt.watchdog_once()
+    rig.clock.t += timedelta(days=2)
+    await _back(rig)
+    assert _ahead(rig, EventKind.WORKS_AHEAD) == []
+    assert not any(o.event.kind is EventKind.WORKS_AHEAD for o in rig.rt.state.obligations)
+
+
+async def test_undelivered_works_warning_still_goes_out_on_its_own_date(tmp_path):
+    tomorrow = DAY + timedelta(days=1)
+    rig = await _held_warning(tmp_path, tomorrow)
+    rig.clock.t = at("06:30", tomorrow)
+    await _back(rig)
+    got = _ahead(rig, EventKind.WORKS_AHEAD)
+    assert got and "28 Oct" in got[0].text
+
+
+async def test_bundled_adoption_and_warning_after_its_date_is_still_sent(tmp_path):
+    rig = await _held_warning(tmp_path, DAY + timedelta(days=1))
+    led = rig.rt._st.lookahead["p1|outbound"]
+    ((oid, fs),) = led.facts.items()
+    adopt = ("adopt:2", "your usual train is now 08:22", False, False)
+    _set_facts(rig, EventKind.WORKS_AHEAD, (adopt, *fs))
+    assert any(k.startswith("adopt:") for k, *_ in rig.rt._st.lookahead["p1|outbound"].facts[oid])
+    assert any("|warn:" in k for k, *_ in fs)
+    rig.clock.t += timedelta(days=2)
+    await _back(rig)
+    assert _ahead(rig, EventKind.WORKS_AHEAD)
+
+
+async def test_withdrawn_adoption_correction_after_its_date_is_still_sent(tmp_path):
+    rig = await _held_warning(tmp_path, DAY + timedelta(days=1))
+    _set_facts(rig, EventKind.RESTORED, (("cancel:2", "ignore the new time", False, False),))
+    rig.clock.t += timedelta(days=2)
+    await _back(rig)
+    assert _ahead(rig, EventKind.RESTORED)
+
+
+async def test_held_warning_whose_works_ended_is_dropped_restored_still_sent(tmp_path):
+    rig = await _held_warning(tmp_path, DAY + timedelta(days=2))
+    rig.clock.t = at("05:40", DAY + timedelta(days=1))
+    rig.provider.world = _clean()
+    await rig.rt.lookahead_once()
+    assert any(o.event.kind is EventKind.RESTORED for o in rig.rt.state.obligations)
+    await _back(rig)
+    got = [e.kind for e in _ahead(rig, EventKind.WORKS_AHEAD) + _ahead(rig, EventKind.RESTORED)]
+    assert got == [EventKind.RESTORED]
+
+
+async def test_held_restoration_followed_by_renewed_works_is_dropped(tmp_path):
+    thu = DAY + timedelta(days=2)
+    rig = Rig(tmp_path, "05:40")
+    rig.provider.world = _cancelled_l2(thu)
+    await rig.rt.start()
+    await rig.rt.lookahead_once()
+    assert _ahead(rig, EventKind.WORKS_AHEAD)  # delivered
+    rig.notifier.fails = lambda e: True
+    rig.clock.t = at("05:40", DAY + timedelta(days=1))
+    rig.provider.world = _clean()
+    await rig.rt.lookahead_once()
+    assert any(o.event.kind is EventKind.RESTORED for o in rig.rt.state.obligations)
+    rig.clock.set("12:00")
+    rig.provider.world = _cancelled_l2(thu)
+    await rig.rt.lookahead_once()
+    await _back(rig)
+    got = [e.kind for e in _ahead(rig, EventKind.WORKS_AHEAD) + _ahead(rig, EventKind.RESTORED)]
+    assert got == [EventKind.WORKS_AHEAD]
+
+
+async def test_held_whole_journey_warning_still_goes_out(tmp_path):
+    tomorrow = DAY + timedelta(days=1)
+    rig = Rig(tmp_path, "05:40")
+    # leg 2: +4 min departure, +9 min duration: a whole-journey change, no leg broken
+    rig.provider.world = _world_with(
+        tomorrow, make_leg("UT", "RTD", "08:54", "09:37", number="5678", day=tomorrow)
+    )
+    rig.notifier.fails = lambda e: True
+    await rig.rt.start()
+    await rig.rt.lookahead_once()
+    fs = [k for v in rig.rt._st.lookahead["p1|outbound"].facts.values() for k, *_ in v]
+    assert fs and all("|j|warn:" in k and ";" in k for k in fs)
+    rig.clock.t = at("06:30", tomorrow)
+    await _back(rig)
+    assert _ahead(rig, EventKind.WORKS_AHEAD)
+
+
+async def test_held_lookahead_message_after_a_rename_names_the_new_profile(tmp_path):
+    rig = await _held_warning(tmp_path, DAY + timedelta(days=1))
+    rig.write(text=PROFILE.replace('"NAME"', '"office_b"').replace(
+        'name: "office_b"\n    days: [sat]', 'name: "office_c"\n    days: [sat]'))  # fmt: skip
+    await rig.rt.reload()
+    await _back(rig)
+    got = _ahead(rig, EventKind.WORKS_AHEAD)
+    assert got and got[0].text.startswith("Office B, ")

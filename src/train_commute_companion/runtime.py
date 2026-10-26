@@ -51,6 +51,7 @@ from train_commute_companion.lookahead import (
     BaselineHistory,
     LookAheadLedger,
     ProbeResult,
+    _mark,
     evaluate,
     forget_pending,
     probe_dates,
@@ -303,7 +304,7 @@ class _View:
     def fact_holds(self, o: Obligation) -> bool:
         rt = self._rt
         if o.look_ahead is not None:
-            pid, d, _ = o.look_ahead
+            pid, d, day = o.look_ahead
             then = _find(rt._st.config_snapshots.get(o.route_revision), pid)
             now = _find(rt._st.config, pid)
             if now is None or (then is not None and not _same_route(then, now)):
@@ -312,7 +313,9 @@ class _View:
                 return False
             hist = rt._st.baselines.get(_dkey(pid, d), BaselineHistory())
             versions = {v.version for v in hist.versions}
-            return o.baseline_version is None or o.baseline_version in versions
+            if o.baseline_version is not None and o.baseline_version not in versions:
+                return False
+            return self._look_ahead_holds(o, _dkey(pid, d), day)
         if o.occurrence is None:
             return True
         s = self._occ(o.occurrence)
@@ -325,6 +328,34 @@ class _View:
             zone = (p.location.zones if p.location else {}).get(role, role)
             return not zone_report_stops_silent(s, {p.destination(d), zone})
         return True
+
+    def _look_ahead_holds(self, o: Obligation, dk: str, day: date) -> bool:
+        """Rule 5(b): a held look-ahead message is dropped once its date passed or none of its
+        per-date facts is still the latest one the ledger records. An adoption or its withdrawal
+        keeps the whole message. Reads the stored facts, never o.fact_key: ";" also joins the
+        legs inside a whole-journey fingerprint."""
+        rt = self._rt
+        led = rt._st.lookahead.get(dk)
+        fs = () if led is None else led.facts.get(o.id, ())
+        if led is None or not fs or any(k.startswith(("adopt:", "cancel:")) for k, *_ in fs):
+            return True  # stored before facts were kept, or an adoption: judged as before
+        if day < rt._clock.now().astimezone(TZ).date():
+            return False
+        per_date = False
+        for k, *_ in fs:
+            parts = k.split("|", 2)  # "<date>|<leg>|warn:<fp>[|loud]" or "...|restored"
+            if len(parts) < 3 or not (parts[2].startswith("warn:") or parts[2] == "restored"):
+                continue
+            per_date = True
+            date_, leg, rest = parts
+            entries = [_mark(x) for x in led.per_date.get(f"{date_}|{leg}", ())]
+            last = next((x for x in reversed(entries) if x.startswith(("warn:", "restored:"))), "")
+            if rest == "restored":
+                if last.startswith("restored:"):
+                    return True
+            elif last == rest.removesuffix("|loud"):
+                return True
+        return not per_date
 
     def _still(self, o: Obligation, s: OccurrenceState) -> bool:
         """Rule 5(b): the message's fact, regenerated from the current state and the latest
@@ -418,7 +449,7 @@ class _View:
         if p is None or p.name == e.profile_name:
             return e
         old, new = _title(e.profile_name), _title(p.name)
-        text = new + e.text[len(old) :] if e.text.startswith(old + ":") else e.text
+        text = new + e.text[len(old) :] if e.text.startswith((old + ":", old + ",")) else e.text
         return replace(e, profile_name=p.name, text=text)
 
     def _regenerated(self, o: Obligation, e: AlertEvent) -> AlertEvent:
