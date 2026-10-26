@@ -199,6 +199,12 @@ def test_start_after_auto_lock_time_locks_at_once():
     assert "08:44" in late.events[0].text
 
 
+def test_usual_missing_after_its_departure_time_with_no_lock_is_loud():  # 10.1 safety
+    t = auto_lock(fresh(), ctx(at("08:20")), answer(LATER))  # late start: 08:12 is gone from NS
+    assert (EventKind.MISSING, Severity.LOUD) in [(e.kind, e.severity) for e in t.events]
+    assert t.state.missing_sent and first_dep(t.state) == at("08:44")
+
+
 def test_leaving_keeps_buffer():
     t = apply_action(
         locked(), ctx(now=dt("2026-10-27 07:55")), Leaving(None, dt("2026-10-27 07:55"))
