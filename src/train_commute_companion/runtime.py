@@ -48,6 +48,7 @@ from train_commute_companion.lookahead import (
     LookAheadLedger,
     ProbeResult,
     evaluate,
+    forget_pending,
     probe_dates,
     probe_queries,
     rebase_on_edit,
@@ -1255,6 +1256,8 @@ class Runtime:
                     continue
                 if dk in ledgers:
                     ledgers[dk] = reset_on_edit(q, p, d, hist, ledgers[dk], today)
+                    if not _same_route(q, p):  # rule 5(c) drops its pending messages
+                        ledgers[dk] = forget_pending(ledgers[dk])
                 baselines[dk] = rebase_on_edit(q, p, d, hist, today)
         self._st = replace(
             self._st, config=new, config_snapshots=snaps, occurrences=occs,

@@ -821,3 +821,23 @@ def reset_on_edit(
     if rebase_on_edit(old, new, d, history, today) is history:
         return ledger
     return replace(ledger, per_date={})
+
+
+def forget_pending(ledger: LookAheadLedger) -> LookAheadLedger:
+    """Rule 5(c): a route edit drops the pending messages written before it. Their per-date
+    marks are taken back so the next run tells those facts again (7.10), instead of matching a
+    fact that was never delivered."""
+    per_date = dict(ledger.per_date)
+    for o in ledger.pending:
+        for fact, *_ in ledger.facts.get(o.id, ()):
+            parts = fact.split("|")  # "<date>|<leg>|warn:<fp>[|loud]" or "<date>|<leg>|restored"
+            if len(parts) < 3 or not parts[2].startswith(("warn:", "restored")):
+                continue  # an adoption or a correction: kept by the baseline, not per date
+            key, entries = "|".join(parts[:2]), per_date.get("|".join(parts[:2]), ())
+            if parts[-1] == "loud":  # only the loud repeat was pending
+                per_date[key] = tuple(x for x in entries if x != f"loud:{parts[2][5:]}")
+                continue
+            marks = [i for i, x in enumerate(entries) if x.startswith(("warn:", "restored:"))]
+            if marks:
+                per_date[key] = entries[: marks[-1]]
+    return replace(ledger, per_date=per_date)

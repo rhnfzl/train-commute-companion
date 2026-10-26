@@ -930,3 +930,33 @@ async def test_held_all_good_names_the_current_platform(tmp_path):
     moved = next(i for i, (k, _) in enumerate(got) if k is EventKind.PLATFORM_CHANGE)
     last = max(i for i, (k, _) in enumerate(got) if k is EventKind.ALL_GOOD)
     assert last > moved and "platform 1" not in got[last][1] and "platform 5" in got[last][1]
+
+
+async def test_window_edit_keeps_an_undelivered_works_warning_told_later(tmp_path):
+    rig = Rig(tmp_path, "05:40")
+    tomorrow = DAY + timedelta(days=1)
+    l2x = make_leg("UT", "RTD", "08:50", "09:24", number="5678", day=tomorrow, cancelled=True)
+    rig.provider.world = [
+        *(c for c in every_day() if c.legs[0].train.operating_date != tomorrow),
+        make_connection(
+            [make_leg("AAA", "UT", "08:12", "08:40", number="1234", day=tomorrow), l2x]
+        ),
+        *returns_every_day("17:52"),
+    ]
+    rig.notifier.fails = lambda e: e.kind is EventKind.WORKS_AHEAD
+    await rig.rt.start()
+    await rig.rt.lookahead_once()
+    assert any(o.event.kind is EventKind.WORKS_AHEAD for o in rig.rt.state.obligations)
+    # a window-only route edit: rule 5(c) drops the held warning, the baseline is kept
+    rig.write(text=PROFILE.replace("NAME", "office_a").replace(
+        "transfers: [UT]}", 'transfers: [UT], window: ["06:42", "10:12"]}', 1))  # fmt: skip
+    await rig.rt.reload()
+    assert rig.rt.config.revision == 2
+    rig.notifier.fails = lambda e: False
+    rig.notifier.attempts.clear()
+    await rig.rt.watchdog_once()
+    rig.clock.set("12:00")
+    await rig.rt.lookahead_once()
+    await rig.rt.watchdog_once()
+    got = [e.text for e in rig.notifier.attempts if e.kind is EventKind.WORKS_AHEAD]
+    assert any("28 Oct" in t for t in got)
