@@ -66,6 +66,7 @@ from train_commute_companion.model import (
     Config,
     Direction,
     EventKind,
+    LocationSettings,
     Observation,
     OccurrenceKey,
     Profile,
@@ -1368,14 +1369,23 @@ class Runtime:
         ok = await self.act(profile_id, choice, occ.key.direction)
         return None if ok else gone
 
-    async def location(self, profile_id: str, event: LocationEvent) -> None:
-        """Every unresolved occurrence of the profile gets the event with a fresh origin answer."""
+    async def location(
+        self, profile_id: str, event: LocationEvent, source: LocationSettings | None = None
+    ) -> None:
+        """Every unresolved occurrence of the profile gets the event with a fresh origin answer.
+        With `source` (the settings the event was read under), a profile whose location settings
+        differ by the time it would be written drops the event: a switched, disabled or replaced
+        source supplies no evidence (8)."""
+
+        def stale(ctx: Ctx) -> bool:
+            return source is not None and ctx.profile.location != source
+
         mine = [k for k, s in self._st.occurrences.items() if s.key.profile_id == profile_id]
         for k in mine:
             s = self._st.occurrences.get(k)
             now = self._clock.now()
             ctx = None if s is None else self._ctx(s, now)
-            if s is None or ctx is None or _resolved(s):
+            if s is None or ctx is None or _resolved(s) or stale(ctx):
                 continue
             gen, p, d = s.generation, ctx.profile, ctx.direction
             got = await self._fetch(Query(p.origin(d), p.destination(d), now), True, None)
@@ -1385,7 +1395,7 @@ class Runtime:
             # never written back from the old copy (rule 21)
             s = self._st.occurrences.get(k)
             ctx = None if s is None else self._ctx(s, now)
-            if s is None or ctx is None or _resolved(s):
+            if s is None or ctx is None or _resolved(s) or stale(ctx):
                 continue
             # an answer asked under another generation is stale; the report itself still counts
             answer = None if isinstance(got, str) or s.generation != gen else got

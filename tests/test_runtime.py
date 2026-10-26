@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
+import pytest
 from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from test_lifecycle_follow import L1, L1X, L2, L2X, LATER, conn, journey, occ
 
@@ -841,6 +842,36 @@ async def test_choose_at_locks_named_departure(tmp_path):
     lock = only_occurrence(rig.rt).lock
     assert lock.legs[0].train.planned_departure == at("08:44")
     assert lock.source is LockSource.CHOOSE and not refused(rig.rt)
+
+
+@pytest.mark.parametrize(
+    "after", ["located_via_ut_telegram", "located_via_ut_off", "located_via_ut_other"]
+)
+async def test_location_source_changed_during_request_is_not_written(tmp_path, after):  # 8
+    rig = Rig(tmp_path)
+    rig.write(text=(PROFILES_DIR / "located_via_ut.yaml").read_text())
+    rig.provider.world = list(ONE_TRANSFER)
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    source = rig.rt.view().profiles[0].location
+    asked, release = asyncio.Event(), asyncio.Event()
+    real = rig.provider.trips
+
+    async def held(q):
+        if not asked.is_set():
+            asked.set()
+            await release.wait()
+        return await real(q)
+
+    rig.provider.trips = held
+    event = LocationEvent("UT", "enter", rig.clock.now(), rig.clock.now())
+    task = asyncio.create_task(rig.rt.location("p1", event, source))
+    await asked.wait()
+    rig.write(text=(PROFILES_DIR / f"{after}.yaml").read_text())
+    await rig.rt.check_file()
+    release.set()
+    await task
+    assert only_occurrence(rig.rt).zone_reports == {}
 
 
 async def test_choose_at_retained_remainder_promotes_ridden_train(tmp_path):  # N3, required

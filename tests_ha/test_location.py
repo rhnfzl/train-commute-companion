@@ -50,9 +50,9 @@ async def start_tracker(h):
     def install(rt: Runtime) -> None:
         orig = rt.location
 
-        async def spy(profile_id, event):
+        async def spy(profile_id, event, *rest):
             calls.append((event.zone, event.kind))
-            await orig(profile_id, event)
+            await orig(profile_id, event, *rest)
 
         rt.location = spy
 
@@ -229,6 +229,33 @@ async def test_source_change_during_pending_work_drops_it(hass, text, monkeypatc
     await reload_profiles(h, text)
     release.set()
     assert await spied(h) == []
+
+
+def evidence(rt: Runtime) -> list[str]:
+    return [z for s in rt.state.occurrences.values() for z in s.zone_reports]
+
+
+@pytest.mark.parametrize("text", [TELEGRAM, OFF, OTHER], ids=["telegram", "disabled", "replaced"])
+async def test_source_change_during_runtime_request_writes_no_evidence(hass, text, monkeypatch):
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    hit, release = threading.Event(), asyncio.Event()  # release lives on the runtime loop
+    real = h.provider.trips
+
+    async def held(q):
+        if not hit.is_set():  # only the location event's request; a reload may ask too
+            hit.set()
+            await release.wait()
+        return await real(q)
+
+    monkeypatch.setattr(h.provider, "trips", held)
+    set_person(hass, 52.1, 5.1)  # positions read, event dispatched, the core's NS request waits
+    assert await hass.async_add_executor_job(hit.wait, 5)
+    await reload_profiles(h, text)
+    await h.host.run(lambda rt: release.set())
+    assert await spied(h) == [("UT", "enter")]  # dispatched under the old source
+    assert await h.host.run(evidence) == []  # and never written
 
 
 @pytest.mark.parametrize("state", [None, "unavailable", "unknown", "not_home"])

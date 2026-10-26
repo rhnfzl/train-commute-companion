@@ -186,6 +186,7 @@ class LocationTracker:
                 )
                 if profile is None or profile.location is None:
                     return
+                source = profile.location
                 positions = await host.positions()
                 if not live():
                     return
@@ -210,7 +211,8 @@ class LocationTracker:
                         return
 
                     def send(rt: Runtime, msg: LocationEvent = event) -> Coroutine[Any, Any, None]:
-                        return rt.location(pid, replace(msg, received_at=rt.now()))
+                        # the core rechecks the source after its own request, before any write
+                        return rt.location(pid, replace(msg, received_at=rt.now()), source)
 
                     await host.run(send)
             except RuntimeError:
