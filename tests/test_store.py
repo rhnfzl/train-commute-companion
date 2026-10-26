@@ -49,7 +49,7 @@ def test_failed_write_leaves_old_file(tmp_path, monkeypatch):
         store.save(replace(full_state(), started_before=False))
     monkeypatch.undo()
     assert path.read_bytes() == before
-    assert list(tmp_path.glob("*.tmp")) == []
+    assert list(tmp_path.glob("*.new")) == []
     store.save(full_state())  # the failed attempt did not advance the counter
 
 

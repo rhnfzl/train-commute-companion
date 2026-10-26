@@ -113,7 +113,7 @@ class JsonFileStore:
         )
         tmp = ""
         try:
-            fd, tmp = tempfile.mkstemp(dir=self._path.parent, prefix=self._path.name, suffix=".tmp")
+            fd, tmp = tempfile.mkstemp(".new", "store-", self._path.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
                 f.flush()
