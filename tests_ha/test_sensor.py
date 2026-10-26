@@ -320,3 +320,14 @@ def test_health_state_order():
         == "key_rejected"
     )
     assert health_state(rv(stale), "p2") == "idle"
+
+
+async def test_health_sensor_shows_lookahead_last_ok(hass):
+    h = await setup_tcc(hass, PROFILE)
+    eid = "sensor.office_a_health"
+    assert attr(hass, eid, "lookahead_last_ok") == {"outbound": None, "return": None}
+    await h.host.run(lambda rt: rt.lookahead_once())
+    await h.entry.runtime_data.coordinator.async_refresh()
+    await hass.async_block_till_done()
+    got = attr(hass, eid, "lookahead_last_ok")
+    assert got["outbound"] is not None and got["return"] is not None

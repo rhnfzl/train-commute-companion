@@ -121,6 +121,9 @@ class RuntimeView:
     requests: int
     # profile id -> its location source epoch (8); a profile never changed has no entry
     location_epochs: Mapping[str, int] = field(default_factory=dict)
+    # "<profile_id>|<direction>" for every direction of the current config: the last successful
+    # look-ahead run (a failed works lookup leaves it), None with no ledger or no good run (7.10)
+    lookahead_last_ok: Mapping[str, datetime | None] = field(default_factory=dict)
 
 
 def _reported(obs: TimeObs | None) -> datetime | None:

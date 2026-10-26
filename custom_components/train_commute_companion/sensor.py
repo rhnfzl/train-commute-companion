@@ -98,6 +98,9 @@ def _health_attrs(
     view: RuntimeView, pid: str, d: Direction | None, n: int | None
 ) -> dict[str, Any]:
     out: dict[str, Any] = {"store_ok": view.store_ok, "requests": view.requests}
+    out["lookahead_last_ok"] = {
+        d.value: _prim(view.lookahead_last_ok.get(f"{pid}|{d.value}")) for d in Direction
+    }
     for direction in Direction:
         occ = pick(view, pid, direction)[0]
         out[f"{direction.value}_last_ok_at"] = _prim(occ.health.last_ok_at) if occ else None

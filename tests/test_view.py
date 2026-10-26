@@ -14,7 +14,7 @@ from train_commute_companion.model import (
     TransferState,
 )
 from train_commute_companion.profile import load_config
-from train_commute_companion.providers.base import ProviderAnswer, Query
+from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.view import Moved, WorksDay, moved, occurrence_view, works_ahead
 
@@ -251,3 +251,28 @@ async def test_view_location_epochs_is_a_copy(tmp_path):
     v = w.rt.view()
     w.rt._loc_epoch["p1"] = 4
     assert v.location_epochs == {"p1": 3}
+
+
+async def test_view_lookahead_last_ok_lists_directions_never_run(tmp_path):
+    w = await World(tmp_path).start()
+    assert w.rt.view().lookahead_last_ok == {
+        "p1|outbound": None,
+        "p1|return": None,
+        "p2|outbound": None,
+        "p2|return": None,
+    }
+
+
+async def test_view_lookahead_last_ok_stays_old_after_a_failed_works_lookup(tmp_path):
+    w = await World(tmp_path, now="05:50").start()
+    await w.rt.lookahead_once()
+    good = w.clock.now()
+    assert w.rt.view().lookahead_last_ok["p1|outbound"] == good
+
+    async def unknown() -> PlannedWorks:
+        return PlannedWorks((), "unknown")
+
+    w.provider.planned_works = unknown  # type: ignore[method-assign]
+    w.clock.set("05:55")
+    await w.rt.lookahead_once()
+    assert w.rt.view().lookahead_last_ok["p1|outbound"] == good

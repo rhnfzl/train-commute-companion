@@ -748,6 +748,13 @@ class Runtime:
             sum(o.attempts > 0 for o in st.obligations),
             self.requests,
             dict(self._loc_epoch),
+            {
+                k: led.last_run if led else None
+                for p in (cfg.profiles if cfg else ())
+                for d in Direction
+                for k in (f"{p.id}|{d.value}",)
+                for led in (st.lookahead.get(k),)
+            },
         )
 
     # --- the serialised writer: state, ledger and obligations in one save (rule 5, 22) ---
