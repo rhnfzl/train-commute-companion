@@ -56,6 +56,9 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
 
     def _sync_issues(self, view: RuntimeView) -> None:
         """Repairs come only from the view, so each one clears itself once the view does."""
+        if not view.started:
+            # a view read before start knows no issue yet; deleting would drop a user's ignore
+            return
         hass = self.hass
         if view.refusal is not None:
             ir.async_create_issue(

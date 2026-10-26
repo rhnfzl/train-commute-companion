@@ -192,6 +192,27 @@ async def test_moved_prompt_repair(hass):
     assert ir.async_get(hass).async_get_issue(DOMAIN, "moved_p1_outbound") is None
 
 
+async def test_view_before_start_keeps_repairs(hass):
+    # AUTORUN: the first refresh can read the view before start; it must not delete issues
+    reg = ir.async_get(hass)
+    for issue_id in ("moved_p1_outbound", "notify_failing", "profile_refused"):
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="moved",
+            translation_placeholders={"message": "m"},
+        )
+    reg.async_ignore(DOMAIN, "moved_p1_outbound", True)
+    h = await setup_tcc(hass, PROFILE, start=False)
+    assert not h.entry.runtime_data.coordinator.data.started
+    for issue_id in ("moved_p1_outbound", "notify_failing", "profile_refused"):
+        assert reg.async_get_issue(DOMAIN, issue_id) is not None
+    assert reg.async_get_issue(DOMAIN, "moved_p1_outbound").dismissed_version is not None
+
+
 async def test_undelivered_alert_raises_notify_failing_repair(hass):
     h = await setup_tcc(hass, PROFILE)
     coordinator = h.entry.runtime_data.coordinator
