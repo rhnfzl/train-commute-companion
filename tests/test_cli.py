@@ -74,3 +74,27 @@ def test_run_refuses_without_key(monkeypatch, capsys):
     monkeypatch.delenv("NS_API_KEY", raising=False)
     assert main(["run", STARTER]) == 1
     assert "NS_API_KEY" in capsys.readouterr().out
+
+
+def test_run_notifier_attributes_every_event(capsys):
+    import asyncio
+    from datetime import UTC, datetime
+
+    from train_commute_companion.cli import _StdoutNotifier
+    from train_commute_companion.model import AlertEvent, EventKind, Severity
+
+    ev = AlertEvent(
+        "p",
+        "Office A",
+        None,
+        None,
+        None,
+        EventKind.ALL_GOOD,
+        Severity.SILENT,
+        None,
+        "fine",
+        "k",
+        datetime(2026, 10, 26, 7, 0, tzinfo=UTC),
+    )
+    assert asyncio.run(_StdoutNotifier().send(ev)) is True
+    assert capsys.readouterr().out.rstrip().endswith("Data: NS")

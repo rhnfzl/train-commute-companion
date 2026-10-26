@@ -101,7 +101,9 @@ def replay(args: argparse.Namespace) -> int:
 
 class _StdoutNotifier:
     async def send(self, event: AlertEvent) -> bool:
-        print(format_event(event), flush=True)
+        print(
+            f"{format_event(event)}\n{ATTRIBUTION}", flush=True
+        )  # NS attribution on every status output
         return True
 
 
