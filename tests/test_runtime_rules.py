@@ -777,3 +777,38 @@ async def test_held_restored_dropped_once_the_train_is_cancelled_again(tmp_path)
     await rig.rt.watchdog_once()
     got = kinds(rig.rt.events_log)
     assert got.count(EventKind.CANCELLED) == 2 and EventKind.RESTORED not in got
+
+
+# --- final review MUST_FIX 1: a held all-clear never follows a cancellation ---
+
+L2_CUT = make_leg("UT", "RTD", "08:50", "09:24", number="5678", stops=["GD"], cut_after="GD")
+
+
+@pytest.mark.parametrize("hold", ["failure", "quiet_hours"])
+@pytest.mark.parametrize("broken", [L2X, L2_CUT], ids=["cancelled", "cut_short"])
+async def test_held_back_to_normal_dropped_after_cancellation_without_replacement(
+    tmp_path, hold, broken
+):
+    rig = Rig(tmp_path)
+    if hold == "quiet_hours":
+        quiet = '    alerts: {quiet_hours: ["07:51", "07:58"]}\n'
+        rig.write(text=PROFILE.replace("NAME", "office_a").replace(
+            '    return: {first_train: "17:52"', quiet + '    return: {first_train: "17:52"', 1))  # fmt: skip
+    else:
+        rig.notifier.fails = lambda e: e.kind is EventKind.BACK_TO_NORMAL
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    for hhmm, world in (("07:52", [make_connection([L1, late_l2(5)])]),
+                        ("07:54", [make_connection([L1, late_l2(0)])])):  # fmt: skip
+        rig.clock.set(hhmm)
+        rig.provider.world = world
+        await rig.rt.poll_once()
+    assert any(o.event.kind is EventKind.BACK_TO_NORMAL for o in rig.rt.state.obligations)
+    rig.clock.set("07:56")
+    rig.provider.world = [make_connection([L1, broken])]  # and no connection onward
+    await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    rig.clock.set("07:59")
+    await rig.rt.watchdog_once()
+    assert EventKind.BACK_TO_NORMAL not in kinds(rig.rt.events_log)
+    assert not any(o.event.kind is EventKind.BACK_TO_NORMAL for o in rig.rt.state.obligations)

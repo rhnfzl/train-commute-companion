@@ -259,6 +259,12 @@ class _LoggingNotifier:
         return ok
 
 
+def _broken(s: OccurrenceState, t: TrainId | None) -> bool:
+    """A live break (cancelled, cut short, missing) is held for train `t`."""
+    ident = "" if t is None else f":{_ident(t)}:"
+    return any(key.startswith(_LIVE + b) and ident in key for key in s.alert_keys for b in _BREAKS)
+
+
 class _View:
     """The delivery ledger view over the runtime's current state (7.12 rule 5)."""
 
@@ -309,7 +315,7 @@ class _View:
                 return False
             if e.kind is EventKind.DELAYED:
                 return _SENT + o.fact_key in s.alert_keys
-            return unfinished
+            return unfinished and not _broken(s, e.train)  # no all-clear for a broken train
         if e.kind in _ONGOING:  # a healthy poll that stopped reporting it ended it
             return _SENT + o.fact_key in s.alert_keys
         if e.kind is EventKind.CANNOT_SEE_TRAIN:
@@ -324,11 +330,7 @@ class _View:
                 x.train == t and x.state not in (LegState.CANCELLED, LegState.RELOCKED)
                 for x in s.lock.legs
             )
-            ident = "" if t is None else f":{t.train_number}@{t.planned_departure.isoformat()}:"
-            broken = any(
-                key.startswith(_LIVE + b) and ident in key for key in s.alert_keys for b in _BREAKS
-            )
-            return on and not broken
+            return on and not _broken(s, t)
         if e.kind in (EventKind.MISSED_FIRST_TRAIN, EventKind.MISSED_TRANSFER):
             return any(x.train == e.train and x.state is LegState.MISSED for x in legs)
         if e.kind is EventKind.NEXT_CONNECTION:  # "if you are not on it": while it is unfinished
