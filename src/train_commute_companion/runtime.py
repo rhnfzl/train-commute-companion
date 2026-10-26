@@ -437,8 +437,8 @@ class _View:
         if e.kind not in _NAMES_LOCK or e.train is None or s is None or s.lock is None:
             return e
         live = [x for x in s.lock.legs if x.state not in (LegState.CANCELLED, LegState.RELOCKED)]
-        if not live or e.train in {x.train for x in live}:
-            return e
+        if not live or e.train in {x.train for x in live} or ":retained:" in e.key:
+            return e  # a retained warning already names its own next connection (rule 7)
         named = _named(e.key)
         if named and [_ident(x.train) for x in live][-len(named) :] == named:
             return e

@@ -9,7 +9,7 @@ from datetime import UTC, date, time, timedelta
 
 import pytest
 from builders import make_connection, make_leg
-from test_lifecycle_follow import L1, L1X, L2, L2X, LATER
+from test_lifecycle_follow import L1, L1X, L2, L2X, LATER, R2, RIDE, journey
 from test_runtime import (
     DAY,
     PROFILE,
@@ -23,7 +23,7 @@ from test_runtime import (
 )
 
 from train_commute_companion.delivery import Obligation
-from train_commute_companion.lifecycle import NotTravelling
+from train_commute_companion.lifecycle import DirectionState, NotTravelling
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import BaselineHistory, BaselineVersion
 from train_commute_companion.model import (
@@ -892,3 +892,24 @@ async def test_lookahead_retried_each_poll_interval_until_a_run_completes(tmp_pa
         await rig.rt.run_forever()
     assert rig.provider.works_calls == 2
     assert led().last_applied < at("06:10")
+
+
+# --- codex whole-plan review: a retained journey is told from its own position (rule 7) ---
+
+DIRECT = make_leg("AAA", "RTD", "08:25", "09:10", number="1400")
+
+
+async def test_retained_cancel_names_its_own_replacement(tmp_path):
+    rig = Rig(tmp_path, "08:00")
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    s = rig.occ()
+    rig.occ_set(replace(s, lock=journey([DIRECT]), retained=(journey([L1, L2], RIDE),),
+                        direction_state=DirectionState.RIDING))  # fmt: skip
+    rig.provider.world = [make_connection([L1, L2X]), make_connection([DIRECT]),
+                          make_connection([R2])]  # fmt: skip
+    rig.clock.set("08:20")
+    await rig.rt.poll_once()
+    sent = [e.text for e in rig.notifier.attempts if e.kind is EventKind.CANCELLED]
+    # someone on the 08:12 cannot catch the 08:25 from AAA: the next good one is from UT
+    assert sent and "09:05" in sent[0] and "08:25" not in sent[0]
