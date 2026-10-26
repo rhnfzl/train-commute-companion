@@ -204,14 +204,14 @@ async def test_relay_accepts_is_true(hass, aioclient_mock, phone):
     assert aioclient_mock.mock_calls[0][2]["message"] == loud_event().text
 
 
-async def open_channel(hass, hass_ws_client):
+async def open_channel(hass, hass_ws_client, confirm=True):
     ws = await hass_ws_client(hass)
     await ws.send_json(
         {
             "id": 5,
             "type": "mobile_app/push_notification_channel",
             "webhook_id": "hook1",
-            "support_confirm": True,
+            "support_confirm": confirm,
         }
     )
     assert (await ws.receive_json())["success"]
@@ -248,6 +248,34 @@ async def test_local_push_confirmed_is_true(hass, hass_ws_client, phone, monkeyp
     )
     assert (await ws.receive_json())["success"]
     assert await task
+
+
+@pytest.mark.parametrize(("relay", "delivered"), [(201, True), (500, False)])
+async def test_local_push_without_confirmation_counts_only_the_relay_answer(
+    hass, hass_ws_client, aioclient_mock, phone, relay, delivered
+):  # 7.12 rules 5, 16: HA drops a websocket push on a closing socket, so it proves nothing
+    aioclient_mock.post(RELAY, status=relay, json={})
+    ws = await open_channel(hass, hass_ws_client, confirm=False)
+    assert await send_from_thread(hass, loud_event()) is delivered
+    assert aioclient_mock.call_count == 1
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.1):
+            await ws.receive_json()  # nothing went over the unconfirmed channel
+
+
+async def test_local_push_without_confirmation_or_relay_is_false(
+    hass, hass_ws_client, hass_admin_user
+):
+    assert await async_setup_component(hass, "http", {})
+    assert await async_setup_component(hass, "mobile_app", {})
+    entry = MockConfigEntry(domain="mobile_app", data={**PHONE, "webhook_id": "hook1",
+        "device_id": "dev1", "device_name": "Phone", "user_id": hass_admin_user.id,
+        "app_data": {"push_websocket_channel": True}})  # fmt: skip
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await open_channel(hass, hass_ws_client, confirm=False)
+    assert not await send_from_thread(hass, loud_event())
 
 
 def test_no_mobile_target_without_mobile_app(hass):

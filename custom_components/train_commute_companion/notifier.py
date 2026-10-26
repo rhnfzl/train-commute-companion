@@ -144,15 +144,15 @@ async def _push_mobile(
     session = async_get_clientsession(hass)
     message = {"message": payload["message"], "data": payload.get("data")}
     channel: Any = data["push_channel"].get(webhook_id)  # PushChannel, untyped upstream
-    if channel is None:
+    if channel is None or not channel.support_confirm:
+        # a local push with no confirmation proves nothing (HA drops it on a closing socket):
+        # only the relay's answer counts (7.12 rules 5, 16)
         if "push_url" not in entry.data["app_data"]:
-            raise HomeAssistantError(f"{entry.title} has no push relay and no local push channel")
+            raise HomeAssistantError(
+                f"{entry.title} has no push relay and no confirming local push channel"
+            )
         async with asyncio.timeout(NOTIFY_TIMEOUT_S):
             await mobile_notify._send_message(session, entry, message)
-        return True
-    if not channel.support_confirm:
-        # an app without confirmations gets the push over the open websocket; nothing more to see
-        channel.async_send_notification(message, None)
         return True
 
     done: asyncio.Future[bool] = hass.loop.create_future()
