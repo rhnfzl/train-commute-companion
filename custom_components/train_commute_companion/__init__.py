@@ -26,7 +26,7 @@ from .const import (
 from .coordinator import TccCoordinator
 from .data import TccConfigEntry, TccData
 from .notifier import HaNotifier
-from .store import EntryMarkedStore
+from .store import EntryMarkedStore, file_lock
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -57,14 +57,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         # no update listener exists, so this edit never reloads the entry
         hass.loop.call_soon_threadsafe(set_started)
 
+    lock = file_lock(state_path)
+
     def build() -> host_mod.Parts:
         clock = host_mod.make_clock()
         provider, close = host_mod.make_provider(api_key, clock)
         rt = Runtime(
             profile_path=Path(profiles_path),
-            store=EntryMarkedStore(JsonFileStore(state_path), started, mark, host.retired),
+            store=EntryMarkedStore(JsonFileStore(state_path), started, mark, host.retired, lock),
             provider=provider,
-            notifier=HaNotifier(hass, entry_id, notify_service, loud_style, host.retired),
+            notifier=notifier,
             clock=clock,
             known_stations=None,
         )
@@ -72,6 +74,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         return host_mod.Parts(rt, clock, provider, close)
 
     host = host_mod.RuntimeHost(build, autorun=host_mod.AUTORUN)
+    # built here on hass.loop: an HA object, and unload needs it to cancel its pending pushes
+    notifier = HaNotifier(hass, entry_id, notify_service, loud_style, host.retired)
+
+    async def stop() -> None:
+        host.retired.set()  # first, so no push or write starts while the thread is being stopped
+        await notifier.async_stop()
+        await host.stop()
+
     # one guard from the first await on, so a cancelled setup also stops the thread it started
     try:
         try:
@@ -83,17 +93,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         await coordinator.async_config_entry_first_refresh()
         # HA polls a coordinator only while it has a listener; monitoring must not wait for entities
         entry.async_on_unload(coordinator.async_add_listener(lambda: None))
-        entry.runtime_data = TccData(host, coordinator)
+        entry.runtime_data = TccData(host, coordinator, stop)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
         async def on_stop(_: Event) -> None:
             # HA does not unload entries when it stops; without this the thread keeps writing
-            await host.stop()
+            await stop()
 
         # async_listen, not _once: removing a fired one-time listener on unload logs an error
         entry.async_on_unload(hass.bus.async_listen(EVENT_HOMEASSISTANT_STOP, on_stop))
     except BaseException:
-        await host.stop()
+        await stop()
         raise
     return True
 
@@ -101,5 +111,5 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if ok:
-        await entry.runtime_data.host.stop()
+        await entry.runtime_data.stop()
     return ok

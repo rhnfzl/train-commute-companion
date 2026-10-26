@@ -4,7 +4,7 @@ import asyncio
 import logging
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -104,11 +104,17 @@ async def async_push(hass: HomeAssistant, service: str, payload: dict[str, Any])
     return (await _push(hass, service, payload))[0]
 
 
-async def _push(hass: HomeAssistant, service: str, payload: dict[str, Any]) -> tuple[bool, bool]:
+async def _push(
+    hass: HomeAssistant,
+    service: str,
+    payload: dict[str, Any],
+    retired: threading.Event | None = None,
+    tasks: set[asyncio.Task[None]] | None = None,
+) -> tuple[bool, bool]:
     """Returns (delivered, timed_out)."""
     try:
         if (webhook_id := mobile_target(hass, service)) is not None:
-            return await _push_mobile(hass, webhook_id, payload), False
+            return await _push_mobile(hass, webhook_id, payload, retired, tasks), False
         async with asyncio.timeout(NOTIFY_TIMEOUT_S):
             await hass.services.async_call("notify", service, payload, blocking=True)
     except (HomeAssistantError, TimeoutError) as err:
@@ -117,9 +123,18 @@ async def _push(hass: HomeAssistant, service: str, payload: dict[str, Any]) -> t
     return True, False
 
 
-async def _push_mobile(hass: HomeAssistant, webhook_id: str, payload: dict[str, Any]) -> bool:
+async def _push_mobile(
+    hass: HomeAssistant,
+    webhook_id: str,
+    payload: dict[str, Any],
+    retired: threading.Event | None = None,
+    tasks: set[asyncio.Task[None]] | None = None,
+) -> bool:
     """mobile_app's own send path, minus its error swallowing: the relay's answer, or the local
-    push confirmation, is observed directly; HA's service only logs a refused push."""
+    push confirmation, is observed directly; HA's service only logs a refused push. The relay
+    fallback runs in a task this push owns: once the push stops waiting (deadline, cancel) its
+    pending confirmation is withdrawn and the fallback cancelled, and a retired owner never
+    relays."""
     # shortcut: calls mobile_app internals (HA 2026.10.4), re-check on each HA bump
     # imported here: only reached once mobile_app is loaded, which the manifest does not require
     from homeassistant.components.mobile_app import notify as mobile_notify
@@ -146,9 +161,13 @@ async def _push_mobile(hass: HomeAssistant, webhook_id: str, payload: dict[str, 
         if not done.done():
             done.set_result(ok)
 
-    async def fallback(d: dict[str, Any]) -> None:
+    relays: set[asyncio.Task[None]] = set()
+
+    async def relay(d: dict[str, Any]) -> None:
         ok = False
         try:
+            if retired is not None and retired.is_set():
+                return
             await mobile_notify._send_message(session, entry, d)
             ok = True
         except HomeAssistantError as err:
@@ -156,8 +175,21 @@ async def _push_mobile(hass: HomeAssistant, webhook_id: str, payload: dict[str, 
         finally:
             settle(ok)
 
+    async def fallback(d: dict[str, Any]) -> None:
+        # HA calls this from its own timer or channel teardown, independent of our task
+        if done.done() or (retired is not None and retired.is_set()):
+            settle(False)
+            return
+        t = hass.async_create_task(relay(d))
+        relays.add(t)
+        if tasks is not None:
+            tasks.add(t)
+            t.add_done_callback(tasks.discard)
+
     channel.async_send_notification(message, fallback)
-    pending = channel.pending_confirms.get(message.get("hass_confirm_id", ""))
+    confirm_id = message.get("hass_confirm_id", "")
+    pending = channel.pending_confirms.get(confirm_id)
+    unsub: Any = None
     if pending is not None:
         # the phone's confirmation is the only caller of this unsubscribe (a failure pops first)
         unsub = pending["unsub_scheduled_push_failed"]
@@ -170,10 +202,18 @@ async def _push_mobile(hass: HomeAssistant, webhook_id: str, payload: dict[str, 
     try:
         # neither a confirmation nor a finished fallback by the deadline: unproven, so not delivered
         async with asyncio.timeout(LOCAL_PUSH_SETTLE_S):
-            return await done
+            return await asyncio.shield(done)  # a cancel must not mark it settled
     except TimeoutError:
         _LOGGER.warning("local push to %s unconfirmed at the deadline", entry.title)
         return False
+    finally:
+        if not done.done():
+            # nobody waits any more: HA must not relay this push later on our behalf
+            settle(False)
+            if channel.pending_confirms.pop(confirm_id, None) is not None and unsub is not None:
+                unsub()
+            for t in relays:
+                t.cancel()
 
 
 class HaNotifier:
@@ -192,6 +232,8 @@ class HaNotifier:
         self.service = service
         self.loud_style = loud_style
         self._fired: set[tuple[str, Severity, Any]] = set()
+        # this notifier's work on hass.loop (sends and relay fallbacks), cancelled on unload
+        self._tasks: set[asyncio.Task[None]] = set()
         self._timed_out_at: float | None = None
 
     async def send(self, event: AlertEvent) -> bool:
@@ -206,9 +248,25 @@ class HaNotifier:
         except TimeoutError:
             return False
 
+    async def async_stop(self) -> None:
+        """On hass.loop, once `retired` is set: cancels and awaits this notifier's sends and
+        fallbacks, so nothing reaches the phone after unload."""
+        tasks = list(self._tasks)
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _send(self, event: AlertEvent) -> bool:
         if self.retired.is_set():
             return False
+        me = cast("asyncio.Task[None]", asyncio.current_task())
+        self._tasks.add(me)
+        try:
+            return await self._deliver(event)
+        finally:
+            self._tasks.discard(me)
+
+    async def _deliver(self, event: AlertEvent) -> bool:
         fact = (event.key, event.severity, event.created_at)
         if fact not in self._fired:
             # shortcut: bounded by clearing, a repeat bus event after 1000 facts is harmless
@@ -225,7 +283,7 @@ class HaNotifier:
         if self._timed_out_at is not None and now - self._timed_out_at < NOTIFY_BACKOFF_S:
             return False
         payload = notify_payload(event.severity, event.text, self.loud_style)
-        ok, timed_out = await _push(self.hass, self.service, payload)
+        ok, timed_out = await _push(self.hass, self.service, payload, self.retired, self._tasks)
         if timed_out:
             self._timed_out_at = now
         return ok

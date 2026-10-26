@@ -327,6 +327,61 @@ async def test_colliding_phone_names_use_the_phone_ha_targets(
     assert [str(c[1]) for c in aioclient_mock.mock_calls] == [RELAY + "/b"]
 
 
+async def pending_local_push(hass, hass_ws_client, phone, monkeypatch):
+    """A send whose local push went out and waits for a confirmation that never comes."""
+    monkeypatch.setattr(
+        "homeassistant.components.mobile_app.push_notification.PUSH_CONFIRM_TIMEOUT", 0.05
+    )
+    monkeypatch.setattr(notifier_mod, "LOCAL_PUSH_SETTLE_S", 5)
+    ws = await open_channel(hass, hass_ws_client)
+    n = build(hass)
+    task = hass.async_create_task(n._send(loud_event()))
+    await ws.receive_json()  # the push reached the phone's websocket
+    return n, task
+
+
+async def test_retired_notifier_never_relays_from_the_fallback(
+    hass, hass_ws_client, aioclient_mock, phone, monkeypatch
+):
+    aioclient_mock.post(RELAY, status=201, json={})
+    n, task = await pending_local_push(hass, hass_ws_client, phone, monkeypatch)
+    n.retired.set()
+    assert await task is False  # HA's confirm timer ran the fallback, which saw the retirement
+    assert aioclient_mock.call_count == 0
+
+
+async def test_stopped_notifier_withdraws_its_pending_push(
+    hass, hass_ws_client, aioclient_mock, phone, monkeypatch
+):
+    aioclient_mock.post(RELAY, status=201, json={})
+    n, task = await pending_local_push(hass, hass_ws_client, phone, monkeypatch)
+    n.retired.set()
+    await n.async_stop()
+    assert task.cancelled()
+    channel = hass.data["mobile_app"]["push_channel"]["hook1"]
+    assert channel.pending_confirms == {}  # HA's confirm timer is gone with it
+    await asyncio.sleep(0.2)
+    await hass.async_block_till_done()
+    assert aioclient_mock.call_count == 0
+
+
+async def test_stopped_notifier_cancels_a_running_fallback(
+    hass, hass_ws_client, aioclient_mock, phone, monkeypatch
+):
+    started = asyncio.Event()
+
+    async def slow_relay(*_):
+        started.set()
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr("homeassistant.components.mobile_app.notify._send_message", slow_relay)
+    n, task = await pending_local_push(hass, hass_ws_client, phone, monkeypatch)
+    await asyncio.wait_for(started.wait(), 2)
+    n.retired.set()
+    await n.async_stop()
+    assert task.cancelled() and n._tasks == set()
+
+
 async def test_retired_notifier_neither_fires_nor_pushes(hass):
     calls = async_mock_service(hass, "notify", "mobile_app_phone")
     events = async_capture_events(hass, EVENT_ALERT)

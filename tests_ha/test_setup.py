@@ -1,4 +1,5 @@
 import asyncio
+import os
 import threading
 import time as wall
 from dataclasses import replace
@@ -32,6 +33,7 @@ from custom_components.train_commute_companion import coordinator as coordinator
 from custom_components.train_commute_companion import host as host_mod
 from custom_components.train_commute_companion.const import CONF_STARTED, DOMAIN, REFRESH_S
 from custom_components.train_commute_companion.coordinator import TccCoordinator
+from train_commute_companion import store as core_store
 from train_commute_companion.lookahead import (
     BaselineHistory,
     BaselineVersion,
@@ -382,6 +384,100 @@ async def test_blocked_runtime_reloads_and_is_retired(hass):
     assert sum(t.name == "tcc-runtime" for t in threading.enumerate()) == 1
     await old.stop()  # the later stop finishes the cleanup it kept
     assert old._thread is None
+
+
+def pause_old_thread(old_thread, gate, entered, fn, then=None):
+    """`fn`, but on the old runtime thread it waits for `gate` first, then calls `then` if given."""
+
+    def wrapped(*args):
+        if threading.current_thread() is old_thread:
+            entered.set()
+            gate.wait(30)
+            if then is not None:
+                return then(*args)
+        return fn(*args)
+
+    return wrapped
+
+
+async def start_old_storage_call(hass, h, call):
+    """Runs `call` on the old runtime, to be paused inside storage. Returns its task and an event
+    set once any other thread reads the state file."""
+    harness.PATCH.setattr(host_mod, "JOIN_TIMEOUT_S", 0.2)
+    old_thread = h.host._thread
+    early = threading.Event()
+    real_load = JsonFileStore.load
+
+    def watched_load(self):
+        if threading.current_thread() is not old_thread:
+            early.set()
+        return real_load(self)
+
+    harness.PATCH.setattr(JsonFileStore, "load", watched_load)
+    stuck = hass.async_create_task(h.host.run(call))
+    return stuck, early
+
+
+async def test_reload_while_the_old_runtime_is_inside_a_save(hass):
+    h = await setup_tcc(hass, PROFILE)
+    old = h.host
+    gate, entered = threading.Event(), threading.Event()
+    # paused after the counter check and before the commit, the window a successor raced into
+    harness.PATCH.setattr(os, "fsync", pause_old_thread(old._thread, gate, entered, os.fsync))
+
+    def save(rt):
+        rt._store.save(rt.state)
+        return True
+
+    stuck, early = await start_old_storage_call(hass, h, save)
+    assert await hass.async_add_executor_job(entered.wait, 5)
+    assert await hass.config_entries.async_reload(h.entry.entry_id)
+    successor = hass.async_create_task(rebound(h))
+    # the successor waits for the old write to finish instead of reading under it
+    assert not await hass.async_add_executor_job(early.wait, 0.5)
+    gate.set()
+    assert await stuck is True  # it passed the retirement check before the stop, so it completes
+    h = await successor
+    assert early.is_set()
+    await drive(h, "08:02")
+    assert not any("could not save" in t for t in texts(h))
+    assert h.entry.runtime_data.coordinator.data.store_ok is True
+    await hass.async_add_executor_job(old._thread.join, 5)
+    await old.stop()
+
+
+async def test_reload_while_the_old_runtime_is_inside_a_load(hass):
+    h = await setup_tcc(hass, PROFILE)
+    old = h.host
+    gate, entered = threading.Event(), threading.Event()
+    path = state_path(hass, h.entry)
+
+    def unreadable(*_):
+        raise ValueError("unreadable")
+
+    # the old reader finds the file corrupt, then sleeps before moving it aside
+    harness.PATCH.setattr(
+        core_store,
+        "decode",
+        pause_old_thread(old._thread, gate, entered, core_store.decode, unreadable),
+    )
+    stuck, early = await start_old_storage_call(hass, h, lambda rt: rt._store.load())
+    assert await hass.async_add_executor_job(entered.wait, 5)
+    assert await hass.config_entries.async_reload(h.entry.entry_id)
+    successor = hass.async_create_task(rebound(h))
+    assert not await hass.async_add_executor_job(early.wait, 0.5)
+    gate.set()
+    with pytest.raises(StorageError, match="corrupt"):
+        await stuck
+    h = await successor
+    # the successor saw the old reader's verdict, and the file it then wrote stays in place
+    assert any("saved state was lost" in t for t in texts(h))
+    await drive(h, "08:02")
+    assert not any("could not save" in t for t in texts(h))
+    assert h.entry.runtime_data.coordinator.data.store_ok is True
+    assert len(list(path.parent.glob(path.name + ".broken-*"))) == 1 and path.exists()
+    await hass.async_add_executor_job(old._thread.join, 5)
+    await old.stop()
 
 
 async def test_cancelled_setup_leaves_no_runtime_thread(hass):
