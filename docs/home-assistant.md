@@ -25,7 +25,7 @@ A loud alert is one you must not miss. Quiet updates are always silent. You choo
 - Time-sensitive (the default): breaks through Focus modes. A phone that is muted stays silent.
 - Critical: sounds on a muted phone and in Focus.
 
-For critical to work, set up your phone:
+For critical to work, set up your phone. The menu names below follow the companion app as we know it and have not been checked on a device, so they may differ on your phone or app version:
 
 - iOS: allow Critical Alerts for the Home Assistant companion app (Settings, Notifications, Home Assistant, Critical Alerts).
 - Android: a critical alert uses the `alarm_stream` channel, which plays at alarm volume even in silent or vibrate mode. To also pass Do Not Disturb, open the channel's settings (Settings, Apps, Home Assistant, Notifications, `alarm_stream`) and turn on "Override Do Not Disturb". Then give the companion app Do Not Disturb access (Settings, Apps, Special app access, Do Not Disturb access, Home Assistant).
