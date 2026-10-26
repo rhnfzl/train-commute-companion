@@ -47,7 +47,8 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
                 view = await self.host.run(lambda rt: rt.view())
         except TimeoutError:
             self._timeouts += 1
-            if self._timeouts == RELOAD_AFTER_TIMEOUTS:
+            # >=: keeps asking while a reload has not replaced this coordinator yet
+            if self._timeouts >= RELOAD_AFTER_TIMEOUTS:
                 self._reload()
             raise UpdateFailed("runtime not answering") from None
         self._timeouts = 0

@@ -62,9 +62,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         provider, close = host_mod.make_provider(api_key, clock)
         rt = Runtime(
             profile_path=Path(profiles_path),
-            store=EntryMarkedStore(JsonFileStore(state_path), started, mark),
+            store=EntryMarkedStore(JsonFileStore(state_path), started, mark, host.retired),
             provider=provider,
-            notifier=HaNotifier(hass, entry_id, notify_service, loud_style),
+            notifier=HaNotifier(hass, entry_id, notify_service, loud_style, host.retired),
             clock=clock,
             known_stations=None,
         )
@@ -72,15 +72,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         return host_mod.Parts(rt, clock, provider, close)
 
     host = host_mod.RuntimeHost(build, autorun=host_mod.AUTORUN)
+    # one guard from the first await on, so a cancelled setup also stops the thread it started
     try:
-        await host.start()
-    except Exception as err:
-        await host.stop()
-        raise ConfigEntryNotReady(f"the runtime did not start: {err}") from err
+        try:
+            await host.start()
+        except Exception as err:
+            raise ConfigEntryNotReady(f"the runtime did not start: {err}") from err
 
-    try:
         coordinator = TccCoordinator(hass, entry, host)
         await coordinator.async_config_entry_first_refresh()
+        # HA polls a coordinator only while it has a listener; monitoring must not wait for entities
+        entry.async_on_unload(coordinator.async_add_listener(lambda: None))
         entry.runtime_data = TccData(host, coordinator)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

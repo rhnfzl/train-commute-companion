@@ -22,12 +22,15 @@ from harness import (
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.helpers import issue_registry as ir
-from pytest_homeassistant_custom_component.common import async_mock_service
+from pytest_homeassistant_custom_component.common import (
+    async_fire_time_changed,
+    async_mock_service,
+)
 
-from custom_components.train_commute_companion import async_unload_entry
+from custom_components.train_commute_companion import async_setup_entry, async_unload_entry
 from custom_components.train_commute_companion import coordinator as coordinator_mod
 from custom_components.train_commute_companion import host as host_mod
-from custom_components.train_commute_companion.const import CONF_STARTED, DOMAIN
+from custom_components.train_commute_companion.const import CONF_STARTED, DOMAIN, REFRESH_S
 from custom_components.train_commute_companion.coordinator import TccCoordinator
 from train_commute_companion.lookahead import (
     BaselineHistory,
@@ -250,14 +253,15 @@ async def test_runtime_not_answering_fails_refresh_then_reloads(hass):
         await asyncio.Event().wait()
 
     harness.PATCH.setattr(h.host, "run", never)
-    for n in range(1, 5):
+    for n in range(1, 6):
         refresh = hass.async_create_task(coordinator.async_refresh())
         await asyncio.sleep(0)
         # hass.loop reads the frozen clock, so its timeout fires only when the freezer moves
         harness.FREEZER.tick(coordinator_mod.RUN_TIMEOUT_S + 1)
         await refresh
         assert coordinator.last_update_success is False
-        assert reload.call_count == (1 if n == 4 else 0)
+        # keeps asking after the fourth, in case the first reload did not replace it
+        assert reload.call_count == max(0, n - 3)
 
 
 async def test_ha_stop_stops_the_runtime_without_unload(hass):
@@ -323,3 +327,79 @@ async def test_runtime_loop_timers_run_under_freezer(hass, tcc_freezer):
         return False
 
     assert await h.host.run(lambda rt: times_out())
+
+
+async def tick(hass, seconds: float) -> None:
+    """Moves HA time on so its own scheduled refresh runs, with no manual refresh."""
+    harness.FREEZER.tick(seconds)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+
+
+async def test_monitoring_runs_without_manual_refresh(hass):
+    h = await setup_tcc(hass, PROFILE)
+    hass.services.async_remove("notify", NOTIFY)
+    write_profiles(hass, OVERLAP)
+    await h.host.run(lambda rt: rt.check_file())
+    await tick(hass, REFRESH_S + 1)
+    assert ir.async_get(hass).async_get_issue(DOMAIN, "notify_failing") is not None
+
+    reload = Mock()
+    harness.PATCH.setattr(hass.config_entries, "async_schedule_reload", reload)
+    harness.PATCH.setattr(host_mod.RuntimeHost, "alive", property(lambda self: False))
+    await tick(hass, REFRESH_S + 1)
+    reload.assert_called_with(h.entry.entry_id)
+
+
+async def test_blocked_runtime_reloads_and_is_retired(hass):
+    h = await setup_tcc(hass, PROFILE)
+    harness.PATCH.setattr(host_mod, "JOIN_TIMEOUT_S", 0.2)
+    old = h.host
+    gate, entered = threading.Event(), threading.Event()
+
+    def stuck_then_try(rt):
+        entered.set()
+        gate.wait(30)  # a synchronous call that never yields: drain cannot run either
+        try:
+            rt._store.save(rt.state)
+        except StorageError:
+            return False
+        return True
+
+    stuck = hass.async_create_task(old.run(stuck_then_try))
+    assert await hass.async_add_executor_job(entered.wait, 5)  # hass.loop timers are frozen
+    assert await hass.config_entries.async_reload(h.entry.entry_id)
+    assert h.entry.state is ConfigEntryState.LOADED
+    new = h.entry.runtime_data.host
+    assert new is not old and new.alive and not old.alive
+    with pytest.raises(RuntimeError):
+        await old.run(lambda rt: None)
+
+    # it wakes after its successor took over: its store refuses the write
+    gate.set()
+    assert await stuck is False
+    await hass.async_add_executor_job(old._thread.join, 5)
+    assert sum(t.name == "tcc-runtime" for t in threading.enumerate()) == 1
+    await old.stop()  # the later stop finishes the cleanup it kept
+    assert old._thread is None
+
+
+async def test_cancelled_setup_leaves_no_runtime_thread(hass):
+    entry, *_ = prepare(hass, PROFILE, "07:50", ())
+    harness.PATCH.setattr(host_mod, "JOIN_TIMEOUT_S", 5)
+    gate, entered = threading.Event(), threading.Event()
+    real = host_mod.make_provider
+
+    def slow(api_key, clock):
+        entered.set()
+        gate.wait(10)
+        return real(api_key, clock)
+
+    harness.PATCH.setattr(host_mod, "make_provider", slow)
+    task = hass.async_create_task(async_setup_entry(hass, entry))
+    assert await hass.async_add_executor_job(entered.wait, 5)
+    task.cancel()
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert no_runtime_thread()

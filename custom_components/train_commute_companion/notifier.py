@@ -2,13 +2,14 @@
 
 import asyncio
 import logging
+import threading
 import time
 from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
-from homeassistant.util import slugify
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from train_commute_companion.model import AlertEvent, Severity
 
@@ -88,55 +89,91 @@ def event_data(event: AlertEvent, entry_id: str, device_id: str | None) -> dict[
     }
 
 
-def local_push_open(hass: HomeAssistant, service: str) -> bool:
+def mobile_target(hass: HomeAssistant, service: str) -> str | None:
+    """The webhook id HA's own mobile_app service would deliver to, from its service-to-target
+    map, so colliding device-name slugs resolve to the same phone HA picks (the last one)."""
     # shortcut: reads mobile_app's internal hass.data layout (HA 2026.10.4), re-check on each HA bump
     data = hass.data.get(MOBILE_APP)
-    if not isinstance(data, dict):
-        return False
-    channels = data.get("push_channel", {})
-    for webhook_id, entry in data.get("config_entries", {}).items():
-        if slugify(f"{MOBILE_APP}_{entry.data.get('device_name', '')}") == service:
-            channel = channels.get(webhook_id)
-            return bool(channel is not None and channel.support_confirm)
-    return False
-
-
-class _Failures(logging.Handler):
-    def __init__(self) -> None:
-        super().__init__(logging.WARNING)
-        self.records: list[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
+    if not isinstance(data, dict) or (svc := data.get("notify")) is None:
+        return None
+    target = getattr(svc, "registered_targets", {}).get(service)
+    return target if target in data.get("config_entries", {}) else None
 
 
 async def async_push(hass: HomeAssistant, service: str, payload: dict[str, Any]) -> bool:
     return (await _push(hass, service, payload))[0]
 
 
-async def _push(
-    hass: HomeAssistant, service: str, payload: dict[str, Any]
-) -> tuple[bool, bool]:
+async def _push(hass: HomeAssistant, service: str, payload: dict[str, Any]) -> tuple[bool, bool]:
     """Returns (delivered, timed_out)."""
-    # shortcut: any mobile_app warning during the window counts as a failure; an unrelated one
-    # gives a false False (a retry, a duplicate push), the safe direction
-    handler = _Failures()
-    logger = logging.getLogger(f"homeassistant.components.{MOBILE_APP}")
-    logger.addHandler(handler)
     try:
+        if (webhook_id := mobile_target(hass, service)) is not None:
+            return await _push_mobile(hass, webhook_id, payload), False
         async with asyncio.timeout(NOTIFY_TIMEOUT_S):
             await hass.services.async_call("notify", service, payload, blocking=True)
-        if local_push_open(hass, service):
-            await asyncio.sleep(LOCAL_PUSH_SETTLE_S)
     except (HomeAssistantError, TimeoutError) as err:
         _LOGGER.warning("push via notify.%s failed: %s", service, repr(err))
         return False, isinstance(err, TimeoutError)
-    finally:
-        logger.removeHandler(handler)
-    if handler.records:
-        _LOGGER.warning("push via notify.%s reported: %s", service, handler.records[0].getMessage())
-        return False, False
     return True, False
+
+
+async def _push_mobile(hass: HomeAssistant, webhook_id: str, payload: dict[str, Any]) -> bool:
+    """mobile_app's own send path, minus its error swallowing: the relay's answer, or the local
+    push confirmation, is observed directly; HA's service only logs a refused push."""
+    # shortcut: calls mobile_app internals (HA 2026.10.4), re-check on each HA bump
+    # imported here: only reached once mobile_app is loaded, which the manifest does not require
+    from homeassistant.components.mobile_app import notify as mobile_notify
+
+    data = hass.data[MOBILE_APP]
+    entry = data["config_entries"][webhook_id]
+    session = async_get_clientsession(hass)
+    message = {"message": payload["message"], "data": payload.get("data")}
+    channel: Any = data["push_channel"].get(webhook_id)  # PushChannel, untyped upstream
+    if channel is None:
+        if "push_url" not in entry.data["app_data"]:
+            raise HomeAssistantError(f"{entry.title} has no push relay and no local push channel")
+        async with asyncio.timeout(NOTIFY_TIMEOUT_S):
+            await mobile_notify._send_message(session, entry, message)
+        return True
+    if not channel.support_confirm:
+        # an app without confirmations gets the push over the open websocket; nothing more to see
+        channel.async_send_notification(message, None)
+        return True
+
+    done: asyncio.Future[bool] = hass.loop.create_future()
+
+    def settle(ok: bool) -> None:
+        if not done.done():
+            done.set_result(ok)
+
+    async def fallback(d: dict[str, Any]) -> None:
+        ok = False
+        try:
+            await mobile_notify._send_message(session, entry, d)
+            ok = True
+        except HomeAssistantError as err:
+            _LOGGER.warning("remote fallback push to %s failed: %s", entry.title, repr(err))
+        finally:
+            settle(ok)
+
+    channel.async_send_notification(message, fallback)
+    pending = channel.pending_confirms.get(message.get("hass_confirm_id", ""))
+    if pending is not None:
+        # the phone's confirmation is the only caller of this unsubscribe (a failure pops first)
+        unsub = pending["unsub_scheduled_push_failed"]
+
+        def confirmed() -> None:
+            unsub()
+            settle(True)
+
+        pending["unsub_scheduled_push_failed"] = confirmed
+    try:
+        # neither a confirmation nor a finished fallback by the deadline: unproven, so not delivered
+        async with asyncio.timeout(LOCAL_PUSH_SETTLE_S):
+            return await done
+    except TimeoutError:
+        _LOGGER.warning("local push to %s unconfirmed at the deadline", entry.title)
+        return False
 
 
 class HaNotifier:
@@ -146,8 +183,11 @@ class HaNotifier:
         entry_id: str,
         service: str,
         loud_style: str = DEFAULT_LOUD_STYLE,
+        retired: threading.Event | None = None,
     ) -> None:
         self.hass = hass
+        # set once the host gives this runtime up: a runtime that outlived its stop never delivers
+        self.retired = retired or threading.Event()
         self.entry_id = entry_id
         self.service = service
         self.loud_style = loud_style
@@ -156,6 +196,8 @@ class HaNotifier:
 
     async def send(self, event: AlertEvent) -> bool:
         """Runs on the runtime thread; the work happens on `hass.loop`."""
+        if self.retired.is_set():
+            return False
         try:
             async with asyncio.timeout(NOTIFY_TIMEOUT_S + LOCAL_PUSH_SETTLE_S + 5):
                 return await asyncio.wrap_future(
@@ -165,6 +207,8 @@ class HaNotifier:
             return False
 
     async def _send(self, event: AlertEvent) -> bool:
+        if self.retired.is_set():
+            return False
         fact = (event.key, event.severity, event.created_at)
         if fact not in self._fired:
             # shortcut: bounded by clearing, a repeat bus event after 1000 facts is harmless

@@ -85,7 +85,9 @@ async def test_loud_payload_critical_when_chosen(hass):
     calls = async_mock_service(hass, "notify", "mobile_app_phone")
     assert await send_from_thread(hass, loud_event(), loud_style="critical")
     data = calls[0].data["data"]
-    assert data["push"]["interruption-level"] == "critical" and data["push"]["sound"]["critical"] == 1
+    assert (
+        data["push"]["interruption-level"] == "critical" and data["push"]["sound"]["critical"] == 1
+    )
     assert (data["ttl"], data["priority"], data["channel"]) == (0, "high", "alarm_stream")
 
 
@@ -150,6 +152,18 @@ async def test_after_a_timeout_next_send_fails_fast_then_recovers(hass, monkeypa
 
 
 # real mobile_app path
+PHONE = {
+    "manufacturer": "Google",
+    "model": "Pixel",
+    "os_name": "Android",
+    "os_version": "16",
+    "app_id": "io.homeassistant.companion.android",
+    "app_name": "Companion",
+    "app_version": "1.0",
+    "supports_encryption": False,
+}
+
+
 @pytest.fixture
 async def phone(hass, hass_admin_user):
     assert await async_setup_component(hass, "http", {})
@@ -157,17 +171,10 @@ async def phone(hass, hass_admin_user):
     entry = MockConfigEntry(
         domain="mobile_app",
         data={
+            **PHONE,
             "webhook_id": "hook1",
             "device_id": "dev1",
             "device_name": "Phone",
-            "manufacturer": "Google",
-            "model": "Pixel",
-            "os_name": "Android",
-            "os_version": "16",
-            "app_id": "io.homeassistant.companion.android",
-            "app_name": "Companion",
-            "app_version": "1.0",
-            "supports_encryption": False,
             "user_id": hass_admin_user.id,
             "app_data": {"push_url": RELAY, "push_token": "tok"},
         },
@@ -208,14 +215,16 @@ async def open_channel(hass, hass_ws_client):
         }
     )
     assert (await ws.receive_json())["success"]
-    assert notifier_mod.local_push_open(hass, "mobile_app_phone")
+    assert notifier_mod.mobile_target(hass, "mobile_app_phone") == "hook1"
     return ws
 
 
 async def test_local_push_unconfirmed_and_fallback_failing_is_false(
     hass, hass_ws_client, aioclient_mock, phone, monkeypatch
 ):
-    monkeypatch.setattr("homeassistant.components.mobile_app.push_notification.PUSH_CONFIRM_TIMEOUT", 0.05)
+    monkeypatch.setattr(
+        "homeassistant.components.mobile_app.push_notification.PUSH_CONFIRM_TIMEOUT", 0.05
+    )
     monkeypatch.setattr(notifier_mod, "LOCAL_PUSH_SETTLE_S", 0.5)
     aioclient_mock.post(RELAY, status=500, json={})
     await open_channel(hass, hass_ws_client)
@@ -241,8 +250,91 @@ async def test_local_push_confirmed_is_true(hass, hass_ws_client, phone, monkeyp
     assert await task
 
 
-def test_local_push_open_false_without_mobile_app(hass):
-    assert not notifier_mod.local_push_open(hass, "mobile_app_phone")
+def test_no_mobile_target_without_mobile_app(hass):
+    assert notifier_mod.mobile_target(hass, "mobile_app_phone") is None
+
+
+async def test_local_push_unconfirmed_and_fallback_succeeding_is_true(
+    hass, hass_ws_client, aioclient_mock, phone, monkeypatch
+):
+    monkeypatch.setattr(
+        "homeassistant.components.mobile_app.push_notification.PUSH_CONFIRM_TIMEOUT", 0.05
+    )
+    monkeypatch.setattr(notifier_mod, "LOCAL_PUSH_SETTLE_S", 5)
+    aioclient_mock.post(RELAY, status=201, json={})
+    await open_channel(hass, hass_ws_client)
+    assert await send_from_thread(hass, loud_event())
+    assert aioclient_mock.call_count == 1
+
+
+async def test_late_confirm_timer_is_unproven_and_false(
+    hass, hass_ws_client, aioclient_mock, phone, monkeypatch
+):
+    # a busy hass.loop starts HA's confirm timeout late: at our deadline no confirmation came and
+    # the fallback has not even run, so the push is not proven
+    monkeypatch.setattr(
+        "homeassistant.components.mobile_app.push_notification.PUSH_CONFIRM_TIMEOUT", 30
+    )
+    monkeypatch.setattr(notifier_mod, "LOCAL_PUSH_SETTLE_S", 0.2)
+    aioclient_mock.post(RELAY, status=500, json={})
+    await open_channel(hass, hass_ws_client)
+    assert not await send_from_thread(hass, loud_event())
+    assert aioclient_mock.call_count == 0
+    channel = hass.data["mobile_app"]["push_channel"]["hook1"]
+    for pending in channel.pending_confirms.values():
+        pending["unsub_scheduled_push_failed"]()  # end HA's late timer, so none lingers
+
+
+@pytest.mark.parametrize("level", [logging.ERROR, logging.CRITICAL])
+async def test_relay_rejection_is_false_whatever_the_log_level(hass, aioclient_mock, phone, level):
+    logger = logging.getLogger("homeassistant.components.mobile_app")
+    old = logger.level
+    logger.setLevel(level)
+    try:
+        aioclient_mock.post(RELAY, status=500, json={})
+        assert not await send_from_thread(hass, loud_event())
+        assert aioclient_mock.call_count == 1
+    finally:
+        logger.setLevel(old)
+
+
+async def test_colliding_phone_names_use_the_phone_ha_targets(
+    hass, hass_ws_client, hass_admin_user, aioclient_mock, monkeypatch
+):
+    """'Phone A' and 'Phone_A' share the slug; HA keeps the last one. Only that phone has a
+    confirming channel: the push goes unconfirmed and its relay fallback refuses."""
+    assert await async_setup_component(hass, "http", {})
+    assert await async_setup_component(hass, "mobile_app", {})
+    for hook, name, url in (("hookA", "Phone A", RELAY + "/a"), ("hookB", "Phone_A", RELAY + "/b")):
+        entry = MockConfigEntry(domain="mobile_app", data={**PHONE, "webhook_id": hook,
+            "device_id": hook, "device_name": name, "user_id": hass_admin_user.id,
+            "app_data": {"push_url": url, "push_token": hook}})  # fmt: skip
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert notifier_mod.mobile_target(hass, "mobile_app_phone_a") == "hookB"
+    ws = await hass_ws_client(hass)
+    await ws.send_json({"id": 5, "type": "mobile_app/push_notification_channel",
+        "webhook_id": "hookB", "support_confirm": True})  # fmt: skip
+    assert (await ws.receive_json())["success"]
+    monkeypatch.setattr(
+        "homeassistant.components.mobile_app.push_notification.PUSH_CONFIRM_TIMEOUT", 0.05
+    )
+    monkeypatch.setattr(notifier_mod, "LOCAL_PUSH_SETTLE_S", 5)
+    aioclient_mock.post(RELAY + "/b", status=500, json={})
+    n = HaNotifier(hass, "entry1", "mobile_app_phone_a")
+    assert not await send_from_thread(hass, loud_event(), n)
+    assert [str(c[1]) for c in aioclient_mock.mock_calls] == [RELAY + "/b"]
+
+
+async def test_retired_notifier_neither_fires_nor_pushes(hass):
+    calls = async_mock_service(hass, "notify", "mobile_app_phone")
+    events = async_capture_events(hass, EVENT_ALERT)
+    n = build(hass)
+    n.retired.set()
+    assert not await send_from_thread(hass, loud_event(), n)
+    assert not await n._send(loud_event())
+    assert calls == [] and events == []
 
 
 async def test_bus_event_fired_once_per_fact_with_all_fields(hass):
@@ -295,9 +387,3 @@ async def test_runtime_side_timeout_when_hass_never_answers(hass, monkeypatch):
 
     monkeypatch.setattr(n, "_send", never)
     assert not await send_from_thread(hass, loud_event(), n)
-
-
-async def test_failure_records_do_not_leak_handlers(hass):
-    before = list(logging.getLogger("homeassistant.components.mobile_app").handlers)
-    await send_from_thread(hass, loud_event())
-    assert logging.getLogger("homeassistant.components.mobile_app").handlers == before
