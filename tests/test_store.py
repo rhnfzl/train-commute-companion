@@ -106,3 +106,19 @@ def test_retained_remainder_survives_restart(tmp_path):
     assert s == t.state
     a = poll(s, ctx(at("08:16")), ans("AAA", conn(L1, L2X), LATER, when="08:16"))
     assert any("if you are on the 08:12" in e.text for e in a.events)
+
+
+@pytest.mark.parametrize("damage", ["corrupt", "missing"])
+def test_run_fresh_after_storage_error_then_recovers(tmp_path, damage):
+    """The caller may run on fresh state after a load error: the next save works and later loads are clean."""
+    path = tmp_path / "state.json"
+    JsonFileStore(path).save(full_state())
+    if damage == "corrupt":
+        path.write_text("{not json")
+    else:
+        path.unlink()
+    store = JsonFileStore(path)
+    with pytest.raises(StorageError):
+        store.load()
+    store.save(full_state())  # explicit fresh start, no extra reset of the marker needed
+    assert JsonFileStore(path).load() == full_state()
