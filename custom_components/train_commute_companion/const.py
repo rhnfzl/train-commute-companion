@@ -8,6 +8,7 @@ EVENT_ALERT = "train_commute_companion_alert"
 CONF_PROFILES_PATH = "profiles_path"
 CONF_NOTIFY = "notify_service"
 CONF_STARTED = "started"
+CONF_LOUD_STYLE = "loud_style"
 REFRESH_S = 15
 NOTIFY_TIMEOUT_S = 20
 # HA's 10 s local-push confirm window, then its 10 s remote fallback, plus margin

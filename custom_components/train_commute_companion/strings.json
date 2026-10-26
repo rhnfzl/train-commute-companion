@@ -1,0 +1,16 @@
+{
+  "issues": {
+    "profile_refused": {
+      "title": "Profile file refused",
+      "description": "{reason} The last valid profiles keep running. Fix the file; this message goes away when it loads."
+    },
+    "moved": {
+      "title": "NS moved your train",
+      "description": "{message}"
+    },
+    "notify_failing": {
+      "title": "Alerts are not reaching your phone",
+      "description": "Calls to notify.{service} fail. Check the companion app, or pick another target in the integration options."
+    }
+  }
+}

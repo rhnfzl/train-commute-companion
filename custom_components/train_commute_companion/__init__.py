@@ -1,0 +1,103 @@
+"""Train Commute Companion: the core runtime on its own thread, read through a coordinator."""
+
+import os
+from functools import partial
+from pathlib import Path
+
+from homeassistant.const import CONF_API_KEY, EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import ConfigType
+
+from train_commute_companion.runtime import Runtime
+from train_commute_companion.store import JsonFileStore
+
+from . import host as host_mod
+from .const import (
+    CONF_LOUD_STYLE,
+    CONF_NOTIFY,
+    CONF_PROFILES_PATH,
+    CONF_STARTED,
+    DEFAULT_LOUD_STYLE,
+    DOMAIN,
+    PLATFORMS,
+)
+from .coordinator import TccCoordinator
+from .data import TccConfigEntry, TccData
+from .notifier import HaNotifier
+from .store import EntryMarkedStore
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
+    await hass.async_add_executor_job(partial(os.makedirs, hass.config.path(DOMAIN), exist_ok=True))
+    # plain values read here on hass.loop; build runs on the runtime thread and touches only these
+    state_path = Path(hass.config.path(DOMAIN, f"state-{entry.entry_id}.json"))
+    api_key: str = entry.data[CONF_API_KEY]
+    started = bool(entry.data.get(CONF_STARTED, False))
+    profiles_path: str = entry.options.get(
+        CONF_PROFILES_PATH, hass.config.path(DOMAIN, "profiles.yaml")
+    )
+    notify_service: str = entry.options[CONF_NOTIFY]
+    loud_style: str = entry.options.get(CONF_LOUD_STYLE, DEFAULT_LOUD_STYLE)
+    entry_id = entry.entry_id
+
+    @callback
+    def set_started() -> None:
+        if hass.config_entries.async_get_entry(entry_id) is not None:
+            hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_STARTED: True})
+
+    def mark() -> None:
+        # no update listener exists, so this edit never reloads the entry
+        hass.loop.call_soon_threadsafe(set_started)
+
+    def build() -> host_mod.Parts:
+        clock = host_mod.make_clock()
+        provider, close = host_mod.make_provider(api_key, clock)
+        rt = Runtime(
+            profile_path=Path(profiles_path),
+            store=EntryMarkedStore(JsonFileStore(state_path), started, mark),
+            provider=provider,
+            notifier=HaNotifier(hass, entry_id, notify_service, loud_style),
+            clock=clock,
+            known_stations=None,
+        )
+        rt.require_stations = True
+        return host_mod.Parts(rt, clock, provider, close)
+
+    host = host_mod.RuntimeHost(build, autorun=host_mod.AUTORUN)
+    try:
+        await host.start()
+    except Exception as err:
+        await host.stop()
+        raise ConfigEntryNotReady(f"the runtime did not start: {err}") from err
+
+    try:
+        coordinator = TccCoordinator(hass, entry, host)
+        await coordinator.async_config_entry_first_refresh()
+        entry.runtime_data = TccData(host, coordinator)
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+        async def on_stop(_: Event) -> None:
+            # HA does not unload entries when it stops; without this the thread keeps writing
+            await host.stop()
+
+        # async_listen, not _once: removing a fired one-time listener on unload logs an error
+        entry.async_on_unload(hass.bus.async_listen(EVENT_HOMEASSISTANT_STOP, on_stop))
+    except BaseException:
+        await host.stop()
+        raise
+    return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
+    ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if ok:
+        await entry.runtime_data.host.stop()
+    return ok
