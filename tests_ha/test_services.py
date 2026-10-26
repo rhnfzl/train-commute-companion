@@ -158,6 +158,13 @@ async def test_buttons_run_the_same_actions(hass):
     assert state(hass, "sensor.office_a_return_status") == "expired"
 
 
+async def test_not_travelling_direction_button_expires_only_that_direction(hass):  # 10.4
+    await setup_tcc(hass, PROFILE)
+    await press(hass, "button.office_a_outbound_not_travelling")
+    assert state(hass, "sensor.office_a_outbound_status") == "expired"
+    assert state(hass, "sensor.office_a_return_status") != "expired"
+
+
 async def test_choose_next_with_nothing_to_choose_raises(hass):
     await setup_tcc(hass, PROFILE, now="12:00")
     with pytest.raises(HomeAssistantError, match="no next connection to choose now"):
