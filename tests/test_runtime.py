@@ -243,7 +243,22 @@ def test_backoff_steps_cap_and_reset():
     assert capped.allow(at("08:01"), live=True)
     assert not capped.allow(at("08:01"), live=False)  # live journeys first (rule 14)
     assert b.on_result(None, now, None) == RequestBudget()
-    assert RequestBudget().on_result(AuthError(), now, None) == RequestBudget()
+    assert RequestBudget().on_result(AuthError(), now, None).reason == "auth"
+
+
+def test_auth_backoff_steps_cap_reset_and_family_change():
+    now, b, steps = at("08:00"), RequestBudget(), []
+    for _ in range(5):
+        b = b.on_result(AuthError(), now, None)
+        steps.append((b.cooldown_until - now.astimezone(UTC)) // timedelta(minutes=1))
+    assert steps == [2, 5, 15, 30, 30] and b.reason == "auth"
+    r = b.on_result(RateLimited(), now, None)
+    assert (r.reason, r.backoff_step, r.cooldown_until - now.astimezone(UTC)) == (
+        "rate",
+        1,
+        timedelta(minutes=2),
+    )
+    assert b.on_result(None, now, None) == RequestBudget()
 
 
 async def test_429_backoff_shared_across_profiles(tmp_path):
@@ -340,14 +355,28 @@ async def test_401_key_rejected_once_per_outage_and_again_each_window(tmp_path):
     await rig.rt.poll_once()
     assert kinds(rig.rt.events_log).count(EventKind.KEY_REJECTED) == 2
     rig.provider.error = lambda q: None
-    rig.clock.set("16:56")
+    rig.clock.set("17:10")  # past the 15-min cooldown the 16:54 rejection started
     await rig.rt.poll_once()
     rig.provider.error = lambda q: AuthError()
-    rig.clock.set("16:58")
+    rig.clock.set("17:12")
     await rig.rt.poll_once()  # a new outage
     assert kinds(rig.rt.events_log).count(EventKind.KEY_REJECTED) == 3
     assert all(e.severity is Severity.LOUD for e in rig.rt.events_log
                if e.kind is EventKind.KEY_REJECTED)  # fmt: skip
+
+
+async def test_401_backs_off_and_keeps_key_rejected(tmp_path):
+    rig = Rig(tmp_path, "07:20")
+    rig.provider.error = lambda q: AuthError()
+    times: list[str] = []
+    rig.provider.hook = lambda q: times.append(rig.clock.now().strftime("%H:%M"))
+    await rig.rt.start()  # the reconcile poll asks once at 07:20
+    for _ in range(25):  # polls every 2 min up to 08:10
+        await rig.rt.poll_once()
+        rig.clock.jump(2)
+    assert times == ["07:20", "07:22", "07:28", "07:44"]
+    assert kinds(rig.rt.events_log).count(EventKind.KEY_REJECTED) == 1
+    assert rig.rt.view().occurrences[0].health.auth_failed  # skipped polls still read as auth
 
 
 async def test_stopped_poller_watchdog_sends_cannot_see_train(tmp_path):
@@ -788,7 +817,7 @@ async def test_station_list_auth_error_sets_key_rejected(tmp_path):
         return frozenset({"AAA", "UT", "RTD"})
 
     rig.provider.stations = ok  # type: ignore[method-assign]
-    rig.clock.jump(2)
+    rig.clock.jump(4)  # the rejection's 2-min cooldown, plus one poll interval off live (rule 14)
     await rig.rt.check_file()  # the wait for the list retries once per poll interval
     assert rig.rt.key_rejected is False
 

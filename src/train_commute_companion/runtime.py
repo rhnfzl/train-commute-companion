@@ -109,6 +109,8 @@ WATCHDOG_EVERY_S = 30
 FILE_EVERY_S = 10
 LOOKAHEAD_AT = time(6, 0)
 BACKOFF_MIN = (2, 4, 8)
+# a rejected key: stays at 30 until a success, never stops (the key may be fixed on NS's side)
+BACKOFF_AUTH_MIN = (2, 5, 15, 30)
 _SENT = "sent:"  # delivery-ledger entries in `alert_keys`: fact key -> severity it was sent at
 # fact keys the latest healthy poll reported: a fact that a healthy poll no longer reports has
 # ended, so its delivery entry goes too and the same fact coming back later is news (7.5)
@@ -164,6 +166,7 @@ class RequestBudget:
 
     cooldown_until: datetime | None = None
     backoff_step: int = 0
+    reason: PollError = "rate"  # which table the step counts in; a skip reports it (7.11)
 
     def allow(self, now: datetime, live: bool) -> bool:
         if self.cooldown_until is None:
@@ -177,13 +180,19 @@ class RequestBudget:
     ) -> "RequestBudget":
         if error is None:
             return RequestBudget()
-        if not isinstance(error, (RateLimited, ServerError)):
+        reason: PollError
+        table: tuple[int, ...]
+        if isinstance(error, AuthError):
+            reason, table = "auth", BACKOFF_AUTH_MIN
+        elif isinstance(error, (RateLimited, ServerError)):
+            reason, table = "rate", BACKOFF_MIN
+        else:
             return self
-        step = min(self.backoff_step + 1, len(BACKOFF_MIN))
-        until = _utc(now) + timedelta(minutes=BACKOFF_MIN[step - 1])
+        step = min((self.backoff_step if self.reason == reason else 0) + 1, len(table))
+        until = _utc(now) + timedelta(minutes=table[step - 1])
         if window_end is not None and _utc(now) < _utc(window_end):
             until = min(until, _utc(window_end))
-        return RequestBudget(until, step)
+        return RequestBudget(until, step, reason)
 
 
 def _okey(k: OccurrenceKey) -> str:
@@ -894,7 +903,9 @@ class Runtime:
     ) -> ProviderAnswer | PollError:
         """`deadline`: the poll's own hard deadline (7.1), shared by all its requests."""
         if not self._budget.allow(self._clock.now(), live):
-            return "rate"  # skipped by the shared backoff: counts toward board health (7.1)
+            # skipped by the shared backoff: counts toward board health (7.1), and a rejected
+            # key still reads as one through its cooldown (7.11)
+            return self._budget.reason
         started = self._clock.now()
         deadline = deadline or _utc(started) + POLL_DEADLINE
         left = (_utc(deadline) - _utc(started)).total_seconds()

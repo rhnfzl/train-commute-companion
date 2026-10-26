@@ -433,6 +433,7 @@ async def test_lookahead_success_ends_the_key_outage(tmp_path):
     for err in (AuthError(), None, AuthError()):
         rig.provider.error = lambda q, err=err: err
         await rig.rt.lookahead_once()
+        rig.clock.jump(4)  # past a rejection's 2-min cooldown plus the look-ahead's extra interval
     assert kinds(rig.rt.events_log).count(EventKind.KEY_REJECTED) == 2
 
 
