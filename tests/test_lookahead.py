@@ -1,7 +1,7 @@
 from dataclasses import replace
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta
 
-from builders import make_connection, make_leg
+from builders import AMS, make_connection, make_leg
 from lookahead_fixtures import (
     CLEAR,
     DAYS,
@@ -70,6 +70,20 @@ def test_works_on_second_leg_only():  # spec fixture
     assert ev.text.endswith("Check replacement transport nearer the day.")
 
 
+def test_works_warning_expires_at_the_dated_journey_end_after_midnight():
+    # 7.12 rule 5(b): a 23:40 journey with a 00:05 transfer ends on the next calendar day
+    late = {"l1": ("23:40", "23:58"), "l2": ("00:05", "00:40")}
+    p = profile(first_train=time(23, 40))
+    history = BaselineHistory((confirmed(**late),))
+    rs = probe(TUE, history.in_force(TUE), p=p, cancel2=True, **late)
+    _, led, events = run(history, rs, p=p)
+    assert [e.kind for e in events] == [EventKind.WORKS_AHEAD]
+    (o,) = led.pending
+    # last planned arrival Wed 00:40 plus the 150-min follow limit
+    assert o.expires_at == datetime(2026, 10, 28, 3, 10, tzinfo=AMS)
+    assert loads(Obligation, dumps(o)).expires_at == o.expires_at
+
+
 def test_return_day_offset_service_date_11_days_out_not_probed():
     ps = profile()
     sat = date(2026, 10, 31)  # commute days Tue 3 Nov (+3) and Tue 10 Nov (+10)
@@ -120,6 +134,7 @@ def test_unanimous_adoption_one_silent_message_file_unchanged():  # Q2 fixtures
     assert h.versions[-1].confirmed and h.versions[-1].effective_from == TUE
     assert P.outbound.first_train == time(8, 12)  # the user's file is never rewritten
     assert len(led.pending) == 1 and led.pending[0].baseline_version == 2
+    assert led.pending[0].expires_at is None  # an adoption is kept after its date (5b)
 
 
 def test_non_unanimous_adopts_nothing():

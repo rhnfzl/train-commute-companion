@@ -330,7 +330,7 @@ class _View:
         return True
 
     def _look_ahead_holds(self, o: Obligation, dk: str, day: date) -> bool:
-        """Rule 5(b): a held look-ahead message is dropped once its date passed or none of its
+        """Rule 5(b): a held look-ahead message is dropped once its journey ended or none of its
         per-date facts is still the latest one the ledger records. An adoption or its withdrawal
         keeps the whole message. Reads the stored facts, never o.fact_key: ";" also joins the
         legs inside a whole-journey fingerprint."""
@@ -339,7 +339,12 @@ class _View:
         fs = () if led is None else led.facts.get(o.id, ())
         if led is None or not fs or any(k.startswith(("adopt:", "cancel:")) for k, *_ in fs):
             return True  # stored before facts were kept, or an adoption: judged as before
-        if day < rt._clock.now().astimezone(TZ).date():
+        # o.expires_at (the dated journey end) drops it in revalidate; without one (stored before
+        # it was kept, or no baseline) the end is unknown: kept until two days after its date
+        if (
+            o.expires_at is None
+            and day + timedelta(days=2) <= rt._clock.now().astimezone(TZ).date()
+        ):
             return False
         per_date = False
         for k, *_ in fs:

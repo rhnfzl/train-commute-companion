@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from train_commute_companion.calendar import TZ, is_commute_day, resolve_local
 from train_commute_companion.classify import classify_leg
 from train_commute_companion.delivery import Obligation
+from train_commute_companion.lifecycle import FOLLOW_LIMIT
 from train_commute_companion.match import matches_pattern, usual_connection
 from train_commute_companion.model import (
     AlertEvent,
@@ -166,6 +167,17 @@ def _base_departures(
         resolve_local(sd + timedelta(days=x.day_offset), x.departure, edge="start")
         for x in sig.legs
     ]
+
+
+def dated_end(p: Profile, d: Direction, sd: date, base: BaselineVersion | None) -> datetime | None:
+    """When a journey on service date `sd` can last be followed: its last planned arrival plus
+    the 150-min limit (7.12 rule 6), in UTC. None without a usable baseline: unknown."""
+    sig = _usable(p, d, base)
+    if sig is None:
+        return None
+    x = sig.legs[-1]
+    dep = resolve_local(sd + timedelta(days=x.day_offset), x.departure, edge="start")
+    return dep.astimezone(UTC) + timedelta(minutes=x.duration_min) + FOLLOW_LIMIT
 
 
 def _minus_search(t: datetime) -> datetime:
@@ -752,9 +764,13 @@ def run_lookahead(
             adopted.version if is_adopt and adopted is not None else (b.version if b else None)
         )
         events.append(ev)
+        # 7.12 rule 5(b): expires when the journey on that date ended, which can be after
+        # midnight (a 23:40 journey with a 00:05 transfer), never at the end of its date. An
+        # adoption or its withdrawal never expires: it is kept after its date
+        ends = None if is_adopt or any(k.startswith("cancel:") for k, *_ in fs) else b
         ob = Obligation(
             f"{ev.key}|{now.isoformat()}", ev, None, (p.id, d, sd), revision, version, fact_key,
-            None, 0,
+            dated_end(p, d, sd, ends), 0,
         )  # fmt: skip
         pending.append(ob)
         bundled[ob.id] = tuple(fs)

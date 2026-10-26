@@ -1026,11 +1026,13 @@ async def _back(rig: Rig) -> None:
 
 
 def _set_facts(rig: Rig, kind: EventKind, facts: tuple) -> None:
-    """Rewrites the held look-ahead message's stored facts (and its kind)."""
+    """Rewrites the held look-ahead message's stored facts (and its kind). A message with an
+    adoption or its withdrawal is written without an expiry, as run_lookahead writes it."""
     st = rig.rt._st
     o = next(o for o in st.obligations if o.look_ahead is not None)
     led = st.lookahead["p1|outbound"]
-    ob = replace(o, event=replace(o.event, kind=kind))
+    keeps = any(k.startswith(("adopt:", "cancel:")) for k, *_ in facts)
+    ob = replace(o, event=replace(o.event, kind=kind), expires_at=None if keeps else o.expires_at)
     rig.rt._st = replace(
         st,
         obligations=tuple(ob if x.id == o.id else x for x in st.obligations),
@@ -1054,6 +1056,59 @@ async def test_undelivered_works_warning_is_dropped_after_its_date(tmp_path):
     assert not any(o.event.kind is EventKind.WORKS_AHEAD for o in rig.rt.state.obligations)
     # the drop leaves the ledger too, as any finished look-ahead message does
     assert rig.rt._st.lookahead["p1|outbound"].pending == ()
+
+
+def _set_expiry(rig: Rig, expires: object) -> None:
+    """Stamps the held look-ahead message with another dated journey end."""
+    st = rig.rt._st
+    o = next(o for o in st.obligations if o.look_ahead is not None)
+    ob = replace(o, expires_at=expires)
+    led = st.lookahead["p1|outbound"]
+    rig.rt._st = replace(
+        st,
+        obligations=tuple(ob if x.id == o.id else x for x in st.obligations),
+        lookahead={
+            **st.lookahead,
+            "p1|outbound": replace(
+                led, pending=tuple(ob if x.id == o.id else x for x in led.pending)
+            ),
+        },
+    )
+    rig.rt._save()
+
+
+async def test_held_works_warning_crossing_midnight_survives_midnight_and_restart(tmp_path):
+    # a 23:40 journey whose transfer leaves at 00:05: its works warning outlives its date
+    wed = DAY + timedelta(days=1)
+    rig = await _held_warning(tmp_path, wed)
+    o = next(o for o in rig.rt.state.obligations if o.look_ahead is not None)
+    assert o.expires_at is not None  # the dated journey end, stored with the message
+    _set_expiry(rig, at("00:40", wed + timedelta(days=1)) + timedelta(minutes=150))
+    rig.clock.t = at("00:00", wed + timedelta(days=1))
+    await rig.restart()
+    await _back(rig)
+    assert _ahead(rig, EventKind.WORKS_AHEAD)
+
+
+async def test_held_works_warning_dropped_once_its_dated_journey_ended(tmp_path):
+    wed = DAY + timedelta(days=1)
+    rig = await _held_warning(tmp_path, wed)
+    _set_expiry(rig, at("00:40", wed + timedelta(days=1)) + timedelta(minutes=150))
+    rig.clock.t = at("03:11", wed + timedelta(days=1))
+    await rig.restart()
+    await _back(rig)
+    assert _ahead(rig, EventKind.WORKS_AHEAD) == []
+    assert rig.rt._st.lookahead["p1|outbound"].pending == ()
+
+
+async def test_held_works_warning_without_a_known_end_is_kept_the_next_day(tmp_path):
+    wed = DAY + timedelta(days=1)
+    rig = await _held_warning(tmp_path, wed)
+    _set_expiry(rig, None)  # stored before the end was kept, or no baseline: uncertain
+    rig.clock.t = at("00:00", wed + timedelta(days=1))
+    await rig.restart()
+    await _back(rig)
+    assert _ahead(rig, EventKind.WORKS_AHEAD)
 
 
 async def test_held_lookahead_profile_refused_after_its_date_is_still_sent(tmp_path):
