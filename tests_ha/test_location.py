@@ -4,9 +4,10 @@ import threading
 
 import harness
 import pytest
-from harness import PROFILE, PROFILES, drive, setup_tcc, write_profiles
+from harness import PROFILE, PROFILES, STATIONS, drive, rebound, setup_tcc, write_profiles
 
 from custom_components.train_commute_companion.location import zones_for
+from train_commute_companion.providers.base import ProviderError
 from train_commute_companion.runtime import Runtime
 
 pytestmark = pytest.mark.usefixtures("tcc_freezer")
@@ -92,6 +93,31 @@ async def test_station_zone_report_after_departure_is_missed_first_train(hass): 
     await drive(h, "08:20")
     assert await spied(h) == [("AAA", "enter")]
     assert any("missed" in c.data["message"].lower() and loud(c) for c in h.pushes), texts(h)
+
+
+async def test_station_list_down_at_restart_recovers_station_zones(hass):  # 8, 7.11
+    h = await setup_tcc(hass, VIA_UT, now="08:00")
+    down = [True]
+
+    async def stations():  # as the NS provider: positions come with the station list
+        if down[0]:
+            raise ProviderError("station endpoint down")
+        h.provider.positions = dict(POSITIONS)
+        return STATIONS
+
+    h.provider.stations = stations
+    assert await hass.config_entries.async_reload(h.entry.entry_id)
+    h = await rebound(h)  # the stored config runs; the station list failed
+    await start_tracker(h)
+    h.provider.positions = {}
+    set_person(hass, 52.0, 5.0)  # at AAA, but no station zone exists yet
+    set_person(hass, *FAR)
+    assert await spied(h) == []
+    down[0] = False
+    await drive(h, "08:02")
+    await h.host.run(lambda rt: rt.check_file())  # the 10 s file watch, with the file unchanged
+    set_person(hass, 52.0, 5.0)
+    assert await spied(h) == [("AAA", "enter")]
 
 
 async def test_starting_inside_a_zone_sends_nothing(hass):

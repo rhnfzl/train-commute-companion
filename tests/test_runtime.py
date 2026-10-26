@@ -717,6 +717,35 @@ async def test_refusal_names_the_station_list_wait(tmp_path):
     assert rt.refusal is not None and "station list is unavailable" in rt.refusal
 
 
+async def test_station_list_down_at_restart_is_retried_while_the_file_is_unchanged(tmp_path):
+    from train_commute_companion.providers.base import ProviderError
+
+    rig = await started(tmp_path)  # a stored config: it runs, so nothing is waiting (5.2)
+    rt = rig.new()
+    rt.require_stations = True
+    calls: list[bool] = []
+    got: list[frozenset[str]] = []
+    rt.on_stations = got.append
+
+    async def stations() -> frozenset[str]:
+        calls.append(True)
+        if len(calls) == 1:
+            raise ProviderError("station endpoint down")
+        return frozenset({"AAA", "UT", "RTD"})
+
+    rig.provider.stations = stations  # type: ignore[method-assign]
+    await rt.start()
+    assert rt.known_stations is None and len(calls) == 1
+    await rt.check_file()  # not due yet: at most once per poll interval
+    assert len(calls) == 1
+    rig.clock.jump(2)
+    await rt.check_file()  # station zones come from this list (8, 7.11)
+    assert rt.known_stations == frozenset({"AAA", "UT", "RTD"}) and got == [rt.known_stations]
+    rig.clock.jump(2)
+    await rt.check_file()
+    assert len(calls) == 2 and rt.refusal is None
+
+
 async def test_store_ok_false_after_failed_write(tmp_path):
     rig = await started(tmp_path)
     assert rig.rt.store_ok is True

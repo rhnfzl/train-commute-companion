@@ -1527,6 +1527,11 @@ class Runtime:
         if mtime != self._mtime or (self._unchecked and self._stations_due()):  # tried again
             self._mtime = mtime
             await self.reload()
+        elif self.require_stations and self.known_stations is None and self._stations_due():
+            # nothing waits, but station zones need the list (8): a failed fetch is retried (7.11)
+            await self._fetch_stations()
+            self._apply({})
+            await self._deliver()
 
     # --- look-ahead (7.10, rule 21) ---
 
