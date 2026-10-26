@@ -1,0 +1,1029 @@
+"""The runtime around the pure core: polling, the independent watchdog, the shared request
+budget, look-ahead, transactional reload and the restart reconcile (7.1, 7.11, 7.12 rules 5,
+10, 11, 12, 14, 21, 22, 5.2, 7.13). The only module with a clock, I/O and the notifier."""
+
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
+from typing import Literal, Protocol
+
+from train_commute_companion.advice import advise
+from train_commute_companion.calendar import TZ, resolve_local
+from train_commute_companion.classify import find_leg
+from train_commute_companion.delivery import (
+    Obligation,
+    deliver,
+    pending_journey_warnings,
+    zone_report_stops_silent,
+)
+from train_commute_companion.health import PollRecord, WatchedLeg, board_health, cannot_see, offline
+from train_commute_companion.lifecycle import (
+    Board,
+    Choose,
+    Ctx,
+    DirectionState,
+    LegState,
+    NotTravelling,
+    OccurrenceState,
+    UserAction,
+    apply_action,
+    ends,
+    on_location,
+    on_poll,
+    on_tick,
+    queries_needed,
+    target_occurrence,
+    whole_day_keys,
+)
+from train_commute_companion.location import LocationEvent
+from train_commute_companion.lookahead import (
+    BaselineHistory,
+    LookAheadLedger,
+    ProbeResult,
+    evaluate,
+    probe_dates,
+    probe_queries,
+    rebase_on_edit,
+    reset_on_edit,
+    run_lookahead,
+    service_date,
+)
+from train_commute_companion.messages import CHECK_APP
+from train_commute_companion.model import (
+    AlertEvent,
+    Config,
+    Direction,
+    EventKind,
+    Observation,
+    OccurrenceKey,
+    Profile,
+    Provenance,
+    Severity,
+    Signature,
+    TrainId,
+    UsualJourney,
+)
+from train_commute_companion.news import Fact, all_good, escalations, severity, unsent
+from train_commute_companion.notify import Notifier
+from train_commute_companion.profile import ProfileError, load_config
+from train_commute_companion.providers.base import (
+    AuthError,
+    MalformedAnswer,
+    PlannedWorks,
+    Provider,
+    ProviderAnswer,
+    ProviderError,
+    Query,
+    RateLimited,
+    ServerError,
+)
+from train_commute_companion.schedule import dated_schedule, schedules_active
+from train_commute_companion.store import PersistedState, StorageError, Store
+
+log = logging.getLogger(__name__)
+
+POLL_EVERY_S = 120
+POLL_DEADLINE = timedelta(seconds=90)
+WATCHDOG_EVERY_S = 30
+FILE_EVERY_S = 10
+LOOKAHEAD_AT = time(6, 0)
+BACKOFF_MIN = (2, 4, 8)
+_SENT = "sent:"  # delivery-ledger entries in `alert_keys`: fact key -> severity it was sent at
+_APP = "app"  # profile name on application warnings, which belong to no profile
+
+PollError = Literal["auth", "rate", "provider", "parse", "timeout"]
+
+
+class Clock(Protocol):
+    def now(self) -> datetime: ...
+    async def sleep(self, seconds: float) -> None: ...
+
+
+class SystemClock:
+    def now(self) -> datetime:
+        return datetime.now(TZ)
+
+    async def sleep(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+
+
+def _utc(t: datetime) -> datetime:
+    return t.astimezone(UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class RequestBudget:
+    """One per API key, shared by every profile and look-ahead (7.12 rule 14)."""
+
+    cooldown_until: datetime | None = None
+    backoff_step: int = 0
+
+    def allow(self, now: datetime, live: bool) -> bool:
+        if self.cooldown_until is None:
+            return True
+        # live journeys first: look-ahead waits one more poll interval after a cooldown
+        extra = timedelta(0) if live else timedelta(seconds=POLL_EVERY_S)
+        return _utc(now) >= _utc(self.cooldown_until) + extra
+
+    def on_result(
+        self, error: BaseException | None, now: datetime, window_end: datetime | None
+    ) -> "RequestBudget":
+        if error is None:
+            return RequestBudget()
+        if not isinstance(error, (RateLimited, ServerError)):
+            return self
+        step = min(self.backoff_step + 1, len(BACKOFF_MIN))
+        until = _utc(now) + timedelta(minutes=BACKOFF_MIN[step - 1])
+        if window_end is not None and _utc(now) < _utc(window_end):
+            until = min(until, _utc(window_end))
+        return RequestBudget(until, step)
+
+
+def _okey(k: OccurrenceKey) -> str:
+    return f"{k.profile_id}|{k.direction.value}|{k.service_date.isoformat()}"
+
+
+def _dkey(pid: str, d: Direction) -> str:
+    return f"{pid}|{d.value}"
+
+
+def _title(name: str) -> str:
+    return name.replace("_", " ").title()
+
+
+def _with_settings(route: Profile, settings: Profile) -> Profile:
+    """`route`'s trains with `settings`' settings (7.12 rule 10)."""
+
+    def j(d: Direction) -> UsualJourney:
+        return replace(
+            route.journey(d),
+            buffer_min=settings.journey(d).buffer_min,
+            earlier_train_advice=settings.journey(d).earlier_train_advice,
+        )
+
+    return replace(
+        route,
+        name=settings.name,
+        alerts=settings.alerts,
+        location=settings.location,
+        transfer_min=settings.transfer_min,
+        outbound=j(Direction.OUTBOUND),
+        return_=j(Direction.RETURN),
+    )
+
+
+def _same_route(a: Profile, b: Profile) -> bool:
+    return _with_settings(a, b) == b
+
+
+def _find(cfg: Config | None, pid: str) -> Profile | None:
+    return next((p for p in (cfg.profiles if cfg else ()) if p.id == pid), None)
+
+
+def _effective(
+    snaps: Mapping[int, Config], cfg: Config | None, s: OccurrenceState
+) -> Profile | None:
+    """The occurrence's route revision with the newest settings (7.12 rule 10)."""
+    route = _find(snaps.get(s.route_revision), s.key.profile_id)
+    cur = _find(cfg, s.key.profile_id)
+    if route is None or cur is None:
+        return route or cur
+    return _with_settings(route, cur)
+
+
+def _in_quiet(window: tuple[time, time] | None, now: datetime) -> bool:
+    if window is None:
+        return False
+    t, (a, b) = now.astimezone(TZ).time(), window
+    return a <= t < b if a <= b else (t >= a or t < b)
+
+
+def _resolved(s: OccurrenceState) -> bool:
+    done = s.direction_state in (DirectionState.DONE, DirectionState.EXPIRED)
+    return s.not_travelling or (done and not s.retained)
+
+
+def _fresh_state(key: OccurrenceKey, revision: int, baseline: int | None) -> OccurrenceState:
+    return OccurrenceState(
+        key, 0, revision, revision, baseline, DirectionState.IDLE, None, (), False, None,
+        False, None, False, (), False, False,
+    )  # fmt: skip
+
+
+class _LoggingNotifier:
+    def __init__(self, inner: Notifier, log_to: list[AlertEvent]) -> None:
+        self._inner, self._log = inner, log_to
+
+    async def send(self, event: AlertEvent) -> bool:
+        try:
+            ok = await self._inner.send(event)
+        except Exception:  # a raising shell is a failed attempt, retried by the watchdog
+            log.exception("notifier failed")
+            return False
+        if ok:
+            self._log.append(event)
+        return ok
+
+
+class _View:
+    """The delivery ledger view over the runtime's current state (7.12 rule 5)."""
+
+    def __init__(self, rt: "Runtime") -> None:
+        self._rt = rt
+
+    def _occ(self, key: OccurrenceKey) -> OccurrenceState | None:
+        return self._rt._st.occurrences.get(_okey(key))
+
+    def skipped(self, key: OccurrenceKey) -> bool:
+        s = self._occ(key)
+        return s is not None and s.not_travelling
+
+    def fact_holds(self, o: Obligation) -> bool:
+        rt = self._rt
+        if o.look_ahead is not None:
+            pid, d, _ = o.look_ahead
+            then = _find(rt._st.config_snapshots.get(o.route_revision), pid)
+            now = _find(rt._st.config, pid)
+            if now is None or (then is not None and not _same_route(then, now)):
+                return False
+            if then is None and rt._st.config and o.route_revision != rt._st.config.revision:
+                return False
+            hist = rt._st.baselines.get(_dkey(pid, d), BaselineHistory())
+            versions = {v.version for v in hist.versions}
+            return o.baseline_version is None or o.baseline_version in versions
+        if o.occurrence is None:
+            return True
+        s = self._occ(o.occurrence)
+        if s is None or s.not_travelling:
+            return False
+        p = rt._profile_for(s)
+        if o.event.severity is Severity.SILENT and p is not None:
+            d = s.key.direction
+            role = "home" if p.destination(d) == p.home_station else "work"
+            zone = (p.location.zones if p.location else {}).get(role, role)
+            return not zone_report_stops_silent(s, {p.destination(d), zone})
+        return True
+
+    def newer_covers(self, o: Obligation) -> bool:
+        if o.occurrence is None:
+            return False
+        return any(
+            x.id != o.id
+            and x.occurrence == o.occurrence
+            and x.event.kind is o.event.kind
+            and x.event.train == o.event.train
+            and _utc(x.event.created_at) > _utc(o.event.created_at)
+            for x in self._rt._st.obligations
+        )
+
+    def revision_live(self, key: OccurrenceKey, rev: int) -> bool:
+        s = self._occ(key)
+        if s is None:
+            return False
+        if s.route_revision == rev:
+            return True
+        snaps = self._rt._st.config_snapshots
+        a, b = (
+            _find(snaps.get(rev), key.profile_id),
+            _find(snaps.get(s.route_revision), key.profile_id),
+        )
+        return a is not None and b is not None and _same_route(a, b)
+
+    def in_quiet_hours(self, profile_id: str, now: datetime) -> bool:
+        p = _find(self._rt._st.config, profile_id)
+        return p is not None and _in_quiet(p.alerts.quiet_hours, now)
+
+    def current(self, o: Obligation) -> AlertEvent:
+        e = o.event
+        p = _find(self._rt._st.config, e.profile_id)
+        if p is None or p.name == e.profile_name:
+            return e
+        old, new = _title(e.profile_name), _title(p.name)
+        text = new + e.text[len(old) :] if e.text.startswith(old + ":") else e.text
+        return replace(e, profile_name=p.name, text=text)
+
+
+class Runtime:
+    def __init__(
+        self,
+        *,
+        profile_path: Path,
+        store: Store,
+        provider: Provider,
+        notifier: Notifier,
+        clock: Clock,
+        known_stations: frozenset[str] | None,
+    ) -> None:
+        self._path = profile_path
+        self._store = store
+        self._provider = provider
+        self.events_log: list[AlertEvent] = []
+        self._notifier = _LoggingNotifier(notifier, self.events_log)
+        self._clock = clock
+        self._known = known_stations
+        self._st = PersistedState(None, {}, {}, {}, {}, (), False)
+        self._budget = RequestBudget()
+        self._store_ok = True
+        self._dirty = False
+        self._mtime: int | None = None
+        self._auth_outage = False
+        self._auth_told: set[str] = set()
+        self._blind: dict[str, datetime] = {}  # occurrence -> start of its cannot_see outage
+        self._offline: set[str] = set()
+        # per occurrence and train: what the last healthy poll showed of it (rule 13)
+        self._seen: dict[str, dict[TrainId, WatchedLeg]] = {}
+        self.requests = 0  # NS publishes no quota (7.1): counted and logged
+
+    # --- configuration and context ---
+
+    @property
+    def config(self) -> Config | None:
+        return self._st.config
+
+    @property
+    def state(self) -> PersistedState:
+        return self._st
+
+    def _profile_for(self, s: OccurrenceState) -> Profile | None:
+        return _effective(self._st.config_snapshots, self._st.config, s)
+
+    def _ctx(self, s: OccurrenceState, now: datetime) -> Ctx | None:
+        p = self._profile_for(s)
+        if p is None:
+            return None
+        d = s.key.direction
+        commute_day = s.key.service_date - timedelta(days=p.journey(d).day_offset)
+        sig = self._signature(p, d, s.key.service_date, s.baseline_version)
+        first = sig.legs[0].departure if sig else None
+        return Ctx(p, d, dated_schedule(p, d, commute_day, first), sig, now)
+
+    def _signature(
+        self, p: Profile, d: Direction, sd: date, version: int | None = None
+    ) -> Signature | None:
+        hist = self._st.baselines.get(_dkey(p.id, d), BaselineHistory())
+        v = next((x for x in hist.versions if x.version == version), None) or hist.in_force(sd)
+        n = len(p.journey(d).transfers) + 1
+        return v.signature if v is not None and len(v.signature.legs) == n else None
+
+    # --- the serialised writer: state, ledger and obligations in one save (rule 5, 22) ---
+
+    def _obligation(self, e: AlertEvent, s: OccurrenceState | None, now: datetime) -> Obligation:
+        expires = None
+        if e.kind is EventKind.LEAVE_NOW and e.train is not None and s is not None:
+            p = self._profile_for(s)
+            buffer = p.journey(s.key.direction).buffer_min if p else 0
+            expires = _utc(e.train.planned_departure) - timedelta(minutes=buffer)
+        if s is not None:
+            revision = s.route_revision
+        else:
+            revision = self._st.config.revision if self._st.config else 0
+        return Obligation(
+            f"{e.key}|{e.severity.value}|{now.isoformat()}",
+            e,
+            None if s is None else s.key,
+            None,
+            revision,
+            None if s is None else s.baseline_version,
+            e.key,
+            expires,
+            0,
+        )
+
+    def _app_warning(self, kind: EventKind, body: str, now: datetime, tag: str = "") -> None:
+        e = AlertEvent(
+            "", _APP, None, None, None, kind, Severity.LOUD, None,
+            f"{_title(_APP)}: {body}", f"{kind.value}:{tag}:{now.isoformat()}", now,
+        )  # fmt: skip
+        self._st = replace(
+            self._st, obligations=(*self._st.obligations, self._obligation(e, None, now))
+        )
+
+    def _record(
+        self, s: OccurrenceState, events: Sequence[AlertEvent], now: datetime
+    ) -> tuple[OccurrenceState, list[Obligation]]:
+        """News (7.5) and escalation (rule 4) against the occurrence's delivery ledger."""
+        sent = {
+            k[len(_SENT) :]: Severity(v) for k, v in s.alert_keys.items() if k.startswith(_SENT)
+        }
+        out = list(unsent(sent, events))
+        facts = [
+            Fact(e.key, e.kind, e.train.planned_departure if e.train else None)
+            for e in events
+            if sent.get(e.key) is Severity.SILENT
+        ]
+        loud = set(escalations(sent, facts, now))
+        out += [
+            replace(e, severity=Severity.LOUD)
+            for e in {e.key: e for e in events}.values()
+            if e.key in loud
+        ]
+        if not out:
+            return s, []
+        twins = [
+            x for x in self._st.occurrences.values()
+            if x.key != s.key and x.key.profile_id == s.key.profile_id
+            and x.key.direction is s.key.direction and not _resolved(x)
+        ]  # fmt: skip
+        keys = dict(s.alert_keys)
+        obligations = []
+        for e in out:
+            keys[_SENT + e.key] = e.severity.value
+            if twins:  # 7.13: alerts name the service date while two occurrences exist
+                e = replace(e, text=f"{e.text} (service date {s.key.service_date.isoformat()})")
+            obligations.append(self._obligation(e, s, now))
+        return replace(s, alert_keys=keys), obligations
+
+    def _apply(self, changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]]) -> None:
+        now = self._clock.now()
+        occs = dict(self._st.occurrences)
+        obligations = list(self._st.obligations)
+        for k, (s, events) in changes.items():
+            occs[k] = s  # twins see the occurrences written so far
+            self._st = replace(self._st, occurrences=occs)
+            s, new = self._record(s, events, now)
+            occs[k] = s
+            obligations += new
+        self._st = replace(self._st, occurrences=occs, obligations=tuple(obligations))
+        self._archive(now)
+        self._save()
+
+    def _archive(self, now: datetime) -> None:
+        """Rule 6: an occurrence leaves the store once it ended and its pending journey warnings
+        were delivered; it stays until its window closed so it is not created again."""
+        occs = {}
+        for k, s in self._st.occurrences.items():
+            ctx = self._ctx(s, now)
+            closed = ctx is None or _utc(now) >= _utc(ctx.schedule.window_end)
+            if closed and ends(s, now, pending_journey_warnings(self._st.obligations, s.key)):
+                self._seen.pop(k, None)
+                self._blind.pop(k, None)
+                self._offline.discard(k)
+                continue
+            occs[k] = s
+        cfg = self._st.config
+        live = {s.route_revision for s in occs.values()} | ({cfg.revision} if cfg else set())
+        snaps = {r: c for r, c in self._st.config_snapshots.items() if r in live}
+        self._st = replace(self._st, occurrences=occs, config_snapshots=snaps)
+
+    def _save(self) -> None:
+        try:
+            self._store.save(self._st)
+        except StorageError as e:
+            self._dirty = True
+            if self._store_ok:  # one loud storage_failed per outage, held in memory only
+                self._store_ok = False
+                log.error("store write failed: %s", e)
+                self._app_warning(
+                    EventKind.STORAGE_FAILED,
+                    "could not save state, alerts may repeat or be lost.",
+                    self._clock.now(),
+                )
+            return
+        self._dirty = False
+        self._store_ok = True
+
+    async def _deliver(self) -> None:
+        """Every pending obligation, revalidated right before sending (rule 5). Merges by id,
+        so obligations added by another task while a send awaited are kept."""
+        view, now = _View(self), self._clock.now()
+        finished: set[str] = set()
+        kept: dict[str, Obligation] = {}
+        for o in self._st.obligations:
+            r = await deliver(o, view, self._notifier, now)
+            if r is None:
+                finished.add(o.id)
+            elif r != o:
+                kept[o.id] = r
+        if not finished and not kept:
+            return
+
+        def survive(xs: Iterable[Obligation]) -> tuple[Obligation, ...]:
+            return tuple(kept.get(o.id, o) for o in xs if o.id not in finished)
+
+        # look-ahead messages live in their ledger too, so a delivered one counts as told
+        ledgers = {k: replace(v, pending=survive(v.pending)) for k, v in self._st.lookahead.items()}
+        self._st = replace(self._st, obligations=survive(self._st.obligations), lookahead=ledgers)
+        self._archive(now)
+        self._save()
+
+    # --- provider access under the shared budget ---
+
+    async def _fetch(
+        self, q: Query, live: bool, window_end: datetime | None
+    ) -> ProviderAnswer | PollError:
+        if not self._budget.allow(self._clock.now(), live):
+            return "rate"  # skipped by the shared backoff: counts toward board health (7.1)
+        started = self._clock.now()
+        self.requests += 1
+        log.debug("request %d: %s", self.requests, q)
+        error: PollError | None = None
+        exc: BaseException | None = None
+        answer = None
+        try:
+            answer = await asyncio.wait_for(self._provider.trips(q), POLL_DEADLINE.total_seconds())
+        except TimeoutError:
+            error = "timeout"
+        except AuthError as e:
+            error, exc = "auth", e
+        except RateLimited as e:
+            error, exc = "rate", e
+        except MalformedAnswer as e:
+            error, exc = "parse", e
+        except ProviderError as e:
+            error, exc = "provider", e
+        now = self._clock.now()
+        if error is None and _utc(now) - _utc(started) > POLL_DEADLINE:
+            error = "timeout"  # a late answer never overwrites a newer one (7.1)
+        if exc is not None:
+            self._budget = self._budget.on_result(exc, now, window_end)
+        elif error is None:  # a timeout neither backs off nor resets the backoff
+            self._budget = RequestBudget()
+        if error is not None or answer is None:
+            return error or "provider"
+        return answer
+
+    async def _fetch_all(
+        self, queries: Sequence[Query], live: bool, window_end: datetime | None
+    ) -> tuple[ProviderAnswer, ...] | PollError:
+        """All or nothing: a poll missing one answer cannot judge the legs it was for (rule 2)."""
+        answers = []
+        for q in queries:
+            a = await self._fetch(q, live, window_end)
+            if isinstance(a, str):
+                return a
+            answers.append(a)
+        return tuple(answers)
+
+    def _auth(self, error: PollError | None, who: str, now: datetime) -> None:
+        """`key_rejected` once per outage and again when each window opens while it lasts."""
+        if error is None:
+            self._auth_outage, self._auth_told = False, set()
+            return
+        if error != "auth" or (self._auth_outage and who in self._auth_told):
+            return
+        self._auth_outage = True
+        self._auth_told.add(who)
+        self._app_warning(EventKind.KEY_REJECTED, "your NS key was rejected.", now, who)
+
+    # --- polling ---
+
+    def _create_occurrences(self, now: datetime) -> None:
+        cfg = self._st.config
+        if cfg is None:
+            return
+        today = now.astimezone(TZ).date()
+        firsts = {}
+        for p in cfg.profiles:
+            for d in Direction:
+                sig = self._signature(p, d, service_date(p, d, today))
+                if sig is not None:
+                    firsts[(p.id, d)] = sig.legs[0].departure
+        occs = dict(self._st.occurrences)
+        for sch in schedules_active(cfg, firsts, now):
+            k = _okey(sch.key)
+            if k not in occs:
+                hist = self._st.baselines.get(_dkey(sch.key.profile_id, sch.key.direction))
+                v = hist.in_force(sch.key.service_date) if hist else None
+                occs[k] = _fresh_state(sch.key, cfg.revision, v.version if v else None)
+        self._st = replace(self._st, occurrences=occs)
+
+    async def poll_once(self) -> None:
+        self._create_occurrences(self._clock.now())
+        for k in sorted(self._st.occurrences):
+            await self._poll(k)
+        await self._deliver()
+
+    async def _poll(self, k: str) -> None:
+        s = self._st.occurrences.get(k)
+        now = self._clock.now()
+        ctx = None if s is None else self._ctx(s, now)
+        if s is None or ctx is None or _resolved(s):
+            return
+        followed = s.lock is not None or bool(s.retained)
+        if not followed and _utc(now) >= _utc(ctx.schedule.window_end):
+            t = on_tick(s, ctx)
+            self._apply({k: (t.state, t.events)})
+            return  # the window only selects the first train (rule 19)
+        gen = s.generation
+        got = await self._fetch_all(queries_needed(s, ctx), True, ctx.schedule.window_end)
+        now = self._clock.now()
+        s = self._st.occurrences.get(k)
+        ctx = None if s is None else self._ctx(s, now)
+        if s is None or ctx is None:
+            return
+        error = got if isinstance(got, str) else None
+        answers = () if isinstance(got, str) else got
+        self._auth(error, k, now)
+        board = Board(answers, (PollRecord(now, error is None, error),), gen)
+        t = on_poll(s, ctx, board)
+        st, events = t.state, list(t.events)
+        if s.generation == gen:  # a choice since the poll started makes the answer stale
+            origin = ctx.profile.origin(ctx.direction)
+            usual = next((a for a in answers if a.query.origin == origin), None)
+            tick = on_tick(st, ctx, usual)
+            st, events = tick.state, [*events, *tick.events]
+            if st.lock is not None and not st.all_good_evaluated:
+                good = all_good(st, board, ctx)  # Q4: judged once, at the first poll with a lock
+                st = replace(st, all_good_evaluated=True)
+                events += [good] if good else []
+            arrival = self._usual_arrival(st, ctx)
+            if usual is not None and arrival is not None:
+                record, more = advise(st, ctx, usual, arrival)
+                st, events = replace(st, advice=record), [*events, *more]
+            if answers:
+                self._remember(k, st, answers)
+        self._apply({k: (st, events)})
+
+    def _usual_arrival(self, s: OccurrenceState, ctx: Ctx) -> datetime | None:
+        """The usual journey's planned arrival: from the baseline, else the auto-locked usual."""
+        sig = ctx.signature
+        if sig is not None:
+            last = sig.legs[-1]
+            day = ctx.schedule.key.service_date + timedelta(days=last.day_offset)
+            dep = resolve_local(day, last.departure, edge="start")
+            return _utc(dep) + timedelta(minutes=last.duration_min)
+        return s.lock.planned_final_arrival if s.lock is not None else None
+
+    def _remember(self, k: str, s: OccurrenceState, answers: Sequence[ProviderAnswer]) -> None:
+        newest = max(answers, key=lambda a: _utc(a.fetched_at))
+        merged = ProviderAnswer(
+            newest.query, tuple(c for a in answers for c in a.connections), newest.fetched_at
+        )
+        seen = self._seen.setdefault(k, {})
+        for j in (*((s.lock,) if s.lock else ()), *s.retained):
+            for x in j.legs:
+                leg, ob = find_leg(merged, x.train, x.board_station)
+                old = seen.get(x.train)
+                dep = arr = Provenance.MISSING
+                if leg is not None:
+                    dep = leg.board.departure.provenance if leg.board.departure else dep
+                    stop = next((st for st in leg.stops if st.code == x.alight_stop), leg.alight)
+                    arr = stop.arrival.provenance if stop.arrival else arr
+                last = (
+                    newest.fetched_at
+                    if ob is Observation.SEEN
+                    else (old.last_seen_at if old else None)
+                )
+                seen[x.train] = WatchedLeg(
+                    x.train, x.train.planned_departure, False, ob, dep, arr, last
+                )
+
+    # --- the watchdog (rule 12) ---
+
+    def _watched(self, k: str, s: OccurrenceState, ctx: Ctx, now: datetime) -> list[WatchedLeg]:
+        seen = self._seen.get(k, {})
+        out = []
+        main = (s.lock,) if s.lock and s.direction_state is not DirectionState.DONE else ()
+        for j in (*main, *s.retained):
+            for x in j.legs:
+                if x.state in (LegState.CANCELLED, LegState.RELOCKED):
+                    continue
+                w = x.watch_until
+                watched = x.state is LegState.DONE and (w is None or _utc(now) < _utc(w))
+                if x.state is LegState.DONE and not watched:
+                    continue
+                riding = watched or x.state in (LegState.RIDING, LegState.MISSED) or j in s.retained
+                base = seen.get(x.train) or WatchedLeg(
+                    x.train, x.train.planned_departure, False, Observation.SEEN,
+                    Provenance.REPORTED, Provenance.REPORTED, None,
+                )  # fmt: skip
+                out.append(replace(base, riding_or_watched=riding))
+        if s.lock is None and not s.retained:  # before a lock: the usual leg, by board age only
+            first = ctx.schedule.first_departure
+            last_ok = board_health(s.poll_records, now).last_ok_at
+            ok = Provenance.REPORTED
+            usual = TrainId(s.key.service_date, "", first)
+            out.append(WatchedLeg(usual, first, False, Observation.SEEN, ok, ok, last_ok))
+        return out
+
+    def _health_events(
+        self, k: str, s: OccurrenceState, ctx: Ctx, now: datetime
+    ) -> list[AlertEvent]:
+        legs = self._watched(k, s, ctx, now)
+        health = board_health(s.poll_records, now)
+        blind, reason = cannot_see(legs, health, now)
+        name = _title(ctx.profile.name)
+        out = []
+
+        def event(kind: EventKind, body: str, tag: str) -> AlertEvent:
+            sev = severity(
+                kind,
+                minutes_to_departure=None,
+                breaks_transfer=False,
+                past_latest_arrival=False,
+                is_tomorrow=False,
+            )
+            return AlertEvent(
+                ctx.profile.id, ctx.profile.name, ctx.direction, s.key.service_date, None, kind,
+                sev, None, f"{name}: {body}", f"{kind.value}:{k}:{tag}", now,
+            )  # fmt: skip
+
+        if blind and k not in self._blind:
+            self._blind[k] = now
+            text = f"cannot see your train in NS data ({reason}), {CHECK_APP}."
+            out.append(event(EventKind.CANNOT_SEE_TRAIN, text, now.isoformat()))
+        elif not blind and k in self._blind:
+            since = self._blind.pop(k)
+            text = "your train is visible in NS data again."
+            out.append(event(EventKind.CAN_SEE_TRAIN_AGAIN, text, since.isoformat()))
+        zone = timedelta(minutes=30)
+        near = any(
+            x.riding_or_watched or timedelta(0) <= _utc(x.departure) - _utc(now) <= zone
+            for x in legs
+        )
+        if s.poll_records and offline(health, near) and k not in self._offline:
+            self._offline.add(k)
+            out.append(
+                event(EventKind.OFFLINE, f"NS data is unavailable, {CHECK_APP}.", now.isoformat())
+            )
+        elif not offline(health, near):
+            self._offline.discard(k)
+        return out
+
+    async def watchdog_once(self) -> None:
+        now = self._clock.now()
+        if self._dirty:
+            self._save()  # retried writes (rule 22)
+        changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
+        for k, s in self._st.occurrences.items():
+            ctx = self._ctx(s, now)
+            if ctx is None or s.not_travelling:
+                continue
+            t = on_tick(s, ctx)
+            events = list(t.events)
+            if not _resolved(t.state):
+                events += self._health_events(k, t.state, ctx, now)
+            if t.state != s or events:
+                changes[k] = (t.state, events)
+        before = self._st.occurrences
+        self._archive(now)  # a window closing is itself no change
+        if changes:
+            self._apply(changes)
+        elif self._st.occurrences != before:
+            self._save()
+        await self._deliver()
+
+    # --- user actions and location ---
+
+    async def act(self, profile_id: str, action: UserAction) -> None:
+        """`choose`, `leaving` and `not travelling` through the serialised writer (7.13)."""
+        now = self._clock.now()
+        self._create_occurrences(now)
+        cfg = self._st.config
+        p = _find(cfg, profile_id)
+        if p is None or cfg is None:
+            return
+        mine = [s for s in self._st.occurrences.values() if s.key.profile_id == profile_id]
+        target = target_occurrence(mine, action)
+        if target is None:
+            return
+        keys = [target.key]
+        if isinstance(action, NotTravelling) and action.whole_day:
+            keys = list(whole_day_keys(p, target.key))
+        changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
+        for key in keys:
+            k = _okey(key)
+            s = self._st.occurrences.get(k) or _fresh_state(key, cfg.revision, None)
+            ctx = self._ctx(s, now)
+            if ctx is not None:
+                t = apply_action(s, ctx, action)
+                changes[k] = (t.state, t.events)
+        self._apply(changes)
+        await self._deliver()
+
+    async def choose(self, profile_id: str, choice: Choose) -> None:
+        await self.act(profile_id, choice)
+
+    async def location(self, profile_id: str, event: LocationEvent) -> None:
+        """Every unresolved occurrence of the profile gets the event with a fresh origin answer."""
+        changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
+        for k, s in list(self._st.occurrences.items()):
+            now = self._clock.now()
+            ctx = self._ctx(s, now)
+            if s.key.profile_id != profile_id or ctx is None or _resolved(s):
+                continue
+            p, d = ctx.profile, ctx.direction
+            got = await self._fetch(Query(p.origin(d), p.destination(d), now), True, None)
+            self._auth(got if isinstance(got, str) else None, k, now)
+            s = self._st.occurrences.get(k, s)
+            t = on_location(
+                s, replace(ctx, now=self._clock.now()), event, None if isinstance(got, str) else got
+            )
+            changes[k] = (t.state, t.events)
+        self._apply(changes)
+        await self._deliver()
+
+    # --- reload (5.2, rule 10) ---
+
+    def _refuse(self, errors: Sequence[ProfileError] | str, now: datetime) -> None:
+        reason = (
+            errors
+            if isinstance(errors, str)
+            else "; ".join(f"{e.path}: {e.message}" for e in errors)
+        )
+        self._app_warning(EventKind.PROFILE_REFUSED, f"profile change refused: {reason}.", now)
+
+    async def reload(self) -> None:
+        now = self._clock.now()
+        try:
+            text = self._path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            self._refuse(f"cannot read {self._path.name} ({e})", now)
+        else:
+            old = self._st.config
+            cfg, errors = load_config(text, self._known, old, now.astimezone(TZ).date())
+            if errors:
+                self._refuse(errors, now)
+            if cfg is not None and cfg is not old:
+                self._apply_config(cfg, now)
+        self._apply({})
+        await self._deliver()
+
+    def _apply_config(self, new: Config, now: datetime) -> None:
+        old, today = self._st.config, now.astimezone(TZ).date()
+        snaps = {**self._st.config_snapshots, new.revision: new}
+        occs = {}
+        for k, s in self._st.occurrences.items():
+            route = _find(snaps.get(s.route_revision) or old, s.key.profile_id)
+            p = _find(new, s.key.profile_id)
+            if route is not None and p is not None and _same_route(route, p):
+                rev = new.revision
+            elif s.lock is not None or s.retained or _resolved(s):
+                rev = s.route_revision  # locked or riding: runs on its route revision (rule 10)
+            else:
+                continue  # not locked yet: created again from the new route when its window opens
+            moved = replace(s, route_revision=rev, settings_revision=new.revision)
+            if _effective(snaps, new, moved) != self._profile_for(s):
+                moved = replace(moved, generation=s.generation + 1)  # in-flight results are stale
+            occs[k] = moved
+        baselines, ledgers = dict(self._st.baselines), dict(self._st.lookahead)
+        for p in new.profiles:
+            q = _find(old, p.id)
+            for d in Direction if q is not None else ():
+                assert q is not None
+                dk = _dkey(p.id, d)
+                hist = baselines.get(dk)
+                if hist is None:
+                    continue
+                if dk in ledgers:
+                    ledgers[dk] = reset_on_edit(q, p, d, hist, ledgers[dk], today)
+                baselines[dk] = rebase_on_edit(q, p, d, hist, today)
+        self._st = replace(
+            self._st, config=new, config_snapshots=snaps, occurrences=occs,
+            baselines=baselines, lookahead=ledgers,
+        )  # fmt: skip
+
+    async def check_file(self) -> None:
+        """The file watch: reload when the file's mtime changes (or it disappears)."""
+        try:
+            mtime: int | None = self._path.stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        if mtime != self._mtime:
+            self._mtime = mtime
+            await self.reload()
+
+    # --- look-ahead (7.10, rule 21) ---
+
+    async def lookahead_once(self) -> None:
+        cfg = self._st.config
+        if cfg is None:
+            return
+        works = await self._works()
+        if works is None:
+            return
+        for p in cfg.profiles:
+            for d in Direction:
+                await self._lookahead(p, d, works)
+        await self._deliver()
+
+    async def _works(self) -> PlannedWorks | None:
+        now = self._clock.now()
+        if not self._budget.allow(now, live=False):
+            return None
+        self.requests += 1
+        try:
+            works = await asyncio.wait_for(
+                self._provider.planned_works(), POLL_DEADLINE.total_seconds()
+            )
+        except (ProviderError, TimeoutError) as e:
+            self._budget = self._budget.on_result(e, self._clock.now(), None)
+            if isinstance(e, AuthError):
+                self._auth("auth", "lookahead", now)
+            return None
+        self._budget = RequestBudget()
+        return works
+
+    async def _lookahead(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
+        dk = _dkey(p.id, d)
+        start = self._clock.now()
+        today = start.astimezone(TZ).date()
+        cfg = self._st.config
+        assert cfg is not None
+        started_revision = cfg.revision
+        hist = self._st.baselines.get(dk, BaselineHistory())
+        started_baseline = hist.latest
+        bases = {
+            x: self._st.baselines.get(_dkey(p.id, x), BaselineHistory()).in_force(today)
+            for x in Direction
+        }
+        results: list[ProbeResult] = []
+        for day in probe_dates(p, today, bases):
+            base = hist.in_force(service_date(p, d, day))
+            got = await self._fetch_all(probe_queries(p, d, day, base), False, None)
+            if isinstance(got, str):
+                self._auth(got, "lookahead", start)
+                return  # an incomplete run writes nothing
+            results += evaluate(p, d, day, got, works, base)
+        # write time: the ledger as stored now with this run's start stamps (rule 21)
+        cfg = self._st.config
+        if cfg is None:
+            return
+        stored = self._st.lookahead.get(dk) or LookAheadLedger({}, (), None, 0, None)
+        ledger = replace(
+            stored, started_revision=started_revision, started_baseline=started_baseline
+        )
+        current = self._st.baselines.get(dk, BaselineHistory())
+        others = [x for x in cfg.profiles if x.id != p.id]
+        all_bases = {
+            (x.id, y): self._st.baselines.get(_dkey(x.id, y), BaselineHistory())
+            for x in cfg.profiles
+            for y in Direction
+            if (x.id, y) != (p.id, d)
+        }
+        out = run_lookahead(
+            p, d, current, ledger, results, cfg.revision, today, start, others, all_bases
+        )
+        if out is None:
+            log.info("look-ahead for %s discarded: configuration or baseline changed", dk)
+            return
+        new_hist, new_ledger, _ = out
+        mine = {o.id for o in stored.pending}
+        obligations = (
+            *(o for o in self._st.obligations if o.id not in mine),
+            *new_ledger.pending,
+        )
+        self._st = replace(
+            self._st,
+            baselines={**self._st.baselines, dk: new_hist},
+            lookahead={**self._st.lookahead, dk: new_ledger},
+            obligations=tuple(obligations),
+        )
+        self._save()
+
+    # --- start, reconcile and the loops ---
+
+    async def start(self) -> None:
+        now = self._clock.now()
+        lost = None
+        try:
+            loaded = self._store.load()
+        except StorageError as e:
+            loaded, lost = None, str(e)
+        if loaded is not None:
+            self._st = loaded
+        self._st = replace(self._st, started_before=True)
+        if lost is not None:  # rule 22: fresh state, loud, and a write clears "state lost"
+            self._app_warning(EventKind.STORAGE_FAILED, f"saved state was lost ({lost}).", now)
+        try:
+            self._mtime = self._path.stat().st_mtime_ns
+        except OSError:
+            self._mtime = None
+        await self.reload()
+        self._create_occurrences(now)
+        # deterministic reconcile: one fresh poll per unarchived occurrence (rule 11)
+        for k in sorted(self._st.occurrences):
+            await self._poll(k)
+        self._apply({})
+        await self._deliver()
+
+    async def run_forever(self) -> None:
+        async def every(seconds: float, step: Callable[[], Awaitable[None]]) -> None:
+            while True:
+                try:
+                    await step()
+                except Exception:  # one failing loop must not stop the others (rule 12)
+                    log.exception("runtime step failed")
+                await self._clock.sleep(seconds)
+
+        async def daily() -> None:
+            while True:
+                now = self._clock.now().astimezone(TZ)
+                nxt = resolve_local(now.date(), LOOKAHEAD_AT, edge="start")
+                if _utc(nxt) <= _utc(now):
+                    nxt = resolve_local(now.date() + timedelta(days=1), LOOKAHEAD_AT, edge="start")
+                await self._clock.sleep((_utc(nxt) - _utc(now)).total_seconds())
+                try:
+                    await self.lookahead_once()
+                except Exception:
+                    log.exception("look-ahead failed")
+
+        await asyncio.gather(
+            every(POLL_EVERY_S, self.poll_once),
+            every(WATCHDOG_EVERY_S, self.watchdog_once),
+            every(FILE_EVERY_S, self.check_file),
+            daily(),
+        )
