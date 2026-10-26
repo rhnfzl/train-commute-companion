@@ -74,7 +74,9 @@ class ProbeResult:
 
 @dataclass(frozen=True, slots=True)
 class LookAheadLedger:
-    per_date: Mapping[str, tuple[str, ...]]  # "<service date>|<leg index or j>" -> entries
+    # "<service date>|<leg index or j>" -> entries; a warn/loud/restored mark written since
+    # owners exist ends in "#<id of the obligation that carries it>", read with _mark/_owner
+    per_date: Mapping[str, tuple[str, ...]]
     pending: tuple[Obligation, ...]
     last_run: datetime | None  # last successful run (look-ahead health only)
     started_revision: int
@@ -493,6 +495,14 @@ def _overlaps(
     return bool(find_overlaps([p, *others], start, first))
 
 
+def _mark(entry: str) -> str:
+    return entry.partition("#")[0]  # no fingerprint holds "#"
+
+
+def _owner(entry: str) -> str:
+    return entry.partition("#")[2]  # "" for an entry stored before owners: counts as delivered
+
+
 def _seed_day(per_date: Mapping[str, tuple[str, ...]], version: int) -> str | None:
     tag = f"seed:{version}"
     return next((k.split("|")[0] for k, v in per_date.items() if tag in v), None)
@@ -536,12 +546,18 @@ def run_lookahead(
     per_date = dict(ledger.per_date)
     pending = list(ledger.pending)
     bundled = dict(ledger.facts)
-    carried: list[tuple[date, list[tuple[str, str, bool, bool]]]] = []  # what a retire left
+    # what a retire left, with the withdrawn obligation that owned its marks
+    carried: list[tuple[date, list[tuple[str, str, bool, bool]], str | None]] = []
     versions = list(history.versions)
     floor = history.floor  # raised by every removal so a number is never handed out twice
     facts: dict[date, list[tuple[str, str, bool, bool]]] = {}  # key, text, loud, is warning
     refusals: list[str] = []
     adopted: BaselineVersion | None = None
+    owned: dict[date, list[tuple[str, int]]] = {}  # this run's marks, owned by its message
+
+    def own(sd: date, key: str, entry: str) -> None:
+        add_entry(key, entry)
+        owned.setdefault(sd, []).append((key, len(per_date[key]) - 1))
 
     def hist() -> BaselineHistory:
         return BaselineHistory(tuple(versions), floor)
@@ -562,7 +578,7 @@ def run_lookahead(
             pending.remove(o)
             rest = [f for f in bundled.pop(o.id, ()) if f[0] != tag]
             if rest and o.look_ahead is not None:
-                carried.append((o.look_ahead[2], rest))
+                carried.append((o.look_ahead[2], rest, o.id))
         if not untold:
             facts.setdefault(w.effective_from, []).append(
                 (f"cancel:{w.version}", text, False, False)
@@ -666,7 +682,7 @@ def run_lookahead(
             and not r.fingerprint.startswith("pattern:")
             and _differs(signature_of(r.connection, sd), exp, DEP_TOL_MIN, DUR_TOL_MIN)
         )
-        entries = per_date.get(key, ())
+        entries = tuple(_mark(x) for x in per_date.get(key, ()))
         at = next(
             (
                 i
@@ -685,12 +701,12 @@ def run_lookahead(
                     continue  # already told at this severity
                 fact += "|loud"  # rule 4: told silent, now tomorrow: once more, loud
             else:
-                add_entry(key, f"warn:{r.fingerprint}")
+                own(sd, key, f"warn:{r.fingerprint}")
             if loud:
-                add_entry(key, f"loud:{r.fingerprint}")
+                own(sd, key, f"loud:{r.fingerprint}")
             facts.setdefault(sd, []).append((fact, _warn_text(r, p, exp), loud, r.works))
         elif last is not None and last.startswith("warn:"):
-            add_entry(key, f"restored:{r.fingerprint}")
+            own(sd, key, f"restored:{r.fingerprint}")
             if adopted is not None and last == f"warn:{r.fingerprint}":
                 continue  # the warned change is what this run adopted: told by the adoption
             what = _leg_name(r, p)
@@ -700,7 +716,7 @@ def run_lookahead(
 
     # 6. one message per direction and date, no cap
     events: list[AlertEvent] = []
-    for sd, fs in [*sorted(facts.items()), *carried]:
+    for sd, fs, was in [*((sd, fs, None) for sd, fs in sorted(facts.items())), *carried]:
         is_adopt = any(k.startswith("adopt:") for k, *_ in fs)
         warns = any("|warn:" in k for k, *_ in fs)
         kind = (
@@ -742,6 +758,14 @@ def run_lookahead(
         )  # fmt: skip
         pending.append(ob)
         bundled[ob.id] = tuple(fs)
+        if was is None:
+            for k, i in owned.get(sd, ()):
+                per_date[k] = (*per_date[k][:i], f"{per_date[k][i]}#{ob.id}", *per_date[k][i + 1 :])
+        else:  # the carried facts' marks move to the message that now carries them
+            per_date = {
+                k: tuple(f"{_mark(x)}#{ob.id}" if _owner(x) == was else x for x in v)
+                for k, v in per_date.items()
+            }
     for reason in refusals:  # a blocked adoption is told while it lasts
         ev = AlertEvent(
             p.id,
@@ -826,29 +850,8 @@ def reset_on_edit(
 def forget_pending(ledger: LookAheadLedger) -> LookAheadLedger:
     """Rule 5(c): a route edit drops the pending messages written before it. Their per-date
     marks are taken back so the next run tells those facts again (7.10), instead of matching a
-    fact that was never delivered."""
-    per_date = dict(ledger.per_date)
-    for o in ledger.pending:
-        for fact, *_ in ledger.facts.get(o.id, ()):
-            # "<date>|<leg>|warn:<fp>[|loud]" or "<date>|<leg>|restored"; a fingerprint may hold "|"
-            parts = fact.split("|", 2)
-            if len(parts) < 3 or not parts[2].startswith(("warn:", "restored")):
-                continue  # an adoption or a correction: kept by the baseline, not per date
-            key, entries = "|".join(parts[:2]), per_date.get("|".join(parts[:2]), ())
-            if parts[2].endswith("|loud"):  # only the loud repeat was pending
-                per_date[key] = tuple(x for x in entries if x != f"loud:{parts[2][5:-5]}")
-                continue
-            # remove only this fact's own mark (and its loud twin), keeping later delivered marks
-            # shortcut: a restored fact has no fingerprint, so the latest restored mark goes; put
-            # the fingerprint in the fact if an older recovery can be held behind a newer one
-            warn = parts[2].startswith("warn:")
-            at = [
-                i
-                for i, x in enumerate(entries)
-                if (x == parts[2] if warn else x.startswith("restored:"))
-            ]
-            if at:
-                i = at[-1]
-                twin = warn and entries[i + 1 : i + 2] == (f"loud:{parts[2][5:]}",)
-                per_date[key] = entries[:i] + entries[i + 2 if twin else i + 1 :]
+    fact that was never delivered. Only marks owned by a dropped message go; a mark of a
+    delivered one, or one stored before owners existed, stays."""
+    drop = {o.id for o in ledger.pending}
+    per_date = {k: tuple(x for x in v if _owner(x) not in drop) for k, v in ledger.per_date.items()}
     return replace(ledger, per_date=per_date)

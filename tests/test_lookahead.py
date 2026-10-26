@@ -425,6 +425,7 @@ def test_superseded_adoption_bundled_with_a_warning_is_withdrawn():  # rules 18,
         kept = [o for o in led2.pending if o.look_ahead == ("p1", OUT, TUE)]
         assert any("2026-10-27|1|warn:" in o.fact_key for o in kept)  # the warning stays
         assert all(o.id in led2.facts for o in led2.pending)
+        assert forget_pending(led2).per_date["2026-10-27|1"] == ()  # its mark moved with it
 
 
 def _delivered(led: LookAheadLedger, o: Obligation) -> LookAheadLedger:
@@ -455,3 +456,69 @@ def test_route_edit_keeps_a_later_delivered_warning_when_taking_back_a_recovery(
     led = replace(forget_pending(led), pending=(), facts={})
     _, _, events = run(history, bad, led=led)
     assert events == []  # the delivered relapse warning is not told twice
+
+
+def _at(minutes: int):
+    return NOW + timedelta(minutes=minutes)  # every run starts later, as in production
+
+
+def test_route_edit_keeps_a_newer_delivered_copy_of_a_held_warning():  # rule 5(c), 7.10
+    history = BaselineHistory((confirmed(),))
+    a = probe(NEXT_TUE, stops2=("BBB",), cut2="BBB")  # the second leg runs only to BBB
+    b, good = probe(NEXT_TUE, cancel2=True), probe(NEXT_TUE)
+    _, led, _ = run(history, a, now=_at(0))  # warning A held
+    _, led, _ = run(history, good, led=led, now=_at(1))  # recovery held
+    _, led, _ = run(history, b, led=led, now=_at(2))
+    led = _delivered(led, led.pending[-1])  # warning B went out
+    _, led, _ = run(history, a, led=led, now=_at(3))
+    led = _delivered(led, led.pending[-1])  # warning A went out again
+    led = replace(forget_pending(led), pending=(), facts={})
+    _, _, events = run(history, b, led=led, now=_at(4))
+    assert [e.kind for e in events] == [EventKind.WORKS_AHEAD]  # the user last heard A
+
+
+def test_route_edit_takes_back_the_held_recovery_not_a_newer_delivered_one():  # rule 5(c)
+    history = BaselineHistory((confirmed(),))
+    bad, good = probe(NEXT_TUE, cancel2=True), probe(NEXT_TUE)
+    _, led, _ = run(history, bad, now=_at(0))
+    led = _delivered(led, led.pending[-1])
+    _, led, _ = run(history, good, led=led, now=_at(1))  # recovery R1 held
+    _, led, _ = run(history, bad, led=led, now=_at(2))
+    led = _delivered(led, led.pending[-1])  # the relapse went out
+    _, led, _ = run(history, good, led=led, now=_at(3))
+    led = _delivered(led, led.pending[-1])  # recovery R2 went out
+    led = replace(forget_pending(led), pending=(), facts={})
+    _, _, warned = run(history, bad, led=led, now=_at(4))
+    _, _, quiet = run(history, good, led=led, now=_at(4))
+    assert [e.kind for e in warned] == [EventKind.WORKS_AHEAD]
+    assert quiet == []  # R2 was delivered: no second "back to normal"
+
+
+def test_route_edit_keeps_a_later_delivered_loud_warning():  # rule 5(c), rule 4
+    history = BaselineHistory((confirmed(),))
+    bad, good = probe(TUE, cancel2=True), probe(TUE)  # fingerprints carry "|cancelled:n"
+    _, led, _ = run(history, bad, today=MON - timedelta(days=1), now=_at(0))
+    led = _delivered(led, led.pending[-1])  # the silent warning went out
+    _, led, (loud,) = run(history, bad, led=led, now=_at(1))
+    assert loud.severity is Severity.LOUD  # its loud repeat is held
+    _, led, _ = run(history, good, led=led, now=_at(2))
+    led = _delivered(led, led.pending[-1])  # the recovery went out
+    _, led, _ = run(history, bad, led=led, now=_at(3))
+    led = _delivered(led, led.pending[-1])  # a fresh loud warning went out
+    led = replace(forget_pending(led), pending=(), facts={})
+    _, _, events = run(history, bad, led=led, now=_at(4))
+    assert events == []
+
+
+def test_owned_and_unowned_marks_survive_the_store():  # an old ledger loads; unowned = told
+    history = BaselineHistory((confirmed(),))
+    bad = probe(NEXT_TUE, cancel2=True)
+    _, new, _ = run(history, bad)
+    assert loads(LookAheadLedger, dumps(new)) == new
+    led = replace(forget_pending(loads(LookAheadLedger, dumps(new))), pending=(), facts={})
+    assert len(run(history, bad, led=led)[2]) == 1  # owned by the held message: taken back
+    marks = {k: tuple(x.partition("#")[0] for x in v) for k, v in new.per_date.items()}
+    old = loads(LookAheadLedger, dumps(replace(new, per_date=marks)))  # written before owners
+    assert old.per_date == marks
+    led = replace(forget_pending(old), pending=(), facts={})
+    assert led.per_date == marks and run(history, bad, led=led)[2] == []
