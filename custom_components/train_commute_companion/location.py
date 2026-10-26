@@ -73,7 +73,9 @@ class LocationTracker:
     def __init__(self, hass: HomeAssistant, entry: TccConfigEntry) -> None:
         self._hass = hass
         self._entry = entry
-        self._tracked: dict[str, str] = {}  # profile id -> entity, lower case like HA's ids
+        # profile id -> (entity, source epoch): the entity lower case like HA's ids, the epoch
+        # from the same coordinator view; a change of either is a new source
+        self._tracked: dict[str, tuple[str, int]] = {}
         # profile id -> token of its current source; work queued under an older token is dropped
         self._gen: dict[str, object] = {}
         self._unsub_state: Any = None
@@ -106,34 +108,35 @@ class LocationTracker:
         """Follows the profiles of the coordinator's view, removed ones that still run included."""
         data = self._entry.runtime_data.coordinator.data
         want = {
-            p.id: p.location.entity.lower()
+            p.id: (p.location.entity.lower(), data.location_epochs.get(p.id, 0))
             for p in (data.profiles if data else ())
             if p.location and p.location.source == "ha" and p.location.entity
         }
         old, self._tracked = self._tracked, want
-        if self._unsub_state is None or set(want.values()) != set(old.values()):
+        entities = sorted({e for e, _ in want.values()})
+        if self._unsub_state is None or entities != sorted({e for e, _ in old.values()}):
             if self._unsub_state is not None:
                 self._unsub_state()
-            entities = sorted(set(want.values()))
             self._unsub_state = (
                 async_track_state_change_event(self._hass, entities, self._on_change)
                 if entities
                 else None
             )
         for pid in old.keys() | want.keys():
-            entity = want.get(pid)
-            if old.get(pid) == entity:
+            tracked = want.get(pid)
+            if old.get(pid) == tracked:
                 continue
             # a new source starts with no history: an old zone or pending event is not its evidence
             self._prev.pop(pid, None)
             self._reported = {k: v for k, v in self._reported.items() if k[0] != pid}
-            if entity is None:
+            if tracked is None:
                 self._gen.pop(pid, None)
                 continue
+            entity, epoch = tracked
             self._gen[pid] = gen = object()
             state = self._hass.states.get(entity)  # 7.2: the state found now only seeds the zone
             if (pos := _fix(state)) is not None and state is not None:
-                self._spawn(self._handle(pid, gen, pos, state.last_updated, seed=True), pid)
+                self._spawn(self._handle(pid, gen, epoch, pos, state.last_updated, seed=True), pid)
 
     @callback
     def _on_change(self, event: Event[EventStateChangedData]) -> None:
@@ -142,9 +145,9 @@ class LocationTracker:
         # an unchanged fix is no news: last_updated also moves on an attribute change (rule 7)
         if new is None or pos is None or (old is not None and _fix(old) == pos):
             return
-        for pid, entity in self._tracked.items():
+        for pid, (entity, epoch) in self._tracked.items():
             if entity == event.data["entity_id"]:
-                self._spawn(self._handle(pid, self._gen[pid], pos, new.last_updated), pid)
+                self._spawn(self._handle(pid, self._gen[pid], epoch, pos, new.last_updated), pid)
 
     def _spawn(self, coro: Coroutine[Any, Any, None], pid: str) -> None:
         task = self._entry.async_create_task(self._hass, coro, f"tcc location {pid}")
@@ -166,13 +169,16 @@ class LocationTracker:
         self,
         pid: str,
         gen: object,
+        epoch: int,
         pos: tuple[float, float],
         at: datetime,
         *,
         seed: bool = False,
     ) -> None:
         """`gen` is the source token at the change: a switch, disable or new entity since then
-        drops the work, so evidence of an old source never reaches the core."""
+        drops the work, so evidence of an old source never reaches the core. `epoch` is the
+        core's location epoch when the fix arrived: work queued behind the lock while the source
+        changed (a switch back included) is dropped here and again by the core."""
         host = self._entry.runtime_data.host
 
         def live() -> bool:
@@ -180,11 +186,11 @@ class LocationTracker:
 
         async with self._locks.setdefault(pid, asyncio.Lock()):
             try:
-                profile = next(
-                    (p for p in self._entry.runtime_data.coordinator.data.profiles if p.id == pid),
-                    None,
-                )
+                data = self._entry.runtime_data.coordinator.data
+                profile = next((p for p in data.profiles if p.id == pid), None)
                 if profile is None or profile.location is None:
+                    return
+                if data.location_epochs.get(pid, 0) != epoch:  # a lagging view drops it too
                     return
                 source = profile.location
                 positions = await host.positions()
@@ -212,7 +218,9 @@ class LocationTracker:
 
                     def send(rt: Runtime, msg: LocationEvent = event) -> Coroutine[Any, Any, None]:
                         # the core rechecks the source after its own request, before any write
-                        return rt.location(pid, replace(msg, received_at=rt.now()), source)
+                        return rt.location(
+                            pid, replace(msg, received_at=rt.now()), source, epoch=epoch
+                        )
 
                     await host.run(send)
             except RuntimeError:

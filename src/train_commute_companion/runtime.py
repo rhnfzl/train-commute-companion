@@ -573,6 +573,9 @@ class Runtime:
         self.on_stations: Callable[[frozenset[str]], object] | None = None
         self._unchecked = False
         self._stations_tried: datetime | None = None
+        # profile id -> location source epoch, bumped on every accepted location change (8):
+        # an event read under an older epoch is dropped, even after a switch back (A, B, A)
+        self._loc_epoch: dict[str, int] = {}
 
     # --- configuration and context ---
 
@@ -699,6 +702,7 @@ class Runtime:
             self._auth_outage,
             sum(o.attempts > 0 for o in st.obligations),
             self.requests,
+            dict(self._loc_epoch),
         )
 
     # --- the serialised writer: state, ledger and obligations in one save (rule 5, 22) ---
@@ -1389,14 +1393,21 @@ class Runtime:
         return why[i] if ok else gone
 
     async def location(
-        self, profile_id: str, event: LocationEvent, source: LocationSettings | None = None
+        self,
+        profile_id: str,
+        event: LocationEvent,
+        source: LocationSettings | None = None,
+        epoch: int | None = None,
     ) -> None:
         """Every unresolved occurrence of the profile gets the event with a fresh origin answer.
         With `source` (the settings the event was read under), a profile whose location settings
         differ by the time it would be written drops the event: a switched, disabled or replaced
-        source supplies no evidence (8)."""
+        source supplies no evidence (8). With `epoch` (`RuntimeView.location_epochs` when the fix
+        arrived), any location change since then drops it too, a switch back included."""
 
         def stale(ctx: Ctx) -> bool:
+            if epoch is not None and epoch != self._loc_epoch.get(profile_id, 0):
+                return True
             return source is not None and ctx.profile.location != source
 
         mine = [k for k, s in self._st.occurrences.items() if s.key.profile_id == profile_id]
@@ -1487,6 +1498,11 @@ class Runtime:
 
     def _apply_config(self, new: Config, now: datetime) -> None:
         old, today = self._st.config, now.astimezone(TZ).date()
+        was = {p.id: p.location for p in (old.profiles if old else ())}
+        now_loc = {p.id: p.location for p in new.profiles}
+        for pid in was.keys() | now_loc.keys():
+            if was.get(pid) != now_loc.get(pid):
+                self._loc_epoch[pid] = self._loc_epoch.get(pid, 0) + 1
         snaps = {**self._st.config_snapshots, new.revision: new}
         occs = {}
         for k, s in self._st.occurrences.items():

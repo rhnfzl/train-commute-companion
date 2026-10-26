@@ -1,4 +1,5 @@
 import asyncio
+import os
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -901,6 +902,87 @@ async def test_location_source_changed_during_request_is_not_written(tmp_path, a
     release.set()
     await task
     assert only_occurrence(rig.rt).zone_reports == {}
+
+
+_MTIME = [2_000_000_000 * 10**9]
+
+
+def bump_mtime(path: Path) -> None:
+    """A strictly increasing mtime, so two writes in one tick are both seen by check_file."""
+    _MTIME[0] += 10**9
+    os.utime(path, ns=(_MTIME[0], _MTIME[0]))
+
+
+async def _switch_rig(tmp_path):
+    """located_via_ut running with its first NS request held until `release` is set."""
+    rig = Rig(tmp_path)
+    rig.write(text=(PROFILES_DIR / "located_via_ut.yaml").read_text())
+    rig.provider.world = list(ONE_TRANSFER)
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    asked, release = asyncio.Event(), asyncio.Event()
+    real = rig.provider.trips
+
+    async def held(q):
+        if not asked.is_set():
+            asked.set()
+            await release.wait()
+        return await real(q)
+
+    rig.provider.trips = held
+    return rig, asked, release
+
+
+async def _switch_away_and_back(rig) -> None:
+    for name in ("located_via_ut_telegram", "located_via_ut"):  # B, then A again
+        rig.write(text=(PROFILES_DIR / f"{name}.yaml").read_text())
+        bump_mtime(rig.path)
+        await rig.rt.check_file()
+
+
+async def test_location_source_switched_away_and_back_during_request_is_not_written(tmp_path):
+    rig, asked, release = await _switch_rig(tmp_path)
+    view = rig.rt.view()
+    source, epoch = view.profiles[0].location, view.location_epochs.get("p1", 0)
+    event = LocationEvent("UT", "enter", rig.clock.now(), rig.clock.now())
+    task = asyncio.create_task(rig.rt.location("p1", event, source, epoch))
+    await asked.wait()
+    await _switch_away_and_back(rig)
+    release.set()
+    await task
+    assert only_occurrence(rig.rt).zone_reports == {}
+    assert rig.rt.view().location_epochs["p1"] == epoch + 2
+
+
+async def test_location_without_epoch_keeps_the_value_check(tmp_path):
+    rig, asked, release = await _switch_rig(tmp_path)
+    source = rig.rt.view().profiles[0].location
+    event = LocationEvent("UT", "enter", rig.clock.now(), rig.clock.now())
+    task = asyncio.create_task(rig.rt.location("p1", event, source))
+    await asked.wait()
+    await _switch_away_and_back(rig)
+    release.set()
+    await task
+    assert "UT" in only_occurrence(rig.rt).zone_reports  # the epoch is the only new fence
+
+
+async def test_location_epoch_bumps_only_on_location_changes(tmp_path):
+    rig = Rig(tmp_path)
+    rig.write(text=(PROFILES_DIR / "located_via_ut.yaml").read_text())
+    await rig.rt.start()
+    first = rig.rt.view().location_epochs.get("p1", 0)
+    steps = [
+        ("located_via_ut", 0),  # the same file again: no change
+        ("located_via_ut_later", 0),  # a route edit, same location
+        ("located_via_ut_off", 1),  # location removed
+        ("located_via_ut", 2),  # location back
+    ]
+    for name, want in steps:
+        rig.write(text=(PROFILES_DIR / f"{name}.yaml").read_text())
+        bump_mtime(rig.path)
+        await rig.rt.check_file()
+        assert not refused(rig.rt), name
+        assert rig.rt.view().location_epochs.get("p1", 0) == first + want, name
 
 
 async def test_choose_at_retained_remainder_promotes_ridden_train(tmp_path):  # N3, required

@@ -243,3 +243,11 @@ async def test_undelivered_counts_failed_obligations(tmp_path):
     w.notifier.fails = lambda e: False
     await w.rt.watchdog_once()
     assert w.rt.view().undelivered == 0
+
+
+async def test_view_location_epochs_is_a_copy(tmp_path):
+    w = await World(tmp_path).start()
+    w.rt._loc_epoch["p1"] = 3
+    v = w.rt.view()
+    w.rt._loc_epoch["p1"] = 4
+    assert v.location_epochs == {"p1": 3}

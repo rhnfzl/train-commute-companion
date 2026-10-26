@@ -1,11 +1,23 @@
 import asyncio
 import logging
+import os
 import threading
 
 import harness
 import pytest
-from harness import PROFILE, PROFILES, STATIONS, drive, rebound, setup_tcc, write_profiles
+from harness import (
+    PROFILE,
+    PROFILES,
+    STATIONS,
+    drive,
+    profiles_path,
+    rebound,
+    setup_tcc,
+    write_profiles,
+)
+from test_setup import tick
 
+from custom_components.train_commute_companion.const import REFRESH_S
 from custom_components.train_commute_companion.location import zones_for
 from train_commute_companion.providers.base import ProviderError
 from train_commute_companion.runtime import Runtime
@@ -51,9 +63,9 @@ async def start_tracker(h):
     def install(rt: Runtime) -> None:
         orig = rt.location
 
-        async def spy(profile_id, event, *rest):
+        async def spy(profile_id, event, *rest, **kw):
             calls.append((event.zone, event.kind))
-            await orig(profile_id, event, *rest)
+            await orig(profile_id, event, *rest, **kw)
 
         rt.location = spy
 
@@ -277,7 +289,7 @@ async def test_source_change_during_runtime_request_writes_no_evidence(hass, tex
 
     monkeypatch.setattr(h.provider, "trips", held)
     set_person(hass, 52.1, 5.1)  # positions read, event dispatched, the core's NS request waits
-    assert await hass.async_add_executor_job(hit.wait, 5)
+    assert await hass.async_add_executor_job(hit.wait, 30)
     await reload_profiles(h, text)
     await h.host.run(lambda rt: release.set())
     assert await spied(h) == [("UT", "enter")]  # dispatched under the old source
@@ -303,3 +315,85 @@ async def test_mixed_case_entity_is_tracked(hass):
     await start_tracker(h)
     set_person(hass, 52.1, 5.1)
     assert await spied(h) == [("UT", "enter")]
+
+
+_MTIME = [2_000_000_000 * 10**9]
+
+
+async def switch_away_and_back(h) -> None:
+    """TELEGRAM then VIA_UT again, both read by the runtime before the coordinator refreshes
+    once: the tracker never sees the telegram source, only a new epoch."""
+    for text in (TELEGRAM, VIA_UT):
+        write_profiles(h.hass, text)
+        _MTIME[0] += 10**9  # two writes in one tick are both seen by the file watch
+        os.utime(profiles_path(h.hass), ns=(_MTIME[0], _MTIME[0]))
+        await h.host.run(lambda rt: rt.check_file())
+    await h.entry.runtime_data.coordinator.async_refresh()
+
+
+def hold_trips(h, monkeypatch):
+    """The first NS request waits on `release` (set on the runtime loop); `hit` marks it."""
+    hit, release = threading.Event(), asyncio.Event()
+    real = h.provider.trips
+
+    async def held(q):
+        if not hit.is_set():  # only the location event's request; a reload may ask too
+            hit.set()
+            await release.wait()
+        return await real(q)
+
+    monkeypatch.setattr(h.provider, "trips", held)
+    return hit, release
+
+
+async def test_source_restored_during_runtime_request_writes_no_evidence(hass, monkeypatch):
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    hit, release = hold_trips(h, monkeypatch)
+    set_person(hass, 52.1, 5.1)
+    assert await hass.async_add_executor_job(hit.wait, 30)
+    await reload_profiles(h, TELEGRAM)
+    await reload_profiles(h, VIA_UT)  # the same settings as when the event was read
+    await h.host.run(lambda rt: release.set())
+    assert await spied(h) == [("UT", "enter")]
+    assert await h.host.run(evidence) == []
+
+
+async def test_events_after_a_source_change_and_refresh_are_written(hass):
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    await reload_profiles(h, TELEGRAM)
+    await reload_profiles(h, VIA_UT)
+    await tick(hass, REFRESH_S + 1)
+    set_person(hass, 52.5001, 5.5)  # still far: seeded by the re-tracked source
+    set_person(hass, 52.1, 5.1)
+    assert await spied(h) == [("UT", "enter")]
+    assert "UT" in await h.host.run(evidence)  # the new epoch is read, not a cached one
+
+
+async def test_event_queued_behind_the_lock_across_a_switch_back_is_dropped(hass, monkeypatch):
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    hit, release = hold_trips(h, monkeypatch)
+    set_person(hass, 52.1, 5.1)  # held in the runtime request, under the profile lock
+    assert await hass.async_add_executor_job(hit.wait, 30)
+    set_person(hass, 52.0, 5.0)  # queues behind the lock with the old epoch
+    await switch_away_and_back(h)
+    await tick(hass, REFRESH_S + 1)
+    await h.host.run(lambda rt: release.set())
+    await spied(h)
+    assert await h.host.run(evidence) == []  # the queued event kept its old epoch
+
+
+async def test_zone_radius_edit_reseeds(hass):
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, 52.1018, 5.1)  # about 200 m from UT: outside its 150 m circle
+    await start_tracker(h)
+    await reload_profiles(h, RADIUS_300)  # the same entity, a wider circle: a new epoch
+    await hass.async_block_till_done()
+    set_person(hass, 52.1019, 5.1)  # inside the new circle, no move across it
+    calls = await spied(h)
+    assert not [c for c in calls if c[1] in ("enter", "leave")], calls

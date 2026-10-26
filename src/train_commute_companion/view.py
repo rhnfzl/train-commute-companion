@@ -2,7 +2,7 @@
 follows, built by pure functions, so a shell never reaches into runtime state."""
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from itertools import pairwise
 
@@ -119,6 +119,8 @@ class RuntimeView:
     key_rejected: bool
     undelivered: int
     requests: int
+    # profile id -> its location source epoch (8); a profile never changed has no entry
+    location_epochs: Mapping[str, int] = field(default_factory=dict)
 
 
 def _reported(obs: TimeObs | None) -> datetime | None:
