@@ -1018,7 +1018,13 @@ class Runtime:
                 watched = x.state is LegState.DONE and (w is None or _utc(now) < _utc(w))
                 if x.state is LegState.DONE and not watched:
                     continue
-                riding = watched or x.state in (LegState.RIDING, LegState.MISSED) or j in s.retained
+                gone = _utc(now) >= _utc(x.train.planned_departure)  # may be on it (rule 7)
+                riding = (
+                    watched
+                    or x.state in (LegState.RIDING, LegState.MISSED)
+                    or j in s.retained
+                    or gone
+                )
                 base = seen.get(x.train) or WatchedLeg(
                     x.train, x.train.planned_departure, False, Observation.SEEN,
                     Provenance.REPORTED, Provenance.REPORTED, None,

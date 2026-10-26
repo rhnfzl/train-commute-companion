@@ -342,6 +342,16 @@ async def test_stopped_poller_watchdog_sends_cannot_see_train(tmp_path):
     assert kinds(rig.rt.events_log)[-1] is EventKind.CAN_SEE_TRAIN_AGAIN
 
 
+async def test_unobserved_departure_does_not_declare_recovery(tmp_path):
+    rig = await started(tmp_path, "07:56")
+    assert rig.occ().lock is not None
+    await rig.run_until("08:20", poll=False)  # the poller stopped before the 08:12 departure
+    ks = kinds(rig.rt.events_log)
+    # no answer arrived after 07:56: the user may be on the 08:12 (rule 7), so no recovery
+    assert EventKind.CANNOT_SEE_TRAIN in ks
+    assert EventKind.CAN_SEE_TRAIN_AGAIN not in ks
+
+
 async def test_watchdog_alerts_after_clock_jump(tmp_path):
     rig = await started(tmp_path, "07:52")  # locked, departing in 20 min
     rig.clock.jump(minutes=20)  # no poll ran
