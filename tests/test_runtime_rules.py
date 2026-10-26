@@ -913,3 +913,20 @@ async def test_retained_cancel_names_its_own_replacement(tmp_path):
     sent = [e.text for e in rig.notifier.attempts if e.kind is EventKind.CANCELLED]
     # someone on the 08:12 cannot catch the 08:25 from AAA: the next good one is from UT
     assert sent and "09:05" in sent[0] and "08:25" not in sent[0]
+
+
+async def test_held_all_good_names_the_current_platform(tmp_path):
+    rig = Rig(tmp_path, "07:50")
+    rig.provider.world = [make_connection([tracked(L1, "1", "1"), L2])]
+    rig.notifier.fails = lambda e: e.kind is EventKind.ALL_GOOD
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    rig.clock.set("07:52")  # the platform moves to 5 and that change is delivered
+    rig.provider.world = [make_connection([tracked(L1, "1", "5"), L2])]
+    await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    got = [(e.kind, e.text) for e in rig.notifier.attempts]
+    moved = next(i for i, (k, _) in enumerate(got) if k is EventKind.PLATFORM_CHANGE)
+    last = max(i for i, (k, _) in enumerate(got) if k is EventKind.ALL_GOOD)
+    assert last > moved and "platform 1" not in got[last][1] and "platform 5" in got[last][1]

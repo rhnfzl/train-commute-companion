@@ -421,6 +421,11 @@ class _View:
                 if i is not None:
                     body = _left_note(s, ctx, pool, j, i).text.partition(": ")[2]
                     break
+        elif e.kind is EventKind.ALL_GOOD:  # with the platform the latest answers give (7.9)
+            g = all_good(
+                replace(s, all_good_evaluated=False), Board(answers, (), s.generation), ctx
+            )
+            body = None if g is None else _twin(g.text)[0].partition(": ")[2]
         if body is None:
             return e
         head, tail = _twin(e.text)
