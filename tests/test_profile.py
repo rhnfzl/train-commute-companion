@@ -6,6 +6,7 @@ import pytest
 from train_commute_companion.model import Config, Direction
 from train_commute_companion.profile import (
     ProfileError,
+    check_lines,
     find_overlaps,
     load_config,
     parse_profiles,
@@ -414,3 +415,32 @@ def test_extra_date_beyond_the_schedulable_range_is_a_profile_error(extreme: str
     assert reload is None and errs == errs2
     assert [e.path for e in errs] == ["profiles[1].extra_dates[0]"]
     assert first is not None and [p.id for p in first.profiles] == ["p1", "p3"]
+
+
+LOCATED = (DATA / "located.yaml").read_text()
+
+
+def with_radius(text: str, m: object) -> str:
+    assert "    location:\n" in text
+    return text.replace("    location:\n", f"    location:\n      station_radius_m: {m!r}\n")
+
+
+def test_check_lines_names_errors_suggestions_and_dst():
+    _, lines = check_lines((DATA / "bad_starter.yaml").read_text(), STATIONS, TODAY)
+    assert any("transfer_min" in x and x.endswith(")") for x in lines)  # suggestion shown
+    assert any(x.startswith("id") or ".id:" in x for x in lines)  # the missing id is named
+    assert any(x.startswith("warning:") and "clock-change nights" in x for x in lines)
+
+
+def test_station_radius_default_and_custom():
+    assert parse_profiles(LOCATED, STATIONS)[0][0].location.station_radius_m == 150
+    assert (
+        parse_profiles(with_radius(LOCATED, 300), STATIONS)[0][0].location.station_radius_m == 300
+    )
+
+
+@pytest.mark.parametrize("bad", [0, -5, "150", 1.5, True])
+def test_station_radius_must_be_positive(bad):
+    _, errors = parse_profiles(with_radius(LOCATED, bad), STATIONS)
+    assert [e.path for e in errors] == ["profiles[0].location.station_radius_m"]
+    assert errors[0].message == "must be a whole number of metres above 0"

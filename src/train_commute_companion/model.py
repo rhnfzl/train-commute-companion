@@ -260,6 +260,7 @@ class LocationSettings:
     source: Literal["ha", "telegram", "owntracks"]
     entity: str | None
     zones: Mapping[str, str]
+    station_radius_m: int = 150  # last and defaulted, so stored configs still decode
 
 
 @dataclass(frozen=True, slots=True)

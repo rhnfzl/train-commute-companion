@@ -663,3 +663,138 @@ async def test_held_warning_names_the_journey_followed_once_the_locks_first_leg_
         "Now following your 08:40 train, then the 09:20 from UT.",
     ]
     assert len(held) == 2
+
+
+# --- shell seams: refusal, flags, started, look-ahead time ---
+
+OVERLAP = PROFILE.replace("days: [sat]", "days: [tue]")
+
+
+async def test_refusal_set_on_bad_file_and_cleared_on_fix(tmp_path):
+    rig = await started(tmp_path)
+    assert rig.rt.refusal is None
+    rig.write(text=OVERLAP.replace("NAME", "office_a"))
+    await rig.rt.check_file()
+    assert rig.rt.refusal is not None
+    assert "office_a" in rig.rt.refusal and "office_b" in rig.rt.refusal
+    rig.write("office_c")
+    await rig.rt.check_file()
+    assert rig.rt.refusal is None
+
+
+async def test_refusal_names_the_station_list_wait(tmp_path):
+    from train_commute_companion.providers.base import ProviderError
+
+    rig = await started(tmp_path)
+    rt = rig.new()
+    rt.require_stations = True
+
+    async def down() -> frozenset[str]:
+        raise ProviderError("station endpoint down")
+
+    rig.provider.stations = down  # type: ignore[method-assign]
+    await rt.start()
+    rig.write("office_x")
+    await rt.check_file()
+    assert rt.refusal is not None and "station list is unavailable" in rt.refusal
+
+
+async def test_store_ok_false_after_failed_write(tmp_path):
+    rig = await started(tmp_path)
+    assert rig.rt.store_ok is True
+    rig.store.fail = True
+    rig.clock.set("07:52")
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    await rig.rt.poll_once()
+    assert rig.rt.store_ok is False
+
+
+async def test_key_rejected_flag_follows_auth_outage(tmp_path):
+    rig = Rig(tmp_path, "07:20")
+    rig.provider.error = lambda q: AuthError()
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    assert rig.rt.key_rejected is True
+    rig.provider.error = lambda q: None
+    rig.clock.set("07:22")
+    await rig.rt.poll_once()
+    assert rig.rt.key_rejected is False
+
+
+async def test_station_list_auth_error_sets_key_rejected(tmp_path):
+    rig = Rig(tmp_path, "07:20")
+    rig.rt.require_stations = True
+
+    async def rejected() -> frozenset[str]:
+        raise AuthError()
+
+    rig.provider.stations = rejected  # type: ignore[method-assign]
+    await rig.rt.start()
+    assert rig.rt.key_rejected is True
+    assert kinds(rig.rt.events_log).count(EventKind.KEY_REJECTED) == 1
+    assert next(e for e in rig.rt.events_log if e.kind is EventKind.KEY_REJECTED).severity is (
+        Severity.LOUD
+    )
+
+    async def ok() -> frozenset[str]:
+        return frozenset({"AAA", "UT", "RTD"})
+
+    rig.provider.stations = ok  # type: ignore[method-assign]
+    rig.clock.jump(2)
+    await rig.rt.check_file()  # the wait for the list retries once per poll interval
+    assert rig.rt.key_rejected is False
+
+
+async def test_started_false_until_start_returns(tmp_path):
+    rig = Rig(tmp_path)
+    seen: list[bool] = []
+    rig.provider.hook = lambda q: seen.append(rig.rt.started)
+    assert rig.rt.started is False
+    await rig.rt.start()
+    assert rig.rt.started is True
+    assert seen and not any(seen)  # the reconcile poll ran before start returned
+
+
+async def test_now_is_the_runtime_clock(tmp_path):
+    rig = Rig(tmp_path)
+    assert rig.rt.now() == at("07:50")
+
+
+class _Stop(Exception):
+    pass
+
+
+async def test_lookahead_at_moves_the_daily_run(tmp_path):
+    from datetime import time
+
+    rig = Rig(tmp_path, "04:00")  # before the default look-ahead time too
+    rig.rt = Runtime(
+        profile_path=rig.path,
+        store=rig.store,
+        provider=rig.provider,
+        notifier=rig.notifier,
+        clock=rig.clock,
+        known_stations=None,
+        lookahead_at=time(7, 12),
+    )
+    first_works: list[datetime] = []
+    plain = rig.provider.planned_works
+
+    async def works() -> PlannedWorks:
+        first_works.append(rig.clock.now())
+        return await plain()
+
+    rig.provider.planned_works = works  # type: ignore[method-assign]
+
+    async def sleep(seconds: float) -> None:
+        await asyncio.sleep(0)
+        if first_works or rig.clock.now() >= at("08:12"):
+            raise _Stop
+        rig.clock.jump(min(seconds, 30) / 60)
+
+    rig.clock.sleep = sleep  # type: ignore[method-assign]
+    try:
+        await rig.rt.run_forever()
+    except _Stop:
+        pass
+    assert first_works and at("07:12") <= first_works[0] < at("07:12") + timedelta(minutes=1)

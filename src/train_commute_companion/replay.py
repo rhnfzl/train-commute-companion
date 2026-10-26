@@ -182,7 +182,17 @@ def _read(path: Path) -> Any:
         raise ReplayError(f"cannot read {path.name}: {e}") from None
 
 
-async def replay_lines(path: Path) -> list[str]:
+@dataclass(frozen=True, slots=True)
+class Replay:
+    clock: ReplayClock
+    provider: ReplayProvider
+    profile_path: Path
+    timeline: list[tuple[datetime, dict[str, Any]]]
+    end: datetime
+
+
+def load_replay(path: Path) -> Replay:
+    """A replay file parsed into its clock, scripted provider, profile path and events."""
     spec = _read(path)
     if not isinstance(spec, dict):
         raise ReplayError(f"{path.name}: not a replay file")
@@ -212,19 +222,27 @@ async def replay_lines(path: Path) -> list[str]:
         key=lambda x: x[0].astimezone(UTC),
     )
     clock = ReplayClock(start)
+    return Replay(
+        clock, ReplayProvider(clock, script), path.parent / str(spec["profile"]), timeline, end
+    )
+
+
+async def replay_lines(path: Path) -> list[str]:
+    r = load_replay(path)
+    clock, end = r.clock, r.end
     rt = Runtime(
-        profile_path=path.parent / str(spec["profile"]),
+        profile_path=r.profile_path,
         store=MemoryStore(),
-        provider=ReplayProvider(clock, script),
+        provider=r.provider,
         notifier=PrintNotifier(),
         clock=clock,
         known_stations=None,
     )
     await rt.start()
-    pending = list(timeline)
+    pending = list(r.timeline)
     while clock.now().astimezone(UTC) < end.astimezone(UTC):
         while pending and pending[0][0].astimezone(UTC) <= clock.now().astimezone(UTC):
-            await _apply(rt, pending.pop(0)[1], clock.now())
+            await apply_event(rt, pending.pop(0)[1], clock.now())
         now = clock.now()
         if now.minute % 2 == 0 and now.second == 0:
             await rt.poll_once()
@@ -233,7 +251,7 @@ async def replay_lines(path: Path) -> list[str]:
     return [*(format_event(e) for e in rt.events_log), ATTRIBUTION]
 
 
-async def _apply(rt: Runtime, e: dict[str, Any], now: datetime) -> None:
+async def apply_event(rt: Runtime, e: dict[str, Any], now: datetime) -> None:
     cfg = rt.config
     pid = str(e.get("profile") or (cfg.profiles[0].id if cfg and cfg.profiles else ""))
     if "location" in e:

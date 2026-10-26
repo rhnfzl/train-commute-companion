@@ -1,6 +1,7 @@
 """NS Reisinformatie mapping. The only place that knows NS field names."""
 
 import asyncio
+import math
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -302,6 +303,22 @@ def map_stations(payload: object) -> frozenset[str]:
     return frozenset(codes)
 
 
+def _num(v: object) -> bool:
+    return isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def map_station_positions(payload: object) -> dict[str, tuple[float, float]]:
+    """Code to (lat, lng) for stations with numeric coordinates; never raises."""
+    return {
+        str(s.get("code") or s.get("stationCode")): (float(s["lat"]), float(s["lng"]))
+        for s in _items(payload) or ()
+        if isinstance(s, dict)
+        and (s.get("code") or s.get("stationCode"))
+        and _num(s.get("lat"))
+        and _num(s.get("lng"))
+    }
+
+
 BASE_URL = "https://gateway.apiportal.ns.nl/reisinformatie-api/api"
 
 
@@ -321,6 +338,7 @@ class NsProvider:
         self._key = api_key
         self._client = client
         self._clock = clock
+        self.positions: dict[str, tuple[float, float]] = {}
 
     async def _get(self, path: str, params: dict[str, str] | None = None) -> object:
         # Messages are fixed text: the key and the request URL never enter an exception.
@@ -370,4 +388,7 @@ class NsProvider:
         return map_disruptions(payload)
 
     async def stations(self) -> frozenset[str]:
-        return map_stations(await self._get("/v2/stations"))
+        payload = await self._get("/v2/stations")
+        codes = map_stations(payload)
+        self.positions = map_station_positions(payload)  # same payload, no extra request
+        return codes

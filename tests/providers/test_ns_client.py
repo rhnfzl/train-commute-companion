@@ -163,3 +163,29 @@ async def test_request_deadline_is_provider_error() -> None:
 def test_ns_provider_satisfies_provider_protocol() -> None:
     client = httpx.AsyncClient()
     _: Provider = NsProvider("k", client, lambda: NOW)  # checked by mypy --strict
+
+
+async def test_stations_fills_positions():
+    p = provider(
+        lambda req: httpx.Response(
+            200,
+            json={
+                "payload": [
+                    {"code": "UT", "lat": 52.09, "lng": 5.11},
+                    {"code": "AAA"},
+                    {"code": "RTD", "lat": "51.9", "lng": 4.46},
+                    {"code": "BBB", "lat": True, "lng": 4.0},
+                ]
+            },
+        )
+    )
+    assert p.positions == {}
+    assert await p.stations() == frozenset({"UT", "AAA", "RTD", "BBB"})
+    assert p.positions == {"UT": (52.09, 5.11)}
+
+
+def test_map_station_positions_never_raises():
+    from train_commute_companion.providers.ns import map_station_positions
+
+    for bad in (None, 3, "x", {"payload": None}, {"payload": [None, 1, {"lat": 1, "lng": 2}]}):
+        assert map_station_positions(bad) == {}

@@ -524,8 +524,12 @@ class Runtime:
         notifier: Notifier,
         clock: Clock,
         known_stations: frozenset[str] | None,
+        lookahead_at: time = LOOKAHEAD_AT,
     ) -> None:
         self._path = profile_path
+        self._lookahead_at = lookahead_at
+        self._refusal: str | None = None
+        self._started = False
         self._store = store
         self._provider = provider
         self.events_log: list[AlertEvent] = []
@@ -567,6 +571,26 @@ class Runtime:
     @property
     def state(self) -> PersistedState:
         return self._st
+
+    @property
+    def refusal(self) -> str | None:
+        """Why the last reload refused the file (or waits for the station list); None if not."""
+        return self._refusal
+
+    @property
+    def store_ok(self) -> bool:
+        return self._store_ok
+
+    @property
+    def key_rejected(self) -> bool:
+        return self._auth_outage
+
+    @property
+    def started(self) -> bool:
+        return self._started
+
+    def now(self) -> datetime:
+        return self._clock.now()
 
     def _profile_for(self, s: OccurrenceState) -> Profile | None:
         return _effective(self._st.config_snapshots, self._st.config, s)
@@ -1177,10 +1201,12 @@ class Runtime:
             if isinstance(errors, str)
             else "; ".join(f"{e.path}: {e.message}" for e in errors)
         )
+        self._refusal = reason
         self._app_warning(EventKind.PROFILE_REFUSED, f"profile change refused: {reason}.", now)
 
     async def reload(self) -> None:
         now = self._clock.now()
+        self._refusal = None
         try:
             text = self._path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
@@ -1194,13 +1220,13 @@ class Runtime:
             if unchecked and not errors and cfg is not old:
                 # 5.3: an edit (or a first configuration) whose codes cannot be checked waits;
                 # the last valid configuration keeps running meanwhile (5.2)
+                reason = (
+                    "the NS station list is unavailable, so station codes cannot be checked;"
+                    " the last valid configuration keeps running and the change is tried again"
+                )
                 if not self._unchecked:
-                    self._refuse(
-                        "the NS station list is unavailable, so station codes cannot be checked;"
-                        " the last valid configuration keeps running and the change is tried"
-                        " again",
-                        now,
-                    )
+                    self._refuse(reason, now)
+                self._refusal = reason
                 self._unchecked = True
             else:
                 self._unchecked = False
@@ -1327,7 +1353,8 @@ class Runtime:
 
     async def stations(self) -> frozenset[str] | None:
         """The NS station list through the shared budget (rule 14); None when refused."""
-        if not self._budget.allow(self._clock.now(), live=False):
+        now = self._clock.now()
+        if not self._budget.allow(now, live=False):
             return None
         before = self._budget
         self.requests += 1
@@ -1335,8 +1362,11 @@ class Runtime:
             got = await asyncio.wait_for(self._provider.stations(), POLL_DEADLINE.total_seconds())
         except (ProviderError, TimeoutError) as e:
             self._settle(before, e, None)
+            if isinstance(e, AuthError):
+                self._auth("auth", "stations", now)
             return None
         self._settle(before, None, None)
+        self._auth(None, "stations", now)  # an accepted key ends the outage (7.11)
         return got
 
     async def _lookahead(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
@@ -1408,6 +1438,7 @@ class Runtime:
             self._since = None
         self._apply({})
         await self._deliver()
+        self._started = True
 
     async def _start(self, now: datetime) -> None:
         lost = None
@@ -1451,13 +1482,16 @@ class Runtime:
         c = self._clock
 
         async def daily() -> None:
-            """Today's run once 06:00 has passed, also after a start past it; retried each poll
-            interval until every direction's run has written (7.10)."""
+            """Today's run once the look-ahead time (LOOKAHEAD_AT by default) has passed, also
+            after a start past it; retried each poll interval until every direction's run has
+            written (7.10)."""
             while True:
                 now = self._clock.now().astimezone(TZ)
-                six = resolve_local(now.date(), LOOKAHEAD_AT, edge="start")
+                six = resolve_local(now.date(), self._lookahead_at, edge="start")
                 if _utc(six) <= _utc(now) and self._lookahead_done(six):
-                    six = resolve_local(now.date() + timedelta(days=1), LOOKAHEAD_AT, edge="start")
+                    six = resolve_local(
+                        now.date() + timedelta(days=1), self._lookahead_at, edge="start"
+                    )
                 if _utc(six) > _utc(now):
                     await self._clock.sleep((_utc(six) - _utc(now)).total_seconds())
                     continue

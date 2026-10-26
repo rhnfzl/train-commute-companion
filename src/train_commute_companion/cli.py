@@ -6,34 +6,20 @@ import json
 import os
 import sys
 from collections.abc import Sequence
-from datetime import datetime, time
+from datetime import datetime
 from pathlib import Path
 
 import httpx
 
 from train_commute_companion.calendar import TZ
 from train_commute_companion.model import AlertEvent, Direction, Profile
-from train_commute_companion.profile import load_config
+from train_commute_companion.profile import check_lines
 from train_commute_companion.providers.base import ProviderError
 from train_commute_companion.providers.ns import NsProvider, map_stations
 from train_commute_companion.replay import ATTRIBUTION, ReplayError, format_event, replay_lines
 from train_commute_companion.runtime import Runtime, SystemClock
 from train_commute_companion.serde import decode
 from train_commute_companion.store import JsonFileStore, PersistedState
-
-_DST_HOUR = 2  # the hour that is repeated or skipped on the clock-change nights (5.2)
-
-
-def _times(p: Profile) -> list[tuple[str, time]]:
-    out: list[tuple[str, time]] = []
-    for d in Direction:
-        j = p.journey(d)
-        out.append((f"{d.value}.first_train", j.first_train))
-        out += [(f"{d.value}.window[{i}]", t) for i, t in enumerate(j.window)]
-    if p.alerts.latest_acceptable_arrival:
-        out.append(("alerts.latest_acceptable_arrival", p.alerts.latest_acceptable_arrival))
-    out += [(f"alerts.quiet_hours[{i}]", t) for i, t in enumerate(p.alerts.quiet_hours or ())]
-    return out
 
 
 def _moved(path: Path, profiles: Sequence[Profile]) -> list[str]:
@@ -76,24 +62,18 @@ def check_profile(args: argparse.Namespace) -> int:
     else:
         got = asyncio.run(_ns_stations())
         known = None if isinstance(got, str) else got
-    cfg, errors = load_config(text, known, None, datetime.now(TZ).date())
-    for pe in errors:
-        print(f"{pe.path}: {pe.message}" + (f" ({pe.suggestion})" if pe.suggestion else ""))
+    cfg, lines = check_lines(text, known, datetime.now(TZ).date())
+    for line in lines:
+        print(line)
     profiles = cfg.profiles if cfg else ()
-    for p in profiles:
-        for where, t in _times(p):
-            if t.hour == _DST_HOUR:
-                print(
-                    f"warning: {p.name}.{where}: {t:%H:%M} is between {_DST_HOUR:02d}:00 and {_DST_HOUR + 1:02d}:00, "
-                    "which is repeated or skipped on the clock-change nights"
-                )
     if args.store:
         for line in _moved(Path(args.store), profiles):
             print(line)
     if known is None:  # 5.3: a file whose codes were not checked is never reported valid
         print(f"station codes not checked: {got}")
         return 1
-    return 1 if errors else 0
+    # error paths start with "file" or "profiles", never "warning: "
+    return 1 if any(not x.startswith("warning: ") for x in lines) else 0
 
 
 async def _ns_stations() -> frozenset[str] | str:

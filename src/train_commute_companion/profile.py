@@ -236,8 +236,11 @@ def _location(c: _Ctx, raw: object) -> tuple[bool, LocationSettings | None]:
         c.err("location", "must be a mapping or null")
         return False, None
     n = len(c.errors)
-    c.keys(raw, ("source", "entity", "zones"), "location")
+    c.keys(raw, ("source", "entity", "zones", "station_radius_m"), "location")
     src, ent, zones = raw.get("source"), raw.get("entity"), raw.get("zones", {})
+    radius = raw.get("station_radius_m", 150)
+    if isinstance(radius, bool) or not isinstance(radius, int) or radius <= 0:
+        c.err("location.station_radius_m", "must be a whole number of metres above 0")
     if src not in _SOURCES:
         c.err("location.source", f"must be one of {', '.join(_SOURCES)}, got {src!r}")
     if ent is not None and not isinstance(ent, str):
@@ -251,7 +254,7 @@ def _location(c: _Ctx, raw: object) -> tuple[bool, LocationSettings | None]:
     if len(c.errors) > n:
         return False, None
     return True, LocationSettings(
-        cast(Literal["ha", "telegram", "owntracks"], src), ent, dict(zones)
+        cast(Literal["ha", "telegram", "owntracks"], src), ent, dict(zones), radius
     )
 
 
@@ -601,3 +604,36 @@ def load_config(
     refused = {p.id for a, b, _ in pairs for p in (a, b)}
     kept = tuple(p for p in profiles if p.id not in refused)
     return (Config(1, kept) if kept else None), errors
+
+
+_DST_HOUR = 2  # the hour that is repeated or skipped on the clock-change nights (5.2)
+
+
+def _times(p: Profile) -> list[tuple[str, time]]:
+    out: list[tuple[str, time]] = []
+    for d in Direction:
+        j = p.journey(d)
+        out.append((f"{d.value}.first_train", j.first_train))
+        out += [(f"{d.value}.window[{i}]", t) for i, t in enumerate(j.window)]
+    if p.alerts.latest_acceptable_arrival:
+        out.append(("alerts.latest_acceptable_arrival", p.alerts.latest_acceptable_arrival))
+    out += [(f"alerts.quiet_hours[{i}]", t) for i, t in enumerate(p.alerts.quiet_hours or ())]
+    return out
+
+
+def check_lines(
+    text: str, known: frozenset[str] | None, today: date
+) -> tuple[Config | None, list[str]]:
+    """`load_config` as readable lines: every error, then the clock-change hour warnings (5.3)."""
+    cfg, errors = load_config(text, known, None, today)
+    lines = [
+        f"{e.path}: {e.message}" + (f" ({e.suggestion})" if e.suggestion else "") for e in errors
+    ]
+    for p in cfg.profiles if cfg else ():
+        for where, t in _times(p):
+            if t.hour == _DST_HOUR:
+                lines.append(
+                    f"warning: {p.name}.{where}: {t:%H:%M} is between {_DST_HOUR:02d}:00 and "
+                    f"{_DST_HOUR + 1:02d}:00, which is repeated or skipped on the clock-change nights"
+                )
+    return cfg, lines
