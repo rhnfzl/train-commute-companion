@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 
 from train_commute_companion.calendar import TZ
-from train_commute_companion.model import AlertEvent, Direction, Profile
+from train_commute_companion.model import AlertEvent, Profile
 from train_commute_companion.profile import check_lines
 from train_commute_companion.providers.base import ProviderError
 from train_commute_companion.providers.ns import NsProvider, map_stations
@@ -20,6 +20,7 @@ from train_commute_companion.replay import ATTRIBUTION, ReplayError, format_even
 from train_commute_companion.runtime import Runtime, SystemClock
 from train_commute_companion.serde import decode
 from train_commute_companion.store import JsonFileStore, PersistedState
+from train_commute_companion.view import moved
 
 
 def _moved(path: Path, profiles: Sequence[Profile]) -> list[str]:
@@ -28,21 +29,7 @@ def _moved(path: Path, profiles: Sequence[Profile]) -> list[str]:
         state = decode(PersistedState, json.loads(path.read_text(encoding="utf-8"))["state"])
     except (OSError, ValueError, KeyError, TypeError) as e:
         return [f"store: cannot read {path.name} ({type(e).__name__}); NS changes not checked"]
-    lines = []
-    for p in profiles:
-        for d in Direction:
-            hist = state.baselines.get(f"{p.id}|{d.value}")
-            confirmed = [v for v in (hist.versions if hist else ()) if v.confirmed]
-            if not confirmed:
-                continue
-            v = max(confirmed, key=lambda x: (x.effective_from, x.version))
-            adopted, mine = v.signature.legs[0].departure, p.journey(d).first_train
-            if adopted != mine:
-                lines.append(
-                    f"{p.name}.{d.value}: NS moved your {mine:%H:%M} to {adopted:%H:%M} "
-                    f"from {v.effective_from.isoformat()}; update your profile?"
-                )
-    return lines
+    return [m.text for m in moved(profiles, state.baselines)]
 
 
 def check_profile(args: argparse.Namespace) -> int:

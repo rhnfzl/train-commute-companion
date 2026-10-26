@@ -88,6 +88,13 @@ from train_commute_companion.providers.base import (
 )
 from train_commute_companion.schedule import dated_schedule, schedules_active
 from train_commute_companion.store import PersistedState, StorageError, Store
+from train_commute_companion.view import (
+    DirectionInfo,
+    RuntimeView,
+    moved,
+    occurrence_view,
+    works_ahead,
+)
 
 log = logging.getLogger(__name__)
 
@@ -642,6 +649,51 @@ class Runtime:
         v = next((x for x in hist.versions if x.version == version), None) or hist.in_force(sd)
         n = len(p.journey(d).transfers) + 1
         return v.signature if v is not None and len(v.signature.legs) == n else None
+
+    def view(self) -> RuntimeView:
+        """A frozen snapshot for shells (5.4): nothing in it changes as the runtime goes on."""
+        now = self._clock.now()
+        st, cfg = self._st, self._st.config
+        occurrences = []
+        for k, s in sorted(st.occurrences.items()):
+            ctx = self._ctx(s, now)
+            if ctx is not None:
+                occurrences.append(occurrence_view(s, ctx, self._boards.get(k, ())))
+        # rule 10: a removed profile still runs on its occurrences, so its entities stay
+        profiles = list(cfg.profiles if cfg else ())
+        running = [s for s in st.occurrences.values() if _find(cfg, s.key.profile_id) is None]
+        for pid in sorted({s.key.profile_id for s in running}):
+            newest = max(
+                (s for s in running if s.key.profile_id == pid), key=lambda s: s.key.service_date
+            )
+            p = self._profile_for(newest)
+            if p is not None:
+                profiles.append(p)
+        directions = []
+        for p in profiles:
+            for d in Direction:
+                routes = [
+                    _find(st.config_snapshots.get(s.route_revision), p.id)
+                    for s in st.occurrences.values()
+                    if s.key.profile_id == p.id and s.key.direction is d
+                ]
+                n = max(len(r.journey(d).transfers) for r in (p, *routes) if r is not None)
+                directions.append(DirectionInfo(p.id, p.name, d, n))
+        today = now.astimezone(TZ).date()
+        return RuntimeView(
+            now,
+            self._started,
+            tuple(profiles),
+            tuple(directions),
+            tuple(occurrences),
+            {k: works_ahead(v, today) for k, v in st.lookahead.items()},
+            moved(cfg.profiles if cfg else (), st.baselines),
+            self._refusal,
+            self._store_ok,
+            self._auth_outage,
+            sum(o.attempts > 0 for o in st.obligations),
+            self.requests,
+        )
 
     # --- the serialised writer: state, ledger and obligations in one save (rule 5, 22) ---
 

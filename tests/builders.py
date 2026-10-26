@@ -3,14 +3,17 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from train_commute_companion.lifecycle import OccurrenceState
 from train_commute_companion.model import (
     Connection,
+    Direction,
     Leg,
     Provenance,
     Stop,
     TimeObs,
     TrainId,
 )
+from train_commute_companion.runtime import Runtime
 
 AMS = ZoneInfo("Europe/Amsterdam")
 
@@ -98,3 +101,35 @@ def make_leg(
 
 def make_connection(legs: Sequence[Leg], status: str = "NORMAL") -> Connection:
     return Connection(tuple(legs), status, None)
+
+
+def _on_track(leg: Leg, track: str) -> Leg:
+    board = replace(leg.stops[0], actual_track=track)
+    return replace(leg, stops=(board, *leg.stops[1:]))
+
+
+# 08:12 AAA-UT, then the 08:46 UT-RTD 5 min late on new track 7; the next connection 08:44
+ONE_TRANSFER: tuple[Connection, ...] = (
+    make_connection(
+        [
+            make_leg("AAA", "UT", "08:12", "08:40", number="1234"),
+            _on_track(
+                make_leg("UT", "RTD", "08:46", "09:20", number="5678", delay_dep=5, delay_arr=5),
+                "7",
+            ),
+        ]
+    ),
+    make_connection(
+        [
+            make_leg("AAA", "UT", "08:44", "09:08", number="1236"),
+            make_leg("UT", "RTD", "09:16", "09:50", number="5680"),
+        ]
+    ),
+)
+
+
+def only_occurrence(rt: Runtime, direction: Direction = Direction.OUTBOUND) -> OccurrenceState:
+    """The single unarchived occurrence of `direction`."""
+    mine = [s for s in rt.state.occurrences.values() if s.key.direction is direction]
+    assert len(mine) == 1, mine
+    return mine[0]
