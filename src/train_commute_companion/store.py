@@ -112,19 +112,24 @@ class JsonFileStore:
             {"version": VERSION, "write_counter": counter, "state": encode(s)}, sort_keys=True
         )
         tmp = ""
+        new_marker = False
         try:
             fd, tmp = tempfile.mkstemp(".new", "store-", self._path.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp, self._path)
+            new_marker = not self._marker.exists()
+            self._marker.touch()  # before the commit: nothing after os.replace can fail
+            os.replace(tmp, self._path)  # the commit point
             tmp = ""
-            self._last = counter
-            self._marker.touch()
         except OSError as e:
+            if tmp and new_marker:  # no store was ever written: a marker would mean "state lost"
+                with contextlib.suppress(OSError):
+                    self._marker.unlink()
             raise StorageError(f"cannot write {self._path.name}: {e}") from e
         finally:
             if tmp:
                 with contextlib.suppress(OSError):
                     os.unlink(tmp)
+        self._last = counter

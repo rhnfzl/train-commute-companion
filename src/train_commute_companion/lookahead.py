@@ -76,9 +76,10 @@ class ProbeResult:
 class LookAheadLedger:
     per_date: Mapping[str, tuple[str, ...]]  # "<service date>|<leg index or j>" -> entries
     pending: tuple[Obligation, ...]
-    last_run: datetime | None  # last successful run
+    last_run: datetime | None  # last successful run (look-ahead health only)
     started_revision: int
     started_baseline: int | None
+    last_applied: datetime | None = None  # start time of the last run whose writes were applied
 
 
 # ---- signatures
@@ -122,7 +123,7 @@ def _duration(s: Signature) -> int:
 
 
 def _differs(a: Signature, b: Signature, dep_tol: int, dur_tol: int) -> bool:
-    if len(a.legs) != len(b.legs):
+    if len(a.legs) != len(b.legs) or abs(_duration(a) - _duration(b)) >= dur_tol:
         return True
     return any(
         (x.board, x.alight) != (y.board, y.alight)
@@ -229,6 +230,16 @@ def _transfer_issue(inc: Leg, out: Leg, p: Profile) -> str | None:
     t = check_transfer(
         classify_leg(inc, station), classify_leg(out, out.alight.code), station, p.transfer_min
     )
+    # 7.10 checks the planned transfer: a reported delay must not hide a short change
+    arr = next((s.planned_arrival for s in inc.stops[1:] if s.code == station), None)
+    dep = out.board.planned_departure
+    planned = (
+        None
+        if arr is None or dep is None
+        else int((dep.astimezone(UTC) - arr.astimezone(UTC)).total_seconds() // 60)
+    )
+    if planned is not None and planned < t.minimum:
+        return f"short:{station}:{planned}:{t.minimum}"
     if t.state is not TransferState.BROKEN:
         return None
     return f"short:{station}:{t.margin_min if t.margin_min is not None else '?'}:{t.minimum}"
@@ -297,7 +308,8 @@ def evaluate(
         ]
         near = _nearest([c for c in ends if matches_pattern(c, j.transfers)], first)
         if near is not None:
-            whole = usual_connection(whole_ans, st[0], _dep(near.legs[0]), j.transfers, sig) or near
+            only = replace(whole_ans, connections=tuple(ends))  # the tie-break sees `ends` only
+            whole = usual_connection(only, st[0], _dep(near.legs[0]), j.transfers, sig) or near
         else:
             pattern = _nearest([c for c in ends if not matches_pattern(c, j.transfers)], first)
 
@@ -467,6 +479,36 @@ def _shifted(p: Profile, d: Direction, first: time) -> Profile:
     return replace(p, outbound=j2) if d is Direction.OUTBOUND else replace(p, return_=j2)
 
 
+def _effective(
+    p: Profile, hs: Mapping[tuple[str, Direction], BaselineHistory], day: date
+) -> Profile:
+    """`p` with each direction's first train and window moved to the baseline in force."""
+    for d in Direction:
+        h = hs.get((p.id, d))
+        v = None if h is None else h.in_force(day)
+        if v is not None:
+            p = _shifted(p, d, v.signature.legs[0].departure)
+    return p
+
+
+def _overlaps(
+    p: Profile,
+    d: Direction,
+    agreed: Signature,
+    start: date,
+    others: Sequence[Profile],
+    bases: Mapping[tuple[str, Direction], BaselineHistory],
+) -> bool:
+    """Rule 19: the dated schedules from `start` on, with `agreed` adopted for `p` and `d`,
+    checked from each date where any schedule changes."""
+    hs = {**bases, (p.id, d): BaselineHistory((BaselineVersion(0, agreed, start, True),))}
+    days = {start} | {v.effective_from for h in hs.values() for v in h.versions}
+    return any(
+        find_overlaps([_effective(x, hs, day) for x in (p, *others)], day)
+        for day in sorted(x for x in days if x >= start)
+    )
+
+
 def _seed_day(per_date: Mapping[str, tuple[str, ...]], version: int) -> str | None:
     tag = f"seed:{version}"
     return next((k.split("|")[0] for k, v in per_date.items() if tag in v), None)
@@ -482,10 +524,13 @@ def run_lookahead(
     today: date,
     now: datetime,
     others: Sequence[Profile] = (),
+    bases: Mapping[tuple[str, Direction], BaselineHistory] | None = None,
 ) -> tuple[BaselineHistory, LookAheadLedger, list[AlertEvent]] | None:
     """The direction's serialised look-ahead writer. Every fact is written to the ledger and
-    stored as a pending message before any delivery. `others` are the other profiles, for the
-    overlap check of an adoption (7.12 rule 19).
+    stored as a pending message before any delivery. `others` are the other profiles and
+    `bases` the current baseline histories of every other (profile id, direction), this
+    profile's other direction included, for the dated overlap check of an adoption (7.12
+    rule 19).
 
     Caller contract (rule 21): `ledger` is the ledger as stored at write time with
     `started_revision` / `started_baseline` set to the revision and `history.latest` seen when
@@ -494,8 +539,9 @@ def run_lookahead(
     `ledger.pending` holds only undelivered obligations: delivery removes each one it finishes."""
     if ledger.started_revision != revision or ledger.started_baseline != history.latest:
         return None  # the route or baseline changed since the run started (rule 21)
-    if ledger.last_run is not None and ledger.last_run.astimezone(UTC) > now.astimezone(UTC):
-        return None  # an older run overlapping a newer one
+    stamps = [t.astimezone(UTC) for t in (ledger.last_applied, ledger.last_run) if t is not None]
+    if stamps and max(stamps) > now.astimezone(UTC):
+        return None  # an older run overlapping a newer one, also a newer failed-health one
     j = p.journey(d)
     n = len(j.transfers) + 1
     results = sorted(
@@ -517,10 +563,30 @@ def run_lookahead(
     def add_entry(key: str, entry: str) -> None:
         per_date[key] = (*per_date.get(key, ()), entry)
 
+    def retire(w: BaselineVersion, text: str) -> None:
+        """Removes a waiting version: an untold adoption of it is just dropped, a told one gets
+        a silent correction on its date (7.12 rule 18)."""
+        nonlocal floor, pending
+        versions.remove(w)
+        floor = max(floor, w.version)
+        told = [
+            o
+            for o in pending
+            if o.baseline_version == w.version and o.event.kind is EventKind.TIMETABLE_ADOPTED
+        ]
+        if told:
+            pending = [o for o in pending if o not in told]  # never delivered
+        else:
+            facts.setdefault(w.effective_from, []).append(
+                (f"cancel:{w.version}", text, False, False)
+            )
+
     # 1. cold start: seed, shorter provisional, confirmation (7.10)
     if not any(v.confirmed for v in versions):
         for sd, r in sorted(wholes.items()):
-            if not r.clean or r.connection is None:
+            # works seen by any leg probe of that date also keep it out (7.10)
+            same_day = [x for x in results if x.service_date == sd]
+            if not r.clean or r.connection is None or not all(x.clean for x in same_day):
                 continue
             sig = signature_of(r.connection, sd)
             prov = max(versions, key=lambda v: v.version, default=None)
@@ -560,24 +626,7 @@ def run_lookahead(
     # 3. a waiting version is cancelled when the run agrees with the version in force
     if agreed is not None and in_force_today is not None and agreed == in_force_today.signature:
         for w in [v for v in versions if v.effective_from > today]:
-            versions.remove(w)
-            floor = max(floor, w.version)
-            told = [
-                o
-                for o in pending
-                if o.baseline_version == w.version and o.event.kind is EventKind.TIMETABLE_ADOPTED
-            ]
-            if told:
-                pending = [o for o in pending if o not in told]  # never delivered: just drop
-            else:
-                facts.setdefault(w.effective_from, []).append(
-                    (
-                        f"cancel:{w.version}",
-                        "your usual timetable stays as it was; ignore the earlier change",
-                        False,
-                        False,
-                    )
-                )
+            retire(w, "your usual timetable stays as it was; ignore the earlier change")
 
     # 4. unanimous adoption of the whole signature, after confirmation only (Q2)
     if agreed is not None and any(v.confirmed for v in versions):
@@ -591,13 +640,16 @@ def run_lookahead(
                     f"NS moved your {_hhmm(old_first)} to {_hhmm(new_first)} on another day;"
                     " update your profile"
                 )
-            elif find_overlaps([_shifted(p, d, new_first), *others], today):
+            elif _overlaps(p, d, agreed, expected[0], others, bases or {}):
                 refusals.append(
                     f"NS moved your {_hhmm(old_first)} to {_hhmm(new_first)}, which overlaps"
                     " another window; update your profile"
                 )
             else:
                 adopted = BaselineVersion(current._next(), agreed, expected[0], True)
+                for w in [v for v in versions if v.effective_from > today]:
+                    if w.effective_from >= adopted.effective_from:  # it would override this one
+                        retire(w, "ignore the earlier change; I follow the newer NS time")
                 versions.append(adopted)
                 add_entry(f"{expected[0].isoformat()}|j", f"adopt:{adopted.version}")
                 when = f"{expected[0]:%A} {expected[0].day} {expected[0]:%b}"
@@ -627,18 +679,29 @@ def run_lookahead(
             and not r.fingerprint.startswith("pattern:")
             and _differs(signature_of(r.connection, sd), exp, DEP_TOL_MIN, DUR_TOL_MIN)
         )
-        last = next(
-            (e for e in reversed(per_date.get(key, ())) if e.startswith(("warn:", "restored:"))),
+        entries = per_date.get(key, ())
+        at = next(
+            (
+                i
+                for i in reversed(range(len(entries)))
+                if entries[i].startswith(("warn:", "restored:"))
+            ),
             None,
         )
+        last = None if at is None else entries[at]
+        since = () if at is None else entries[at + 1 :]
         if r.works or changed:
-            if last == f"warn:{r.fingerprint}":
-                continue  # already told; only the latest entry counts
-            add_entry(key, f"warn:{r.fingerprint}")
             loud = sd == today + timedelta(days=1)
-            facts.setdefault(sd, []).append(
-                (f"{key}|warn:{r.fingerprint}", _warn_text(r, p, exp), loud, r.works)
-            )
+            fact = f"{key}|warn:{r.fingerprint}"
+            if last == f"warn:{r.fingerprint}":  # only the latest entry counts
+                if not loud or f"loud:{r.fingerprint}" in since:
+                    continue  # already told at this severity
+                fact += "|loud"  # rule 4: told silent, now tomorrow: once more, loud
+            else:
+                add_entry(key, f"warn:{r.fingerprint}")
+            if loud:
+                add_entry(key, f"loud:{r.fingerprint}")
+            facts.setdefault(sd, []).append((fact, _warn_text(r, p, exp), loud, r.works))
         elif last is not None and last.startswith("warn:"):
             add_entry(key, f"restored:{r.fingerprint}")
             if adopted is not None and last == f"warn:{r.fingerprint}":
@@ -736,6 +799,7 @@ def run_lookahead(
         now if success else ledger.last_run,
         revision,
         final.latest,
+        now,
     )
     return final, new_ledger, events
 
@@ -761,3 +825,19 @@ def rebase_on_edit(
     if same_route and base is not None and base.signature.legs[0].departure == b.first_train:
         return history
     return BaselineHistory((), max(history.latest or 0, history.floor))
+
+
+def reset_on_edit(
+    old: Profile,
+    new: Profile,
+    d: Direction,
+    history: BaselineHistory,
+    ledger: LookAheadLedger,
+    today: date,
+) -> LookAheadLedger:
+    """Rule 10: a route edit that re-seeds the direction also forgets its per-date facts, so a
+    warning about the new route is told again instead of matching one about the old route
+    (whose pending messages rule 5 drops). Call it with the same arguments as rebase_on_edit."""
+    if rebase_on_edit(old, new, d, history, today) is history:
+        return ledger
+    return replace(ledger, per_date={})

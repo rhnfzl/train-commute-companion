@@ -1,5 +1,6 @@
 import os
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from test_lifecycle_follow import L1, L2, L2X, LATER, ans, at, conn, ctx, journey, occ, poll
@@ -122,3 +123,33 @@ def test_run_fresh_after_storage_error_then_recovers(tmp_path, damage):
         store.load()
     store.save(full_state())  # explicit fresh start, no extra reset of the marker needed
     assert JsonFileStore(path).load() == full_state()
+
+
+def test_failed_marker_write_commits_nothing(tmp_path, monkeypatch):  # rule 22
+    path = tmp_path / "state.json"
+    store = JsonFileStore(path)
+    store.save(full_state())
+    before = path.read_bytes()
+
+    def boom(*a, **k):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(Path, "touch", boom)
+    with pytest.raises(StorageError):
+        store.save(replace(full_state(), started_before=False))
+    monkeypatch.undo()
+    assert path.read_bytes() == before  # memory and disk agree: the change was not applied
+    store.save(full_state())  # the counter did not advance
+
+
+def test_failed_first_write_is_not_state_loss(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(StorageError):
+        JsonFileStore(path).save(full_state())
+    monkeypatch.undo()
+    assert JsonFileStore(path).load() is None  # still a first installation
