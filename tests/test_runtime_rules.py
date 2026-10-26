@@ -1052,6 +1052,18 @@ async def test_undelivered_works_warning_is_dropped_after_its_date(tmp_path):
     await _back(rig)
     assert _ahead(rig, EventKind.WORKS_AHEAD) == []
     assert not any(o.event.kind is EventKind.WORKS_AHEAD for o in rig.rt.state.obligations)
+    # the drop leaves the ledger too, as any finished look-ahead message does
+    assert rig.rt._st.lookahead["p1|outbound"].pending == ()
+
+
+async def test_held_lookahead_profile_refused_after_its_date_is_still_sent(tmp_path):
+    # an app warning is sent before fact_holds runs (rule 5a beats 5c)
+    rig = await _held_warning(tmp_path, DAY + timedelta(days=1))
+    ((_, fs),) = rig.rt._st.lookahead["p1|outbound"].facts.items()
+    _set_facts(rig, EventKind.PROFILE_REFUSED, fs)  # a stale per-date fact: 5(b) would drop it
+    rig.clock.t += timedelta(days=2)
+    await _back(rig)
+    assert _ahead(rig, EventKind.PROFILE_REFUSED)
 
 
 async def test_undelivered_works_warning_still_goes_out_on_its_own_date(tmp_path):
