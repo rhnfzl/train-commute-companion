@@ -65,13 +65,17 @@ def check_profile(args: argparse.Namespace) -> int:
     except (OSError, UnicodeDecodeError) as e:
         print(f"{args.path}: cannot read ({e})")
         return 1
-    known = None
+    got: frozenset[str] | str = ""
+    known: frozenset[str] | None
     if args.stations_file:
         try:
             known = map_stations(json.loads(Path(args.stations_file).read_text(encoding="utf-8")))
         except (OSError, ValueError, ProviderError) as err:  # never pass silently
             print(f"{args.stations_file}: cannot read station list ({err})")
             return 1
+    else:
+        got = asyncio.run(_ns_stations())
+        known = None if isinstance(got, str) else got
     cfg, errors = load_config(text, known, None, datetime.now(TZ).date())
     for pe in errors:
         print(f"{pe.path}: {pe.message}" + (f" ({pe.suggestion})" if pe.suggestion else ""))
@@ -86,7 +90,39 @@ def check_profile(args: argparse.Namespace) -> int:
     if args.store:
         for line in _moved(Path(args.store), profiles):
             print(line)
+    if known is None:  # 5.3: a file whose codes were not checked is never reported valid
+        print(f"station codes not checked: {got}")
+        return 1
     return 1 if errors else 0
+
+
+async def _ns_stations() -> frozenset[str] | str:
+    """The NS station list with NS_API_KEY, or why it is not available."""
+    key = os.environ.get("NS_API_KEY", "").strip()
+    if not key:
+        return "pass --stations-file or set NS_API_KEY"
+    async with httpx.AsyncClient() as client:
+        try:
+            return await NsProvider(key, client, lambda: datetime.now(TZ)).stations()
+        except ProviderError as e:
+            return f"the NS station list is unavailable ({e}); pass --stations-file"
+
+
+def _station_list(cache: Path, fresh: frozenset[str] | None) -> frozenset[str] | None:
+    """The fresh NS list, saved as the validated copy; else the last saved copy (5.3)."""
+    if fresh is not None:
+        try:
+            cache.write_text(json.dumps(sorted(fresh)), encoding="utf-8")
+        except OSError as e:
+            print(f"warning: cannot save the station list to {cache} ({e})", flush=True)
+        return fresh
+    try:
+        codes = json.loads(cache.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(codes, list) or not codes or not all(isinstance(c, str) for c in codes):
+        return None
+    return frozenset(codes)
 
 
 def replay(args: argparse.Namespace) -> int:
@@ -107,24 +143,31 @@ class _StdoutNotifier:
         return True
 
 
-async def _run(args: argparse.Namespace, key: str) -> None:
+async def _run(args: argparse.Namespace, key: str) -> int:
     async with httpx.AsyncClient() as client:
         provider = NsProvider(key, client, lambda: datetime.now(TZ))
-        try:
-            known = await provider.stations()
-        except ProviderError:  # without the list codes go unchecked; polling still works
-            known = None
         rt = Runtime(
             profile_path=Path(args.path),
             store=JsonFileStore(Path(args.store)),
             provider=provider,
             notifier=_StdoutNotifier(),
             clock=SystemClock(),
-            known_stations=known,
+            known_stations=None,
         )
+        # through the runtime's request budget (rule 14); never run with codes unchecked (5.3)
+        cache = Path(args.store).with_suffix(".stations.json")
+        known = _station_list(cache, await rt.stations())
+        if known is None:
+            print(
+                f"the NS station list is unavailable and {cache} holds no saved copy; "
+                "refusing to start, station codes cannot be checked",
+                flush=True,
+            )
+            return 1
+        rt.known_stations = known
         print(ATTRIBUTION, flush=True)
-        await rt.start()
         await rt.run_forever()
+    return 0
 
 
 def run(args: argparse.Namespace) -> int:
@@ -132,10 +175,9 @@ def run(args: argparse.Namespace) -> int:
         print("NS_API_KEY is not set; refusing to start")
         return 1
     try:
-        asyncio.run(_run(args, os.environ["NS_API_KEY"].strip()))
+        return asyncio.run(_run(args, os.environ["NS_API_KEY"].strip()))
     except KeyboardInterrupt:
-        pass
-    return 0
+        return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

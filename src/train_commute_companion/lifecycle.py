@@ -5,7 +5,7 @@ always comes from the caller."""
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 
 from train_commute_companion.board import (
@@ -17,7 +17,7 @@ from train_commute_companion.board import (
     is_good,
     max_transfers,
 )
-from train_commute_companion.calendar import TZ
+from train_commute_companion.calendar import TZ, resolve_local
 from train_commute_companion.classify import classify_leg, find_leg, served
 from train_commute_companion.health import PollRecord
 from train_commute_companion.location import LocationEvent
@@ -137,6 +137,9 @@ class OccurrenceState:
     # what the news ledger reads to stop repeat silent messages. Persisted state: a store that
     # drops it turns a silent end after a restart into a loud stopped_following.
     zone_reports: Mapping[str, datetime] = field(default_factory=dict)
+    # the baseline signature this occurrence started on (rule 10): a later re-seed of the
+    # direction's history must not move a locked occurrence's schedule
+    baseline_signature: Signature | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,24 +337,54 @@ def announced(last: int | None, now: int | None) -> int | None:
     return now if abs(now - said) >= DELAY_STEP_MIN else last
 
 
-_STATED = re.compile(r"\|~(-?\d+)")  # a live delay in a key, before `_stated` announces it
+# a live delay in a key, before `_stated` announces it: `|~N`, or tagged `|d~N` / `|a~N`
+# (departure, arrival); `?` is a delay NS did not report, which keeps the last stated one
+_STATED = re.compile(r"\|(\w?)~(-?\d+|\?)")
+
+
+def _recovery(e: AlertEvent, before: Sequence[int], said: Sequence[int]) -> AlertEvent | None:
+    """A stated delay falling to on time is "back to normal" (1 min or less), one falling
+    under the 3-min step is "nearly on time" (7.5); an on-time train never stated late says
+    nothing. A loud delay (past the arrival limit) stays a delay."""
+    if max(said) <= ON_TIME_MAX_MIN:
+        if max(before) <= ON_TIME_MAX_MIN:
+            return e if e.severity is Severity.LOUD else None
+        kind, tail = EventKind.BACK_TO_NORMAL, "is back to normal, on time per NS."
+    elif max(said) < DELAY_STEP_MIN and max(before) > max(said):
+        kind, tail = EventKind.NEARLY_ON_TIME, "is nearly on time."
+    else:
+        return e
+    head = e.text.partition(" train ")[0]
+    key = kind.value + e.key[len(e.kind.value) :]
+    return replace(e, kind=kind, severity=Severity.SILENT, text=f"{head} train {tail}", key=key)
 
 
 def _stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
-    """A stated replacement time in a key moves only by news (7.5): the delay last stated per
-    fact is kept in `alert_keys`, so 09:05 to 09:08 is news again while 09:05 to 09:06 is not."""
+    """A stated replacement time or delay in a key moves only by news (7.5): the delay last
+    stated per fact is kept in `alert_keys`, so 09:05 to 09:08 is news again while 09:05 to
+    09:06 is not. A delay brought back to on time becomes its recovery message."""
     keys = dict(s.alert_keys)
     out = []
     for e in events:
-        m = _STATED.search(e.key)
-        if m is None:
+        ms = list(_STATED.finditer(e.key))
+        if not ms:
             out.append(e)
             continue
-        base = e.key[: m.start()] + e.key[m.end() :]
-        last = keys.get(base)
-        said = announced(None if last is None else int(last), int(m[1])) or 0
-        keys[base] = str(said)
-        out.append(replace(e, key=f"{base}|stated+{said}"))
+        base = _STATED.sub("", e.key)
+        said, before = [], []
+        for m in ms:
+            slot = base + (f"#{m[1]}" if m[1] else "")
+            last = keys.get(slot)
+            was = None if last is None else int(last)
+            now = None if m[2] == "?" else int(m[2])
+            told = announced(was, now) or 0
+            keys[slot] = str(told)
+            said.append(told)
+            before.append(was or 0)
+        e = replace(e, key=f"{base}|stated+{','.join(map(str, said))}")
+        ev = _recovery(e, before, said) if e.kind is EventKind.DELAYED else e
+        if ev is not None:
+            out.append(ev)
     return Transition(replace(s, alert_keys=keys) if keys != s.alert_keys else s, tuple(out))
 
 
@@ -605,6 +638,7 @@ def apply_action(s: OccurrenceState, ctx: Ctx, action: UserAction) -> Transition
 _BAD = (LegKind.CANCELLED, LegKind.CUT_SHORT)
 _RUNS = (LegKind.OK, LegKind.DELAYED)
 _AT_RISK_LOUD = timedelta(minutes=30)
+_PLATFORM_LOUD = timedelta(minutes=15)
 _KEEP_POLLS = 20  # shortcut: health reads only the latest records; keep more if it ever needs a day
 
 
@@ -943,26 +977,61 @@ def _at_risk(ctx: Ctx, x: LegProgress, nxt: LegProgress, reason: str) -> AlertEv
     return _event(ctx, EventKind.TRANSFER_AT_RISK, sev, text, nxt.train)
 
 
+def _limit_at(limit: time, planned: datetime) -> datetime:
+    """`latest_acceptable_arrival` as an instant: the one nearest the planned arrival, so a
+    23:55 limit for a 23:50 arrival stays on that evening when the train slips past midnight."""
+    day = planned.astimezone(TZ).date()
+    options = [resolve_local(day + timedelta(days=n), limit, edge="start") for n in (-1, 0, 1)]
+    return min(options, key=lambda t: abs(_utc(t) - _utc(planned)))
+
+
 def _delayed(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg, *, last: bool) -> AlertEvent:
     """7.9 `delayed`: silent, loud when the last leg of the outbound journey arrives after
-    `latest_acceptable_arrival`. A broken change is its own loud event. The delay in the key is
-    stepped by `_stated`, so only a 3-min move is news (7.5)."""
-    late = cl.arr_delay_min if cl.arr_delay_min is not None else cl.dep_delay_min or 0
+    `latest_acceptable_arrival` (compared as instants, 7.13). A broken change is its own loud
+    event. Departure and arrival delays are each stepped by `_stated`, so only a 3-min move of
+    either is news, and a fall back to on time becomes its recovery message (7.5)."""
+    dep, arr_late = cl.dep_delay_min, cl.arr_delay_min
     stop = next((st for st in cl.leg.stops[1:] if st.code == x.alight_stop), None)
     arr = None if stop is None or stop.arrival is None else stop.arrival.value
+    planned = None if stop is None or stop.arrival is None else stop.arrival.planned
     limit = ctx.profile.alerts.latest_acceptable_arrival
     past = (
         last
         and ctx.direction is Direction.OUTBOUND
         and limit is not None
         and arr is not None
-        and arr.astimezone(TZ).time() > limit
+        and _utc(arr) > _utc(_limit_at(limit, planned or arr))
     )
-    text = f"your {_name(x)} train is delayed {late} min"
+    if dep is not None and arr_late is not None and dep != arr_late:
+        on = "on time" if arr_late <= ON_TIME_MAX_MIN else f"{arr_late} min late"
+        text = f"your {_name(x)} train leaves {dep} min late and arrives {on}"
+    else:
+        text = (
+            f"your {_name(x)} train is delayed {arr_late if arr_late is not None else dep or 0} min"
+        )
     if arr is not None:
         text += f", arriving {_hhmm(arr)}"
     sev = Severity.LOUD if past else Severity.SILENT
-    return _event(ctx, EventKind.DELAYED, sev, f"{text}.", x.train, f"{_name(x)}|~{late}")
+
+    def n(v: int | None) -> str:
+        return "?" if v is None else str(v)
+
+    facts = f"{_name(x)}|d~{n(dep)}|a~{n(arr_late)}"
+    return _event(ctx, EventKind.DELAYED, sev, f"{text}.", x.train, facts)
+
+
+def _platform(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
+    """7.9 `platform_change` for a leg not yet left: loud within 15 min of its expected
+    departure, else silent (escalated once it enters the zone, rule 4)."""
+    b = cl.leg.board
+    if not b.actual_track or not b.planned_track or b.actual_track == b.planned_track:
+        return None
+    soon = _departs(x, cl) - _utc(ctx.now) <= _PLATFORM_LOUD
+    text = (
+        f"your {_name(x)} train now leaves from platform {b.actual_track} (was {b.planned_track})."
+    )
+    sev = Severity.LOUD if soon else Severity.SILENT
+    return _event(ctx, EventKind.PLATFORM_CHANGE, sev, text, x.train, f"track {b.actual_track}")
 
 
 def _follow(
@@ -1048,6 +1117,8 @@ def _follow(
             if (r := act(t, ridden=x.state is LegState.RIDING)) is not None:
                 return r
             continue
+        if cl.kind in _RUNS and x.state in _MAY_HAVE_LEFT and (pc := _platform(ctx, x, cl)):
+            events.append(pc)
         cut = cl.kind is LegKind.CUT_SHORT or x.alight_stop != x.intended_alight
         before = x
         if cut:
@@ -1112,7 +1183,8 @@ def _follow(
                 if (r := act(t)) is not None:
                     return r
                 continue
-        late = cl.kind is LegKind.DELAYED and x.state is not LegState.DONE
+        # every running leg: `_stated` keeps only news, including the fall back to on time
+        late = cl.kind in _RUNS and x.state is not LegState.DONE
         if nxt is None or ncl is None or ncl.kind is LegKind.CANCELLED:
             if late and ncl is None:  # a cancelled next leg is the news, not this delay
                 events.append(_delayed(ctx, x, cl, last=nxt is None))

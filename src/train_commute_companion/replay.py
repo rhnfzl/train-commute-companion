@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-from train_commute_companion.calendar import TZ
+from train_commute_companion.calendar import TZ, resolve_local
 from train_commute_companion.lifecycle import Leaving, NotTravelling
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.model import Connection
@@ -30,17 +30,26 @@ class ReplayError(Exception):
 
 
 def _local(text: object, base: date, what: str) -> datetime:
-    """A quoted "HH:MM" (on the base date) or "YYYY-MM-DD HH:MM", as an Amsterdam instant."""
+    """A quoted "HH:MM" (on the base date) or "YYYY-MM-DD HH:MM", as an Amsterdam instant by the
+    runtime's own resolver (7.13): a time in the spring gap moves to the first instant after it,
+    a repeated autumn time is its first occurrence. An explicit UTC offset ("02:30+01:00")
+    names the second occurrence of a repeated time."""
     if not isinstance(text, str):
         raise ReplayError(f'{what}: quote the time, for example "08:12" (got {text!r})')
-    m = re.fullmatch(r"(?:(\d{4}-\d{2}-\d{2}) )?(\d{1,2}):(\d{2})", text.strip())
+    m = re.fullmatch(r"(?:(\d{4}-\d{2}-\d{2}) )?(\d{1,2}):(\d{2})([+-]\d{2}:\d{2})?", text.strip())
     if not m:
         raise ReplayError(f"{what}: {text!r} is not HH:MM or YYYY-MM-DD HH:MM")
     day = date.fromisoformat(m.group(1)) if m.group(1) else base
     try:
-        return datetime.combine(day, time(int(m.group(2)), int(m.group(3))), tzinfo=TZ)
+        clock = time(int(m.group(2)), int(m.group(3)))
     except ValueError:
         raise ReplayError(f"{what}: {text!r} is not a time") from None
+    if m.group(4) is None:
+        return resolve_local(day, clock, edge="start")
+    fixed = datetime.fromisoformat(f"{day.isoformat()}T{clock:%H:%M}{m.group(4)}").astimezone(TZ)
+    if (fixed.date(), fixed.time()) != (day, clock):
+        raise ReplayError(f"{what}: {text!r} is not an Amsterdam time at that offset")
+    return fixed
 
 
 class ReplayClock:
@@ -139,13 +148,13 @@ class ReplayProvider:
 
     def __init__(self, clock: ReplayClock, script: list[_Scripted]) -> None:
         self._clock = clock
-        self._script = sorted(script, key=lambda s: s.at)
+        self._script = sorted(script, key=lambda s: s.at.astimezone(UTC))
 
     async def trips(self, q: Query) -> ProviderAnswer:
         now = self._clock.now()
         live: dict[str, _Scripted] = {}
         for s in self._script:
-            if s.at <= now:
+            if s.at.astimezone(UTC) <= now.astimezone(UTC):  # instants: the DST fold
                 live[s.query] = s
         conns = tuple(
             x
@@ -200,7 +209,7 @@ async def replay_lines(path: Path) -> list[str]:
             (_local(e["at"], base, f"events[{i}].at"), e)
             for i, e in enumerate(spec.get("events") or [])
         ),
-        key=lambda x: x[0],
+        key=lambda x: x[0].astimezone(UTC),
     )
     clock = ReplayClock(start)
     rt = Runtime(
@@ -213,8 +222,8 @@ async def replay_lines(path: Path) -> list[str]:
     )
     await rt.start()
     pending = list(timeline)
-    while clock.now() < end:
-        while pending and pending[0][0] <= clock.now():
+    while clock.now().astimezone(UTC) < end.astimezone(UTC):
+        while pending and pending[0][0].astimezone(UTC) <= clock.now().astimezone(UTC):
             await _apply(rt, pending.pop(0)[1], clock.now())
         now = clock.now()
         if now.minute % 2 == 0 and now.second == 0:

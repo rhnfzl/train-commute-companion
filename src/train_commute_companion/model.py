@@ -216,6 +216,9 @@ class AdviceRecord:
     advised_train: TrainId | None
     sent_at: datetime | None
     withdrawn: bool
+    # the usual journey's planned arrival, read from a healthy answer before any relock when no
+    # baseline exists yet: the 7.6 reference, never a replacement's arrival
+    usual_arrival: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

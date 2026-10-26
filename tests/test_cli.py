@@ -2,6 +2,8 @@ import json
 from datetime import date, time
 from pathlib import Path
 
+import pytest
+
 from train_commute_companion.cli import main
 from train_commute_companion.lookahead import BaselineHistory, BaselineVersion
 from train_commute_companion.model import Signature, SignatureLeg
@@ -13,9 +15,25 @@ STARTER = str(ROOT / "examples" / "profiles.yaml")
 BAD = str(ROOT / "tests" / "data" / "profiles" / "bad_starter.yaml")
 
 
-def test_check_profile_starter_file_clean(capsys):
-    assert main(["check-profile", STARTER]) == 0
+@pytest.fixture(autouse=True)
+def no_key(monkeypatch):
+    monkeypatch.delenv("NS_API_KEY", raising=False)
+
+
+def stations(tmp: Path, *codes: str) -> list[str]:
+    f = tmp / "stations.json"
+    f.write_text(json.dumps({"payload": [{"code": c} for c in codes or ("AAA", "UT", "RTD")]}))
+    return ["--stations-file", str(f)]
+
+
+def test_check_profile_starter_file_clean(tmp_path, capsys):
+    assert main(["check-profile", STARTER, *stations(tmp_path)]) == 0
     assert capsys.readouterr().out == ""
+
+
+def test_check_profile_without_a_station_list_is_not_reported_valid(capsys):
+    assert main(["check-profile", STARTER]) == 1
+    assert "station codes not checked" in capsys.readouterr().out
 
 
 def test_check_profile_names_every_error_and_suggests(capsys):
@@ -49,7 +67,7 @@ def store_with_move(path: Path, to: time) -> None:
 def test_check_profile_says_ns_moved_the_train(tmp_path, capsys):
     store = tmp_path / "state.json"
     store_with_move(store, time(8, 15))
-    assert main(["check-profile", STARTER, "--store", str(store)]) == 0
+    assert main(["check-profile", STARTER, "--store", str(store), *stations(tmp_path)]) == 0
     assert "NS moved your 08:12 to 08:15 from 2026-11-03; update your profile?" in (
         capsys.readouterr().out
     )
@@ -58,15 +76,18 @@ def test_check_profile_says_ns_moved_the_train(tmp_path, capsys):
 def test_check_profile_same_time_in_store_is_quiet(tmp_path, capsys):
     store = tmp_path / "state.json"
     store_with_move(store, time(8, 12))
-    assert main(["check-profile", STARTER, "--store", str(store)]) == 0
+    assert main(["check-profile", STARTER, "--store", str(store), *stations(tmp_path)]) == 0
     assert capsys.readouterr().out == ""
 
 
 def test_check_profile_leaves_a_broken_store_alone(tmp_path, capsys):
     store = tmp_path / "state.json"
     store.write_text("not json")
-    assert main(["check-profile", STARTER, "--store", str(store)]) == 0
-    assert store.read_text() == "not json" and list(tmp_path.iterdir()) == [store]
+    flags = stations(tmp_path)
+    assert main(["check-profile", STARTER, "--store", str(store), *flags]) == 0
+    assert store.read_text() == "not json" and sorted(tmp_path.iterdir()) == sorted(
+        [store, Path(flags[1])]
+    )
     assert "cannot read" in capsys.readouterr().out
 
 

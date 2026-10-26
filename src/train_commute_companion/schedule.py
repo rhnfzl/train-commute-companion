@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, time, timedelta
 
 from train_commute_companion.calendar import TZ, is_commute_day, resolve_local
@@ -55,8 +55,13 @@ def in_window(s: DatedSchedule, at: datetime) -> bool:
 
 
 def schedules_active(
-    cfg: Config, baselines: Mapping[tuple[str, Direction], time], now: datetime
+    cfg: Config,
+    baselines: Mapping[tuple[str, Direction], time],
+    now: datetime,
+    first: Callable[[Profile, Direction, date], time | None] | None = None,
 ) -> list[DatedSchedule]:
+    """`first(profile, direction, commute_day)`, when given, is the baseline first train in
+    force on that occurrence's own service date; else `baselines` holds one for every date."""
     out: list[DatedSchedule] = []
     at = now.astimezone(UTC)  # same-zone comparison ignores fold; instants do not
     today = now.astimezone(TZ).date()
@@ -66,7 +71,8 @@ def schedules_active(
             for back in (-1, 0, 1, 2):
                 day = today - timedelta(days=back)
                 if is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays):
-                    s = dated_schedule(p, d, day, baselines.get((p.id, d)))
+                    base = first(p, d, day) if first else baselines.get((p.id, d))
+                    s = dated_schedule(p, d, day, base)
                     if in_window(s, at):
                         out.append(s)
     return out

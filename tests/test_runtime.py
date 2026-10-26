@@ -621,7 +621,7 @@ async def test_held_cancellation_names_the_current_lock_when_sent(tmp_path):
     )
 
 
-async def test_held_warning_keeps_its_text_once_the_locks_first_leg_is_past(tmp_path):
+async def test_held_warning_names_the_journey_followed_once_the_locks_first_leg_is_past(tmp_path):
     rig = await started(tmp_path)
     rig.notifier.fails = lambda e: e.kind is EventKind.CANCELLED
     rig.clock.set("07:52")
@@ -645,5 +645,10 @@ async def test_held_warning_keeps_its_text_once_the_locks_first_leg_is_past(tmp_
     rig.notifier.fails = lambda e: False
     await rig.rt.watchdog_once()
     told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
-    assert told and all("09:20" not in t for t in told)
-    assert set(told) <= set(held)
+    assert told and all("09:20" not in t and "connection: 08:25" not in t for t in told)
+    # the obsolete 08:25 replacement is not named; the journey now followed is
+    assert sorted(t.rsplit(". ", 1)[-1] for t in told) == [
+        "Next good connection: 08:40.",
+        "Now following your 08:40 train.",
+    ]
+    assert len(held) == 2

@@ -492,3 +492,74 @@ def test_delay_past_latest_acceptable_arrival_is_loud():  # 7.9
     assert kinds(poll(_direct_lock(), c, ans("AAA", _late(4)))) == [
         (EventKind.DELAYED, Severity.SILENT)
     ]
+
+
+# --- live news per leg: platform, delay recovery, both delays, arrival limit (7.5, 7.9) ---
+
+
+def with_track(leg: Leg, planned: str, actual: str) -> Leg:
+    b = replace(leg.stops[0], planned_track=planned, actual_track=actual)
+    return replace(leg, stops=(b, *leg.stops[1:]))
+
+
+def test_platform_change_is_news_silent_then_loud_in_the_15_min_zone():
+    s = occ(journey([L1, L2]))
+    t = poll(s, ctx(at("07:40")), ans("AAA", conn(with_track(L1, "1", "5"), L2)))
+    pc = [e for e in t.events if e.kind is EventKind.PLATFORM_CHANGE]
+    assert len(pc) == 1 and pc[0].severity is Severity.SILENT
+    assert "platform 5 (was 1)" in pc[0].text
+    t2 = poll(t.state, ctx(at("07:58")), ans("AAA", conn(with_track(L1, "1", "5"), L2)))
+    pc2 = [e for e in t2.events if e.kind is EventKind.PLATFORM_CHANGE]
+    assert pc2 and pc2[0].severity is Severity.LOUD and pc2[0].key == pc[0].key
+
+
+def test_delay_back_to_normal_and_nearly_on_time_are_news():
+    def leg(delay: int) -> Leg:
+        return make_leg("AAA", "RTD", "08:12", "09:24", delay_dep=delay, delay_arr=delay)
+
+    s = occ(journey([leg(0)]))
+    c = ctx(at("07:40"), DIRECT)
+    t = poll(s, c, ans("AAA", conn(leg(7))))
+    assert [e.kind for e in t.events] == [EventKind.DELAYED]
+    t = poll(t.state, c, ans("AAA", conn(leg(2))))
+    assert [(e.kind, e.severity) for e in t.events] == [(EventKind.NEARLY_ON_TIME, Severity.SILENT)]
+    t = poll(t.state, c, ans("AAA", conn(leg(0))))
+    assert [(e.kind, e.severity) for e in t.events] == [(EventKind.BACK_TO_NORMAL, Severity.SILENT)]
+    assert "back to normal" in t.events[0].text
+    t = poll(t.state, c, ans("AAA", conn(leg(0))))
+    assert t.events == ()  # on time and already told: nothing
+
+
+def test_departure_delay_moves_are_news_while_arrival_is_unchanged():
+    s = occ(journey([L1, L2]))
+    c = ctx(at("07:40"))
+    seven = make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_dep=7)
+    ten = make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_dep=10)
+    t1 = poll(s, c, ans("AAA", conn(seven, L2)))
+    t2 = poll(t1.state, c, ans("AAA", conn(ten, L2)))
+    d1 = [e for e in t1.events if e.kind is EventKind.DELAYED]
+    d2 = [e for e in t2.events if e.kind is EventKind.DELAYED]
+    assert len(d1) == 1 and "leaves 7 min late and arrives on time" in d1[0].text
+    assert len(d2) == 1 and "leaves 10 min late" in d2[0].text and d2[0].key != d1[0].key
+    assert "delayed 0 min" not in d1[0].text + d2[0].text
+
+
+def test_arrival_limit_is_compared_across_midnight():
+    from train_commute_companion.classify import classify_leg
+    from train_commute_companion.lifecycle import _delayed
+
+    text = (
+        PROFILES.replace("TRANSFERS", "[]")
+        .replace("UT_MIN", "4")
+        .replace('"08:12", buffer_min: 10', '"23:20", buffer_min: 10')
+        .replace("    return:", '    alerts: {latest_acceptable_arrival: "23:55"}\n    return:')
+    )
+    ps, errs = parse_profiles(text, None)
+    assert errs == [], errs
+    p = ps[0]
+    c = Ctx(p, Direction.OUTBOUND, dated_schedule(p, Direction.OUTBOUND, DAY, None), None,
+            at("23:30"))  # fmt: skip
+    for delay, loud in ((4, False), (15, True)):  # 23:54 is in time, 00:05 the next day is not
+        leg = make_leg("AAA", "RTD", "23:20", "23:50", number="9", delay_arr=delay)
+        e = _delayed(c, progress_of(leg), classify_leg(leg, "RTD"), last=True)
+        assert (e.severity is Severity.LOUD) is loud, (delay, e.text)

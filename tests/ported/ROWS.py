@@ -30,7 +30,7 @@ PORTED: dict[str, str] = {
     "board:23": "tests/ported/test_rows_news_more.py::test_plus_5_to_plus_8_is_news_and_plus_5_to_plus_6_is_not",
     "board:24": "tests/ported/test_news_rows.py::test_same_facts_give_the_same_key",
     "board:25": "tests/test_classify.py::test_delay_3_min_is_delayed_2_is_ok",
-    "board:26": "tests/test_news.py::test_platform_change_loud_within_15_min",
+    "board:26": "tests/test_lifecycle_follow.py::test_platform_change_is_news_silent_then_loud_in_the_15_min_zone",
     "board:27": "tests/test_lifecycle_end.py::test_acceptance_needs_two_answers_4_min_apart_5_min_after_arrival",
     "board:28": "tests/test_lifecycle_follow.py::test_locked_leg_absent_from_empty_answer_is_missing",
     "board:29": "tests/test_health.py::test_departed_leg_not_ridden_is_finished_and_ignored",
