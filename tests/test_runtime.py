@@ -872,7 +872,9 @@ async def test_choose_at_retained_from_missed_transfer_queries_transfer_station(
     assert await rig.rt.choose_at("p1", time(8, 46)) is None
     assert rig.provider.calls[-1].origin == "UT"
     s = only_occurrence(rig.rt)
-    assert s.lock.legs[0].train.planned_departure == at("08:46")
+    # the 08:12 into UT stays in the lock, and nothing is left alerting (7.12 rule 7)
+    assert [x.train.planned_departure for x in s.lock.legs] == [at("08:12"), at("08:46")]
+    assert s.lock.legs[0] == pre.lock.legs[0] and s.retained == ()
     assert s.lock.source is LockSource.CHOOSE and not refused(rig.rt)
 
 
@@ -915,7 +917,7 @@ async def test_choose_at_reasons(tmp_path):
     )
 
 
-async def test_choose_at_two_trains_same_minute_needs_number(tmp_path):
+async def test_choose_at_two_trains_same_minute_is_refused_plainly(tmp_path):
     rig = Rig(tmp_path)
     twin = make_connection(
         [
@@ -927,12 +929,12 @@ async def test_choose_at_two_trains_same_minute_needs_number(tmp_path):
     await rig.rt.start()
     await rig.rt.poll_once()
     before = only_occurrence(rig.rt).lock
-    assert "give the train number" in await rig.rt.choose_at("p1", time(8, 44))
+    # 6.1: two trains in one boarding minute stay uncertain even with the number, so the
+    # reason never sends the user to a choice the core would refuse
+    for number in (None, "1238"):
+        reason = await rig.rt.choose_at("p1", time(8, 44), number)
+        assert reason == "two trains leave AAA at 08:44; NS data cannot tell them apart"
     assert not refused(rig.rt)
-    # the number picks the connection, but two trains in one boarding minute stay uncertain to
-    # the core (6.1, never identified by proximity): the choice reaches it and is refused loudly
-    assert await rig.rt.choose_at("p1", time(8, 44), "1238") is None
-    assert "leg uncertain" in rig.rt.events_log[-1].text
     assert only_occurrence(rig.rt).lock == before
 
 

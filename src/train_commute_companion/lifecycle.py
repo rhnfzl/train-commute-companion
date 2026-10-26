@@ -585,9 +585,15 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
     # the kept prefix comes from the journey the choice continues, never from another one
     base = s.lock if source is None else source
     done = () if base is None else base.legs[: _first_open(base)]
+    # a missed-transfer remainder starts at the transfer: the lock legs into it are its past
+    head: tuple[LegProgress, ...] = ()
+    if source is not None and source is not s.lock and s.lock is not None:
+        at = source.legs[0].board_station
+        ends = [i for i, x in enumerate(s.lock.legs) if x.alight_stop == at]
+        head = s.lock.legs[: ends[0] + 1] if ends else ()
     if source is not None and len(c.legs) == 1:
         check = GoodCheck(c.destination == p.destination(d), "does not arrive at the destination")
-        if check.ok and len(done) > max_transfers(j.transfers):
+        if check.ok and len(head) + len(done) > max_transfers(j.transfers):
             check = GoodCheck(False, "over the transfer cap")
     else:
         # a train the user may be on is kept: catchability applies only to the legs after it,
@@ -595,7 +601,8 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
         rest = c if source is None else Connection(c.legs[1:], c.status, c.ctx_recon)
         if source is not None:
             ridden = replace(source.legs[len(done)], intended_alight=rest.origin)
-            kept, n_before, station = _observe(pool, ridden)[0], len(done) + 1, rest.origin
+            kept, station = _observe(pool, ridden)[0], rest.origin
+            n_before = len(head) + len(done) + 1
         else:
             kept = _observe(pool, done[-1])[0] if done else None
             n_before = len(done)
@@ -620,7 +627,7 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
             progress_of(y) if (h := have.get(y.train)) is None else reuse(h, y.alight.code)
             for y in c.legs
         )
-    new = replace(new, legs=(*done, *legs))
+    new = replace(new, legs=(*head, *done, *legs))
     # a choice ends every retained remainder; the writer retains the old lock if ridden
     written = write_lock(replace(s, retained=()), new, expect=s.lock, now=ctx.now)
     assert written is not None  # a choice always writes over the lock it read

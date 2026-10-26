@@ -1330,16 +1330,17 @@ class Runtime:
             await self._deliver()
             return f"NS did not answer ({got}); try again"
         minute = _utc(when).replace(second=0, microsecond=0)
-        found = [
+        same = [
             c for c in got.connections
             if c.legs and c.legs[0].board.code == station
             and _utc(c.legs[0].train.planned_departure).replace(second=0, microsecond=0) == minute
-            and train_number in (None, c.legs[0].train.train_number)
         ]  # fmt: skip
+        # 6.1: two trains in one boarding minute are uncertain even by number, so is_good refuses
+        if len({(c.legs[0].train.operating_date, c.legs[0].train.train_number) for c in same}) > 1:
+            return f"two trains leave {station} at {hhmm}; NS data cannot tell them apart"
+        found = [c for c in same if train_number in (None, c.legs[0].train.train_number)]
         if not found:
             return f"no train at {hhmm} from {station} in NS data"
-        if len({c.legs[0].train for c in found}) > 1:
-            return f"two trains leave at {hhmm}; give the train number"
         far = datetime.max.replace(tzinfo=UTC)
         pick = min(found, key=lambda c: _utc(c.legs[-1].alight.planned_arrival or far))
         # rule 21: a reload during the request may have removed or archived the occurrence
