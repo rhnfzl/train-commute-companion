@@ -442,3 +442,16 @@ def test_route_edit_takes_back_a_pending_loud_repeat_with_reasons():  # rule 5(c
     led = replace(forget_pending(led), pending=(), facts={})
     _, _, events = run(history, bad, led=led)
     assert [e.severity for e in events] == [Severity.LOUD]  # told again
+
+
+def test_route_edit_keeps_a_later_delivered_warning_when_taking_back_a_recovery():  # rule 5(c)
+    history = BaselineHistory((confirmed(),))
+    bad, good = probe(NEXT_TUE, cancel2=True), probe(NEXT_TUE)
+    _, led, _ = run(history, bad)
+    led = _delivered(led, led.pending[0])
+    _, led, _ = run(history, good, led=led)  # the recovery is held
+    _, led, _ = run(history, bad, led=led)
+    led = _delivered(led, led.pending[-1])  # the relapse warning went out
+    led = replace(forget_pending(led), pending=(), facts={})
+    _, _, events = run(history, bad, led=led)
+    assert events == []  # the delivered relapse warning is not told twice

@@ -838,7 +838,17 @@ def forget_pending(ledger: LookAheadLedger) -> LookAheadLedger:
             if parts[2].endswith("|loud"):  # only the loud repeat was pending
                 per_date[key] = tuple(x for x in entries if x != f"loud:{parts[2][5:-5]}")
                 continue
-            marks = [i for i, x in enumerate(entries) if x.startswith(("warn:", "restored:"))]
-            if marks:
-                per_date[key] = entries[: marks[-1]]
+            # remove only this fact's own mark (and its loud twin), keeping later delivered marks
+            # shortcut: a restored fact has no fingerprint, so the latest restored mark goes; put
+            # the fingerprint in the fact if an older recovery can be held behind a newer one
+            warn = parts[2].startswith("warn:")
+            at = [
+                i
+                for i, x in enumerate(entries)
+                if (x == parts[2] if warn else x.startswith("restored:"))
+            ]
+            if at:
+                i = at[-1]
+                twin = warn and entries[i + 1 : i + 2] == (f"loud:{parts[2][5:]}",)
+                per_date[key] = entries[:i] + entries[i + 2 if twin else i + 1 :]
     return replace(ledger, per_date=per_date)
