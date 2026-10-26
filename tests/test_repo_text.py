@@ -18,5 +18,5 @@ def test_no_em_dash_in_repo():
 
 def test_no_station_literals_in_src():
     # station codes appear only in tests and docs
-    for p in (ROOT / "src").rglob("*.py"):
+    for p in [*(ROOT / "src").rglob("*.py"), *(ROOT / "custom_components").rglob("*.py")]:
         assert not re.search(r'"(UT|RTD|AAA|BBB)"', p.read_text()), p

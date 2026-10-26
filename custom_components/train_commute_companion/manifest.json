@@ -1,0 +1,14 @@
+{
+  "domain": "train_commute_companion",
+  "name": "Train Commute Companion",
+  "after_dependencies": ["mobile_app"],
+  "codeowners": ["@OWNER"],
+  "documentation": "https://github.com/OWNER/train-commute-companion",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/OWNER/train-commute-companion/issues",
+  "loggers": ["train_commute_companion"],
+  "requirements": ["train-commute-companion==0.1.0"],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}

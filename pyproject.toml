@@ -16,6 +16,7 @@ tcc = "train_commute_companion.cli:main"
 
 [dependency-groups]
 dev = ["pytest", "pytest-asyncio", "ruff", "mypy", "types-PyYAML"]
+ha = ["pytest-homeassistant-custom-component==0.13.375; python_full_version >= '3.14.2'"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/train_commute_companion"]
@@ -28,4 +29,5 @@ strict = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = ["tests"]
+testpaths = ["tests"]
+pythonpath = ["tests", "."]
