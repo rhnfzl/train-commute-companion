@@ -830,12 +830,13 @@ def forget_pending(ledger: LookAheadLedger) -> LookAheadLedger:
     per_date = dict(ledger.per_date)
     for o in ledger.pending:
         for fact, *_ in ledger.facts.get(o.id, ()):
-            parts = fact.split("|")  # "<date>|<leg>|warn:<fp>[|loud]" or "<date>|<leg>|restored"
+            # "<date>|<leg>|warn:<fp>[|loud]" or "<date>|<leg>|restored"; a fingerprint may hold "|"
+            parts = fact.split("|", 2)
             if len(parts) < 3 or not parts[2].startswith(("warn:", "restored")):
                 continue  # an adoption or a correction: kept by the baseline, not per date
             key, entries = "|".join(parts[:2]), per_date.get("|".join(parts[:2]), ())
-            if parts[-1] == "loud":  # only the loud repeat was pending
-                per_date[key] = tuple(x for x in entries if x != f"loud:{parts[2][5:]}")
+            if parts[2].endswith("|loud"):  # only the loud repeat was pending
+                per_date[key] = tuple(x for x in entries if x != f"loud:{parts[2][5:-5]}")
                 continue
             marks = [i for i, x in enumerate(entries) if x.startswith(("warn:", "restored:"))]
             if marks:

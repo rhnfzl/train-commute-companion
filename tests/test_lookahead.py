@@ -30,6 +30,7 @@ from train_commute_companion.lookahead import (
     LookAheadLedger,
     _overlaps,
     evaluate,
+    forget_pending,
     probe_dates,
     rebase_on_edit,
     reset_on_edit,
@@ -424,3 +425,20 @@ def test_superseded_adoption_bundled_with_a_warning_is_withdrawn():  # rules 18,
         kept = [o for o in led2.pending if o.look_ahead == ("p1", OUT, TUE)]
         assert any("2026-10-27|1|warn:" in o.fact_key for o in kept)  # the warning stays
         assert all(o.id in led2.facts for o in led2.pending)
+
+
+def _delivered(led: LookAheadLedger, o: Obligation) -> LookAheadLedger:
+    facts = {k: v for k, v in led.facts.items() if k != o.id}
+    return replace(led, pending=tuple(x for x in led.pending if x is not o), facts=facts)
+
+
+def test_route_edit_takes_back_a_pending_loud_repeat_with_reasons():  # rule 5(c), 7.10
+    history = BaselineHistory((confirmed(),))
+    bad = probe(TUE, cancel2=True)  # fingerprints carry "|cancelled:n"
+    _, led, _ = run(history, bad, today=MON - timedelta(days=1))
+    led = _delivered(led, led.pending[0])  # the silent warning went out
+    _, led, (loud,) = run(history, bad, led=led)
+    assert loud.severity is Severity.LOUD  # tomorrow's loud repeat, then held and dropped
+    led = replace(forget_pending(led), pending=(), facts={})
+    _, _, events = run(history, bad, led=led)
+    assert [e.severity for e in events] == [Severity.LOUD]  # told again
