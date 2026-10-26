@@ -32,6 +32,7 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
         )
         self.host = host
         self._timeouts = 0
+        self._reauth_started = False
 
     def _reload(self) -> None:
         assert self.config_entry is not None
@@ -61,6 +62,13 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
             # a view read before start knows no issue yet; deleting would drop a user's ignore
             return
         hass = self.hass
+        if not view.key_rejected:
+            self._reauth_started = False
+        elif not self._reauth_started:
+            # once per outage; HA also folds it into a reauth flow that is already open
+            assert self.config_entry is not None
+            self._reauth_started = True
+            self.config_entry.async_start_reauth(hass)
         if view.refusal is not None:
             ir.async_create_issue(
                 hass,

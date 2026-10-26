@@ -1,4 +1,120 @@
 {
+  "config": {
+    "step": {
+      "user": {
+        "title": "Train Commute Companion",
+        "description": "Enter your NS API key and where your profiles file is.",
+        "data": {
+          "api_key": "NS API key",
+          "profiles_path": "Profiles file"
+        },
+        "data_description": {
+          "api_key": "Your NS API key from the NS API portal.",
+          "profiles_path": "Full path to your profiles file. Copy the starter file there first."
+        }
+      },
+      "notify": {
+        "title": "Where should alerts go?",
+        "description": "Pick your phone. Two test notifications are sent to notify.{service} next.",
+        "data": {
+          "notify_service": "Phone",
+          "loud_style": "Loud alert style"
+        },
+        "data_description": {
+          "notify_service": "The phone that gets the alerts. Both test notifications go to it.",
+          "loud_style": "How a loud alert arrives. Quiet updates are always silent."
+        }
+      },
+      "test": {
+        "title": "Did both arrive?",
+        "description": "A loud and a silent test notification were sent to notify.{service}.",
+        "menu_options": {
+          "test_ok": "I received both",
+          "test_resend": "Send both again",
+          "notify": "Pick another target"
+        }
+      },
+      "reauth_confirm": {
+        "title": "NS key rejected",
+        "description": "NS rejected your API key. Enter a new one.",
+        "data": {
+          "api_key": "NS API key"
+        },
+        "data_description": {
+          "api_key": "Your NS API key from the NS API portal."
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "NS rejected this key.",
+      "cannot_connect": "NS could not be reached. Try again.",
+      "file_missing": "No profiles file at {path}. Copy the starter file there first (examples/profiles.yaml in the repository).",
+      "file_unreadable": "The profiles file cannot be read. Check its permissions.",
+      "path_not_allowed": "Home Assistant may not read this path. Put the file in the config folder or allow its folder in allowlist_external_dirs.",
+      "send_failed": "The test notification to notify.{service} did not arrive. Check the companion app or pick another target."
+    },
+    "abort": {
+      "no_mobile_app": "No phone with the Home Assistant companion app was found. Install the app, sign in, then try again.",
+      "single_instance_allowed": "Train Commute Companion is already set up.",
+      "reauth_successful": "The new NS key works and is saved."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Train Commute Companion",
+        "menu_options": {
+          "validate": "Check the profiles file",
+          "settings": "Change settings"
+        }
+      },
+      "validate": {
+        "title": "Check the profiles file",
+        "description": "{report}\n\nPhone location is not always reliable. In stations, tunnels, or with battery saving on, your position can be late or wrong. Location only helps the companion. It never hides a warning about your train."
+      },
+      "settings": {
+        "title": "Settings",
+        "description": "Changing the phone or the alert style sends the test notifications again.",
+        "data": {
+          "profiles_path": "Profiles file",
+          "notify_service": "Phone",
+          "loud_style": "Loud alert style"
+        },
+        "data_description": {
+          "profiles_path": "Full path to your profiles file. Copy the starter file there first.",
+          "notify_service": "The phone that gets the alerts. Both test notifications go to it.",
+          "loud_style": "How a loud alert arrives. Quiet updates are always silent."
+        }
+      },
+      "test": {
+        "title": "Did both arrive?",
+        "description": "A loud and a silent test notification were sent to notify.{service}.",
+        "menu_options": {
+          "test_ok": "I received both and save",
+          "test_resend": "Send both again",
+          "settings": "Back to settings"
+        }
+      }
+    },
+    "error": {
+      "file_missing": "No profiles file at {path}. Copy the starter file there first (examples/profiles.yaml in the repository).",
+      "file_unreadable": "The profiles file cannot be read. Check its permissions.",
+      "path_not_allowed": "Home Assistant may not read this path. Put the file in the config folder or allow its folder in allowlist_external_dirs.",
+      "send_failed": "The test notification to notify.{service} did not arrive. Check the companion app or pick another target."
+    },
+    "abort": {
+      "validated": "Checked. Nothing was changed.",
+      "no_mobile_app": "No phone with the Home Assistant companion app was found."
+    }
+  },
+  "selector": {
+    "loud_style": {
+      "options": {
+        "time_sensitive": "Time-sensitive: breaks through Focus, a muted phone stays silent",
+        "critical": "Critical: sounds even on mute and in Focus; Android rings at alarm volume"
+      }
+    }
+  },
   "issues": {
     "profile_refused": {
       "title": "Profile file refused",

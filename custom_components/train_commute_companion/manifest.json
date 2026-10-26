@@ -3,6 +3,7 @@
   "name": "Train Commute Companion",
   "after_dependencies": ["mobile_app"],
   "codeowners": ["@OWNER"],
+  "config_flow": true,
   "documentation": "https://github.com/OWNER/train-commute-companion",
   "integration_type": "service",
   "iot_class": "cloud_polling",
