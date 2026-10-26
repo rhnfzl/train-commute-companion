@@ -26,12 +26,14 @@ from .const import (
 from .coordinator import TccCoordinator
 from .data import TccConfigEntry, TccData
 from .notifier import HaNotifier
+from .services import async_setup_services
 from .store import EntryMarkedStore, file_lock
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    async_setup_services(hass)
     return True
 
 

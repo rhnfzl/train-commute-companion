@@ -113,6 +113,12 @@
         "time_sensitive": "Time-sensitive: breaks through Focus, a muted phone stays silent",
         "critical": "Critical: sounds even on mute and in Focus; Android rings at alarm volume"
       }
+    },
+    "direction": {
+      "options": {
+        "outbound": "Outbound",
+        "return": "Return"
+      }
     }
   },
   "issues": {
@@ -154,6 +160,88 @@
       },
       "health": {
         "name": "Health"
+      }
+    },
+    "button": {
+      "leaving": {
+        "name": "{direction} leaving"
+      },
+      "not_travelling": {
+        "name": "{direction} not travelling"
+      },
+      "choose_next": {
+        "name": "{direction} choose next"
+      },
+      "not_travelling_today": {
+        "name": "Not travelling today"
+      }
+    }
+  },
+  "services": {
+    "choose": {
+      "name": "Choose a train",
+      "description": "Follow the train that leaves at this time.",
+      "fields": {
+        "profile": {
+          "name": "Profile",
+          "description": "The profile's name or id."
+        },
+        "departure": {
+          "name": "Departure",
+          "description": "The planned departure time of the train."
+        },
+        "train_number": {
+          "name": "Train number",
+          "description": "Only needed when two trains leave at the same time."
+        },
+        "service_date": {
+          "name": "Service date",
+          "description": "Pick another day's journey. Leave empty for the next one."
+        },
+        "direction": {
+          "name": "Direction",
+          "description": "Outbound or return. Needed when both run on the chosen day."
+        }
+      }
+    },
+    "leaving": {
+      "name": "I'm leaving",
+      "description": "Tell the companion you are on your way now.",
+      "fields": {
+        "profile": {
+          "name": "Profile",
+          "description": "The profile's name or id."
+        },
+        "service_date": {
+          "name": "Service date",
+          "description": "Pick another day's journey. Leave empty for the next one."
+        },
+        "direction": {
+          "name": "Direction",
+          "description": "Outbound or return. Needed when both run on the chosen day."
+        }
+      }
+    },
+    "not_travelling": {
+      "name": "Not travelling",
+      "description": "Stop following a journey. Its alerts stop too.",
+      "fields": {
+        "profile": {
+          "name": "Profile",
+          "description": "The profile's name or id."
+        },
+        "service_date": {
+          "name": "Service date",
+          "description": "Pick another day's journey. Leave empty for the next one."
+        },
+        "direction": {
+          "name": "Direction",
+          "description": "Outbound or return. Needed when both run on the chosen day."
+        },
+        "whole_day": {
+          "name": "Whole day",
+          "description": "Both directions of the commute day."
+        }
       }
     }
   }

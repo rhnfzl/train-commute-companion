@@ -16,5 +16,4 @@ LOCAL_PUSH_SETTLE_S = 22
 NOTIFY_BACKOFF_S = 60
 LOUD_STYLES = ("time_sensitive", "critical")
 DEFAULT_LOUD_STYLE = "time_sensitive"
-# grows as each platform module lands, so setup never forwards a platform that does not exist
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON]

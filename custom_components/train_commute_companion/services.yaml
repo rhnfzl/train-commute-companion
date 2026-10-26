@@ -1,0 +1,59 @@
+choose:
+  fields:
+    profile:
+      required: true
+      selector:
+        text:
+    departure:
+      required: true
+      selector:
+        time:
+    train_number:
+      selector:
+        text:
+    service_date:
+      selector:
+        date:
+    direction:
+      selector:
+        select:
+          options:
+            - outbound
+            - return
+          translation_key: direction
+leaving:
+  fields:
+    profile:
+      required: true
+      selector:
+        text:
+    service_date:
+      selector:
+        date:
+    direction:
+      selector:
+        select:
+          options:
+            - outbound
+            - return
+          translation_key: direction
+not_travelling:
+  fields:
+    profile:
+      required: true
+      selector:
+        text:
+    service_date:
+      selector:
+        date:
+    direction:
+      selector:
+        select:
+          options:
+            - outbound
+            - return
+          translation_key: direction
+    whole_day:
+      default: false
+      selector:
+        boolean:
