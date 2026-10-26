@@ -45,7 +45,7 @@ class BaselineVersion:
 @dataclass(frozen=True, slots=True)
 class BaselineHistory:
     versions: tuple[BaselineVersion, ...] = ()
-    floor: int = 0  # highest number retired by a re-seed, so version numbers never repeat
+    floor: int = 0  # highest number retired (re-seed or cancellation): numbers never repeat
 
     def in_force(self, day: date) -> BaselineVersion | None:
         live = [v for v in self.versions if v.effective_from <= day]
@@ -485,7 +485,13 @@ def run_lookahead(
 ) -> tuple[BaselineHistory, LookAheadLedger, list[AlertEvent]] | None:
     """The direction's serialised look-ahead writer. Every fact is written to the ledger and
     stored as a pending message before any delivery. `others` are the other profiles, for the
-    overlap check of an adoption (7.12 rule 19)."""
+    overlap check of an adoption (7.12 rule 19).
+
+    Caller contract (rule 21): `ledger` is the ledger as stored at write time with
+    `started_revision` / `started_baseline` set to the revision and `history.latest` seen when
+    this run started; `history` and `revision` are the current ones; `now` is the run's start
+    time. A newer run that finished first stamped a later `last_run`, so this one is dropped.
+    `ledger.pending` holds only undelivered obligations: delivery removes each one it finishes."""
     if ledger.started_revision != revision or ledger.started_baseline != history.latest:
         return None  # the route or baseline changed since the run started (rule 21)
     if ledger.last_run is not None and ledger.last_run.astimezone(UTC) > now.astimezone(UTC):
@@ -500,12 +506,13 @@ def run_lookahead(
     per_date = dict(ledger.per_date)
     pending = list(ledger.pending)
     versions = list(history.versions)
+    floor = history.floor  # raised by every removal so a number is never handed out twice
     facts: dict[date, list[tuple[str, str, bool, bool]]] = {}  # key, text, loud, is warning
     refusals: list[str] = []
     adopted: BaselineVersion | None = None
 
     def hist() -> BaselineHistory:
-        return BaselineHistory(tuple(versions), history.floor)
+        return BaselineHistory(tuple(versions), floor)
 
     def add_entry(key: str, entry: str) -> None:
         per_date[key] = (*per_date.get(key, ()), entry)
@@ -554,6 +561,7 @@ def run_lookahead(
     if agreed is not None and in_force_today is not None and agreed == in_force_today.signature:
         for w in [v for v in versions if v.effective_from > today]:
             versions.remove(w)
+            floor = max(floor, w.version)
             told = [
                 o
                 for o in pending

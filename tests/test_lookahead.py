@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import date, time
+from datetime import date, time, timedelta
 
 from builders import make_connection, make_leg
 from lookahead_fixtures import (
@@ -183,3 +183,26 @@ def test_window_edit_after_adoption_keeps_baseline():
     history = BaselineHistory((confirmed(), confirmed(2, TUE, **SHIFTED)))
     edited = profile(window=(time(7, 0), time(10, 0)))
     assert rebase_on_edit(P, edited, OUT, history, WED) is history
+
+
+def test_cancelled_version_number_is_never_reused():
+    waiting = BaselineVersion(2, confirmed(**SHIFTED).signature, NEXT_TUE, True)
+    history = BaselineHistory((confirmed(), waiting))
+    h, _, _ = run(history, probes(history))
+    assert [v.version for v in h.versions] == [1] and h.floor == 2
+    # the same shift seen again is adopted under a fresh number, so a run started under the
+    # cancelled v2 cannot pass the baseline check against it
+    h2, _, _ = run(h, probes(h, **SHIFTED), led=ledger(h))
+    assert h2.latest == 3
+    assert run_lookahead(P, OUT, h2, ledger(history), probes(h2), 1, MON, NOW) is None
+
+
+def test_stored_ledger_with_start_stamp_survives_a_route_edit():
+    history = BaselineHistory((confirmed(),))
+    _, stored, _ = run(history, probes(history), now=NOW - timedelta(days=1))
+    # the profile moved to revision 2 since; this run started on it
+    started = replace(stored, started_revision=2, started_baseline=history.latest)
+    assert run_lookahead(P, OUT, history, started, probes(history), 2, MON, NOW) is not None
+    # a newer run that finished first wins
+    newer = replace(started, last_run=NOW + timedelta(minutes=5))
+    assert run_lookahead(P, OUT, history, newer, probes(history), 2, MON, NOW) is None
