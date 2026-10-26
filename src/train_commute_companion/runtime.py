@@ -1247,7 +1247,7 @@ class Runtime:
     ) -> str | None:
         """A train named by its clock time (shells): the core finds the occurrence, the station
         and the connection, with one live request under the shared budget (rule 14). None when
-        a `Choose` reached the writer (the core may still refuse it, loudly); else why not."""
+        the choice was written; else why not (a refusal is also pushed, loudly)."""
         now = self._clock.now()
         self._create_occurrences(now)
         cands = sorted(
@@ -1358,16 +1358,34 @@ class Runtime:
         if not found:
             return f"no train at {hhmm} from {station} in NS data"
         far = datetime.max.replace(tzinfo=UTC)
-        pick = min(found, key=lambda c: _utc(c.legs[-1].alight.planned_arrival or far))
+        ranked = sorted(found, key=lambda c: _utc(c.legs[-1].alight.planned_arrival or far))
         # rule 21: a reload during the request may have removed or archived the occurrence
         now_occ = self._st.occurrences.get(k)
         if now_occ is None or _resolved(now_occ):
             return gone
         if (now_occ.generation, now_occ.route_revision, now_occ.baseline_version) != mark:
             return "your journey changed while NS answered; try again"
-        choice = Choose(occ.key.service_date, pick, (got, *boards))
-        ok = await self.act(profile_id, choice, occ.key.direction)
-        return None if ok else gone
+        d = occ.key.direction
+        mine = [
+            s for s in self._st.occurrences.values()
+            if s.key.profile_id == profile_id and s.key.direction is d
+        ]  # fmt: skip
+
+        def refusal(choice: Choose) -> str | None:
+            """The check `act` applies, ridden prefix included, as a dry run (rule 1)."""
+            t = target_occurrence(mine, choice)
+            tctx = None if t is None else self._ctx(t, self._clock.now())
+            if t is None or tctx is None:
+                return gone
+            events = apply_action(t, tctx, choice).events
+            return next((e.text for e in events if e.kind is EventKind.CHOOSE_REFUSED), None)
+
+        choices = [Choose(occ.key.service_date, c, (got, *boards)) for c in ranked]
+        why = [refusal(c) for c in choices]
+        # the earliest arrival that passes; when none does, the earliest is refused loudly
+        i = next((n for n, r in enumerate(why) if r is None), 0)
+        ok = await self.act(profile_id, choices[i], d)
+        return why[i] if ok else gone
 
     async def location(
         self, profile_id: str, event: LocationEvent, source: LocationSettings | None = None

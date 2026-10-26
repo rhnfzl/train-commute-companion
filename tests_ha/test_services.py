@@ -2,8 +2,9 @@ from dataclasses import replace
 from datetime import date
 
 import pytest
-from builders import make_leg
+from builders import make_connection, make_leg
 from harness import (
+    ONE_TRANSFER,
     PROFILE,
     PROFILES,
     drive,
@@ -156,6 +157,35 @@ async def test_buttons_run_the_same_actions(hass):
     await press(hass, "button.office_a_not_travelling_today")
     assert state(hass, "sensor.office_a_outbound_status") == "expired"
     assert state(hass, "sensor.office_a_return_status") == "expired"
+
+
+TIGHT = make_connection(  # the 08:44 again, onward after 2 min at UT (transfer_min 4)
+    [
+        make_leg("AAA", "UT", "08:44", "09:08", number="1236"),
+        make_leg("UT", "RTD", "09:10", "09:34", number="5690"),
+    ]
+)
+
+
+async def test_choose_next_locks_the_shown_connection_not_an_earlier_broken_one(hass):  # 7.12 r1
+    h = await setup_tcc(hass, PROFILE, world=[*ONE_TRANSFER, TIGHT])
+    # shown: the 09:16 onward (arrives 09:50); the 09:10 arrives first but its transfer fails
+    assert (
+        attr(hass, "sensor.office_a_outbound_next_connection", "arrival") == at("09:50").isoformat()
+    )
+    await press(hass, "button.office_a_outbound_choose_next")
+    assert attr(hass, "sensor.office_a_outbound_lock", "source") == "choose"
+    s = await h.host.run(lambda rt: only_occurrence(rt))
+    assert [x.train.planned_departure for x in s.lock.legs] == [at("08:44"), at("09:16")]
+    assert not refused(h)
+
+
+async def test_choose_raises_with_the_refusal_when_no_connection_passes(hass):  # 7.12 r1
+    h = await setup_tcc(hass, PROFILE, world=[ONE_TRANSFER[0], TIGHT])
+    with pytest.raises(ServiceValidationError, match="choice refused: transfer at UT broken"):
+        await call(hass, "choose", profile="office_a", departure="08:44")
+    s = await h.host.run(lambda rt: only_occurrence(rt))
+    assert s.lock.legs[0].train.planned_departure == at("08:12")
 
 
 async def test_not_travelling_direction_button_expires_only_that_direction(hass):  # 10.4

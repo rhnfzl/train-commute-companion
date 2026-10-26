@@ -949,6 +949,36 @@ async def test_choose_at_reasons(tmp_path):
     )
 
 
+TIGHT = make_connection(  # the 08:44 again, onward after 2 min at UT (transfer_min 4)
+    [
+        make_leg("AAA", "UT", "08:44", "09:08", number="1236"),
+        make_leg("UT", "RTD", "09:10", "09:34", number="5690"),
+    ]
+)
+
+
+async def test_choose_at_skips_earlier_arrival_with_impossible_transfer(tmp_path):  # rule 1
+    rig = Rig(tmp_path, "07:50")
+    rig.provider.world = [*ONE_TRANSFER, TIGHT]
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    assert await rig.rt.choose_at("p1", time(8, 44)) is None
+    lock = only_occurrence(rig.rt).lock
+    assert [x.train.planned_departure for x in lock.legs] == [at("08:44"), at("09:16")]
+    assert lock.source is LockSource.CHOOSE and not refused(rig.rt)
+
+
+async def test_choose_at_returns_the_refusal_when_no_connection_passes(tmp_path):
+    rig = Rig(tmp_path, "07:50")
+    rig.provider.world = [ONE_TRANSFER[0], TIGHT]
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    before = only_occurrence(rig.rt).lock
+    reason = await rig.rt.choose_at("p1", time(8, 44))
+    assert reason is not None and "choice refused: transfer at UT broken" in reason
+    assert refused(rig.rt) and only_occurrence(rig.rt).lock == before
+
+
 async def test_choose_at_two_trains_same_minute_is_refused_plainly(tmp_path):
     rig = Rig(tmp_path)
     twin = make_connection(
@@ -1090,7 +1120,8 @@ async def test_choose_at_onward_change_judged_on_fresh_incoming_data(tmp_path): 
     late = make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_arr=40)  # now 09:20
     rig.provider.world = [make_connection([late, first.legs[1]]), ONE_TRANSFER[1]]
     rig.clock.set("09:10")
-    assert await rig.rt.choose_at("p1", time(9, 16)) is None
+    reason = await rig.rt.choose_at("p1", time(9, 16))
+    assert reason is not None and "choice refused: transfer at UT broken" in reason
     assert refused(rig.rt)  # the 09:16 leaves before the incoming train now arrives
     assert only_occurrence(rig.rt).lock.legs[1].train.planned_departure == at("08:46")
 
