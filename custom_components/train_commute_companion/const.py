@@ -10,5 +10,10 @@ CONF_NOTIFY = "notify_service"
 CONF_STARTED = "started"
 REFRESH_S = 15
 NOTIFY_TIMEOUT_S = 20
+# HA's 10 s local-push confirm window, then its 10 s remote fallback, plus margin
+LOCAL_PUSH_SETTLE_S = 22
+NOTIFY_BACKOFF_S = 60
+LOUD_STYLES = ("time_sensitive", "critical")
+DEFAULT_LOUD_STYLE = "time_sensitive"
 # grows as each platform module lands, so setup never forwards a platform that does not exist
 PLATFORMS: list[Platform] = []
