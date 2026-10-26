@@ -69,7 +69,14 @@ async def do_choose(
     direction: Direction | None,
 ) -> None:
     reason = await _run(
-        data, lambda rt: rt.choose_at(profile_id, departure, train_number, service_date, direction)
+        data,
+        lambda rt: rt.choose_at(
+            profile_id,
+            departure,
+            train_number=train_number,
+            service_date=service_date,
+            direction=direction,
+        ),
     )
     await data.coordinator.async_request_refresh()
     if reason is not None:
