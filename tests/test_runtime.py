@@ -1,24 +1,40 @@
 import asyncio
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
-from builders import AMS, make_connection, make_leg
+from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from test_lifecycle_follow import L1, L1X, L2, L2X, LATER, conn, journey, occ
 
-from train_commute_companion.lifecycle import Choose, DirectionState, LegState, NotTravelling
+from train_commute_companion.lifecycle import (
+    Choose,
+    DirectionState,
+    LegState,
+    LockSource,
+    NotTravelling,
+)
+from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import BaselineHistory
-from train_commute_companion.model import AlertEvent, Connection, EventKind, Provenance, Severity
+from train_commute_companion.model import (
+    AlertEvent,
+    Connection,
+    Direction,
+    EventKind,
+    OccurrenceKey,
+    Provenance,
+    Severity,
+)
 from train_commute_companion.providers.base import (
     AuthError,
     PlannedWorks,
     ProviderAnswer,
+    ProviderError,
     Query,
     RateLimited,
     ServerError,
 )
-from train_commute_companion.runtime import RequestBudget, Runtime
+from train_commute_companion.runtime import RequestBudget, Runtime, _fresh_state
 from train_commute_companion.serde import dumps, loads
 from train_commute_companion.store import PersistedState, StorageError
 
@@ -798,3 +814,218 @@ async def test_lookahead_at_moves_the_daily_run(tmp_path):
     except _Stop:
         pass
     assert first_works and at("07:12") <= first_works[0] < at("07:12") + timedelta(minutes=1)
+
+
+# --- choose a train by its time; act reports a miss (7.13, N3) ---
+
+PROFILES_DIR = Path(__file__).parent / "data" / "profiles"
+
+
+async def one_transfer(tmp: Path, now: str = "07:50", poll: bool = True) -> Rig:
+    rig = Rig(tmp, now)
+    rig.provider.world = list(ONE_TRANSFER)
+    await rig.rt.start()
+    if poll:
+        await rig.rt.poll_once()
+    return rig
+
+
+def refused(rt: Runtime) -> bool:
+    return EventKind.CHOOSE_REFUSED in kinds(rt.events_log)
+
+
+async def test_choose_at_locks_named_departure(tmp_path):
+    rig = await one_transfer(tmp_path)
+    assert await rig.rt.choose_at("p1", time(8, 44)) is None
+    lock = only_occurrence(rig.rt).lock
+    assert lock.legs[0].train.planned_departure == at("08:44")
+    assert lock.source is LockSource.CHOOSE and not refused(rig.rt)
+
+
+async def test_choose_at_retained_remainder_promotes_ridden_train(tmp_path):  # N3, required
+    rig = await one_transfer(tmp_path)
+    rig.clock.set("08:18")  # at AAA after the 08:12 left: it may still dwell with the user on it
+    await rig.rt.location("p1", LocationEvent("AAA", "report", at("08:18"), at("08:18")))
+    rig.clock.set("08:20")
+    await rig.rt.poll_once()
+    pre = only_occurrence(rig.rt)
+    assert pre.lock.legs[0].train.planned_departure == at("08:44")
+    assert pre.retained[0].legs[0].train.planned_departure == at("08:12")
+    ridden_state = pre.retained[0].legs[0].state
+    assert ridden_state is LegState.MISSED
+    assert await rig.rt.choose_at("p1", time(8, 12)) is None
+    s = only_occurrence(rig.rt)
+    assert s.lock.legs[0].train.planned_departure == at("08:12")
+    assert s.lock.source is LockSource.CHOOSE
+    assert s.lock.legs[0].state is ridden_state  # the ridden prefix keeps its progress
+    assert s.direction_state is DirectionState.RIDING and s.retained == ()
+    assert not refused(rig.rt)
+
+
+async def test_choose_at_retained_from_missed_transfer_queries_transfer_station(tmp_path):
+    rig = await one_transfer(tmp_path)
+    await rig.run_until("08:44")
+    rig.clock.set("08:53")  # at UT after the delayed 08:46 left: missed transfer, kept retained
+    await rig.rt.location("p1", LocationEvent("UT", "report", at("08:53"), at("08:53")))
+    pre = only_occurrence(rig.rt)
+    assert pre.retained[0].legs[0].train.planned_departure == at("08:46")
+    assert await rig.rt.choose_at("p1", time(8, 46)) is None
+    assert rig.provider.calls[-1].origin == "UT"
+    s = only_occurrence(rig.rt)
+    assert s.lock.legs[0].train.planned_departure == at("08:46")
+    assert s.lock.source is LockSource.CHOOSE and not refused(rig.rt)
+
+
+async def test_choose_at_onward_train_after_done_first_leg_keeps_prefix(tmp_path):
+    rig = await one_transfer(tmp_path)
+    await rig.run_until("08:56")  # leg 1 accepted at UT
+    pre = only_occurrence(rig.rt)
+    assert pre.lock.legs[0].state is LegState.DONE
+    assert pre.lock.legs[1].train.planned_departure == at("08:46")
+    assert await rig.rt.choose_at("p1", time(9, 16)) is None
+    assert rig.provider.calls[-1].origin == "UT"
+    s = only_occurrence(rig.rt)
+    assert [x.train.planned_departure for x in s.lock.legs] == [at("08:12"), at("09:16")]
+    assert s.lock.legs[0].state is LegState.DONE and s.lock.source is LockSource.CHOOSE
+    assert not refused(rig.rt)
+
+
+async def test_choose_at_onward_train_fetches_board_when_none_yet(tmp_path):
+    rig = await one_transfer(tmp_path)
+    await rig.run_until("08:56")
+    rig.rt._boards.clear()  # as after a restart: no poll answer holds the incoming leg yet
+    n = len(rig.provider.calls)
+    assert await rig.rt.choose_at("p1", time(9, 16)) is None
+    assert len(rig.provider.calls) > n + 1 and rig.provider.calls[-1].origin == "UT"
+    assert only_occurrence(rig.rt).lock.legs[1].train.planned_departure == at("09:16")
+    assert not refused(rig.rt)
+
+
+async def test_choose_at_reasons(tmp_path):
+    rig = await one_transfer(tmp_path)
+    assert "13:00 is outside the outbound window" in await rig.rt.choose_at("p1", time(13, 0))
+    assert "no train at 08:13 from AAA" in await rig.rt.choose_at("p1", time(8, 13))
+    reason = await rig.rt.choose_at("p2", time(8, 12))  # p2 runs on saturdays
+    assert reason == "no journey of Office B is being followed now"
+    assert "is being followed" in await rig.rt.choose_at("nobody", time(8, 12))
+    other_day = await rig.rt.choose_at("p1", time(8, 44), service_date=date(2026, 10, 28))
+    assert "is being followed" in other_day
+    assert "is being followed" in await rig.rt.choose_at(
+        "p1", time(8, 44), direction=Direction.RETURN
+    )
+
+
+async def test_choose_at_two_trains_same_minute_needs_number(tmp_path):
+    rig = Rig(tmp_path)
+    twin = make_connection(
+        [
+            make_leg("AAA", "UT", "08:44", "09:06", number="1238"),
+            make_leg("UT", "RTD", "09:12", "09:46", number="5682"),
+        ]
+    )
+    rig.provider.world = [*ONE_TRANSFER, twin]
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    before = only_occurrence(rig.rt).lock
+    assert "give the train number" in await rig.rt.choose_at("p1", time(8, 44))
+    assert not refused(rig.rt)
+    # the number picks the connection, but two trains in one boarding minute stay uncertain to
+    # the core (6.1, never identified by proximity): the choice reaches it and is refused loudly
+    assert await rig.rt.choose_at("p1", time(8, 44), "1238") is None
+    assert "leg uncertain" in rig.rt.events_log[-1].text
+    assert only_occurrence(rig.rt).lock == before
+
+
+async def test_choose_at_counts_one_request_and_reports_provider_error(tmp_path):
+    rig = await one_transfer(tmp_path)
+    n, calls = rig.rt.requests, len(rig.provider.calls)
+    assert await rig.rt.choose_at("p1", time(8, 44)) is None
+    assert rig.rt.requests == n + 1 and len(rig.provider.calls) == calls + 1
+    rig.provider.error = lambda q: ProviderError()
+    reason = await rig.rt.choose_at("p1", time(8, 12))
+    assert reason == "NS did not answer (provider); try again"
+    assert rig.rt.requests == n + 2
+    assert only_occurrence(rig.rt).lock.legs[0].train.planned_departure == at("08:44")
+
+
+async def test_choose_at_waits_on_the_shared_backoff(tmp_path):  # rule 14
+    rig = await one_transfer(tmp_path)
+    rig.provider.error = lambda q: RateLimited()
+    assert "NS did not answer (rate)" in await rig.rt.choose_at("p1", time(8, 44))
+    rig.provider.error = lambda q: None
+    calls = len(rig.provider.calls)
+    assert "NS did not answer (rate)" in await rig.rt.choose_at("p1", time(8, 44))
+    assert len(rig.provider.calls) == calls  # the cooldown holds the second request back
+
+
+async def test_choose_at_target_gone_after_request_returns_reason(tmp_path):
+    rig = await one_transfer(tmp_path, "07:20", poll=False)  # before the auto lock: not running
+    assert rig.occ() is not None and rig.occ().lock is None
+
+    async def remove_p1(q: Query) -> None:
+        rig.provider.hook = None
+        rig.write(text=PROFILE.split('  - id: "p1"')[0] + "  - id" + PROFILE.split("  - id")[2])
+        await rig.rt.reload()
+
+    rig.provider.hook = remove_p1
+    reason = await rig.rt.choose_at("p1", time(8, 44))
+    assert "is being followed" in reason
+    assert rig.occ() is None and not refused(rig.rt)
+
+
+async def test_act_returns_false_for_unknown_profile_or_no_target(tmp_path):
+    rig = await one_transfer(tmp_path)
+    assert await rig.rt.act("nobody", NotTravelling(None, False)) is False
+    assert await rig.rt.act("p2", NotTravelling(None, False)) is False  # saturdays only
+    assert await rig.rt.act("p1", NotTravelling(date(2026, 10, 28), False)) is False
+    assert not rig.occ().not_travelling
+    assert await rig.rt.act("p1", NotTravelling(None, False)) is True
+    assert rig.occ().not_travelling
+
+
+async def test_act_reaches_a_removed_profile_that_still_runs(tmp_path):
+    rig = await one_transfer(tmp_path)
+    await rig.run_until("08:20")
+    assert rig.occ().direction_state is DirectionState.RIDING
+    rig.write(text=PROFILE.split('  - id: "p1"')[0] + "  - id" + PROFILE.split("  - id")[2])
+    await rig.rt.reload()
+    assert rig.rt.config.profiles[0].id == "p2" and len(rig.rt.config.profiles) == 1
+    assert rig.occ() is not None  # runs to its end (rule 10)
+    assert await rig.rt.act("p1", NotTravelling(None, False)) is True
+    s = rig.occ()
+    assert s.not_travelling and s.direction_state is DirectionState.EXPIRED
+
+
+async def test_whole_day_uses_the_running_route_day_offset(tmp_path):
+    rig = Rig(tmp_path, "17:40")
+    rig.write(text=(PROFILES_DIR / "night_return.yaml").read_text())
+    rig.provider.world = [make_connection([make_leg("UT", "AAA", "17:52", "18:20", number="2222")])]
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    ret = "p1|return|2026-10-27"
+    assert rig.occ(ret).lock is not None  # the return started with day_offset 0
+    rig.write(text=(PROFILES_DIR / "night_return_offset.yaml").read_text())
+    await rig.rt.reload()
+    assert rig.rt.config.profiles[0].return_.day_offset == 1
+    assert await rig.rt.act("p1", NotTravelling(None, True)) is True
+    assert rig.occ(ret).not_travelling
+    # the commute day of the running route: tonight's outbound, not the one of the day before
+    assert rig.occ("p1|outbound|2026-10-27").not_travelling
+
+
+async def test_act_direction_picks_that_direction_on_a_shared_date(tmp_path):
+    rig = await one_transfer(tmp_path)
+    key = OccurrenceKey("p1", Direction.RETURN, DAY)
+    rev = rig.rt.config.revision
+    rig.occ_set(_fresh_state(key, rev, None), "p1|return|2026-10-27")
+    assert await rig.rt.act("p1", NotTravelling(DAY, False), Direction.RETURN) is True
+    assert rig.occ("p1|return|2026-10-27").not_travelling
+    assert not rig.occ().not_travelling and rig.occ().lock is not None  # outbound keeps alerting
+
+
+async def test_choose_at_401_sets_key_rejected(tmp_path):
+    rig = await one_transfer(tmp_path)
+    rig.provider.error = lambda q: AuthError()
+    assert "NS did not answer (auth)" in await rig.rt.choose_at("p1", time(8, 44))
+    assert rig.rt.key_rejected
+    assert EventKind.KEY_REJECTED in kinds(rig.rt.events_log)

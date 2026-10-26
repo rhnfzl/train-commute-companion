@@ -26,11 +26,13 @@ from train_commute_companion.lifecycle import (
     Choose,
     Ctx,
     DirectionState,
+    Leaving,
     LegProgress,
     LegState,
     NotTravelling,
     OccurrenceState,
     UserAction,
+    _first_open,
     _left_note,
     _pool,
     apply_action,
@@ -1191,34 +1193,162 @@ class Runtime:
 
     # --- user actions and location ---
 
-    async def act(self, profile_id: str, action: UserAction) -> None:
-        """`choose`, `leaving` and `not travelling` through the serialised writer (7.13)."""
+    async def act(
+        self, profile_id: str, action: UserAction, direction: Direction | None = None
+    ) -> bool:
+        """`choose`, `leaving` and `not travelling` through the serialised writer (7.13).
+        `direction`: only that direction's occurrences are targeted (both share a date).
+        False when nothing was targeted: an unknown profile, or no occurrence to act on. A
+        removed profile still running on an occurrence is known (rule 10)."""
         now = self._clock.now()
         self._create_occurrences(now)
-        cfg = self._st.config
-        p = _find(cfg, profile_id)
-        if p is None or cfg is None:
-            return
-        mine = [s for s in self._st.occurrences.values() if s.key.profile_id == profile_id]
+        mine = [
+            s for s in self._st.occurrences.values()
+            if s.key.profile_id == profile_id and direction in (None, s.key.direction)
+        ]  # fmt: skip
         target = target_occurrence(mine, action)
-        if target is None:
-            return
+        p = None if target is None else self._profile_for(target)
+        if target is None or p is None:
+            return False
         keys = [target.key]
         if isinstance(action, NotTravelling) and action.whole_day:
-            keys = list(whole_day_keys(p, target.key))
+            keys = list(whole_day_keys(p, target.key))  # its own route revision's day_offset
+        cfg = self._st.config
+        revision = cfg.revision if cfg else target.route_revision
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
         for key in keys:
             k = _okey(key)
-            s = self._st.occurrences.get(k) or self._frozen(_fresh_state(key, cfg.revision, None))
+            s = self._st.occurrences.get(k) or self._frozen(_fresh_state(key, revision, None))
             ctx = self._ctx(s, now)
             if ctx is not None:
                 t = apply_action(s, ctx, action)
                 changes[k] = (t.state, t.events)
         self._apply(changes)
         await self._deliver()
+        return True
 
-    async def choose(self, profile_id: str, choice: Choose) -> None:
-        await self.act(profile_id, choice)
+    async def choose(self, profile_id: str, choice: Choose) -> bool:
+        return await self.act(profile_id, choice)
+
+    async def choose_at(
+        self,
+        profile_id: str,
+        departure: time,
+        train_number: str | None = None,
+        service_date: date | None = None,
+        direction: Direction | None = None,
+    ) -> str | None:
+        """A train named by its clock time (shells): the core finds the occurrence, the station
+        and the connection, with one live request under the shared budget (rule 14). None when
+        a `Choose` reached the writer (the core may still refuse it, loudly); else why not."""
+        now = self._clock.now()
+        self._create_occurrences(now)
+        cands = sorted(
+            (
+                s for s in self._st.occurrences.values()
+                if s.key.profile_id == profile_id and not _resolved(s)
+                and service_date in (None, s.key.service_date)
+                and direction in (None, s.key.direction)
+            ),
+            key=lambda s: s.key.service_date,
+        )  # fmt: skip
+        named = _find(self._st.config, profile_id) or next(
+            (p for s in cands if (p := self._profile_for(s)) is not None), None
+        )
+        gone = f"no journey of {_title(named.name if named else profile_id)} is being followed now"
+        hhmm = f"{departure:%H:%M}"
+
+        def named_leg(x: LegProgress) -> bool:
+            t = x.train.planned_departure.astimezone(TZ)
+            return (
+                x.state is not LegState.DONE
+                and (t.hour, t.minute) == (departure.hour, departure.minute)
+                and train_number in (None, x.train.train_number)
+            )
+
+        # a train of the lock or of a retained remainder: the one the user may ride (N3)
+        hit = next(
+            (
+                (s, x)
+                for s in cands
+                for j in (*((s.lock,) if s.lock else ()), *s.retained)
+                for x in j.legs
+                if named_leg(x)
+            ),
+            None,
+        )
+        occ: OccurrenceState | None
+        ctx: Ctx | None
+        if hit is not None:
+            occ, x = hit
+            ctx = self._ctx(occ, now)
+            station, when = x.board_station, x.train.planned_departure
+        else:
+            # at a transfer station: target_occurrence would skip it as riding
+            occ = next(
+                (s for s in cands if s.lock and 0 < _first_open(s.lock) < len(s.lock.legs)),
+                None,
+            ) or target_occurrence(cands, Leaving(service_date, now))
+            ctx = None if occ is None else self._ctx(occ, now)
+            if occ is None or ctx is None:
+                return gone
+            w = ctx.schedule
+            days = {w.window_start.astimezone(TZ).date(), w.window_end.astimezone(TZ).date()}
+            inside = sorted(
+                (
+                    t for d in days for edge in ("start", "end")
+                    if _utc(w.window_start) <= _utc(t := resolve_local(d, departure, edge=edge))
+                    < _utc(w.window_end)
+                ),
+                key=_utc,
+            )  # fmt: skip
+            if not inside:
+                return f"{hhmm} is outside the {ctx.direction.value} window"
+            when = inside[0]
+            n = 0 if occ.lock is None else _first_open(occ.lock)
+            lock = occ.lock
+            station = (
+                lock.legs[n - 1].alight_stop if lock and n else ctx.profile.origin(ctx.direction)
+            )
+        if occ is None or ctx is None:
+            return gone
+        k, end = _okey(occ.key), ctx.schedule.window_end
+        boards = self._boards.get(k, ())
+        if station != ctx.profile.origin(ctx.direction) and not boards:
+            # the change from the kept incoming leg is judged on what a poll observes it with
+            more = await self._fetch_all(queries_needed(occ, ctx), True, end)
+            self._auth(more if isinstance(more, str) else None, k, self._clock.now())
+            if isinstance(more, str):
+                await self._deliver()
+                return f"NS did not answer ({more}); try again"
+            boards = more
+        got = await self._fetch(
+            Query(station, ctx.profile.destination(ctx.direction), when), True, end
+        )
+        self._auth(got if isinstance(got, str) else None, k, self._clock.now())
+        if isinstance(got, str):
+            await self._deliver()
+            return f"NS did not answer ({got}); try again"
+        minute = _utc(when).replace(second=0, microsecond=0)
+        found = [
+            c for c in got.connections
+            if c.legs and c.legs[0].board.code == station
+            and _utc(c.legs[0].train.planned_departure).replace(second=0, microsecond=0) == minute
+            and train_number in (None, c.legs[0].train.train_number)
+        ]  # fmt: skip
+        if not found:
+            return f"no train at {hhmm} from {station} in NS data"
+        if len({c.legs[0].train for c in found}) > 1:
+            return f"two trains leave at {hhmm}; give the train number"
+        far = datetime.max.replace(tzinfo=UTC)
+        pick = min(found, key=lambda c: _utc(c.legs[-1].alight.planned_arrival or far))
+        # rule 21: a reload during the request may have removed or archived the occurrence
+        now_occ = self._st.occurrences.get(k)
+        if now_occ is None or _resolved(now_occ):
+            return gone
+        choice = Choose(occ.key.service_date, pick, (got, *boards))
+        ok = await self.act(profile_id, choice, occ.key.direction)
+        return None if ok else gone
 
     async def location(self, profile_id: str, event: LocationEvent) -> None:
         """Every unresolved occurrence of the profile gets the event with a fresh origin answer."""
