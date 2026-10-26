@@ -3,6 +3,7 @@ budget, look-ahead, transactional reload and the restart reconcile (7.1, 7.11, 7
 10, 11, 12, 14, 21, 22, 5.2, 7.13). The only module with a clock, I/O and the notifier."""
 
 import asyncio
+import copy
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -662,6 +663,7 @@ class Runtime:
             if ctx is not None:
                 occurrences.append(occurrence_view(s, ctx, self._boards.get(k, ())))
         # rule 10: a removed profile still runs on its occurrences, so its entities stay
+        # deep copies: a profile's mappings (`transfer_min`, zones) stay the runtime's own
         profiles = list(cfg.profiles if cfg else ())
         running = [s for s in st.occurrences.values() if _find(cfg, s.key.profile_id) is None]
         for pid in sorted({s.key.profile_id for s in running}):
@@ -685,7 +687,7 @@ class Runtime:
         return RuntimeView(
             now,
             self._started,
-            tuple(profiles),
+            copy.deepcopy(tuple(profiles)),
             tuple(directions),
             tuple(occurrences),
             {k: works_ahead(v, today) for k, v in st.lookahead.items()},
@@ -920,12 +922,16 @@ class Runtime:
         return answer
 
     async def _fetch_all(
-        self, queries: Sequence[Query], live: bool, window_end: datetime | None
+        self,
+        queries: Sequence[Query],
+        live: bool,
+        window_end: datetime | None,
+        deadline: datetime | None = None,
     ) -> tuple[ProviderAnswer, ...] | PollError:
         """All or nothing: a poll missing one answer cannot judge the legs it was for (rule 2).
         One hard deadline for the whole poll, not one per request (7.1)."""
         answers = []
-        deadline = _utc(self._clock.now()) + POLL_DEADLINE
+        deadline = deadline or _utc(self._clock.now()) + POLL_DEADLINE
         for q in queries:
             a = await self._fetch(q, live, window_end, deadline)
             if isinstance(a, str):
@@ -1293,37 +1299,46 @@ class Runtime:
             if occ is None or ctx is None:
                 return gone
             w = ctx.schedule
-            days = {w.window_start.astimezone(TZ).date(), w.window_end.astimezone(TZ).date()}
+            n = 0 if occ.lock is None else _first_open(occ.lock)
+            lock = occ.lock
+            if lock and n:
+                # an onward train continues the kept incoming leg: dated from it, not the window
+                station = lock.legs[n - 1].alight_stop
+                lo = _utc(lock.legs[n - 1].train.planned_departure)
+                hi = lo + timedelta(days=1)
+            else:
+                station = ctx.profile.origin(ctx.direction)
+                lo, hi = _utc(w.window_start), _utc(w.window_end)
+            first = lo.astimezone(TZ).date()
             inside = sorted(
                 (
-                    t for d in days for edge in ("start", "end")
-                    if _utc(w.window_start) <= _utc(t := resolve_local(d, departure, edge=edge))
-                    < _utc(w.window_end)
+                    t for d in (first, first + timedelta(days=1)) for edge in ("start", "end")
+                    if lo <= _utc(t := resolve_local(d, departure, edge=edge)) < hi
                 ),
                 key=_utc,
             )  # fmt: skip
             if not inside:
                 return f"{hhmm} is outside the {ctx.direction.value} window"
             when = inside[0]
-            n = 0 if occ.lock is None else _first_open(occ.lock)
-            lock = occ.lock
-            station = (
-                lock.legs[n - 1].alight_stop if lock and n else ctx.profile.origin(ctx.direction)
-            )
         if occ is None or ctx is None:
             return gone
         k, end = _okey(occ.key), ctx.schedule.window_end
-        boards = self._boards.get(k, ())
-        if station != ctx.profile.origin(ctx.direction) and not boards:
-            # the change from the kept incoming leg is judged on what a poll observes it with
-            more = await self._fetch_all(queries_needed(occ, ctx), True, end)
+        # rule 21: what the choice is judged on must still hold when it is written
+        mark = (occ.generation, occ.route_revision, occ.baseline_version)
+        # one deadline for every request of the choice: the shell waits 120 s in all
+        deadline = _utc(self._clock.now()) + POLL_DEADLINE
+        boards: tuple[ProviderAnswer, ...] = ()
+        if station != ctx.profile.origin(ctx.direction):
+            # the change from the kept incoming leg is judged on a fresh observation of it,
+            # never on an older poll's answer (rule 1)
+            more = await self._fetch_all(queries_needed(occ, ctx), True, end, deadline)
             self._auth(more if isinstance(more, str) else None, k, self._clock.now())
             if isinstance(more, str):
                 await self._deliver()
                 return f"NS did not answer ({more}); try again"
             boards = more
         got = await self._fetch(
-            Query(station, ctx.profile.destination(ctx.direction), when), True, end
+            Query(station, ctx.profile.destination(ctx.direction), when), True, end, deadline
         )
         self._auth(got if isinstance(got, str) else None, k, self._clock.now())
         if isinstance(got, str):
@@ -1347,6 +1362,8 @@ class Runtime:
         now_occ = self._st.occurrences.get(k)
         if now_occ is None or _resolved(now_occ):
             return gone
+        if (now_occ.generation, now_occ.route_revision, now_occ.baseline_version) != mark:
+            return "your journey changed while NS answered; try again"
         choice = Choose(occ.key.service_date, pick, (got, *boards))
         ok = await self.act(profile_id, choice, occ.key.direction)
         return None if ok else gone

@@ -10,6 +10,7 @@ from test_lifecycle_follow import L1, L1X, L2, L2X, LATER, conn, journey, occ
 from train_commute_companion.lifecycle import (
     Choose,
     DirectionState,
+    Leaving,
     LegState,
     LockSource,
     NotTravelling,
@@ -1031,3 +1032,76 @@ async def test_choose_at_401_sets_key_rejected(tmp_path):
     assert "NS did not answer (auth)" in await rig.rt.choose_at("p1", time(8, 44))
     assert rig.rt.key_rejected
     assert EventKind.KEY_REJECTED in kinds(rig.rt.events_log)
+
+
+# --- choose_at under concurrency, freshness and the shell's deadline (rule 1, 21; 7.13) ---
+
+
+async def test_choose_at_slow_answer_never_overwrites_a_newer_choice(tmp_path):  # rule 21
+    rig = await one_transfer(tmp_path)
+
+    async def newer_choice(q: Query) -> None:
+        rig.provider.hook = None
+        assert await rig.rt.choose_at("p1", time(8, 12)) is None
+
+    rig.provider.hook = newer_choice
+    reason = await rig.rt.choose_at("p1", time(8, 44))
+    assert reason == "your journey changed while NS answered; try again"
+    lock = only_occurrence(rig.rt).lock
+    assert lock.legs[0].train.planned_departure == at("08:12")
+    assert lock.source is LockSource.CHOOSE
+
+
+async def test_choose_at_onward_change_judged_on_fresh_incoming_data(tmp_path):  # rule 1
+    rig = await one_transfer(tmp_path)
+    await rig.run_until("08:56")  # leg 1 done, its answer cached by the last poll
+    first = ONE_TRANSFER[0]
+    late = make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_arr=40)  # now 09:20
+    rig.provider.world = [make_connection([late, first.legs[1]]), ONE_TRANSFER[1]]
+    rig.clock.set("09:10")
+    assert await rig.rt.choose_at("p1", time(9, 16)) is None
+    assert refused(rig.rt)  # the 09:16 leaves before the incoming train now arrives
+    assert only_occurrence(rig.rt).lock.legs[1].train.planned_departure == at("08:46")
+
+
+async def test_choose_at_onward_train_after_the_window_end(tmp_path):
+    rig = await one_transfer(tmp_path)
+    await rig.run_until("08:56")
+    onward = make_connection([make_leg("UT", "RTD", "10:30", "11:04", number="5690")])
+    rig.provider.world = [*ONE_TRANSFER, onward]
+    assert await rig.rt.choose_at("p1", time(10, 30)) is None
+    assert only_occurrence(rig.rt).lock.legs[1].train.planned_departure == at("10:30")
+    assert not refused(rig.rt)
+
+
+async def test_choose_at_shares_one_deadline_across_its_requests(tmp_path):
+    rig = await one_transfer(tmp_path)
+    await rig.run_until("08:56")  # two board queries (UT and the incoming AAA) plus the choice
+
+    async def slow(q: Query) -> None:
+        await rig.clock.sleep(35)
+
+    rig.provider.hook = slow
+    reason = await rig.rt.choose_at("p1", time(9, 16))
+    assert reason == "NS did not answer (timeout); try again"  # 105 s > the 90 s deadline
+    assert only_occurrence(rig.rt).lock.legs[1].train.planned_departure == at("08:46")
+
+
+async def test_view_profiles_are_detached_from_the_runtime(tmp_path):
+    rig = await one_transfer(tmp_path)
+    v = rig.rt.view()
+    v.profiles[0].transfer_min["UT"] = 99  # type: ignore[index]
+    assert rig.rt.config.profiles[0].transfer_min["UT"] == 4
+    assert rig.rt.view().profiles[0].transfer_min["UT"] == 4
+
+
+async def test_dated_choose_or_leaving_refused_on_a_skipped_occurrence(tmp_path):
+    rig = await one_transfer(tmp_path)
+    assert await rig.rt.act("p1", NotTravelling(None, False)) is True
+    before = rig.occ()
+    assert await rig.rt.act("p1", Leaving(DAY, rig.clock.now())) is False
+    choice = Choose(DAY, ONE_TRANSFER[1], ())
+    assert await rig.rt.act("p1", choice) is False
+    assert "is being followed" in await rig.rt.choose_at("p1", time(8, 44), service_date=DAY)
+    assert rig.occ() == before and not refused(rig.rt)
+    assert await rig.rt.act("p1", NotTravelling(DAY, False)) is True  # explicit skip still lands

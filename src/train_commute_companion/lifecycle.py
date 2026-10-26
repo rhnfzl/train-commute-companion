@@ -551,7 +551,14 @@ def target_occurrence(
 ) -> OccurrenceState | None:
     """Which occurrence a user action applies to (7.13)."""
     if action.service_date is not None:
-        return next((x for x in states if x.key.service_date == action.service_date), None)
+        # a resolved occurrence takes no `choose` or `leaving`: nothing would follow it (rule 6)
+        return next(
+            (
+                x for x in states if x.key.service_date == action.service_date
+                and (isinstance(action, NotTravelling) or not _resolved(x))
+            ),
+            None,
+        )  # fmt: skip
     open_ = sorted((x for x in states if not _resolved(x)), key=lambda x: x.key.service_date)
     if isinstance(action, NotTravelling):
         return next(iter(open_), None)
