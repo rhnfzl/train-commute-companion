@@ -182,6 +182,10 @@ class Rig:
     def occ(self, key: str = "p1|outbound|2026-10-27"):
         return self.rt.state.occurrences.get(key)
 
+    def occ_set(self, s, key: str = "p1|outbound|2026-10-27") -> None:
+        st = self.rt._st
+        self.rt._st = replace(st, occurrences={**st.occurrences, key: s})
+
     async def run_until(self, hhmm: str, poll: bool = True) -> None:
         """Polls every 2 min and runs the watchdog every 30 s up to `hhmm`."""
         end = at(hhmm, self.clock.t.date())
@@ -615,3 +619,31 @@ async def test_held_cancellation_names_the_current_lock_when_sent(tmp_path):
     assert told and all(
         "08:25." not in t and t.endswith("Next good connection: 08:40.") for t in told
     )
+
+
+async def test_held_warning_keeps_its_text_once_the_locks_first_leg_is_past(tmp_path):
+    rig = await started(tmp_path)
+    rig.notifier.fails = lambda e: e.kind is EventKind.CANCELLED
+    rig.clock.set("07:52")
+    later_x = conn(
+        make_leg("AAA", "UT", "08:25", "08:53", number="1300", cancelled=True), LATER.legs[1]
+    )
+    last = conn(
+        make_leg("AAA", "UT", "08:40", "09:08", number="1400"),
+        make_leg("UT", "RTD", "09:20", "09:54", number="7777"),
+    )
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    await rig.rt.poll_once()
+    rig.clock.set("07:54")
+    rig.provider.world = [make_connection([L1X, L2]), later_x, last]
+    await rig.rt.poll_once()
+    held = [o.event.text for o in rig.rt.state.obligations if o.event.kind is EventKind.CANCELLED]
+    # the lock's first leg is past: its second leg (09:20) must not become the "connection"
+    s = rig.occ()
+    first = replace(s.lock.legs[0], state=LegState.DONE)
+    rig.occ_set(replace(s, lock=replace(s.lock, legs=(first, *s.lock.legs[1:]))))
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
+    assert told and all("09:20" not in t for t in told)
+    assert set(told) <= set(held)

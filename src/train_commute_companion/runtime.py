@@ -309,15 +309,18 @@ class _View:
     def _relocked(self, o: Obligation, e: AlertEvent) -> AlertEvent:
         """Rule 5(a): a journey warning names the current lock, not the replacement frozen at
         write time. Kept as written while the lock still holds the warned train (nothing better
-        to name) or its next train is the one the text already names."""
+        to name), its first leg is no longer ahead, or its first train is the one the text
+        already names."""
         s = None if o.occurrence is None else self._rt._st.occurrences.get(_okey(o.occurrence))
         if e.kind not in JOURNEY_WARNINGS or e.train is None or s is None or s.lock is None:
             return e
         live = [x for x in s.lock.legs if x.state not in (LegState.CANCELLED, LegState.RELOCKED)]
-        ahead = [x for x in live if x.state in (LegState.PENDING, LegState.BOARDING)]
-        if not ahead or e.train in {x.train for x in live}:
+        # only the lock's first leg is a "connection"; once it is past, a later leg is not one
+        if not live or live[0].state not in (LegState.PENDING, LegState.BOARDING):
             return e
-        t = ahead[0].train
+        if e.train in {x.train for x in live}:
+            return e
+        t = live[0].train
         if f"{t.train_number}@{t.planned_departure.isoformat()}" in e.key:
             return e
         head, tail = e.text, ""
