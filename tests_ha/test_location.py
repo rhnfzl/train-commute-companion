@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import threading
 
@@ -14,6 +15,10 @@ VIA_UT = (PROFILES / "located_via_ut.yaml").read_text()
 DIRECT = (PROFILES / "located_direct.yaml").read_text()
 RADIUS_300 = (PROFILES / "located_300.yaml").read_text()
 B_ONLY = (PROFILES / "office_b_only.yaml").read_text()
+OTHER = (PROFILES / "located_via_ut_other.yaml").read_text()
+TELEGRAM = (PROFILES / "located_via_ut_telegram.yaml").read_text()
+OFF = (PROFILES / "located_via_ut_off.yaml").read_text()
+MIXED = (PROFILES / "located_via_ut_mixed.yaml").read_text()
 POSITIONS = {"AAA": (52.0, 5.0), "UT": (52.1, 5.1)}
 HOME = (52.01, 5.01)
 FAR = (52.5, 5.5)
@@ -197,3 +202,51 @@ async def test_unload_with_a_location_event_in_flight_is_clean(hass, caplog):
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR and r.name != HOST_LOGGER]
     assert not errors, errors
     assert not any(t.name == "tcc-runtime" for t in threading.enumerate())
+
+
+async def reload_profiles(h, text):
+    write_profiles(h.hass, text)
+    await h.host.run(lambda rt: rt.check_file())
+    await h.entry.runtime_data.coordinator.async_refresh()
+
+
+@pytest.mark.parametrize("text", [TELEGRAM, OFF, OTHER], ids=["telegram", "disabled", "replaced"])
+async def test_source_change_during_pending_work_drops_it(hass, text, monkeypatch):
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    waiting, release = asyncio.Event(), asyncio.Event()
+    real = h.host.positions
+
+    async def held():
+        waiting.set()
+        await release.wait()
+        return await real()
+
+    monkeypatch.setattr(h.host, "positions", held)
+    set_person(hass, 52.1, 5.1)  # the old source enters UT while the positions read waits
+    await waiting.wait()
+    await reload_profiles(h, text)
+    release.set()
+    assert await spied(h) == []
+
+
+@pytest.mark.parametrize("state", [None, "unavailable", "unknown", "not_home"])
+async def test_replaced_tracker_starts_with_no_zone(hass, state):
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *HOME)
+    await start_tracker(h)  # seeds home for person.someone
+    if state is not None:
+        hass.states.async_set("person.other", state, {})  # unseedable: no coordinates
+    await reload_profiles(h, OTHER)
+    await hass.async_block_till_done()
+    hass.states.async_set("person.other", "not_home", {"latitude": FAR[0], "longitude": FAR[1]})
+    assert await spied(h) == []  # no leave of a home the new tracker was never seen in
+
+
+async def test_mixed_case_entity_is_tracked(hass):
+    h = await setup_tcc(hass, MIXED)
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    set_person(hass, 52.1, 5.1)
+    assert await spied(h) == [("UT", "enter")]

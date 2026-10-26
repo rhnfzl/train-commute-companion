@@ -73,7 +73,9 @@ class LocationTracker:
     def __init__(self, hass: HomeAssistant, entry: TccConfigEntry) -> None:
         self._hass = hass
         self._entry = entry
-        self._tracked: dict[str, str] = {}  # profile id -> entity
+        self._tracked: dict[str, str] = {}  # profile id -> entity, lower case like HA's ids
+        # profile id -> token of its current source; work queued under an older token is dropped
+        self._gen: dict[str, object] = {}
         self._unsub_state: Any = None
         self._unsub_data: Any = None
         self._tasks: set[asyncio.Task[None]] = set()
@@ -91,6 +93,7 @@ class LocationTracker:
                 unsub()
         self._unsub_state = self._unsub_data = None
         self._tracked = {}
+        self._gen.clear()
         self._prev.clear()
         self._reported.clear()
         tasks = list(self._tasks)
@@ -103,7 +106,7 @@ class LocationTracker:
         """Follows the profiles of the coordinator's view, removed ones that still run included."""
         data = self._entry.runtime_data.coordinator.data
         want = {
-            p.id: p.location.entity
+            p.id: p.location.entity.lower()
             for p in (data.profiles if data else ())
             if p.location and p.location.source == "ha" and p.location.entity
         }
@@ -117,14 +120,20 @@ class LocationTracker:
                 if entities
                 else None
             )
-        for pid in old.keys() - want.keys():
+        for pid in old.keys() | want.keys():
+            entity = want.get(pid)
+            if old.get(pid) == entity:
+                continue
+            # a new source starts with no history: an old zone or pending event is not its evidence
             self._prev.pop(pid, None)
             self._reported = {k: v for k, v in self._reported.items() if k[0] != pid}
-        for pid, entity in want.items():
-            if old.get(pid) != entity:  # 7.2: the state found now only seeds the zone
-                state = self._hass.states.get(entity)
-                if (pos := _fix(state)) is not None and state is not None:
-                    self._spawn(self._handle(pid, pos, state.last_updated, seed=True), pid)
+            if entity is None:
+                self._gen.pop(pid, None)
+                continue
+            self._gen[pid] = gen = object()
+            state = self._hass.states.get(entity)  # 7.2: the state found now only seeds the zone
+            if (pos := _fix(state)) is not None and state is not None:
+                self._spawn(self._handle(pid, gen, pos, state.last_updated, seed=True), pid)
 
     @callback
     def _on_change(self, event: Event[EventStateChangedData]) -> None:
@@ -135,7 +144,7 @@ class LocationTracker:
             return
         for pid, entity in self._tracked.items():
             if entity == event.data["entity_id"]:
-                self._spawn(self._handle(pid, pos, new.last_updated), pid)
+                self._spawn(self._handle(pid, self._gen[pid], pos, new.last_updated), pid)
 
     def _spawn(self, coro: Coroutine[Any, Any, None], pid: str) -> None:
         task = self._entry.async_create_task(self._hass, coro, f"tcc location {pid}")
@@ -154,9 +163,21 @@ class LocationTracker:
         return {s for leg in legs for s in (leg.board, leg.alight)}
 
     async def _handle(
-        self, pid: str, pos: tuple[float, float], at: datetime, *, seed: bool = False
+        self,
+        pid: str,
+        gen: object,
+        pos: tuple[float, float],
+        at: datetime,
+        *,
+        seed: bool = False,
     ) -> None:
+        """`gen` is the source token at the change: a switch, disable or new entity since then
+        drops the work, so evidence of an old source never reaches the core."""
         host = self._entry.runtime_data.host
+
+        def live() -> bool:
+            return self._gen.get(pid) is gen
+
         async with self._locks.setdefault(pid, asyncio.Lock()):
             try:
                 profile = next(
@@ -165,7 +186,10 @@ class LocationTracker:
                 )
                 if profile is None or profile.location is None:
                     return
-                zones = zones_for(self._hass, profile, await host.positions(), self._running(pid))
+                positions = await host.positions()
+                if not live():
+                    return
+                zones = zones_for(self._hass, profile, positions, self._running(pid))
                 zone = resolve_zone(*pos, zones)
                 prev, self._prev[pid] = self._prev.get(pid), zone
                 if seed:
@@ -182,6 +206,8 @@ class LocationTracker:
                         self._reported[(pid, zone)] = at
                         events.append(LocationEvent(zone, "report", at, at))
                 for event in events:
+                    if not live():  # checked with no await before the dispatch
+                        return
 
                     def send(rt: Runtime, msg: LocationEvent = event) -> Coroutine[Any, Any, None]:
                         return rt.location(pid, replace(msg, received_at=rt.now()))
