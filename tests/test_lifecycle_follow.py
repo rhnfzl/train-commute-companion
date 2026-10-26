@@ -448,3 +448,47 @@ def test_queries_cover_retained_and_restorable():
         Query("AAA", "RTD", at("08:12")),
         Query("BBB", "RTD", at("08:12")),
     ]
+
+
+def _late(delay: int) -> Connection:
+    return conn(
+        make_leg("AAA", "RTD", "08:12", "09:24", number="1234", delay_dep=delay, delay_arr=delay)
+    )
+
+
+def _direct_lock() -> OccurrenceState:
+    return occ(journey([make_leg("AAA", "RTD", "08:12", "09:24", number="1234")]))
+
+
+def test_plain_delay_is_silent_and_moves_only_by_3_min_steps():  # 7.9, 7.5
+    s = _direct_lock()
+    t = poll(s, ctx(at("07:50")), ans("AAA", _late(7)))
+    assert kinds(t) == [(EventKind.DELAYED, Severity.SILENT)]
+    t2 = poll(t.state, ctx(at("07:52")), ans("AAA", _late(8)))
+    t3 = poll(t.state, ctx(at("07:52")), ans("AAA", _late(10)))
+    assert t2.events[0].key == t.events[0].key  # a wobble is not news
+    assert t3.events[0].key != t.events[0].key  # a 3-min step is
+    assert poll(s, ctx(at("07:50")), ans("AAA", _late(2))).events == ()
+
+
+def test_delay_past_latest_acceptable_arrival_is_loud():  # 7.9
+    text = (
+        PROFILES.replace("TRANSFERS", "[]")
+        .replace("UT_MIN", "4")
+        .replace("outbound: {", 'alerts: {latest_acceptable_arrival: "09:30"}\n    outbound: {')
+    )
+    ps, errs = parse_profiles(text, None)
+    assert errs == []
+    c = Ctx(
+        ps[0],
+        Direction.OUTBOUND,
+        dated_schedule(ps[0], Direction.OUTBOUND, DAY, None),
+        None,
+        at("07:50"),
+    )
+    assert kinds(poll(_direct_lock(), c, ans("AAA", _late(7)))) == [
+        (EventKind.DELAYED, Severity.LOUD)
+    ]
+    assert kinds(poll(_direct_lock(), c, ans("AAA", _late(4)))) == [
+        (EventKind.DELAYED, Severity.SILENT)
+    ]

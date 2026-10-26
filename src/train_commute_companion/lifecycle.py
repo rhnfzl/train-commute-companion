@@ -943,6 +943,28 @@ def _at_risk(ctx: Ctx, x: LegProgress, nxt: LegProgress, reason: str) -> AlertEv
     return _event(ctx, EventKind.TRANSFER_AT_RISK, sev, text, nxt.train)
 
 
+def _delayed(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg, *, last: bool) -> AlertEvent:
+    """7.9 `delayed`: silent, loud when the last leg of the outbound journey arrives after
+    `latest_acceptable_arrival`. A broken change is its own loud event. The delay in the key is
+    stepped by `_stated`, so only a 3-min move is news (7.5)."""
+    late = cl.arr_delay_min if cl.arr_delay_min is not None else cl.dep_delay_min or 0
+    stop = next((st for st in cl.leg.stops[1:] if st.code == x.alight_stop), None)
+    arr = None if stop is None or stop.arrival is None else stop.arrival.value
+    limit = ctx.profile.alerts.latest_acceptable_arrival
+    past = (
+        last
+        and ctx.direction is Direction.OUTBOUND
+        and limit is not None
+        and arr is not None
+        and arr.astimezone(TZ).time() > limit
+    )
+    text = f"your {_name(x)} train is delayed {late} min"
+    if arr is not None:
+        text += f", arriving {_hhmm(arr)}"
+    sev = Severity.LOUD if past else Severity.SILENT
+    return _event(ctx, EventKind.DELAYED, sev, f"{text}.", x.train, f"{_name(x)}|~{late}")
+
+
 def _follow(
     s: OccurrenceState,
     ctx: Ctx,
@@ -1090,7 +1112,10 @@ def _follow(
                 if (r := act(t)) is not None:
                     return r
                 continue
+        late = cl.kind is LegKind.DELAYED and x.state is not LegState.DONE
         if nxt is None or ncl is None or ncl.kind is LegKind.CANCELLED:
+            if late and ncl is None:  # a cancelled next leg is the news, not this delay
+                events.append(_delayed(ctx, x, cl, last=nxt is None))
             continue  # a cancelled next leg is handled as a cancellation on its own turn
         tc = check_transfer(cl, ncl, x.alight_stop, p.transfer_min)
         if tc.state is TransferState.BROKEN:
@@ -1113,6 +1138,8 @@ def _follow(
             if (r := act(t, ridden=nxt.state in _DEPARTED)) is not None:
                 return r
             continue
+        if late:  # after the break check: a broken change is its own loud event
+            events.append(_delayed(ctx, x, cl, last=False))
         if tc.state is TransferState.AT_RISK and ahead:
             events.append(_at_risk(ctx, x, nxt, tc.reason))
     if rc is not None and obs[k] is not None:
