@@ -1494,14 +1494,30 @@ def _place_zone(p: Profile, station: str) -> str:
     return (p.location.zones if p.location else {}).get(role, role)
 
 
+def location_queries(s: OccurrenceState, ctx: Ctx, event: LocationEvent) -> list[Query]:
+    """The poll's queries (rule 2) when a station event could show a locked leg missed (rule 7):
+    an origin answer asked now can omit a train that already left."""
+    lock, zone = s.lock, event.zone
+    if event.kind == "leave" or lock is None:
+        return []
+    if not any(x.state in _MISSABLE and x.board_station == zone for x in lock.legs):
+        return []
+    return queries_needed(s, ctx)
+
+
 def on_location(
-    s: OccurrenceState, ctx: Ctx, event: LocationEvent, answer: ProviderAnswer | None = None
+    s: OccurrenceState,
+    ctx: Ctx,
+    event: LocationEvent,
+    answer: ProviderAnswer | None = None,
+    watched: Sequence[ProviderAnswer] = (),
 ) -> Transition:
     """Location only adds (7.2): leaving the origin zone sets a provisional lock, entering the
     first station zone a definitive one, a station report after a leg's expected departure is a
     missed leg (rule 7). `answer`: a fresh healthy answer from the origin; without it only the
     travelling and station facts are kept, so the runtime passes the origin answer with every
-    event. A stale event counts as unknown. Nothing here ends or silences anything."""
+    event. `watched`: the answers of `location_queries`, read only for a missed leg. A stale
+    event counts as unknown. Nothing here ends or silences anything."""
     unchanged = Transition(s, ())
     if _resolved(s) or event.zone is None:
         return unchanged
@@ -1511,14 +1527,18 @@ def on_location(
     prev = s.zone_reports.get(event.zone)
     if prev is None or _utc(event.at) > _utc(prev):
         s = replace(s, zone_reports={**s.zone_reports, event.zone: event.at})
-    t = _locate(s, ctx, event, answer)
+    t = _locate(s, ctx, event, answer, watched)
     # rule 21: a lock, catchability or missed-leg change raises the generation; a repeat
     # report that changes none of them keeps polls in flight
     return _stated(_bumped(start, t.state), t.events)
 
 
 def _locate(
-    s: OccurrenceState, ctx: Ctx, event: LocationEvent, answer: ProviderAnswer | None
+    s: OccurrenceState,
+    ctx: Ctx,
+    event: LocationEvent,
+    answer: ProviderAnswer | None,
+    watched: Sequence[ProviderAnswer],
 ) -> Transition:
     p, d = ctx.profile, ctx.direction
     if s.direction_state is DirectionState.DONE:
@@ -1528,7 +1548,8 @@ def _locate(
             return _left_origin(s, ctx, event, answer)
         return Transition(s, ())
     pool = None if answer is None else _pool((answer,))
-    missed = None if pool is None else _missed(s, ctx, event, pool)
+    seen = (*((answer,) if answer is not None else ()), *watched)  # `location_queries`
+    missed = _missed(s, ctx, event, _pool(seen)) if seen else None
     if missed is not None:
         return missed
     if event.zone == p.origin(d):
@@ -1615,7 +1636,7 @@ def _missed(s: OccurrenceState, ctx: Ctx, event: LocationEvent, pool: _Pool) -> 
         text = f"you missed your change at {x.board_station} to the {_name(x)} train"
         cause = (EventKind.MISSED_TRANSFER, Severity.LOUD, text, x.train)
         kept = _observe(pool, legs[i - 1])[0]
-    asked = (pool.query,)
+    asked = tuple(a.query for a in pool.answers)
     return _relock(
         s, ctx, pool, asked, legs, i, x.board_station, kept, cause, source=LockSource.MISSED
     )

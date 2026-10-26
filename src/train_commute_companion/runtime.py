@@ -38,6 +38,7 @@ from train_commute_companion.lifecycle import (
     _pool,
     apply_action,
     ends,
+    location_queries,
     on_location,
     on_poll,
     on_tick,
@@ -1407,6 +1408,8 @@ class Runtime:
                 continue
             gen, p, d = s.generation, ctx.profile, ctx.direction
             got = await self._fetch(Query(p.origin(d), p.destination(d), now), True, None)
+            qs = location_queries(s, ctx, event)  # the locked trains, from where they leave
+            more = await self._fetch_all(qs, True, None) if qs else ()
             now = self._clock.now()
             self._auth(got if isinstance(got, str) else None, k, now)
             # re-read after the request: an occurrence skipped, archived or edited meanwhile is
@@ -1417,7 +1420,8 @@ class Runtime:
                 continue
             # an answer asked under another generation is stale; the report itself still counts
             answer = None if isinstance(got, str) or s.generation != gen else got
-            t = on_location(s, ctx, event, answer)
+            watched = () if isinstance(more, str) or s.generation != gen else more
+            t = on_location(s, ctx, event, answer, watched)
             self._apply({k: (t.state, t.events)})
         await self._deliver()
 

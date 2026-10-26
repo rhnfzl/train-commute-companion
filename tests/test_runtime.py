@@ -939,6 +939,39 @@ async def test_choose_at_retained_from_missed_transfer_queries_transfer_station(
     assert s.lock.source is LockSource.CHOOSE and not refused(rig.rt)
 
 
+def departing_from_asked_time(rig: Rig) -> None:
+    """As NS: an answer holds only trips leaving at or after the asked time."""
+    real = rig.provider.trips
+
+    async def trips(q: Query) -> ProviderAnswer:
+        a = await real(q)
+        kept = tuple(c for c in a.connections if c.legs[0].train.planned_departure >= q.at)
+        return replace(a, connections=kept)
+
+    rig.provider.trips = trips  # type: ignore[method-assign]
+
+
+async def test_station_report_finds_missed_first_train_ns_no_longer_lists(tmp_path):  # rule 7
+    rig = await one_transfer(tmp_path)
+    departing_from_asked_time(rig)
+    rig.clock.set("08:18")  # at AAA after the 08:12 left; a query from AAA now omits it
+    await rig.rt.location("p1", LocationEvent("AAA", "report", at("08:18"), at("08:18")))
+    assert EventKind.MISSED_FIRST_TRAIN in kinds(rig.rt.events_log)
+    s = only_occurrence(rig.rt)
+    assert s.lock.legs[0].train.planned_departure == at("08:44")
+    assert s.retained[0].legs[0].train.planned_departure == at("08:12")
+
+
+async def test_station_report_finds_missed_transfer_ns_no_longer_lists(tmp_path):  # rule 7
+    rig = await one_transfer(tmp_path)
+    departing_from_asked_time(rig)
+    await rig.run_until("08:44")
+    rig.clock.set("08:53")  # at UT after the delayed 08:46 left; a query from AAA now omits it
+    await rig.rt.location("p1", LocationEvent("UT", "report", at("08:53"), at("08:53")))
+    assert EventKind.MISSED_TRANSFER in kinds(rig.rt.events_log)
+    assert only_occurrence(rig.rt).retained[0].legs[0].train.planned_departure == at("08:46")
+
+
 async def test_choose_at_onward_train_after_done_first_leg_keeps_prefix(tmp_path):
     rig = await one_transfer(tmp_path)
     await rig.run_until("08:56")  # leg 1 accepted at UT
