@@ -325,11 +325,11 @@ class _View:
             return k not in rt._blind
         if e.kind is EventKind.OFFLINE:
             return k in rt._offline
-        if e.kind is EventKind.RESTORED:  # back in the lock, and not broken again since
+        if e.kind is EventKind.RESTORED:  # back in its journey, and not broken again since
             t = e.train
-            on = s.lock is not None and any(
+            on = any(
                 x.train == t and x.state not in (LegState.CANCELLED, LegState.RELOCKED)
-                for x in s.lock.legs
+                for x in legs
             )
             return on and not _broken(s, t)
         if e.kind in (EventKind.MISSED_FIRST_TRAIN, EventKind.MISSED_TRANSFER):

@@ -9,7 +9,7 @@ from datetime import UTC, date, time, timedelta
 
 import pytest
 from builders import make_connection, make_leg
-from test_lifecycle_follow import L1, L1X, L2, L2X, LATER, R2, RIDE, journey
+from test_lifecycle_follow import FROM_UT, L1, L1X, L2, L2X, LATER, R2, RIDE, T_FULL, journey
 from test_runtime import (
     DAY,
     PROFILE,
@@ -913,6 +913,25 @@ async def test_retained_cancel_names_its_own_replacement(tmp_path):
     sent = [e.text for e in rig.notifier.attempts if e.kind is EventKind.CANCELLED]
     # someone on the 08:12 cannot catch the 08:25 from AAA: the next good one is from UT
     assert sent and "09:05" in sent[0] and "08:25" not in sent[0]
+
+
+async def test_retained_journey_back_to_normal_is_delivered(tmp_path):
+    rig = Rig(tmp_path, "08:00")
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    s = rig.occ()
+    # the retained direct train was cut short at UT and gained a recovery leg from there
+    j = journey([T_FULL, FROM_UT], RIDE)
+    cut = replace(j.legs[0], served_endpoint="UT", alight_stop="UT")
+    rig.occ_set(replace(s, lock=journey([DIRECT]), retained=(replace(j, legs=(cut, j.legs[1])),),
+                        direction_state=DirectionState.RIDING))  # fmt: skip
+    rig.provider.world = [make_connection([T_FULL]), make_connection([DIRECT]),
+                          make_connection([FROM_UT])]  # fmt: skip
+    rig.clock.set("08:20")  # it reaches RTD again before the recovery leaves
+    await rig.rt.poll_once()
+    await rig.rt.watchdog_once()
+    sent = [e for e in rig.notifier.attempts if e.kind is EventKind.RESTORED]
+    assert sent and ":retained:1234@" in sent[0].key
 
 
 async def test_held_all_good_names_the_current_platform(tmp_path):
