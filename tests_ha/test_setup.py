@@ -276,14 +276,17 @@ async def test_ha_stop_stops_the_runtime_without_unload(hass):
 
 async def test_failed_platform_unload_keeps_host_and_tracker(hass):
     h = await setup_tcc(hass, PROFILE)
+    tracker = h.entry.runtime_data.tracker
+    restart = Mock(wraps=tracker.start)
+    harness.PATCH.setattr(tracker, "start", restart)
     unload = AsyncMock(return_value=False)
     harness.PATCH.setattr(hass.config_entries, "async_unload_platforms", unload)
     assert await async_unload_entry(hass, h.entry) is False
-    assert h.host.alive
+    assert h.host.alive and restart.call_count == 1 and tracker._unsub_data is not None
     unload.side_effect = RuntimeError("platform refused")
     with pytest.raises(RuntimeError):
         await async_unload_entry(hass, h.entry)
-    assert h.host.alive
+    assert h.host.alive and restart.call_count == 2 and tracker._unsub_data is not None
     harness.PATCH.undo()  # the fixture's unload then works for real
 
 

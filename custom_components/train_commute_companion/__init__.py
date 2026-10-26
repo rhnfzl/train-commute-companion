@@ -25,6 +25,7 @@ from .const import (
 )
 from .coordinator import TccCoordinator
 from .data import TccConfigEntry, TccData
+from .location import LocationTracker
 from .notifier import HaNotifier
 from .services import async_setup_services
 from .store import EntryMarkedStore, file_lock
@@ -79,7 +80,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
     # built here on hass.loop: an HA object, and unload needs it to cancel its pending pushes
     notifier = HaNotifier(hass, entry_id, notify_service, loud_style, host.retired)
 
+    tracker: LocationTracker | None = None
+
     async def stop() -> None:
+        if tracker is not None:
+            await tracker.stop()  # before the host, so no event is sent to a retired runtime
         host.retired.set()  # first, so no push or write starts while the thread is being stopped
         await notifier.async_stop()
         await host.stop()
@@ -97,6 +102,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         entry.async_on_unload(coordinator.async_add_listener(lambda: None))
         entry.runtime_data = TccData(host, coordinator, stop)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        tracker = entry.runtime_data.tracker = LocationTracker(hass, entry)
+        tracker.start()
 
         async def on_stop(_: Event) -> None:
             # HA does not unload entries when it stops; without this the thread keeps writing
@@ -111,7 +118,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
-    ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    tracker = entry.runtime_data.tracker
+    if tracker is not None:
+        await tracker.stop()
+    try:
+        ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    except BaseException:
+        if tracker is not None:
+            tracker.start()  # the entry stays loaded, so it keeps listening
+        raise
     if ok:
         await entry.runtime_data.stop()
+    elif tracker is not None:
+        tracker.start()
     return ok

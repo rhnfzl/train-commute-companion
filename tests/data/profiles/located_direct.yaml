@@ -1,0 +1,11 @@
+profiles:
+  - id: "p1"
+    name: "office_a"
+    days: [mon, tue, wed, thu, fri]
+    home_station: "AAA"
+    work_station: "RTD"
+    outbound: {first_train: "08:12", buffer_min: 10}
+    return: {first_train: "17:52", buffer_min: 5}
+    location:
+      source: ha
+      entity: person.someone
