@@ -1,0 +1,7 @@
+profile: profiles/two_profiles_different_days.yaml
+now: "2026-10-27 07:50"
+until: "2026-10-28 08:30"
+queries:
+  - {at: "07:50", query: "AAA>RTD", answer_file: answers/one_transfer_on_time.yaml}
+  - {at: "07:50", query: "AAA>UT", answer_file: answers/wed_direct.yaml}
+  - {at: "07:50", query: "RTD>AAA", answer_file: answers/tue_return.yaml}

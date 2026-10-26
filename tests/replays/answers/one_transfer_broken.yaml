@@ -1,0 +1,7 @@
+trips:
+  - legs:
+      - {from: AAA, to: UT, dep: "08:12", arr: "08:40", number: "1111", delay: 12}
+      - {from: UT, to: RTD, dep: "08:50", arr: "09:24", number: "2222"}
+  - legs:
+      - {from: AAA, to: UT, dep: "08:12", arr: "08:40", number: "1111", delay: 12}
+      - {from: UT, to: RTD, dep: "09:20", arr: "09:54", number: "2223"}

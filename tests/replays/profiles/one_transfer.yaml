@@ -1,0 +1,9 @@
+profiles:
+  - id: "p1"
+    name: "office_a"
+    days: [mon, tue, wed, thu, fri]
+    home_station: "AAA"
+    work_station: "RTD"
+    transfer_min: {UT: 4}
+    outbound: {first_train: "08:12", transfers: [UT], buffer_min: 10}
+    return: {first_train: "17:52", transfers: [UT], buffer_min: 5}

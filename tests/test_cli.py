@@ -1,0 +1,76 @@
+import json
+from datetime import date, time
+from pathlib import Path
+
+from train_commute_companion.cli import main
+from train_commute_companion.lookahead import BaselineHistory, BaselineVersion
+from train_commute_companion.model import Signature, SignatureLeg
+from train_commute_companion.serde import encode
+from train_commute_companion.store import VERSION, PersistedState
+
+ROOT = Path(__file__).parent.parent
+STARTER = str(ROOT / "examples" / "profiles.yaml")
+BAD = str(ROOT / "tests" / "data" / "profiles" / "bad_starter.yaml")
+
+
+def test_check_profile_starter_file_clean(capsys):
+    assert main(["check-profile", STARTER]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_check_profile_names_every_error_and_suggests(capsys):
+    assert main(["check-profile", BAD]) == 1
+    out = capsys.readouterr().out
+    assert "transfer_min" in out and "id" in out and f"{2:02d}:00" in out
+    assert "(" in out  # a suggestion rides along
+
+
+def test_check_profile_unreadable_file(capsys):
+    assert main(["check-profile", "/nonexistent/profiles.yaml"]) == 1
+    assert "cannot read" in capsys.readouterr().out
+
+
+def test_check_profile_unknown_station_with_list(tmp_path, capsys):
+    stations = tmp_path / "s.json"
+    stations.write_text(json.dumps({"payload": [{"code": "AAA"}, {"code": "UT"}]}))
+    assert main(["check-profile", STARTER, "--stations-file", str(stations)]) == 1
+    assert "RTD" in capsys.readouterr().out
+
+
+def store_with_move(path: Path, to: time) -> None:
+    sig = Signature(
+        (SignatureLeg("AAA", "UT", to, 0, 28), SignatureLeg("UT", "RTD", time(8, 50), 0, 34))
+    )
+    hist = BaselineHistory((BaselineVersion(1, sig, date(2026, 11, 3), True),))
+    state = PersistedState(None, {}, {"p1|outbound": hist}, {}, {}, (), True)
+    path.write_text(json.dumps({"version": VERSION, "write_counter": 1, "state": encode(state)}))
+
+
+def test_check_profile_says_ns_moved_the_train(tmp_path, capsys):
+    store = tmp_path / "state.json"
+    store_with_move(store, time(8, 15))
+    assert main(["check-profile", STARTER, "--store", str(store)]) == 0
+    assert "NS moved your 08:12 to 08:15 from 2026-11-03; update your profile?" in (
+        capsys.readouterr().out
+    )
+
+
+def test_check_profile_same_time_in_store_is_quiet(tmp_path, capsys):
+    store = tmp_path / "state.json"
+    store_with_move(store, time(8, 12))
+    assert main(["check-profile", STARTER, "--store", str(store)]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_check_profile_leaves_a_broken_store_alone(tmp_path, capsys):
+    store = tmp_path / "state.json"
+    store.write_text("not json")
+    assert main(["check-profile", STARTER, "--store", str(store)]) == 0
+    assert store.read_text() == "not json" and list(tmp_path.iterdir()) == [store]
+    assert "cannot read" in capsys.readouterr().out
+
+
+def test_run_refuses_without_key(monkeypatch, capsys):
+    monkeypatch.delenv("NS_API_KEY", raising=False)
+    assert main(["run", STARTER]) == 1
+    assert "NS_API_KEY" in capsys.readouterr().out

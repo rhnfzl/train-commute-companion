@@ -1,0 +1,6 @@
+07:50 SILENT all_good: Office A: your 08:12 to RTD is on time per NS, change at UT then BBB, platform 1.
+08:12 SILENT next_connection: Office A: your 08:12 AAA to UT train has left. If you are not on it, no good connection found, check the NS app.
+08:20 LOUD transfer_at_risk: Office A: your change at UT is at risk: margin below minimum plus 2.
+08:46 SILENT next_connection: Office A: your 08:46 UT to BBB train has left. If you are not on it, no good connection found, check the NS app.
+09:16 SILENT next_connection: Office A: your 09:16 BBB to RTD train has left. If you are not on it, no good connection found, check the NS app.
+Data: NS

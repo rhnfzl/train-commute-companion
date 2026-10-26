@@ -1,0 +1,5 @@
+profile: profiles/direct.yaml
+now: "2026-10-27 07:50"
+until: "09:24"
+queries:
+  - {at: "07:50", query: "AAA>RTD", answer_file: answers/direct_on_time.yaml}

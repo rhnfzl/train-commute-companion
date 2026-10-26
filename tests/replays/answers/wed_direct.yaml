@@ -1,0 +1,4 @@
+trips:
+  - day: 1
+    legs:
+      - {from: AAA, to: UT, dep: "08:12", arr: "08:40", number: "4444"}
