@@ -1267,7 +1267,7 @@ class Runtime:
         if cfg is None:
             return
         works = await self._works()
-        if works is None:
+        if works is None:  # refused by the shared cooldown: retried by `daily`
             return
         for pid, d in [(p.id, d) for p in cfg.profiles for d in Direction]:
             # the profile as configured now: one held across an earlier direction's requests
@@ -1277,7 +1277,22 @@ class Runtime:
                 await self._lookahead(p, d, works)
         await self._deliver()
 
+    def _lookahead_done(self, since: datetime) -> bool:
+        """Every configured direction has a look-ahead run written since `since`."""
+        cfg = self._st.config
+        leds = [
+            self._st.lookahead.get(_dkey(p.id, d))
+            for p in (cfg.profiles if cfg else ())
+            for d in Direction
+        ]
+        return all(
+            x is not None and x.last_applied is not None and _utc(x.last_applied) >= _utc(since)
+            for x in leds
+        )
+
     async def _works(self) -> PlannedWorks | None:
+        """None only when the shared budget refuses; a failed lookup is coverage `unknown`, so
+        the probes still run and none is clean (7.10)."""
         now = self._clock.now()
         if not self._budget.allow(now, live=False):
             return None
@@ -1291,7 +1306,7 @@ class Runtime:
             self._settle(before, e, None)
             if isinstance(e, AuthError):
                 self._auth("auth", "lookahead", now)
-            return None
+            return PlannedWorks((), "unknown")
         self._settle(before, None, None)
         self._auth(None, "lookahead", now)  # an accepted key ends the outage (7.11)
         return works
@@ -1422,16 +1437,22 @@ class Runtime:
         c = self._clock
 
         async def daily() -> None:
+            """Today's run once 06:00 has passed, also after a start past it; retried each poll
+            interval until every direction's run has written (7.10)."""
             while True:
                 now = self._clock.now().astimezone(TZ)
-                nxt = resolve_local(now.date(), LOOKAHEAD_AT, edge="start")
-                if _utc(nxt) <= _utc(now):
-                    nxt = resolve_local(now.date() + timedelta(days=1), LOOKAHEAD_AT, edge="start")
-                await self._clock.sleep((_utc(nxt) - _utc(now)).total_seconds())
+                six = resolve_local(now.date(), LOOKAHEAD_AT, edge="start")
+                if _utc(six) <= _utc(now) and self._lookahead_done(six):
+                    six = resolve_local(now.date() + timedelta(days=1), LOOKAHEAD_AT, edge="start")
+                if _utc(six) > _utc(now):
+                    await self._clock.sleep((_utc(six) - _utc(now)).total_seconds())
+                    continue
                 try:
                     await self.lookahead_once()
                 except Exception:
                     log.exception("look-ahead failed")
+                if not self._lookahead_done(six):
+                    await self._clock.sleep(POLL_EVERY_S)
 
         async def main() -> None:
             if not started:

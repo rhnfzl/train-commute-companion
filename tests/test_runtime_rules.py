@@ -34,7 +34,13 @@ from train_commute_companion.model import (
     Signature,
     SignatureLeg,
 )
-from train_commute_companion.providers.base import AuthError, Query, RateLimited
+from train_commute_companion.providers.base import (
+    AuthError,
+    MalformedAnswer,
+    Query,
+    RateLimited,
+    ServerError,
+)
 from train_commute_companion.store import PersistedState
 
 
@@ -812,3 +818,77 @@ async def test_held_back_to_normal_dropped_after_cancellation_without_replacemen
     await rig.rt.watchdog_once()
     assert EventKind.BACK_TO_NORMAL not in kinds(rig.rt.events_log)
     assert not any(o.event.kind is EventKind.BACK_TO_NORMAL for o in rig.rt.state.obligations)
+
+
+# --- final review MUST_FIX 2: a failed works lookup still probes, a missed run is caught up ---
+
+
+@pytest.mark.parametrize("err", [TimeoutError(), MalformedAnswer("bad json")])
+async def test_failed_works_lookup_still_probes_and_warns(tmp_path, err):
+    rig = Rig(tmp_path, "05:40")
+    tomorrow = DAY + timedelta(days=1)
+    l2x = make_leg("UT", "RTD", "08:50", "09:24", number="5678", day=tomorrow, cancelled=True)
+    rig.provider.world = [
+        *(c for c in every_day() if c.legs[0].train.operating_date != tomorrow),
+        make_connection([make_leg("AAA", "UT", "08:12", "08:40", number="1234", day=tomorrow),
+                         l2x]),
+        *returns_every_day("17:52"),
+    ]  # fmt: skip
+    await rig.rt.start()
+
+    async def fail() -> object:
+        raise err
+
+    rig.provider.planned_works = fail  # type: ignore[method-assign]
+    await rig.rt.lookahead_once()
+    assert rig.provider.calls, "the probes ran"
+    works = [
+        e for e in rig.rt.events_log if e.kind is EventKind.WORKS_AHEAD and e.profile_id == "p1"
+    ]
+    assert [(e.direction.value, e.severity) for e in works] == [("outbound", Severity.LOUD)]
+    assert "Wednesday 28 Oct" in works[0].text
+    assert rig.rt.state.baselines.get("p1|outbound", BaselineHistory()).versions == ()
+    assert rig.rt.state.lookahead["p1|outbound"].last_run is None  # a failed run for health
+
+
+class Sleeps:
+    """A clock sleep for `run_forever`: moves time at most `step` seconds per call, and stops
+    the run at a sleep past an hour (the wait for tomorrow's run), after `limit` calls or once
+    `done()` holds."""
+
+    def __init__(self, rig: Rig, step: float, limit: int, done=lambda: False) -> None:
+        self.rig, self.step, self.limit, self.done, self.n = rig, step, limit, done, 0
+
+    async def __call__(self, seconds: float) -> None:
+        self.n += 1
+        await asyncio.sleep(0)
+        if seconds > 3600 or self.n > self.limit or self.done():
+            raise Stop
+        self.rig.clock.jump(min(seconds, self.step) / 60)
+
+
+async def test_lookahead_catches_up_after_start_past_six(tmp_path):
+    rig = Rig(tmp_path, "07:00")
+    rig.clock.sleep = Sleeps(rig, 0, 40)  # type: ignore[method-assign]
+    with pytest.raises(Stop):
+        await rig.rt.run_forever()
+    assert rig.provider.works_calls == 1
+
+
+async def test_lookahead_retried_each_poll_interval_until_a_run_completes(tmp_path):
+    rig = Rig(tmp_path, "06:00")
+    plain = rig.provider.planned_works
+
+    async def first_fails() -> object:
+        if rig.provider.works_calls == 0:
+            rig.provider.works_calls += 1
+            raise ServerError("503")  # also starts the shared cooldown: the probes wait
+        return await plain()
+
+    rig.provider.planned_works = first_fails  # type: ignore[method-assign]
+    led = lambda: rig.rt.state.lookahead.get("p1|outbound")
+    rig.clock.sleep = Sleeps(rig, 30, 400, lambda: led() is not None)  # type: ignore[method-assign]
+    with pytest.raises(Stop):
+        await rig.rt.run_forever()
+    assert rig.provider.works_calls == 2
+    assert led().last_applied < at("06:10")
