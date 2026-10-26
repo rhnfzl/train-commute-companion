@@ -468,3 +468,25 @@ def test_promoted_retained_journey_is_followed_and_keeps_the_occurrence():  # ru
     r2x = make_leg("UT", "RTD", "09:05", "09:39", number="6666", cancelled=True)
     p = poll(t.state, ctx(at("08:30")), ans("AAA", conn(L1, r2x)), ans("UT", conn(r2x)))
     assert (EventKind.CANCELLED, Severity.LOUD) in kinds(p)
+
+
+def test_choice_of_the_ridden_train_to_another_transfer_stop_moves_its_alighting_stop():
+    # riding 1234 AAA to UT, the user chooses 1234 on to BBB, then 9999 BBB to RTD
+    a_ut = make_leg("AAA", "UT", "08:12", "08:40", number="1234")
+    u_r = make_leg("UT", "RTD", "08:50", "09:24", number="5678")
+    a_bbb = make_leg("AAA", "BBB", "08:12", "08:55", number="1234", stops=["UT"])
+    b_r = make_leg("BBB", "RTD", "09:05", "09:32", number="9999")
+    pick = conn(a_bbb, b_r)
+    t = apply_action(
+        occ(journey([a_ut, u_r], RIDE)), ctx(at("08:20")), Choose(None, pick, (ans("AAA", pick),))
+    )
+    assert not t.events
+    first = t.state.lock.legs[0]
+    assert first.intended_alight == first.alight_stop == "BBB"
+    t2 = poll(
+        t.state,
+        ctx(at("08:22")),
+        ans("AAA", pick, when="08:22"),
+        ans("BBB", conn(b_r), when="08:22"),
+    )
+    assert not {EventKind.TRANSFER_BROKEN, EventKind.ROUTE_CHANGED} & {e.kind for e in t2.events}

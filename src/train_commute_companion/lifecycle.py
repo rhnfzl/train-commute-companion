@@ -608,9 +608,18 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
     riding = source is not None or s.travelling
     new = journey_of(c, LockSource.CHOOSE, Commitment.COMMITTED if riding else Commitment.INTENDED)
     legs = new.legs
-    if source is not None:  # the ridden prefix keeps its progress
+    if source is not None:  # the ridden prefix keeps its progress, to the chosen stop
         have = {x.train: x for x in source.legs}
-        legs = tuple(have.get(x.train) or progress_of(x) for x in c.legs)
+
+        def reuse(h: LegProgress, stop: str) -> LegProgress:
+            if h.intended_alight == stop:
+                return h
+            return replace(_move_stop(h, stop, stop), intended_alight=stop)
+
+        legs = tuple(
+            progress_of(y) if (h := have.get(y.train)) is None else reuse(h, y.alight.code)
+            for y in c.legs
+        )
     new = replace(new, legs=(*done, *legs))
     # a choice ends every retained remainder; the writer retains the old lock if ridden
     written = write_lock(replace(s, retained=()), new, expect=s.lock, now=ctx.now)
