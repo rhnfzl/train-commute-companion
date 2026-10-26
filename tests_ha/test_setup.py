@@ -338,7 +338,8 @@ async def tick(hass, seconds: float) -> None:
     """Moves HA time on so its own scheduled refresh runs, with no manual refresh."""
     harness.FREEZER.tick(seconds)
     async_fire_time_changed(hass)
-    await hass.async_block_till_done()
+    # the scheduled refresh is a background task waiting on the runtime thread
+    await hass.async_block_till_done(wait_background_tasks=True)
 
 
 async def test_monitoring_runs_without_manual_refresh(hass):
