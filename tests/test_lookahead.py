@@ -27,13 +27,24 @@ from train_commute_companion.delivery import Obligation
 from train_commute_companion.lookahead import (
     BaselineHistory,
     BaselineVersion,
+    LookAheadLedger,
+    _overlaps,
     evaluate,
     probe_dates,
     rebase_on_edit,
     reset_on_edit,
     run_lookahead,
 )
-from train_commute_companion.model import AlertEvent, Direction, EventKind, Severity
+from train_commute_companion.model import (
+    AlertEvent,
+    Direction,
+    EventKind,
+    Severity,
+    Signature,
+    SignatureLeg,
+)
+from train_commute_companion.profile import find_overlaps, parse_profiles
+from train_commute_companion.serde import dumps, loads
 
 SHIFTED = {"l1": ("08:15", "08:43"), "l2": ("08:49", "09:27")}
 
@@ -122,7 +133,7 @@ def _adoption_obligation(version: int) -> Obligation:
         "p1", "office_a", OUT, NEXT_TUE, None, EventKind.TIMETABLE_ADOPTED, Severity.SILENT,
         None, "x", "k", MON,
     )  # fmt: skip
-    return Obligation("o", ev, None, ("p1", OUT, NEXT_TUE), 1, version, "adopt", None, 0)
+    return Obligation("o", ev, None, ("p1", OUT, NEXT_TUE), 1, version, f"adopt:{version}", None, 0)
 
 
 def test_waiting_version_cancelled_before_date_never_activates():
@@ -327,3 +338,89 @@ def test_whole_journey_tie_break_keeps_the_destination():
     (whole,) = [r for r in evaluate(P, OUT, TUE, answers, CLEAR, None) if r.leg_index is None]
     assert whole.connection is not None and whole.connection.destination == "RTD"
     assert whole.works and not whole.clean
+
+
+NIGHT_YAML = """
+profiles:
+  - id: "n1"
+    name: "night"
+    days: [mon, tue]
+    home_station: "AAA"
+    work_station: "RTD"
+    outbound: {first_train: "%s", window: ["%s", "%s"], buffer_min: 0}
+    return: {first_train: "%s", window: ["%s", "%s"], buffer_min: 0%s}
+"""
+
+
+def _night(out: tuple[str, str, str], back: tuple[str, str, str], offset: int = 0):
+    extra = f", day_offset: {offset}" if offset else ""
+    ps, errs = parse_profiles(NIGHT_YAML % (*out, *back, extra), None)
+    assert errs == [] and find_overlaps(ps, MON) == []
+    return ps[0]
+
+
+def _ver(first: str, eff: date, version: int = 1) -> BaselineVersion:
+    leg = SignatureLeg("AAA", "RTD", time.fromisoformat(first), 0, 30)
+    return BaselineVersion(version, Signature((leg,)), eff, True)
+
+
+def test_adoption_overlap_across_an_overnight_adoption_boundary():  # rule 19
+    p = _night(("01:20", "01:05", "04:00"), ("22:30", "22:15", "00:50"))
+    out = BaselineHistory((_ver("01:20", date(2026, 10, 1)),))
+    back = BaselineHistory((_ver("22:30", date(2026, 10, 1)), _ver("22:15", TUE, 2)))
+    bases = {("n1", Direction.RETURN): back}
+    # Monday's return under its old version still closes Tue 00:50, past Tue's new 00:45 start
+    assert _overlaps(p, OUT, _ver("01:00", TUE).signature, TUE, out, (), bases)
+    assert not _overlaps(p, OUT, _ver("01:05", TUE).signature, TUE, out, (), bases)
+
+
+def test_adoption_overlap_uses_the_service_date_of_a_day_offset_return():  # rule 19
+    p = _night(("08:00", "07:30", "09:00"), ("07:00", "06:00", "07:20"), offset=1)
+    out = BaselineHistory((_ver("08:00", date(2026, 10, 1)),))
+    agreed = _ver("07:45", TUE).signature  # window 07:15-08:45
+
+    def bases(eff: date):
+        back = BaselineHistory((_ver("07:00", date(2026, 10, 1)), _ver("06:50", eff, 2)))
+        return {("n1", Direction.RETURN): back}
+
+    # Monday's return runs on Tuesday, so the return version in force on Tuesday applies
+    assert not _overlaps(p, OUT, agreed, TUE, out, (), bases(TUE))  # ends 07:10
+    assert _overlaps(p, OUT, agreed, TUE, out, (), bases(WED))  # still ends 07:20
+
+
+def _mixed_answers(day: date, l1, l2, l2_alone):
+    a = make_leg("AAA", "UT", *l1, day=day, number="1000")
+    b = make_leg("UT", "RTD", *l2, day=day, number="2000")
+    b2 = make_leg("UT", "RTD", *l2_alone, day=day, number="2002")
+    return [
+        ans("AAA", "UT", make_connection([a])),
+        ans("UT", "RTD", make_connection([b2])),
+        ans("AAA", "RTD", make_connection([a, b])),
+    ]
+
+
+def test_superseded_adoption_bundled_with_a_warning_is_withdrawn():  # rules 18, 5
+    history = BaselineHistory((confirmed(),))
+    rs = [
+        r
+        for day in DAYS
+        for r in evaluate(
+            P, OUT, day, _mixed_answers(day, *SHIFTED.values(), ("08:55", "09:33")), CLEAR,
+            history.in_force(day),
+        )
+    ]  # fmt: skip
+    h, led, events = run(history, rs)
+    tue = next(e for e in events if e.service_date == TUE)
+    assert tue.kind is EventKind.WORKS_AHEAD and "NS moved your 08:12 to 08:15" in tue.text
+    led = loads(LookAheadLedger, dumps(led))  # through the store
+    later = NOW + timedelta(minutes=5)
+    for again in (probes(h), probes(h, l1=("08:19", "08:47"), l2=("08:53", "09:31"))):
+        out = run_lookahead(P, OUT, h, led, again, 1, MON, later)
+        assert out is not None
+        h2, led2, events2 = out
+        assert 2 not in [v.version for v in h2.versions]
+        assert not any("ignore the earlier change" in e.text for e in events2)
+        assert not any("adopt:2" in o.fact_key.split(";") for o in led2.pending)
+        kept = [o for o in led2.pending if o.look_ahead == ("p1", OUT, TUE)]
+        assert any("2026-10-27|1|warn:" in o.fact_key for o in kept)  # the warning stays
+        assert all(o.id in led2.facts for o in led2.pending)

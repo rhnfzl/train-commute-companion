@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal, cast
@@ -464,6 +464,9 @@ def parse_profiles(
     return profiles, errors
 
 
+FirstTrain = Callable[[Profile, Direction, date], time | None]
+
+
 @dataclass(frozen=True, slots=True)
 class _Occ:
     day: date
@@ -474,7 +477,9 @@ class _Occ:
     end: datetime  # UTC
 
 
-def _occurrences(p: Profile, today: date, near: frozenset[date]) -> dict[date, list[_Occ]]:
+def _occurrences(
+    p: Profile, today: date, near: frozenset[date], first_train: FirstTrain | None
+) -> dict[date, list[_Occ]]:
     first = today - timedelta(days=2)  # a commute day two days back can still have an open window
     span = {first + timedelta(days=i) for i in range(_SCAN_DAYS)}
     out: dict[date, list[_Occ]] = {}
@@ -483,7 +488,7 @@ def _occurrences(p: Profile, today: date, near: frozenset[date]) -> dict[date, l
         real = is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays)
         if recurring or real:
             for d in Direction:
-                s = dated_schedule(p, d, day, None)
+                s = dated_schedule(p, d, day, first_train(p, d, day) if first_train else None)
                 out.setdefault(day, []).append(
                     _Occ(
                         day,
@@ -519,7 +524,7 @@ def _window_overlap(
 
 
 def _overlap_pairs(
-    profiles: Sequence[Profile], today: date
+    profiles: Sequence[Profile], today: date, first: FirstTrain | None = None
 ) -> list[tuple[Profile, Profile, ProfileError]]:
     found: dict[tuple[str, str], tuple[Profile, Profile, ProfileError]] = {}
 
@@ -554,7 +559,7 @@ def _overlap_pairs(
     near = frozenset(
         d + timedelta(days=k) for p in profiles for d in p.extra_dates for k in range(-3, 4)
     )
-    occ = {p.id: _occurrences(p, today, near) for p in profiles}
+    occ = {p.id: _occurrences(p, today, near, first) for p in profiles}
     floor = datetime.combine(today, time(), TZ).astimezone(UTC)
     for p in profiles:
         hit = _window_overlap(occ[p.id], occ[p.id], floor, True)
@@ -573,8 +578,12 @@ def _overlap_pairs(
     return list(found.values())
 
 
-def find_overlaps(profiles: Sequence[Profile], today: date) -> list[ProfileError]:
-    return [e for _, _, e in _overlap_pairs(profiles, today)]
+def find_overlaps(
+    profiles: Sequence[Profile], today: date, first: FirstTrain | None = None
+) -> list[ProfileError]:
+    """`first` gives the effective first train of a (profile, direction, commute day), for the
+    dated check after an adoption (7.12 rule 19); without it the file's first trains count."""
+    return [e for _, _, e in _overlap_pairs(profiles, today, first)]
 
 
 def load_config(

@@ -1,7 +1,7 @@
 """Planned-works look-ahead and timetable baselines (7.10, 7.12 rules 18, 19, 21, Q2). Pure."""
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 
 from train_commute_companion.calendar import TZ, is_commute_day, resolve_local
@@ -80,6 +80,9 @@ class LookAheadLedger:
     started_revision: int
     started_baseline: int | None
     last_applied: datetime | None = None  # start time of the last run whose writes were applied
+    # pending obligation id -> its facts (key, text, loud, is warning), so one fact can be
+    # withdrawn from a message that bundles several (7.12 rule 18)
+    facts: Mapping[str, tuple[tuple[str, str, bool, bool], ...]] = field(default_factory=dict)
 
 
 # ---- signatures
@@ -467,46 +470,27 @@ def _expected(base: BaselineVersion, li: int | None) -> Signature:
     return base.signature if li is None else Signature((base.signature.legs[li],))
 
 
-def _shifted(p: Profile, d: Direction, first: time) -> Profile:
-    j = p.journey(d)
-    delta = _clock_min(first) - _clock_min(j.first_train)
-
-    def move(t: time) -> time:
-        m = (_clock_min(t) + delta) % 1440
-        return time(m // 60, m % 60)
-
-    j2 = replace(j, first_train=first, window=(move(j.window[0]), move(j.window[1])))
-    return replace(p, outbound=j2) if d is Direction.OUTBOUND else replace(p, return_=j2)
-
-
-def _effective(
-    p: Profile, hs: Mapping[tuple[str, Direction], BaselineHistory], day: date
-) -> Profile:
-    """`p` with each direction's first train and window moved to the baseline in force."""
-    for d in Direction:
-        h = hs.get((p.id, d))
-        v = None if h is None else h.in_force(day)
-        if v is not None:
-            p = _shifted(p, d, v.signature.legs[0].departure)
-    return p
-
-
 def _overlaps(
     p: Profile,
     d: Direction,
     agreed: Signature,
     start: date,
+    current: BaselineHistory,
     others: Sequence[Profile],
     bases: Mapping[tuple[str, Direction], BaselineHistory],
 ) -> bool:
-    """Rule 19: the dated schedules from `start` on, with `agreed` adopted for `p` and `d`,
-    checked from each date where any schedule changes."""
-    hs = {**bases, (p.id, d): BaselineHistory((BaselineVersion(0, agreed, start, True),))}
-    days = {start} | {v.effective_from for h in hs.values() for v in h.versions}
-    return any(
-        find_overlaps([_effective(x, hs, day) for x in (p, *others)], day)
-        for day in sorted(x for x in days if x >= start)
-    )
+    """Rule 19: every occurrence from `start` on gets the baseline in force on its own service
+    date, with `agreed` adopted for `p` and `d` from `start`, so a window opened under an
+    older version that runs past an adoption boundary is compared too."""
+    own = tuple(v for v in current.versions if v.effective_from < start)
+    hs = {**bases, (p.id, d): BaselineHistory((*own, BaselineVersion(0, agreed, start, True)))}
+
+    def first(x: Profile, dx: Direction, commute_day: date) -> time | None:
+        h = hs.get((x.id, dx))
+        v = None if h is None else h.in_force(commute_day + timedelta(x.journey(dx).day_offset))
+        return None if v is None else v.signature.legs[0].departure
+
+    return bool(find_overlaps([p, *others], start, first))
 
 
 def _seed_day(per_date: Mapping[str, tuple[str, ...]], version: int) -> str | None:
@@ -551,6 +535,8 @@ def run_lookahead(
     wholes = {r.service_date: r for r in results if r.leg_index is None}
     per_date = dict(ledger.per_date)
     pending = list(ledger.pending)
+    bundled = dict(ledger.facts)
+    carried: list[tuple[date, list[tuple[str, str, bool, bool]]]] = []  # what a retire left
     versions = list(history.versions)
     floor = history.floor  # raised by every removal so a number is never handed out twice
     facts: dict[date, list[tuple[str, str, bool, bool]]] = {}  # key, text, loud, is warning
@@ -565,18 +551,19 @@ def run_lookahead(
 
     def retire(w: BaselineVersion, text: str) -> None:
         """Removes a waiting version: an untold adoption of it is just dropped, a told one gets
-        a silent correction on its date (7.12 rule 18)."""
+        a silent correction on its date (7.12 rule 18). The adoption fact is found by key, also
+        inside a message it shares with warnings; those other facts are sent again without it."""
         nonlocal floor, pending
         versions.remove(w)
         floor = max(floor, w.version)
-        told = [
-            o
-            for o in pending
-            if o.baseline_version == w.version and o.event.kind is EventKind.TIMETABLE_ADOPTED
-        ]
-        if told:
-            pending = [o for o in pending if o not in told]  # never delivered
-        else:
+        tag = f"adopt:{w.version}"
+        untold = [o for o in pending if tag in o.fact_key.split(";")]
+        for o in untold:  # never delivered
+            pending.remove(o)
+            rest = [f for f in bundled.pop(o.id, ()) if f[0] != tag]
+            if rest and o.look_ahead is not None:
+                carried.append((o.look_ahead[2], rest))
+        if not untold:
             facts.setdefault(w.effective_from, []).append(
                 (f"cancel:{w.version}", text, False, False)
             )
@@ -640,7 +627,7 @@ def run_lookahead(
                     f"NS moved your {_hhmm(old_first)} to {_hhmm(new_first)} on another day;"
                     " update your profile"
                 )
-            elif _overlaps(p, d, agreed, expected[0], others, bases or {}):
+            elif _overlaps(p, d, agreed, expected[0], current, others, bases or {}):
                 refusals.append(
                     f"NS moved your {_hhmm(old_first)} to {_hhmm(new_first)}, which overlaps"
                     " another window; update your profile"
@@ -713,8 +700,7 @@ def run_lookahead(
 
     # 6. one message per direction and date, no cap
     events: list[AlertEvent] = []
-    for sd in sorted(facts):
-        fs = facts[sd]
+    for sd, fs in [*sorted(facts.items()), *carried]:
         is_adopt = any(k.startswith("adopt:") for k, *_ in fs)
         warns = any("|warn:" in k for k, *_ in fs)
         kind = (
@@ -750,19 +736,12 @@ def run_lookahead(
             adopted.version if is_adopt and adopted is not None else (b.version if b else None)
         )
         events.append(ev)
-        pending.append(
-            Obligation(
-                f"{ev.key}|{now.isoformat()}",
-                ev,
-                None,
-                (p.id, d, sd),
-                revision,
-                version,
-                fact_key,
-                None,
-                0,
-            )
-        )
+        ob = Obligation(
+            f"{ev.key}|{now.isoformat()}", ev, None, (p.id, d, sd), revision, version, fact_key,
+            None, 0,
+        )  # fmt: skip
+        pending.append(ob)
+        bundled[ob.id] = tuple(fs)
     for reason in refusals:  # a blocked adoption is told while it lasts
         ev = AlertEvent(
             p.id,
@@ -800,6 +779,7 @@ def run_lookahead(
         revision,
         final.latest,
         now,
+        {o.id: bundled[o.id] for o in pending if o.id in bundled},
     )
     return final, new_ledger, events
 
