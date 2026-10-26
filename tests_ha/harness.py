@@ -18,6 +18,8 @@ from custom_components.train_commute_companion import host as host_mod
 from custom_components.train_commute_companion.const import DOMAIN
 from custom_components.train_commute_companion.host import RuntimeHost
 from train_commute_companion.model import Connection
+from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
+from train_commute_companion.replay import ReplayClock, ReplayProvider
 
 PROFILES = Path(__file__).resolve().parents[1] / "tests" / "data" / "profiles"
 PROFILE = (PROFILES / "office_a.yaml").read_text()
@@ -36,6 +38,25 @@ class HaProvider(Provider):
 
     async def stations(self) -> frozenset[str]:
         return STATIONS
+
+
+class ReplayStations:
+    """A replay's provider with the station list a real one has: `require_stations` would refuse
+    the first configuration against the replay provider's empty list."""
+
+    positions: dict[str, tuple[float, float]]
+
+    def __init__(self, inner: ReplayProvider, codes: frozenset[str]) -> None:
+        self.inner, self.codes, self.positions = inner, codes, {}
+
+    async def trips(self, q: Query) -> ProviderAnswer:
+        return await self.inner.trips(q)
+
+    async def planned_works(self) -> PlannedWorks:
+        return await self.inner.planned_works()
+
+    async def stations(self) -> frozenset[str]:
+        return self.codes
 
 
 @dataclass
@@ -66,15 +87,23 @@ def write_profiles(hass: HomeAssistant, text: str) -> None:
 
 
 def prepare(
-    hass: HomeAssistant, profile_text: str, now: str, world: Sequence[Connection]
+    hass: HomeAssistant,
+    profile_text: str,
+    now: str,
+    world: Sequence[Connection],
+    *,
+    replay: tuple[ReplayClock, ReplayStations] | None = None,
 ) -> tuple[MockConfigEntry, FakeClock, HaProvider, list[ServiceCall]]:
-    """Everything `setup_tcc` does before setting the entry up."""
+    """Everything `setup_tcc` does before setting the entry up. `replay` swaps in a replay's
+    clock and provider for the scripted ones."""
     assert FREEZER is not None and PATCH is not None, "use pytest.mark.usefixtures('tcc_freezer')"
     clock = FakeClock(at(now))
+    provider = HaProvider(clock, world)
+    if replay is not None:
+        clock, provider = replay  # type: ignore[assignment]
     FREEZER.move_to(clock.now())
     write_profiles(hass, profile_text)
     pushes = async_mock_service(hass, "notify", NOTIFY)
-    provider = HaProvider(clock, world)
 
     async def close() -> None:
         pass
