@@ -180,6 +180,13 @@ def dated_end(p: Profile, d: Direction, sd: date, base: BaselineVersion | None) 
     return dep.astimezone(UTC) + timedelta(minutes=x.duration_min) + FOLLOW_LIMIT
 
 
+def _probed_end(r: ProbeResult) -> datetime | None:
+    """The affected journey's own last planned arrival plus the 150-min limit (7.12 rule 6):
+    works can move it past the baseline's. None when the probe shows no arrival: unknown."""
+    arr = None if r.connection is None else r.connection.legs[-1].alight.planned_arrival
+    return None if arr is None else arr.astimezone(UTC) + FOLLOW_LIMIT
+
+
 def _minus_search(t: datetime) -> datetime:
     return (t.astimezone(UTC) - SEARCH).astimezone(TZ)
 
@@ -558,8 +565,8 @@ def run_lookahead(
     per_date = dict(ledger.per_date)
     pending = list(ledger.pending)
     bundled = dict(ledger.facts)
-    # what a retire left, with the withdrawn obligation that owned its marks
-    carried: list[tuple[date, list[tuple[str, str, bool, bool]], str | None]] = []
+    # what a retire left, with the withdrawn obligation that owned its marks and its expiry
+    carried: list[tuple[date, list[tuple[str, str, bool, bool]], str | None, datetime | None]] = []
     versions = list(history.versions)
     floor = history.floor  # raised by every removal so a number is never handed out twice
     facts: dict[date, list[tuple[str, str, bool, bool]]] = {}  # key, text, loud, is warning
@@ -590,7 +597,7 @@ def run_lookahead(
             pending.remove(o)
             rest = [f for f in bundled.pop(o.id, ()) if f[0] != tag]
             if rest and o.look_ahead is not None:
-                carried.append((o.look_ahead[2], rest, o.id))
+                carried.append((o.look_ahead[2], rest, o.id, o.expires_at))
         if not untold:
             facts.setdefault(w.effective_from, []).append(
                 (f"cancel:{w.version}", text, False, False)
@@ -682,6 +689,7 @@ def run_lookahead(
 
     # 5. per probe: warnings, already told, restored (look-ahead 23-27)
     final = hist()
+    unsure: set[date] = set()  # a date with a fact whose affected journey has no known end
     for r in results:
         sd = r.service_date
         key = f"{sd.isoformat()}|{'j' if r.leg_index is None else r.leg_index}"
@@ -717,6 +725,8 @@ def run_lookahead(
             if loud:
                 own(sd, key, f"loud:{r.fingerprint}")
             facts.setdefault(sd, []).append((fact, _warn_text(r, p, exp), loud, r.works))
+            if _probed_end(r) is None:
+                unsure.add(sd)
         elif last is not None and last.startswith("warn:"):
             own(sd, key, f"restored:{r.fingerprint}")
             if adopted is not None and last == f"warn:{r.fingerprint}":
@@ -725,10 +735,15 @@ def run_lookahead(
             facts.setdefault(sd, []).append(
                 (f"{key}|restored", f"your {what} is back to normal", False, False)
             )
+            if _probed_end(r) is None:
+                unsure.add(sd)
 
     # 6. one message per direction and date, no cap
     events: list[AlertEvent] = []
-    for sd, fs, was in [*((sd, fs, None) for sd, fs in sorted(facts.items())), *carried]:
+    for sd, fs, was, kept in [
+        *((sd, fs, None, None) for sd, fs in sorted(facts.items())),
+        *carried,
+    ]:
         is_adopt = any(k.startswith("adopt:") for k, *_ in fs)
         warns = any("|warn:" in k for k, *_ in fs)
         kind = (
@@ -765,12 +780,19 @@ def run_lookahead(
         )
         events.append(ev)
         # 7.12 rule 5(b): expires when the journey on that date ended, which can be after
-        # midnight (a 23:40 journey with a 00:05 transfer), never at the end of its date. An
-        # adoption or its withdrawal never expires: it is kept after its date
-        ends = None if is_adopt or any(k.startswith("cancel:") for k, *_ in fs) else b
+        # midnight (a 23:40 journey with a 00:05 transfer), never at the end of its date: the
+        # latest of the baseline's end and every affected journey probed for that date, as
+        # works can move the last arrival later. An unknown end, an adoption or its withdrawal
+        # gets no expiry: it is kept after its date. Carried facts keep their message's bound
+        expires = kept
+        if was is None and not is_adopt and not any(k.startswith("cancel:") for k, *_ in fs):
+            ends = [_probed_end(r) for r in results if r.service_date == sd]
+            base_end = dated_end(p, d, sd, b)
+            if base_end is not None and sd not in unsure:
+                expires = max([base_end, *(e for e in ends if e is not None)])
         ob = Obligation(
             f"{ev.key}|{now.isoformat()}", ev, None, (p.id, d, sd), revision, version, fact_key,
-            dated_end(p, d, sd, ends), 0,
+            expires, 0,
         )  # fmt: skip
         pending.append(ob)
         bundled[ob.id] = tuple(fs)

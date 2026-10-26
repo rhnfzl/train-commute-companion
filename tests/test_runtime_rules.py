@@ -1101,6 +1101,49 @@ async def test_held_works_warning_dropped_once_its_dated_journey_ended(tmp_path)
     assert rig.rt._st.lookahead["p1|outbound"].pending == ()
 
 
+async def _held_changed_journey(tmp_path, day: date, l1: object, l2: object) -> Rig:
+    """05:40 the day before `day`: works change the outbound on `day` to `l1` then `l2`."""
+    rig = Rig(tmp_path, "05:40")
+    rig.provider.world = [
+        *(c for c in every_day() if c.legs[0].train.operating_date != day),
+        make_connection([l1, l2]),
+        *returns_every_day("17:52"),
+    ]
+    rig.notifier.fails = lambda e: True
+    await rig.rt.start()
+    await rig.rt.lookahead_once()
+    return rig
+
+
+@pytest.mark.parametrize(
+    ("l2", "end"),
+    [
+        # the first leg runs to 11:58 and the changed onward train at 12:05 is cancelled
+        (("12:05", "12:40", "11:58"), "15:10"),
+        # a slow replacement on the usual onward train
+        (("08:50", "12:40", "08:40"), "15:10"),
+    ],
+)
+async def test_held_warning_outlives_the_baseline_end_when_works_move_the_arrival(
+    tmp_path, l2, end
+):
+    # 7.12 rule 6: the follow limit counts from the affected journey's own last arrival
+    wed = DAY + timedelta(days=1)
+    dep, arr, l1_arr = l2
+    rig = await _held_changed_journey(
+        tmp_path,
+        wed,
+        make_leg("AAA", "UT", "08:12", l1_arr, number="1234", day=wed),
+        make_leg("UT", "RTD", dep, arr, number="5678", day=wed, cancelled=True),
+    )
+    o = next(o for o in rig.rt.state.obligations if o.event.kind is EventKind.WORKS_AHEAD)
+    assert o.expires_at == at(end, wed)  # 12:40 plus 150 min, not 09:24 plus 150 min
+    rig.clock.t = at("12:00", wed)  # after the baseline end, 09:24 plus 150 min
+    await rig.restart()
+    await _back(rig)
+    assert _ahead(rig, EventKind.WORKS_AHEAD)
+
+
 async def test_held_works_warning_without_a_known_end_is_kept_the_next_day(tmp_path):
     wed = DAY + timedelta(days=1)
     rig = await _held_warning(tmp_path, wed)

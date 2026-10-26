@@ -84,6 +84,21 @@ def test_works_warning_expires_at_the_dated_journey_end_after_midnight():
     assert loads(Obligation, dumps(o)).expires_at == o.expires_at
 
 
+def test_works_warning_expiry_counts_from_the_affected_journey_arrival():
+    # 7.12 rule 6: works stretch the onward leg to 12:40, so 09:24 plus 150 min is too early
+    history = BaselineHistory((confirmed(),))
+    rs = probe(TUE, history.in_force(TUE), cancel2=True, l2=("08:46", "12:40"))
+    _, led, _ = run(history, rs)
+    (o,) = led.pending
+    assert o.expires_at == datetime(2026, 10, 27, 15, 10, tzinfo=AMS)
+    # the onward train leaves later than the probes look: no known end, so no expiry
+    rs = probe(TUE, history.in_force(TUE), cancel2=True, l1=("08:12", "11:58"),
+               l2=("12:05", "12:40"))  # fmt: skip
+    _, led, _ = run(history, rs)
+    (o,) = led.pending
+    assert o.expires_at is None
+
+
 def test_return_day_offset_service_date_11_days_out_not_probed():
     ps = profile()
     sat = date(2026, 10, 31)  # commute days Tue 3 Nov (+3) and Tue 10 Nov (+10)
