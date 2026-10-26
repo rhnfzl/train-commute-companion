@@ -107,11 +107,12 @@ def sync_entities(
         # a view read before the runtime has a config would otherwise delete every entity (HA-17)
         if not view.started or not view.directions:
             return
+        # not from the registry: a removed device already took its entries (5.4)
+        added.intersection_update(want)
         registry = er.async_get(coordinator.hass)
         for e in er.async_entries_for_config_entry(registry, entry.entry_id):
             if e.domain == platform and e.platform == DOMAIN and e.unique_id not in want:
                 registry.async_remove(e.entity_id)
-                added.discard(e.unique_id)
 
     update()
     return coordinator.async_add_listener(update)

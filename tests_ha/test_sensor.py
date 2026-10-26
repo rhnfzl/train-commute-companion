@@ -147,6 +147,26 @@ async def test_removed_profile_removes_its_device(hass):
     assert device(hass, h, "p2") is not None
 
 
+async def test_readded_profile_gets_its_sensors_and_buttons_back(hass):  # 5.4
+    h = await setup_tcc(hass, PROFILE)
+    write_profiles(hass, B_ONLY)
+    await h.host.run(lambda rt: rt.act("p1", NotTravelling(None, False)))
+    await reload_file(h)
+    await jump(h, "2026-10-27 20:00")
+    for _ in range(3):
+        await h.host.run(lambda rt: rt.watchdog_once())
+        await h.entry.runtime_data.coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert device(hass, h, "p1") is None
+    write_profiles(hass, PROFILE)
+    await reload_file(h)
+    reg = er.async_get(hass)
+    for domain, uid in (("sensor", "p1_outbound_status"), ("button", "p1_outbound_leaving")):
+        eid = reg.async_get_entity_id(domain, DOMAIN, uid)
+        assert eid is not None and hass.states.get(eid) is not None, uid
+    assert device(hass, h, "p1") is not None
+
+
 async def test_reload_keeps_unique_ids_and_user_customisation(hass):
     h = await setup_tcc(hass, PROFILE)
     reg = er.async_get(hass)
