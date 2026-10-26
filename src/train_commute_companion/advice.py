@@ -9,6 +9,7 @@ from train_commute_companion.classify import classify_leg, find_leg
 from train_commute_companion.lifecycle import (
     Ctx,
     DirectionState,
+    LegProgress,
     LegState,
     OccurrenceState,
     _event,
@@ -20,6 +21,7 @@ from train_commute_companion.model import (
     AlertEvent,
     Connection,
     EventKind,
+    Leg,
     LegKind,
     Observation,
     Severity,
@@ -56,27 +58,31 @@ def _unrideable(c: Connection, answer: ProviderAnswer, profile_min: dict[str, in
     )
 
 
+def _segment(answer: ProviderAnswer, x: LegProgress) -> Leg | None:
+    """The locked train over its stored stops, from a copy in the answer that reaches the
+    stored alighting stop. A copy cut where its own connection changes earlier says nothing
+    about the rest, so with no copy reaching that stop the segment is unavailable."""
+    leg, ob = find_leg(answer, x.train, x.board_station)
+    if leg is None or ob is not Observation.SEEN:
+        return None
+    for g in (g for c in answer.connections for g in c.legs):
+        if g.train != leg.train or g.board.code != x.board_station:
+            continue
+        end = next((i for i, st in enumerate(g.stops) if i and st.code == x.alight_stop), None)
+        if end is not None:
+            return replace(g, stops=g.stops[: end + 1])
+    return None
+
+
 def _ridden(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Connection | None:
     """The connection the user would ride by waiting: the locked one, else the usual one.
-    A lock not listed as one connection is rebuilt from its legs as observed (6.1), so a
-    lock spread over connections still counts; None when a leg is not seen."""
+    The lock is rebuilt leg by leg against its stored boarding and alighting stops (6.1), so
+    a lock spread over connections still counts and a fragment ending early is not its
+    arrival; None when a leg's whole segment is not seen."""
     if s.lock is not None:
-        first = s.lock.legs[0].train
-        trains = [x.train for x in s.lock.legs]
-        listed = next(
-            (
-                c
-                for c in answer.connections
-                if c.legs[0].train == first and [x.train for x in c.legs] == trains
-            ),
-            None,
-        )
-        if listed is not None:
-            return listed
-        found = [find_leg(answer, x.train, x.board_station) for x in s.lock.legs]
-        if any(leg is None or ob is not Observation.SEEN for leg, ob in found):
-            return None
-        return Connection(tuple(leg for leg, _ in found if leg is not None), "", None)
+        found = [_segment(answer, x) for x in s.lock.legs]
+        legs = tuple(g for g in found if g is not None)
+        return Connection(legs, "", None) if len(legs) == len(found) else None
     j = ctx.profile.journey(ctx.direction)
     origin = ctx.profile.origin(ctx.direction)
     return usual_connection(

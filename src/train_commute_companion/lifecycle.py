@@ -2,6 +2,7 @@
 and termination (7.2, 7.4, 7.7, 7.8, 7.12 rules 1, 2, 3, 6, 7, 8, 10, 11, 21, 7.13). Pure: `now`
 always comes from the caller."""
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
@@ -317,6 +318,43 @@ def _hhmm(t: datetime) -> str:
     return t.astimezone(TZ).strftime("%H:%M")
 
 
+DELAY_STEP_MIN = 3
+ON_TIME_MAX_MIN = 1
+
+
+def announced(last: int | None, now: int | None) -> int | None:
+    """The delay the user was last told, moved only by news (7.5): a 3-min step either way
+    from what was said, or back to normal at 1 min or less. A wobble around the last stated
+    delay keeps it, so +5 to +6 or +3 to +2 says nothing. No reported time keeps it too."""
+    if now is None:
+        return last
+    said = last or 0
+    if said > ON_TIME_MAX_MIN and now <= ON_TIME_MAX_MIN:
+        return 0
+    return now if abs(now - said) >= DELAY_STEP_MIN else last
+
+
+_STATED = re.compile(r"\|~(-?\d+)")  # a live delay in a key, before `_stated` announces it
+
+
+def _stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
+    """A stated replacement time in a key moves only by news (7.5): the delay last stated per
+    fact is kept in `alert_keys`, so 09:05 to 09:08 is news again while 09:05 to 09:06 is not."""
+    keys = dict(s.alert_keys)
+    out = []
+    for e in events:
+        m = _STATED.search(e.key)
+        if m is None:
+            out.append(e)
+            continue
+        base = e.key[: m.start()] + e.key[m.end() :]
+        last = keys.get(base)
+        said = announced(None if last is None else int(last), int(m[1])) or 0
+        keys[base] = str(said)
+        out.append(replace(e, key=f"{base}|stated+{said}"))
+    return Transition(replace(s, alert_keys=keys) if keys != s.alert_keys else s, tuple(out))
+
+
 def _event(
     ctx: Ctx,
     kind: EventKind,
@@ -417,7 +455,7 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
         locked, left = _advance_all(locked, ctx, pool, live=True)
         events += [e for e in left if e.train != first.train]
         t = _follow(locked, ctx, pool, (answer.query,))
-        return Transition(t.state, (*events, *t.events))
+        return _stated(t.state, (*events, *t.events))
     if not s.missing_sent:
         events.append(
             _event(
@@ -865,8 +903,14 @@ def _relock(
         return Transition(_progress(s, legs), tuple(events))
     via = ", ".join(c.transfer_stations) or "a direct train"
     # the replacement by identity, not by its live time: a drifting estimate is not news (7.5)
-    facts = f"{text}|" + ",".join(
-        f"{x.train.train_number}@{x.train.planned_departure.isoformat()}" for x in c.legs
+    # and its stated time by its delay, which `_stated` turns into 3-min news steps
+    late = (_departure(c) - _utc(c.legs[0].train.planned_departure)) // timedelta(minutes=1)
+    facts = (
+        f"{text}|"
+        + ",".join(
+            f"{x.train.train_number}@{x.train.planned_departure.isoformat()}" for x in c.legs
+        )
+        + f"|~{late}"
     )
     text += f". Next good connection: {_hhmm(_departure(c))}" + (
         f", new route via {via}." if how == "new_route" else "."
@@ -1207,7 +1251,7 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
             events.append(replace(e, text=f"{head}: {on}{body}", key=key))
     s = replace(s, retained=tuple(retained))
     t = (_restore(s, ctx, pool) or _follow(s, ctx, pool, asked)) if live else Transition(s, ())
-    return Transition(_bumped(start, t.state), (*events, *t.events))
+    return _stated(_bumped(start, t.state), (*events, *t.events))
 
 
 # --- arrival acceptance, location, missed legs, termination (7.2, 7.7, 7.12 rules 6, 7) ---
@@ -1324,7 +1368,7 @@ def on_location(
     t = _locate(s, ctx, event, answer)
     # rule 21: a lock, catchability or missed-leg change raises the generation; a repeat
     # report that changes none of them keeps polls in flight
-    return Transition(_bumped(start, t.state), t.events)
+    return _stated(_bumped(start, t.state), t.events)
 
 
 def _locate(

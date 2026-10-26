@@ -7,7 +7,14 @@ from datetime import UTC, date, datetime, timedelta
 from train_commute_companion.calendar import TZ
 from train_commute_companion.classify import classify_leg, find_leg
 from train_commute_companion.health import FRESH_FOR, board_health
-from train_commute_companion.lifecycle import Board, Ctx, Journey, OccurrenceState, _event
+from train_commute_companion.lifecycle import (
+    Board,
+    Ctx,
+    Journey,
+    OccurrenceState,
+    _event,
+    announced,
+)
 from train_commute_companion.messages import body
 from train_commute_companion.model import (
     AlertEvent,
@@ -28,8 +35,6 @@ from train_commute_companion.transfer import check_transfer
 
 AT_RISK_LOUD_MIN = 30
 PLATFORM_LOUD_MIN = 15
-DELAY_STEP_MIN = 3
-ON_TIME_MAX_MIN = 1
 _SILENT = frozenset(
     {
         EventKind.CAN_SEE_TRAIN_AGAIN,
@@ -46,35 +51,30 @@ _SILENT = frozenset(
 Delays = tuple[int | None, int | None]  # (departure, arrival) delay a message last stated
 
 
-def announced(last: int | None, now: int | None) -> int | None:
-    """The delay the user was last told, moved only by news (7.5): a 3-min step either way
-    from what was said, or back to normal at 1 min or less. A wobble around the last stated
-    delay keeps it, so +5 to +6 or +3 to +2 says nothing. No reported time keeps it too."""
-    if now is None:
-        return last
-    said = last or 0
-    if said > ON_TIME_MAX_MIN and now <= ON_TIME_MAX_MIN:
-        return 0
-    return now if abs(now - said) >= DELAY_STEP_MIN else last
+def _ident(t: TrainId) -> str:
+    return f"{t.train_number}@{t.planned_departure.isoformat()}"
+
+
+def segment(leg: Leg) -> str:
+    """A leg's identity for delay history: the train, by planned departure, over its stops."""
+    return f"{_ident(leg.train)}/{leg.board.code}/{leg.alight.code}"
 
 
 def announced_delays(
-    last: Sequence[Delays] | None, classified: Sequence[ClassifiedLeg]
-) -> tuple[Delays, ...]:
-    """Per leg, the delays to state next, from what the last message stated. `last` from
-    another journey (a relock changed the legs) starts again from on time."""
-    prev = list(last) if last is not None and len(last) == len(classified) else []
-    return tuple(
-        (
-            announced(prev[i][0] if prev else None, c.dep_delay_min),
-            announced(prev[i][1] if prev else None, c.arr_delay_min),
+    last: Mapping[str, Delays] | None, classified: Sequence[ClassifiedLeg]
+) -> dict[str, Delays]:
+    """Per segment, the delays to state next, from what the last message stated about that
+    same train over the same stops. A segment a relock brought in has no history and starts
+    from its newly announced facts, never another train's delay at the same position."""
+    prev = last or {}
+    out = {}
+    for c in classified:
+        was = prev.get(segment(c.leg), (None, None))
+        out[segment(c.leg)] = (
+            announced(was[0], c.dep_delay_min),
+            announced(was[1], c.arr_delay_min),
         )
-        for i, c in enumerate(classified)
-    )
-
-
-def _ident(t: TrainId) -> str:
-    return f"{t.train_number}@{t.planned_departure.isoformat()}"
+    return out
 
 
 def _track(leg: Leg) -> str:
@@ -95,11 +95,12 @@ def alert_key(
     classified: Sequence[ClassifiedLeg],
     transfers: Sequence[TransferCheck],
     replacement: Connection | None,
-    delays: Sequence[Delays],
+    delays: Mapping[str, Delays],
 ) -> str:
     """Everything a message states, per leg and per transfer, and the named replacement by
     every leg (train with planned departure, stations, platform, delays); only a change is
     news. `delays` come from `announced_delays` over `key_legs`, so they move only by news."""
+    none: Delays = (None, None)
     legs = [
         "/".join(
             (
@@ -114,7 +115,8 @@ def alert_key(
                 c.last_served.code if c.last_served else "-",
             )
         )
-        for c, d in zip(key_legs(classified, replacement), delays, strict=True)
+        for c in key_legs(classified, replacement)
+        for d in [delays.get(segment(c.leg), none)]
     ]
     n = len(classified)
     return "|".join(
@@ -218,6 +220,20 @@ def _contrary(answers: Sequence[ProviderAnswer], train: TrainId, board: str, ali
     return False
 
 
+def _copies(
+    answers: Sequence[ProviderAnswer], train: TrainId, board: str, alight: str | None
+) -> list[ClassifiedLeg]:
+    """Every copy of the train boarding at `board`, seen; with `alight`, only the copies whose
+    connection changes there, since their transfer flags are about that change."""
+    return [
+        replace(classify_leg(g, alight or g.alight.code), observation=Observation.SEEN)
+        for a in answers
+        for conn in a.connections
+        for g in conn.legs
+        if g.train == train and g.board.code == board and alight in (None, g.alight.code)
+    ]
+
+
 def all_good(s: OccurrenceState, board: Board, ctx: Ctx) -> AlertEvent | None:
     """Evaluated once, at the first lock (Q4, OQ3 = A). The caller sets `all_good_evaluated`.
     Rule 20: the newest answer is fresh and contains every locked leg, seen, ok and with
@@ -251,10 +267,16 @@ def all_good(s: OccurrenceState, board: Board, ctx: Ctx) -> AlertEvent | None:
         ):
             return None
         seen.append(c)
-    for a, b, x in zip(seen, seen[1:], s.lock.legs, strict=False):
-        if (
-            check_transfer(a, b, x.alight_stop, ctx.profile.transfer_min).state
+    for a, b, x, y in zip(seen, seen[1:], s.lock.legs, s.lock.legs[1:], strict=False):
+        # every copy that changes here, whatever order the answers list them in (6.1): a copy
+        # saying the change is not possible or not reachable is evidence against all_good
+        ins = [a, *_copies(board.answers, x.train, x.board_station, x.alight_stop)]
+        outs = [b, *_copies(board.answers, y.train, y.board_station, None)]
+        if any(
+            check_transfer(i, o, x.alight_stop, ctx.profile.transfer_min).state
             is not TransferState.OK
+            for i in ins
+            for o in outs
         ):
             return None
     legs = [c.leg for c in seen]

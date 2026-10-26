@@ -21,6 +21,7 @@ from train_commute_companion.news import (
     announced_delays,
     escalations,
     key_legs,
+    segment,
     severity,
     unsent,
 )
@@ -292,3 +293,53 @@ def test_no_all_good_after_failed_polls_since_the_last_success():  # 7.11, rule 
     two = (ok, PollRecord(at("08:01"), False, "provider"), PollRecord(at("08:02"), False, "parse"))
     assert all_good(s, replace(b, polls=two), ctx(at("08:02"))) is None
     assert all_good(s, replace(b, polls=(ok,)), ctx(at("08:02"))) is not None
+
+
+def test_relock_does_not_inherit_another_trains_announced_delay():  # 7.5, finding 5
+    # the old 1234 was announced +6; the relock target 1300 at the same position is now +5
+    old = make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_dep=6)
+    _, said = keyed(old)
+    new5 = make_leg("AAA", "UT", "08:25", "08:53", number="1300", delay_dep=5)
+    k5, said5 = keyed(new5, last=said)
+    assert said5[segment(new5)][0] == 5  # its own announced facts, not the old +6
+    new8 = make_leg("AAA", "UT", "08:25", "08:53", number="1300", delay_dep=8)
+    assert key(new8, last=said5) != k5  # +5 to +8 is a full step for this train
+
+
+def test_retained_warning_replacement_time_moves_by_news_steps():  # 7.5, finding 1
+    from test_lifecycle_follow import L2X, LATER, RIDE, ans, conn, poll
+
+    def r2(delay: int):
+        return make_leg("UT", "RTD", "09:05", "09:39", number="6666", delay_dep=delay)
+
+    s = occ(journey(LATER.legs), retained=(journey([L1, L2], RIDE),))
+    ledger: dict[str, Severity] = {}
+
+    def step(state: OccurrenceState, delay: int):
+        later = conn(LATER.legs[0], r2(delay))
+        t = poll(
+            state, ctx(at("08:20")), ans("AAA", conn(L1, L2X), later), ans("UT", conn(r2(delay)))
+        )
+        new = unsent(ledger, t.events)
+        ledger.update({e.key: e.severity for e in new})
+        return t.state, [e.kind for e in new if ":retained:" in e.key]
+
+    s, sent = step(s, 0)
+    assert sent == [EventKind.CANCELLED]  # next good connection 09:05
+    s, sent = step(s, 1)
+    assert sent == []  # 09:06: under a step
+    s, sent = step(s, 3)
+    assert sent == [EventKind.CANCELLED]  # 09:08: news again
+    s, sent = step(s, 4)
+    assert sent == []
+
+
+def test_no_all_good_when_any_copy_says_the_change_is_not_possible():  # rule 20, finding 2
+    s = occ(LOCK)
+    assert all_good(s, good_board(s, L1, L2), ctx(at("08:02"))) is not None
+    for flag in ({"change_possible": False}, {"reachable": False}):
+        bad = replace(L1, **flag)
+        one = answer_at("08:01", make_connection([L1, L2]), make_connection([bad, L2]))
+        two = answer_at("08:01", make_connection([bad, L2]), make_connection([L1, L2]))
+        for a in (one, two):
+            assert all_good(s, replace(board(s), answers=(a,)), ctx(at("08:02"))) is None

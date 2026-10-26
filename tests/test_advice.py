@@ -248,3 +248,18 @@ def test_lock_not_listed_as_one_connection_is_rebuilt_from_its_legs():
     spread = make_connection([SLOW.legs[0], onward])  # the locked train, listed with more
     _, events = advise(s, c, answer(EARLY, spread), USUAL_ARRIVAL)
     assert [e.kind for e in events] == [EventKind.LEAVE_NOW]
+
+
+def test_fragment_ending_before_the_alighting_stop_is_not_the_locked_arrival():  # 7.6, 6.1
+    # the locked UT -> AAA 17:52 is only offered as UT -> BBB plus an onward train to AAA at
+    # 18:56: its 18:10 arrival at BBB is not the destination arrival
+    c = ctx(at("17:00"))
+    j = journey_of(conn("17:52", "18:26", "1234"), LockSource.AUTO, Commitment.INTENDED)
+    s = replace(fresh(c), direction_state=DirectionState.LOCKED, lock=j)
+    part = make_leg("UT", "BBB", "17:52", "18:10", number="1234")
+    onward = make_leg("BBB", "AAA", "18:20", "18:56", number="3000")
+    board = answer(EARLY, make_connection([part, onward]))
+    rec, events = advise(s, c, board, USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.LEAVE_NOW]  # unavailable, so advise
+    _, again = advise(replace(s, advice=rec), ctx(at("17:05")), board, USUAL_ARRIVAL)
+    assert again == []  # still needed: never withdrawn on the fragment
