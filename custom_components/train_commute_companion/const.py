@@ -17,4 +17,4 @@ NOTIFY_BACKOFF_S = 60
 LOUD_STYLES = ("time_sensitive", "critical")
 DEFAULT_LOUD_STYLE = "time_sensitive"
 # grows as each platform module lands, so setup never forwards a platform that does not exist
-PLATFORMS: list[Platform] = []
+PLATFORMS: list[Platform] = [Platform.SENSOR]

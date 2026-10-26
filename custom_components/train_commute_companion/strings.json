@@ -128,5 +128,33 @@
       "title": "Alerts are not reaching your phone",
       "description": "Calls to notify.{service} fail. Check the companion app, or pick another target in the integration options."
     }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "{direction} status"
+      },
+      "lock": {
+        "name": "{direction} lock"
+      },
+      "leg": {
+        "name": "{direction} leg {n}"
+      },
+      "transfer": {
+        "name": "{direction} transfer {n}"
+      },
+      "next_connection": {
+        "name": "{direction} next connection"
+      },
+      "advice": {
+        "name": "{direction} earlier train advice"
+      },
+      "works_ahead": {
+        "name": "{direction} works ahead"
+      },
+      "health": {
+        "name": "Health"
+      }
+    }
   }
 }

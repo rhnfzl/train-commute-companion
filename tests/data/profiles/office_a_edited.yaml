@@ -1,0 +1,16 @@
+profiles:
+  - id: "p1"
+    name: "desk_a"
+    days: [mon, tue, wed, thu, fri]
+    home_station: "AAA"
+    work_station: "RTD"
+    transfer_min: {UT: 4, BBB: 4}
+    outbound: {first_train: "08:20", buffer_min: 10, transfers: [UT, BBB]}
+    return: {first_train: "17:55", buffer_min: 5}
+  - id: "p2"
+    name: "office_b"
+    days: [sat]
+    home_station: "AAA"
+    work_station: "RTD"
+    outbound: {first_train: "08:12", buffer_min: 10}
+    return: {first_train: "17:52", buffer_min: 5}

@@ -6,6 +6,7 @@ from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -54,7 +55,20 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
             raise UpdateFailed("runtime not answering") from None
         self._timeouts = 0
         self._sync_issues(view)
+        self._sync_devices(view)
         return view
+
+    def _sync_devices(self, view: RuntimeView) -> None:
+        """Removes the device (and so the entities) of a profile the view no longer has."""
+        if not view.started or not view.directions:  # a view without a config knows no profile yet
+            return
+        assert self.config_entry is not None
+        present = {d.profile_id for d in view.directions}
+        registry = dr.async_get(self.hass)
+        for device in dr.async_entries_for_config_entry(registry, self.config_entry.entry_id):
+            ids = {i for (domain, i) in device.identifiers if domain == DOMAIN}
+            if ids and not ids & present:
+                registry.async_remove_device(device.id)
 
     def _sync_issues(self, view: RuntimeView) -> None:
         """Repairs come only from the view, so each one clears itself once the view does."""
