@@ -30,7 +30,7 @@ For critical to work, set up your phone:
 - iOS: allow Critical Alerts for the Home Assistant companion app (Settings, Notifications, Home Assistant, Critical Alerts).
 - Android: a critical alert uses the `alarm_stream` channel, which plays at alarm volume even in silent or vibrate mode. To also pass Do Not Disturb, open the channel's settings (Settings, Apps, Home Assistant, Notifications, `alarm_stream`) and turn on "Override Do Not Disturb". Then give the companion app Do Not Disturb access (Settings, Apps, Special app access, Do Not Disturb access, Home Assistant).
 
-After any change to these settings, run the delivery test again with Do Not Disturb on: Configure, Change settings, then save, and check that the loud test still rings.
+When you change the alert style or the notify target (Configure, Change settings, then save), the integration sends a loud and a silent test. Turn Do Not Disturb on first and check that the loud test still rings. Saving without changing either sends no test.
 
 ### Check the file
 
