@@ -3,9 +3,10 @@ evidence per leg, retained remainders, generation and termination (7.2, 7.4, 7.7
 
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from typing import Literal
 
 from builders import AMS, make_leg
-from test_lifecycle_end import accepted_first, arrived, report, retained_of
+from test_lifecycle_end import DONE_RIDE, accepted_first, arrived, polls, report, retained_of
 from test_lifecycle_follow import (
     DIRECT,
     FROM_BBB,
@@ -32,6 +33,7 @@ from test_lifecycle_follow import (
     usual_locked,
 )
 
+from train_commute_companion.delivery import zone_report_stops_silent
 from train_commute_companion.lifecycle import (
     Choose,
     DirectionState,
@@ -39,6 +41,7 @@ from train_commute_companion.lifecycle import (
     LegState,
     LockSource,
     NotTravelling,
+    OccurrenceState,
     apply_action,
     ends,
     on_location,
@@ -217,6 +220,29 @@ def test_done_main_journey_with_retained_remainder_takes_actions_and_location():
     s = replace(retained_of(journey([L1, L2], RIDE)), direction_state=DirectionState.DONE)
     assert target_occurrence([s], NotTravelling(None, False)) is s
     assert "RTD" in report(s, "RTD", "09:31").zone_reports
+
+
+def located(
+    s: OccurrenceState, zone: str, kind: Literal["enter", "leave", "report"], when: str, now: str
+) -> OccurrenceState:
+    return on_location(s, ctx(at(now)), LocationEvent(zone, kind, at(when), at(when))).state
+
+
+def test_leave_after_arrival_is_not_arrival_evidence():  # rule 6 needs presence, 8.4
+    s = located(occ(accepted_first(journey([L1, L2], DONE_RIDE))), "RTD", "enter", "09:20", "09:20")
+    s = polls(s, "09:29", "09:33")  # the last leg (09:24) accepted
+    s = located(s, "RTD", "leave", "09:31", "09:33")
+    assert "RTD" in s.zone_reports and s.zone_reports["RTD"] == at(
+        "09:20"
+    )  # the leave wrote nothing
+    t = on_tick(s, ctx(at("10:03")))
+    assert kinds(t) == [(EventKind.STOPPED_FOLLOWING, Severity.LOUD)]  # loud, not a silent end
+
+
+def test_leave_does_not_stop_repeat_silent_messages():  # 8.4
+    s = located(arrived(), "work", "leave", "09:31", "09:31")
+    assert not zone_report_stops_silent(s, {"RTD", "work"})
+    assert zone_report_stops_silent(located(s, "work", "enter", "09:32", "09:32"), {"RTD", "work"})
 
 
 def test_progress_changes_raise_the_generation():  # rule 21

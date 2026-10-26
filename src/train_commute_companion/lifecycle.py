@@ -1517,7 +1517,8 @@ def on_location(
     missed leg (rule 7). `answer`: a fresh healthy answer from the origin; without it only the
     travelling and station facts are kept, so the runtime passes the origin answer with every
     event. `watched`: the answers of `location_queries`, read only for a missed leg. A stale
-    event counts as unknown. Nothing here ends or silences anything."""
+    event counts as unknown. Only an `enter` or `report` is kept in `zone_reports` (presence).
+    Nothing here ends or silences anything."""
     unchanged = Transition(s, ())
     if _resolved(s) or event.zone is None:
         return unchanged
@@ -1525,7 +1526,8 @@ def on_location(
         return unchanged
     start = s
     prev = s.zone_reports.get(event.zone)
-    if prev is None or _utc(event.at) > _utc(prev):
+    # a leave places the user outside the zone: it is never presence (rule 6, 8.4)
+    if event.kind != "leave" and (prev is None or _utc(event.at) > _utc(prev)):
         s = replace(s, zone_reports={**s.zone_reports, event.zone: event.at})
     t = _locate(s, ctx, event, answer, watched)
     # rule 21: a lock, catchability or missed-leg change raises the generation; a repeat
