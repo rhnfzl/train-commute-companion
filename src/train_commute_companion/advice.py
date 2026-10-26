@@ -50,10 +50,17 @@ def _unrideable(c: Connection, answer: ProviderAnswer, profile_min: dict[str, in
         )
         for x in c.legs
     ]
-    if any(x.kind in (LegKind.CANCELLED, LegKind.CUT_SHORT) for x in cls):
-        return True
+    nxt = [*cls[1:], None]
+    for x, n in zip(cls, nxt, strict=True):
+        if x.kind is LegKind.CANCELLED:
+            return True
+        # a cut-short train with a listed onward leg from its last served stop is a way there
+        if x.kind is LegKind.CUT_SHORT and not (
+            n is not None and x.last_served is not None and n.leg.board.code == x.last_served.code
+        ):
+            return True
     return any(
-        check_transfer(a, b, a.leg.alight.code, profile_min).state is TransferState.BROKEN
+        check_transfer(a, b, b.leg.board.code, profile_min).state is TransferState.BROKEN
         for a, b in itertools.pairwise(cls)
     )
 
@@ -85,9 +92,22 @@ def _ridden(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Connection 
         return Connection(legs, "", None) if len(legs) == len(found) else None
     j = ctx.profile.journey(ctx.direction)
     origin = ctx.profile.origin(ctx.direction)
-    return usual_connection(
+    usual = usual_connection(
         answer, origin, ctx.schedule.first_departure, j.transfers, ctx.signature
     )
+    if usual is not None:
+        return usual
+    # the usual train cut short with a listed change onward (6.3 N-leg model: its pattern differs)
+    want = ctx.schedule.first_departure.astimezone(UTC)
+    cut = [
+        c
+        for c in answer.connections
+        if c.legs[0].board.code == origin
+        and c.legs[0].train.planned_departure.astimezone(UTC) == want
+        and c.legs[-1].alight.code == ctx.profile.destination(ctx.direction)
+        and len(c.legs) == len(j.transfers) + 2
+    ]
+    return min(cut, key=lambda c: _arrival(c) or _FAR) if cut else None
 
 
 def _gate(s: OccurrenceState, ctx: Ctx) -> bool:

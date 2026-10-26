@@ -52,3 +52,10 @@ def test_earlier_train_advice_stops_quietly_while_the_usual_train_is_still_cance
     s = replace(fresh(c), advice=rec)
     _, events = advise(s, ctx(at("17:10")), answer(cancelled, LATER), USUAL_ARRIVAL)
     assert all(e.kind is not EventKind.EARLIER_TRAIN_WITHDRAWN for e in events)
+
+
+def test_cut_short_with_a_2_min_late_change_gives_no_advice():
+    # board 10: arriving 2 min late is not bad (7.6), so the early train is not advised
+    c = ctx(at("17:00"))
+    _, events = advise(fresh(c), c, answer(EARLY, cut_short("18:28"), LATER), USUAL_ARRIVAL)
+    assert events == []

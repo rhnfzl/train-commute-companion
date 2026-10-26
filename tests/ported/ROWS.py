@@ -10,11 +10,11 @@ PORTED: dict[str, str] = {
     "board:3": "tests/test_advice.py::test_saving_measured_against_replacement",
     "board:4": "tests/ported/test_board_advice.py::test_never_suggested_when_nothing_is_bad",
     "board:5": "tests/test_advice.py::test_no_advice_when_earlier_train_cannot_be_caught",
-    "board:6": "overridden:7.1",
+    "board:6": "overridden:7.12",  # advice gate is rule 17 (idle or locked-not-travelling), no separate gate flag
     "board:7": "tests/test_match.py::test_detour_is_never_usual",
     "board:8": "tests/test_match.py::test_bus_leg_never_matches",
     "board:9": "tests/ported/test_rows_cut_short_advice.py::test_cut_short_with_a_connection_22_min_late_triggers_advice",
-    "board:10": "overridden:7.6",
+    "board:10": "tests/ported/test_rows_cut_short_advice.py::test_cut_short_with_a_2_min_late_change_gives_no_advice",
     "board:11": "tests/ported/test_rows_cut_short_advice.py::test_cut_short_without_a_connection_advises_without_calling_it_cancelled",
     "board:12": "merged:board:7",
     "board:13": "tests/ported/test_board_classify.py::test_mixed_board_classifies_each_row_by_its_own_stops",
@@ -23,7 +23,7 @@ PORTED: dict[str, str] = {
     "board:16": "tests/test_messages.py::test_cut_short_text_never_says_cancelled",
     "board:17": "tests/ported/test_rows_cut_short_advice.py::test_cut_short_with_no_listed_connection_keeps_the_lock",
     "board:18": "tests/test_lifecycle_follow.py::test_cancelled_first_leg_relocks_whole_journey",
-    "board:19": "overridden:7.2",
+    "board:19": "overridden:7.2",  # 7.2: the auto lock picks the usual connection, no rotating subject
     "board:20": "merged:board:7",
     "board:21": "tests/test_news.py::test_delay_is_news_by_movement_since_last_announced",
     "board:22": "tests/test_news.py::test_delay_is_news_by_movement_since_last_announced",
@@ -34,14 +34,14 @@ PORTED: dict[str, str] = {
     "board:27": "tests/test_lifecycle_end.py::test_acceptance_needs_two_answers_4_min_apart_5_min_after_arrival",
     "board:28": "tests/test_lifecycle_follow.py::test_locked_leg_absent_from_empty_answer_is_missing",
     "board:29": "tests/test_health.py::test_departed_leg_not_ridden_is_finished_and_ignored",
-    "board:30": "overridden:6.1",
-    "board:31": "overridden:6.1",
+    "board:30": "overridden:6.1",  # 6.1: identity is the TrainId; a lock never holds an actual time
+    "board:31": "overridden:6.1",  # 6.1: no guessing by time proximity; missing is rule 2 of 7.12
     "board:32": "tests/test_lifecycle_follow.py::test_no_connection_found_is_loud",
     "board:33": "tests/test_news.py::test_repeated_missing_and_retained_events_sent_once",
     "board:34": "tests/test_health.py::test_two_failed_polls",
     "board:35": "tests/test_runtime.py::test_stopped_poller_watchdog_sends_cannot_see_train",
     "board:36": "tests/test_runtime.py::test_missing_file_on_start_runs_stored_config",
-    "board:37": "overridden:7.2",
+    "board:37": "overridden:7.2",  # 7.2/7.4: the lock is the whole journey; a cancelled leg is followed by relock
     "board:38": "tests/ported/test_news_rows.py::test_departure_or_arrival_moving_three_minutes_is_news",
     "board:39": "tests/ported/test_board_classify.py::test_late_arrival_on_time_departure_is_delayed",
     "board:40": "tests/test_news.py::test_delay_is_news_by_movement_since_last_announced",
@@ -52,9 +52,9 @@ PORTED: dict[str, str] = {
     "board:45": "tests/test_news.py::test_replacement_keyed_by_planned_departure_onward_trains_and_platform",
     "board:46": "tests/test_lifecycle_follow.py::test_route_changed_before_boarding_follows_within_cap",
     "board:47": "merged:board:7",
-    "board:48": "overridden:6.3",
+    "board:48": "overridden:6.3",  # 6.3: route_changed needs the usual pattern, which is always known
     "board:49": "tests/test_board.py::test_buffer_catchability_before_tap_and_after_station_report",
-    "board:50": "overridden:7.12",
+    "board:50": "overridden:7.12",  # 7.12 rule 2: a locked or retained leg absent from a healthy answer is missing, not news
     "board:51": "tests/test_lifecycle_follow.py::test_cancelled_second_leg_relocks_from_transfer",
     "board:52": "tests/ported/test_lifecycle_follow_rows.py::test_rerouted_journey_later_leg_cancelled_keeps_the_ridden_train",
     "board:53": "tests/test_lifecycle_follow.py::test_cancelled_first_leg_relocks_whole_journey",
@@ -66,29 +66,29 @@ PORTED: dict[str, str] = {
     "board:59": "tests/test_news.py::test_key_changes_with_transfer_state_and_replacement",
     "board:60": "tests/test_advice.py::test_planned_slower_journey_triggers_advice",
     "board:61": "tests/test_messages.py::test_change_journey_is_never_direct_and_ok_says_per_ns",
-    "board:62": "overridden:7.1",
+    "board:62": "overridden:7.1",  # 7.1: one query per poll feeds both the board and advice
     "board:63": "tests/test_lifecycle_safety.py::test_ridden_cancellation_still_reports_a_later_onward_cancellation",
     "board:64": "merged:board:55",
     "board:65": "tests/test_lifecycle_end.py::test_repeated_estimate_before_its_time_does_not_end_journey",
-    "board:66": "overridden:12",
+    "board:66": "overridden:12",  # 12: work-from-home hints are not ported
     "board:67": "tests/test_messages.py::test_message_starts_with_profile_and_names_leg",
     "board:68": "tests/test_advice.py::test_off_by_default_outbound",
     "board:69": "tests/test_lifecycle_follow.py::test_queries_cover_retained_and_restorable",
     "board:70": "tests/test_schedule.py::test_auto_lock_time",
     "board:71": "tests/test_calendar.py::test_extra_date_counts_and_holiday_skipped",
-    "board:72": "overridden:12",
+    "board:72": "overridden:12",  # 12: work-from-home inference is not ported
     "board:73": "tests/test_schedule.py::test_window_is_half_open",
     "board:74": "tests/test_schedule.py::test_active_uses_baseline",
     "board:75": "tests/test_lifecycle_end.py::test_window_closed_with_no_lock_stops_following",
-    "board:76": "overridden:7.10",
+    "board:76": "overridden:7.10",  # 7.10: baselines are signatures in state, not parsed strings
     "board:77": "tests/test_messages.py::test_message_starts_with_profile_and_names_leg",
     "board:78": "tests/test_schedule.py::test_window_anchored_on_previous_evening",
-    "board:79": "overridden:7.1",
+    "board:79": "overridden:6.3",  # 6.3: with no lock the query time is the effective departure
     "board:80": "tests/test_board.py::test_buffer_catchability_before_tap_and_after_station_report",
     "board:81": "tests/ported/test_board_classify.py::test_cut_short_has_no_arrival_delay_but_keeps_departure_delay",
-    "board:82": "merged:board:69",
-    "board:83": "overridden:9",
-    "board:84": "overridden:9",
+    "board:82": "overridden:7.12",  # 7.12 rule 2: every unfinished leg is refreshed each poll
+    "board:83": "overridden:9",  # 9/6.2: kind comes from stops on the board; no single-train sensors
+    "board:84": "overridden:9",  # 9/6.2: no briefing; status comes from the same board kind
     "lifecycle:1": "tests/test_match.py::test_detour_is_never_usual",
     "lifecycle:2": "tests/test_lifecycle_follow.py::test_cut_short_first_leg_before_transfer_station",
     "lifecycle:3": "tests/ported/test_lifecycle_classify.py::test_numeric_string_number_matches_only_exactly",
@@ -103,7 +103,7 @@ PORTED: dict[str, str] = {
     "lifecycle:12": "tests/test_health.py::test_two_failed_polls",
     "lifecycle:13": "tests/ported/test_lifecycle_follow_rows.py::test_cancellation_after_planned_arrival_still_alerts_and_moves_the_lock",
     "lifecycle:14": "tests/test_model.py::test_time_before_4am_rolls_to_next_day",
-    "lifecycle:15": "overridden:7.2",
+    "lifecycle:15": "overridden:7.12",
     "lifecycle:16": "tests/test_board.py::test_buffer_catchability_before_tap_and_after_station_report",
     "lifecycle:17": "tests/test_board.py::test_buffer_catchability_before_tap_and_after_station_report",
     "lifecycle:18": "overridden:12",
