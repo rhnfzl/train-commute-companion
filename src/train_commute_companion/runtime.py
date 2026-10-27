@@ -455,6 +455,23 @@ class _LoggingNotifier:
         return ok
 
 
+def _covers(x: Obligation, o: Obligation) -> bool:
+    """Rule 5(b): `x` is a newer message about what `o` reported (same occurrence and train,
+    the same kind or both delay news)."""
+
+    def family(k: EventKind) -> frozenset[EventKind]:
+        return _DELAY_NEWS if k in _DELAY_NEWS else frozenset({k})
+
+    return (
+        o.occurrence is not None
+        and x.id != o.id
+        and x.occurrence == o.occurrence
+        and x.event.kind in family(o.event.kind)
+        and x.event.train == o.event.train
+        and _utc(x.event.created_at) > _utc(o.event.created_at)
+    )
+
+
 def _broken(s: OccurrenceState, t: TrainId | None) -> bool:
     """A live break (cancelled, cut short, missing) is held for train `t`."""
     ident = "" if t is None else f":{_ident(t)}:"
@@ -612,20 +629,7 @@ class _View:
         return True  # choose_refused: the answer to a command the user gave, true as said
 
     def newer_covers(self, o: Obligation) -> bool:
-        if o.occurrence is None:
-            return False
-
-        def family(k: EventKind) -> frozenset[EventKind]:
-            return _DELAY_NEWS if k in _DELAY_NEWS else frozenset({k})
-
-        return any(
-            x.id != o.id
-            and x.occurrence == o.occurrence
-            and x.event.kind in family(o.event.kind)
-            and x.event.train == o.event.train
-            and _utc(x.event.created_at) > _utc(o.event.created_at)
-            for x in self._s.obligations
-        )
+        return any(_covers(x, o) for x in self._s.obligations)
 
     def revision_live(self, key: OccurrenceKey, rev: int) -> bool:
         s = self._occ(key)
@@ -1468,6 +1472,10 @@ class Runtime:
         cid = event_id(o.id)
         if cid in self._copies:
             return False
+        # rule 5(b): the copies this message covers end now, so a receiver that comes back never
+        # gets them after it, also once its own copy was accepted or a restart came between
+        for c in [c for c in self._copies.values() if _covers(o, c.obligation)]:
+            self._drop_copy(c.id)
         if len(self._copies) >= MAX_COPIES:  # overload: a never-tried copy goes first (Q1)
             pool = [c for c in self._copies.values() if c.first_try is None]
             old = min(

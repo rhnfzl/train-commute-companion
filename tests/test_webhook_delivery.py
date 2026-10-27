@@ -23,6 +23,7 @@ from test_runtime_rules import (
     _clean,
     cancelled_usual_world,
     live_facts_bundle,
+    tracked,
 )
 from webhook_receiver import Receiver
 
@@ -452,6 +453,28 @@ async def test_owed_copy_survives_a_restart_without_a_phone_resend(tmp_path):  #
     assert len(rig.end.of(EventKind.CANCELLED)) == 1
     assert set(rig.end.ids(EventKind.CANCELLED)) == {first}
     assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 1
+
+
+@pytest.mark.parametrize("recover", ["after", "at_escalation", "after_restart"])
+async def test_escalation_supersedes_the_queued_silent_copy(tmp_path, recover):  # rule 5(b)
+    rig = await wstarted(tmp_path)
+    rig.end.error = httpx.ReadTimeout
+    for hhmm in ("07:52", "07:58"):  # silent, then loud within 15 min of the 08:12
+        if hhmm == "07:58" and recover == "at_escalation":
+            rig.end.error = None
+        rig.clock.set(hhmm)
+        rig.provider.world = [make_connection([tracked(L1, "1", "5"), L2])]
+        await rig.rt.poll_once()
+    pc = [e.severity for e in rig.rt.events_log if e.kind is EventKind.PLATFORM_CHANGE]
+    assert pc == [Severity.SILENT, Severity.LOUD]
+    if recover == "after_restart":
+        await rig.restart()
+    rig.end.error = None
+    await tick(rig)
+    await tick(rig)
+    got = [p["severity"] for p in rig.end.of(EventKind.PLATFORM_CHANGE)]
+    assert got == [Severity.LOUD.value]
+    assert copies(rig, EventKind.PLATFORM_CHANGE) == []
 
 
 async def test_quiet_hours_hold_the_copy_and_the_give_up_counts_from_the_first_try(
