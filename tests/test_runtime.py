@@ -496,6 +496,43 @@ async def test_failed_reload_write_keeps_the_last_written_configuration(tmp_path
     assert rig.rt.config.revision == 2 and rig.store.load().config.revision == 2
 
 
+_EDITS = {
+    "departure": PROFILE.replace("NAME", "office_a").replace(
+        '"08:12", buffer_min: 10, transfers', '"09:12", buffer_min: 10, transfers'
+    ),
+    "removed": "profiles:\n" + PROFILE[PROFILE.index('  - id: "p2"') :],
+    "settings": PROFILE.replace("NAME", "office_c").replace("UT: 4", "UT: 6"),
+}
+
+
+@pytest.mark.parametrize("edit", sorted(_EDITS))
+async def test_failed_reload_write_keeps_following_the_written_journey(tmp_path, edit):
+    rig = Rig(tmp_path, "07:20")  # 5.2, rule 22: an edit not written is not applied
+    await rig.rt.start()
+    rig.store.fail = True
+    rig.write(text=_EDITS[edit])
+    rig.clock.jump(1)
+    await rig.rt.check_file()
+    rig.clock.set("07:50")
+    await rig.rt.poll_once()
+    assert rig.rt.config.revision == 1 and rig.occ() is not None
+    asked = len(rig.provider.calls)
+    rig.provider.error = lambda q: ProviderError("down")
+    rig.clock.set("08:00")
+    await rig.rt.watchdog_once()  # the written journey is still watched
+    assert EventKind.CANNOT_SEE_TRAIN in kinds(rig.notifier.attempts)
+    rig.provider.error = lambda q: None
+    rig.clock.set("08:02")
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    await rig.rt.poll_once()  # and polled, under the written settings
+    assert len(rig.provider.calls) > asked
+    cancelled = [e for e in rig.notifier.attempts if e.kind is EventKind.CANCELLED]
+    assert len(cancelled) == 1 and cancelled[0].text.startswith("Office A")
+    rig.store.fail = False
+    await rig.rt.check_file()  # once the store is back the edit is applied
+    assert rig.rt.config.revision == 2 and rig.store.load().config.revision == 2
+
+
 async def test_failed_lookahead_write_changes_nothing_active(tmp_path):
     rig = Rig(tmp_path, "05:40")
     rig.provider.world = every_day()
@@ -524,8 +561,8 @@ async def test_unwritten_choice_survives_a_later_failed_poll(tmp_path):
     assert rig.store.load().occurrences["p1|outbound|2026-10-27"].lock == rig.occ().lock
 
 
-async def test_unwritten_relock_survives_a_reload_written_first(tmp_path):
-    rig = await started(tmp_path)
+async def test_unwritten_relock_is_recomputed_after_a_reload_written_first(tmp_path):
+    rig = await started(tmp_path)  # rule 22: a poll's unwritten change is never applied
     rig.store.fail = True
     rig.clock.set("07:52")
     rig.provider.world = [make_connection([L1X, L2]), LATER]
@@ -533,10 +570,14 @@ async def test_unwritten_relock_survives_a_reload_written_first(tmp_path):
     rig.store.fail = False
     rig.write("office_c")
     rig.clock.jump(1)
-    await rig.rt.check_file()  # an unrelated edit is the first write to land
+    await rig.rt.check_file()  # an edit to the same occurrence is the first write to land
     assert rig.rt.refusal is None and rig.rt.config.profiles[0].name == "office_c"
+    assert rig.occ().lock.legs[0].train == USUAL.legs[0].train
+    rig.clock.set("07:54")
+    await rig.rt.poll_once()  # the next poll decides again, on what was written
     assert rig.occ().lock.legs[0].train == LATER.legs[0].train
     assert rig.store.load().occurrences["p1|outbound|2026-10-27"].lock == rig.occ().lock
+    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 1
 
 
 async def test_unwritten_adoption_is_sent_from_memory_and_written_later(tmp_path):

@@ -6,10 +6,10 @@ import asyncio
 import copy
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from train_commute_companion.advice import (
     advice_query,
@@ -302,14 +302,17 @@ def _broken(s: OccurrenceState, t: TrainId | None) -> bool:
 class _View:
     """The delivery ledger view over the runtime's current state (7.12 rule 5)."""
 
-    def __init__(self, rt: "Runtime") -> None:
-        self._rt = rt
+    def __init__(self, rt: "Runtime", held: bool = False) -> None:
+        """`held`: for the alerts of unwritten changes, judged on what the last write tried,
+        their own change included (rule 22)."""
+        self._rt, self._held = rt, held
 
     @property
     def _s(self) -> PersistedState:
         """Read at every call: a skip, reload or poll written while a send awaited counts for
-        the next message (7.8, rule 5). An unwritten change is in it too (rule 22)."""
-        return self._rt._st
+        the next message (7.8, rule 5)."""
+        rt = self._rt
+        return rt._shadow if self._held and rt._shadow is not None else rt._st
 
     def _occ(self, key: OccurrenceKey) -> OccurrenceState | None:
         return self._s.occurrences.get(_okey(key))
@@ -546,6 +549,87 @@ class _View:
         return replace(e, text=f"{head.rstrip()} {nxt}{tail}")
 
 
+def _held_id(o: Obligation) -> tuple[str | None, str, Severity]:
+    """An alert's identity across recomputations of the same change (rule 22)."""
+    return None if o.occurrence is None else _okey(o.occurrence), o.event.key, o.event.severity
+
+
+def _settled(d: Mapping[str, Obligation], i: str, r: Obligation | None) -> dict[str, Obligation]:
+    return {k: v for k, v in d.items() if k != i} if r is None else {**d, i: r}
+
+
+_LEDGER = ("alert_keys", "poll_records")  # composed apart: the newest of each (rule 22)
+
+
+def _delta(old: PersistedState, new: PersistedState) -> Callable[[PersistedState], PersistedState]:
+    """Rule 22: what a change did to `old`, replayable onto a later state: the occurrence
+    fields it changed (not the ledger), the look-ahead histories and ledgers, and the
+    obligations it finished or updated. Its new obligations are held apart."""
+    occs: dict[str, OccurrenceState | dict[str, Any] | None] = {}
+    for k in old.occurrences.keys() | new.occurrences.keys():
+        a, b = old.occurrences.get(k), new.occurrences.get(k)
+        if b is None:
+            occs[k] = None
+        elif a is None:
+            occs[k] = b
+        elif diff := {
+            f.name: getattr(b, f.name)
+            for f in fields(b)
+            if f.name not in _LEDGER and getattr(a, f.name) != getattr(b, f.name)
+        }:
+            occs[k] = diff
+    bases = {k: v for k, v in new.baselines.items() if old.baselines.get(k) != v}
+    leds = {k: v for k, v in new.lookahead.items() if old.lookahead.get(k) != v}
+    was = {o.id: o for o in old.obligations}
+    now = {o.id: o for o in new.obligations}
+    changed = {i: o for i, o in now.items() if i in was and was[i] != o}
+
+    def replay(st: PersistedState) -> PersistedState:
+        out = dict(st.occurrences)
+        for k, c in occs.items():
+            cur = out.get(k)
+            if c is None:
+                out.pop(k, None)
+            elif isinstance(c, dict):
+                if cur is not None:
+                    out[k] = replace(cur, **c)
+            else:
+                out[k] = (
+                    c
+                    if cur is None
+                    else replace(c, alert_keys=cur.alert_keys, poll_records=cur.poll_records)
+                )
+        obls = tuple(
+            changed.get(o.id, o) for o in st.obligations if o.id not in was.keys() - now.keys()
+        )
+        return replace(
+            st,
+            occurrences=out,
+            baselines={**st.baselines, **bases},
+            lookahead={**st.lookahead, **leds},
+            obligations=obls,
+        )
+
+    return replay
+
+
+def _advice_told(st: PersistedState, told: Sequence[tuple[Obligation, bool]]) -> PersistedState:
+    """7.6: the advice episode a finished LEAVE_NOW belongs to is delivered once sent, and
+    ended silently once dropped unsent, so the same train can be advised again."""
+    occs = dict(st.occurrences)
+    for o, sent in told:
+        k = None if o.occurrence is None else _okey(o.occurrence)
+        s = None if k is None else occs.get(k)
+        a = None if s is None else s.advice
+        if k is None or s is None or a is None or a.sent_at is None:
+            continue
+        if a.advised_train != o.event.train or _utc(a.sent_at) != _utc(o.event.created_at):
+            continue  # an older episode's message
+        a = replace(a, delivered=True) if sent else replace(a, withdrawn=True)
+        occs[k] = replace(s, advice=a)
+    return replace(st, occurrences=occs)
+
+
 def _ident(t: TrainId) -> str:
     return f"{t.train_number}@{t.planned_departure.isoformat()}"
 
@@ -630,14 +714,25 @@ class Runtime:
         self._st = PersistedState(None, {}, {}, {}, {}, (), False)
         self._budget = RequestBudget()
         self._store_ok = True
-        # rule 22: only a written state is active (what shells see). `_durable` is the last one
-        # written (or loaded). `_st` is where every change is made: while writes fail it holds
-        # every unwritten change, the latest on top of the earlier ones, and `_staged` is set
-        # until one write lands. Their alerts go from memory; `_held`: `storage_failed`, which
+        # rule 22: only a written state is applied. `_st` is the last written (or loaded) state
+        # and everything runs from it; while writes fail it only gains what unwritten changes
+        # observed and told (poll records, the delivery ledger in `_marks`), never their
+        # decisions. `_durable` is that written state as written. Pending until one write lands:
+        # `_base` the newest change, retried by the watchdog (a poll's is recomputed anyway);
+        # `_ops` the changes nothing recomputes (a user action, a look-ahead run, delivery
+        # outcomes), replayed onto whatever is written next; `_held` their new alerts, sent from
+        # memory and judged on `_shadow` (the last state a write tried); `_gone` obligations
+        # finished meanwhile; `_told` alerts sent from memory. `_notes`: `storage_failed`, which
         # never uses the store
         self._durable = self._st
-        self._staged: PersistedState | None = None
+        self._base: PersistedState | None = None
+        self._ops: list[Callable[[PersistedState], PersistedState]] = []
+        self._marks: dict[str, Mapping[str, str]] = {}
         self._held: dict[str, Obligation] = {}
+        self._gone: set[str] = set()
+        self._told: set[tuple[str | None, str, Severity]] = set()
+        self._shadow: PersistedState | None = None
+        self._notes: dict[str, Obligation] = {}
         self._refused_told: str | None = None
         self._mtime: int | None = None
         self._auth_outage = False
@@ -668,23 +763,11 @@ class Runtime:
 
     @property
     def config(self) -> Config | None:
-        return self._active().config
+        return self._st.config
 
     @property
     def state(self) -> PersistedState:
-        return self._active()
-
-    def _active(self) -> PersistedState:
-        """Rule 22: the last written state while a change waits to be written, with the poll
-        records seen since (observations, not a change: a fresh board never reads as stale)."""
-        if self._staged is None:
-            return self._st
-        occs = {
-            k: replace(x, poll_records=self._st.occurrences[k].poll_records)
-            if k in self._st.occurrences else x
-            for k, x in self._durable.occurrences.items()
-        }  # fmt: skip
-        return replace(self._durable, occurrences=occs)
+        return self._st
 
     @property
     def refusal(self) -> str | None:
@@ -760,12 +843,9 @@ class Runtime:
     def view(self) -> RuntimeView:
         """A frozen snapshot for shells (5.4): nothing in it changes as the runtime goes on. It
         shows the written state (rule 22); an unsent alert counts whether written or not."""
-        undelivered = sum(o.attempts > 0 for o in (*self._st.obligations, *self._held.values()))
-        work, self._st = self._st, self._active()
-        try:
-            return self._view(undelivered)
-        finally:
-            self._st = work
+        live = [o for o in self._st.obligations if o.id not in self._gone]
+        mem = (*self._held.values(), *self._notes.values())
+        return self._view(sum(o.attempts > 0 for o in (*live, *mem)))
 
     def _view(self, undelivered: int) -> RuntimeView:
         now = self._clock.now()
@@ -900,6 +980,8 @@ class Runtime:
         self,
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]],
         polled: bool = False,
+        keep: bool = False,
+        stage: bool = True,
     ) -> None:
         now = self._clock.now()
         occs = dict(self._st.occurrences)
@@ -912,7 +994,7 @@ class Runtime:
             obligations += new
         self._st = replace(self._st, occurrences=occs, obligations=tuple(obligations))
         self._archive(now)
-        self._save()
+        self._save(keep, stage)
 
     def _archive(self, now: datetime) -> None:
         """Rule 6: an occurrence leaves the store once it ended and its pending journey warnings
@@ -935,22 +1017,25 @@ class Runtime:
         snaps = {r: c for r, c in self._st.config_snapshots.items() if r in live}
         self._st = replace(self._st, occurrences=occs, config_snapshots=snaps)
 
-    def _save(self) -> bool:
-        """Rule 22: writes the whole changed state as one; only once written is it active. A
-        failed write leaves the last written state active for shells, keeps the change (and
-        every earlier unwritten one) where the next change is made, so nothing waiting is lost,
-        and sends its alerts from memory; the watchdog and every later change write it again.
-        A first configuration is shown anyway: nothing else could run."""
+    def _save(
+        self,
+        keep: bool = False,
+        stage: bool = True,
+        cand: PersistedState | None = None,
+        op: Callable[[PersistedState], PersistedState] | None = None,
+    ) -> bool:
+        """Rule 22: writes the changed state (`cand`, else `_st`) as one, with every change
+        still waiting; only once written is it applied. A failed write leaves the last written
+        state running and keeps the change: as the newest to retry (`stage`), and when nothing
+        recomputes it (`keep`, or its own `op`) to replay onto whatever is written next. Its new
+        alerts go from memory. A first configuration runs anyway: nothing else could."""
+        cand = self._st if cand is None else cand
+        if self._base is not None and cand is not self._base:
+            cand = self._restage(self._durable, cand)  # what waits on other occurrences too
         try:
-            self._store.save(self._st)
+            self._store.save(write := self._compose(cand))
         except StorageError as e:
-            self._staged = self._st
-            if self._durable.config is None and self._st.config is not None:
-                self._durable = replace(
-                    self._durable,
-                    config=self._st.config,
-                    config_snapshots=self._st.config_snapshots,
-                )
+            self._pend(cand, keep, stage, op)
             if self._store_ok:  # one loud storage_failed per outage, held in memory only
                 self._store_ok = False
                 log.error("store write failed: %s", e)
@@ -960,11 +1045,112 @@ class Runtime:
                     self._clock.now(),
                     "",
                 )
-                self._held[o.id] = o
+                self._notes[o.id] = o
             return False
-        self._durable, self._staged = self._st, None
+        self._st = self._durable = write
+        self._base, self._ops, self._marks, self._shadow = None, [], {}, None
+        self._held, self._gone, self._told = {}, set(), set()
         self._store_ok = True
         return True
+
+    def _compose(self, cand: PersistedState) -> PersistedState:
+        """`cand` with every change still waiting (rule 22): the kept changes replayed, the
+        newest poll records and delivery ledger, held alerts in and finished ones out."""
+        if self._shadow is None and not self._held and not self._gone:
+            return cand
+        st = cand
+        for op in self._ops:
+            st = op(st)
+        occs = {}
+        for k, s in st.occurrences.items():
+            # the running state holds the newest of both; an occurrence it lacks, the marks
+            cur = self._st.occurrences.get(k)
+            occs[k] = (
+                replace(s, alert_keys=self._marks.get(k, s.alert_keys))
+                if cur is None
+                else replace(s, alert_keys=cur.alert_keys, poll_records=cur.poll_records)
+            )
+        known = {o.id for o in self._durable.obligations}
+        taken = {_held_id(o) for o in self._held.values()} | self._told
+        obls = [
+            self._held.get(o.id, o)
+            for o in st.obligations
+            if o.id not in self._gone
+            and (o.id in known or o.id in self._held or _held_id(o) not in taken)
+        ]
+        ids = {o.id for o in obls}
+        obls += [o for o in self._held.values() if o.id not in ids]
+        ledgers = {
+            k: replace(
+                v,
+                pending=tuple(self._held.get(o.id, o) for o in v.pending if o.id not in self._gone),
+            )
+            for k, v in st.lookahead.items()
+        }
+        return replace(st, occurrences=occs, obligations=tuple(obls), lookahead=ledgers)
+
+    def _pend(
+        self,
+        cand: PersistedState,
+        keep: bool,
+        stage: bool,
+        op: Callable[[PersistedState], PersistedState] | None,
+    ) -> None:
+        """A failed write (rule 22): the change waits, the last written state runs on with
+        what the change observed and told (poll records, delivery ledger), its new alerts are
+        held to go from memory."""
+        base = self._durable
+        if op is not None:
+            self._ops.append(op)
+        elif keep:
+            self._ops.append(_delta(base, cand))
+        if stage or self._base is None:
+            self._base = self._restage(base, cand)
+        known = {o.id for o in base.obligations}
+        taken = {_held_id(o) for o in self._held.values()} | self._told
+        for o in cand.obligations:
+            if o.id in known or o.id in self._held or o.id in self._gone or _held_id(o) in taken:
+                continue  # a recomputed alert already held or sent from memory is not again
+            self._held[o.id] = o
+            taken.add(_held_id(o))
+        for k, x in self._st.occurrences.items():  # the newest ledger, computed on the marks
+            was = base.occurrences.get(k)
+            if k in self._marks or was is None or was.alert_keys != x.alert_keys:
+                self._marks[k] = x.alert_keys
+        if base.config is None and cand.config is not None:
+            base = replace(base, config=cand.config, config_snapshots=cand.config_snapshots)
+            self._durable = base
+        occs = {}
+        for k, x in base.occurrences.items():
+            cur = self._st.occurrences.get(k)
+            occs[k] = replace(
+                x,
+                alert_keys=self._marks.get(k, x.alert_keys),
+                poll_records=x.poll_records if cur is None else cur.poll_records,
+            )
+        self._st = replace(base, occurrences=occs)
+        self._shadow = self._compose(self._base)
+
+    def _restage(self, base: PersistedState, cand: PersistedState) -> PersistedState:
+        """The newest change to retry: `cand`, keeping every occurrence an earlier waiting
+        change made that `cand` left as written (a poll of another occurrence, a no-op)."""
+        old = self._base
+        if old is None:
+            return cand
+
+        def bare(x: OccurrenceState) -> OccurrenceState:
+            return replace(x, alert_keys={}, poll_records=())
+
+        occs = {}
+        for k in old.occurrences.keys() | cand.occurrences.keys():
+            c, o, w = cand.occurrences.get(k), old.occurrences.get(k), base.occurrences.get(k)
+            if c is None and w is not None:
+                continue  # ended by `cand`
+            if c is not None and (w is None and o is None or w is not None and bare(c) != bare(w)):
+                occs[k] = c
+            elif o is not None:
+                occs[k] = o
+        return replace(cand, occurrences=occs)
 
     async def _deliver(self) -> None:
         """Every pending obligation, revalidated right before sending (rule 5). Merges by id,
@@ -975,61 +1161,71 @@ class Runtime:
 
     async def _deliver_pass(self) -> None:
         view = _View(self)  # reads the state as it is when each message is judged (rule 5)
+        held_view = _View(self, held=True)
         finished: set[str] = set()
         kept: dict[str, Obligation] = {}
-        told: dict[str, bool] = {}  # finished LEAVE_NOW id -> sent (else dropped)
-        for o in (*self._st.obligations, *self._held.values()):
-            held = o.id in self._held
-            if not held and all(x.id != o.id for x in self._st.obligations):
-                continue  # removed by a change written while an earlier send awaited
-            if self._since is not None and _utc(o.event.created_at) < _utc(self._since):
-                continue  # written before this start: judged once the reconcile poll ran (r11)
-            k = None if o.occurrence is None else _okey(o.occurrence)
-            if o.event.kind in _OBSERVED and k in self._st.occurrences and k not in self._boards:
-                continue  # judged on observations: waits for a healthy answer (rule 5b)
-            # a fresh clock per message: a slow send must not leave the next one judged early
-            n = len(self.events_log)  # the logging notifier appends what it sent
-            r = await deliver(o, view, self._notifier, self._clock.now())
-            if held:  # never written (rule 22)
-                if r is None:
-                    self._held.pop(o.id, None)
-                else:
-                    self._held[o.id] = r
-                continue
-            if r is None:
-                finished.add(o.id)
-                if o.event.kind is EventKind.LEAVE_NOW:
-                    told[o.id] = len(self.events_log) > n
-            elif r != o:
-                kept[o.id] = r
-        if not finished and not kept:
+        told: list[tuple[Obligation, bool]] = []  # finished LEAVE_NOW, sent (else dropped)
+        try:
+            for o in (*self._st.obligations, *self._held.values(), *self._notes.values()):
+                if o.id in self._gone:
+                    continue  # finished while the store was down (rule 22)
+                mem = o.id in self._held or o.id in self._notes
+                if not mem and all(x.id != o.id for x in self._st.obligations):
+                    continue  # removed by a change written while an earlier send awaited
+                if self._since is not None and _utc(o.event.created_at) < _utc(self._since):
+                    continue  # written before this start: judged once the reconcile ran (r11)
+                k = None if o.occurrence is None else _okey(o.occurrence)
+                if (
+                    o.event.kind in _OBSERVED
+                    and k in self._st.occurrences
+                    and k not in self._boards
+                ):
+                    continue  # judged on observations: waits for a healthy answer (rule 5b)
+                # a fresh clock per message: a slow send must not leave the next one judged early
+                n = len(self.events_log)  # the logging notifier appends what it sent
+                v = held_view if o.id in self._held else view
+                r = await deliver(o, v, self._notifier, self._clock.now())
+                sent = len(self.events_log) > n
+                if r is None and o.event.kind is EventKind.LEAVE_NOW:
+                    told.append((o, sent))
+                # where it is now: a write landing during the send may have written a held one
+                if o.id in self._notes:
+                    self._notes = _settled(self._notes, o.id, r)
+                elif o.id in self._held:
+                    self._held = _settled(self._held, o.id, r)
+                    if r is None:
+                        self._gone.add(o.id)
+                        if sent:
+                            self._told.add(_held_id(o))
+                elif r is None:
+                    finished.add(o.id)
+                elif r != o:
+                    kept[o.id] = r
+        finally:  # each acknowledged send is recorded, also when shutdown cancels the pass
+            self._delivered(finished, kept, told)
+
+    def _delivered(
+        self,
+        finished: set[str],
+        kept: Mapping[str, Obligation],
+        told: Sequence[tuple[Obligation, bool]],
+    ) -> None:
+        if not finished and not kept and not told:
             return
-        self._advice_told(told)
 
-        def survive(xs: Iterable[Obligation]) -> tuple[Obligation, ...]:
-            return tuple(kept.get(o.id, o) for o in xs if o.id not in finished)
+        def outcome(st: PersistedState) -> PersistedState:
+            def survive(xs: Iterable[Obligation]) -> tuple[Obligation, ...]:
+                return tuple(kept.get(o.id, o) for o in xs if o.id not in finished)
 
-        # look-ahead messages live in their ledger too, so a delivered one counts as told
-        ledgers = {k: replace(v, pending=survive(v.pending)) for k, v in self._st.lookahead.items()}
-        self._st = replace(self._st, obligations=survive(self._st.obligations), lookahead=ledgers)
+            # look-ahead messages live in their ledger too, so a delivered one counts as told
+            ledgers = {k: replace(v, pending=survive(v.pending)) for k, v in st.lookahead.items()}
+            st = _advice_told(st, told)
+            return replace(st, obligations=survive(st.obligations), lookahead=ledgers)
+
+        self._st = outcome(self._st)
         self._archive(self._clock.now())
-        self._save()
-
-    def _advice_told(self, told: Mapping[str, bool]) -> None:
-        """7.6: the advice episode a finished LEAVE_NOW belongs to is delivered once sent, and
-        ended silently once dropped unsent, so the same train can be advised again."""
-        occs = dict(self._st.occurrences)
-        for o in self._st.obligations:
-            k = None if o.occurrence is None else _okey(o.occurrence)
-            s = None if k is None else occs.get(k)
-            a = None if s is None else s.advice
-            if k is None or s is None or a is None or o.id not in told or a.sent_at is None:
-                continue
-            if a.advised_train != o.event.train or _utc(a.sent_at) != _utc(o.event.created_at):
-                continue  # an older episode's message
-            a = replace(a, delivered=True) if told[o.id] else replace(a, withdrawn=True)
-            occs[k] = replace(s, advice=a)
-        self._st = replace(self._st, occurrences=occs)
+        self._gone |= finished
+        self._save(stage=False, op=outcome)
 
     # --- provider access under the shared budget ---
 
@@ -1136,7 +1332,12 @@ class Runtime:
                 v = hist.in_force(sch.key.service_date) if hist else None
                 fresh = _fresh_state(sch.key, cfg.revision, v.version if v else None)
                 own = v.signature if v else None
-                occs[k] = replace(fresh, baseline_signature=own, baseline_frozen=True)
+                occs[k] = replace(
+                    fresh,
+                    baseline_signature=own,
+                    baseline_frozen=True,
+                    alert_keys=self._marks.get(k, {}),  # told while the store was down (r22)
+                )
         self._st = replace(self._st, occurrences=occs)
 
     async def poll_once(self) -> None:
@@ -1356,8 +1557,8 @@ class Runtime:
 
     async def watchdog_once(self) -> None:
         now = self._clock.now()
-        if self._staged is not None:  # the unwritten changes, written again (rule 22)
-            self._save()
+        if self._shadow is not None:  # the waiting changes, written again (rule 22)
+            self._save(stage=False, cand=self._base)
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
         for k, s in self._st.occurrences.items():
             ctx = self._ctx(s, now)
@@ -1372,9 +1573,9 @@ class Runtime:
         before = self._st.occurrences
         self._archive(now)  # a window closing is itself no change
         if changes:
-            self._apply(changes)
+            self._apply(changes, stage=False)
         elif self._st.occurrences != before:
-            self._save()
+            self._save(stage=False)
         await self._deliver()
 
     # --- user actions and location ---
@@ -1409,7 +1610,7 @@ class Runtime:
             if ctx is not None:
                 t = apply_action(s, ctx, action)
                 changes[k] = (t.state, t.events)
-        self._apply(changes)
+        self._apply(changes, keep=True)  # nothing recomputes a user action (rule 22)
         await self._deliver()
         return True
 
@@ -1655,7 +1856,7 @@ class Runtime:
                     self._apply_config(cfg, now)
                     applied = cfg
         self._apply({})
-        if applied is not None and self._staged is not None:
+        if applied is not None and self._shadow is not None:
             self._mtime = None  # not written, so not active: the file watch tries again (r22)
         await self._deliver()
 
@@ -1862,7 +2063,7 @@ class Runtime:
             lookahead={**self._st.lookahead, dk: new_ledger},
             obligations=tuple(obligations),
         )
-        self._save()
+        self._save(keep=True, stage=False)
 
     # --- start, reconcile and the loops ---
 

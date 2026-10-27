@@ -1511,3 +1511,62 @@ async def test_held_lookahead_message_after_a_rename_names_the_new_profile(tmp_p
     await _back(rig)
     got = _ahead(rig, EventKind.WORKS_AHEAD)
     assert got and got[0].text.startswith("Office B, ")
+
+
+async def _cancel_mid_pass(rig: Rig) -> None:
+    """A delivery pass whose `key_rejected` send hangs, cancelled there as `docker stop` does;
+    every other pending message is sent before it."""
+    rt = rig.rt
+    rt._app_warning(EventKind.KEY_REJECTED, "your NS key was rejected.", rig.clock.now())
+    inner, entered = rig.notifier.send, asyncio.Event()
+
+    async def send(e: AlertEvent) -> bool:
+        if e.kind is EventKind.KEY_REJECTED:
+            entered.set()
+            await asyncio.Event().wait()
+        return await inner(e)
+
+    rig.notifier.send = send  # type: ignore[method-assign]
+    rig.notifier.fails = lambda e: False
+    task = asyncio.create_task(rt._deliver())
+    await asyncio.wait_for(entered.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    rig.notifier.send = inner  # type: ignore[method-assign]
+
+
+async def test_shutdown_mid_pass_keeps_sent_alerts_and_advice_told(tmp_path):
+    rig = Rig(tmp_path, "16:54")  # Review Focus 5, rule 22, 7.6
+    rig.notifier.fails = lambda e: True
+    rig.provider.world = cancelled_usual_world()
+    await rig.rt.start()
+    assert [o.event.kind for o in rig.rt.state.obligations] == [EventKind.LEAVE_NOW]
+    await _cancel_mid_pass(rig)
+    stored = rig.store.load()
+    assert [o.event.kind for o in stored.obligations] == [EventKind.KEY_REJECTED]
+    assert stored.occurrences["p1|return|2026-10-27"].advice.delivered
+    n = len(rig.notifier.attempts)
+    await rig.restart()
+    assert EventKind.LEAVE_NOW not in kinds(rig.notifier.attempts[n:])
+
+
+async def test_shutdown_mid_pass_keeps_a_sent_lookahead_message_told(tmp_path):
+    rig = Rig(tmp_path, "05:40")  # Review Focus 5, 7.10
+    rig.provider.world = every_day()
+    await rig.rt.start()
+    await rig.rt.lookahead_once()
+    rig.clock.t = at("05:40", DAY + timedelta(days=1))
+    await rig.rt.lookahead_once()
+    rig.provider.world = every_day("08:20")
+    rig.clock.t = at("05:40", DAY + timedelta(days=2))
+    rig.notifier.fails = lambda e: True
+    await rig.rt.lookahead_once()
+    assert rig.store.load().lookahead["p1|outbound"].pending
+    await _cancel_mid_pass(rig)
+    stored = rig.store.load()
+    assert not stored.lookahead["p1|outbound"].pending
+    assert [o.event.kind for o in stored.obligations] == [EventKind.KEY_REJECTED]
+    n = len(rig.notifier.attempts)
+    await rig.restart()
+    assert EventKind.TIMETABLE_ADOPTED not in kinds(rig.notifier.attempts[n:])
