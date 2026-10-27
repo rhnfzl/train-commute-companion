@@ -50,6 +50,14 @@ def test_health_shows_lookahead_last_ok_without_failing():
     assert body["lookahead_last_ok"] == {"p1|outbound": old.isoformat(), "p1|return": None}
 
 
+def test_health_shows_webhooks_failing_without_failing():
+    status, body = health_report(FINE, True, True, True)
+    assert (status, body["ok"], body["webhooks_failing"]) == (200, True, True)
+    assert health_report(FINE, True, True, False)[1]["webhooks_failing"] is False
+    assert health_report(FINE, True, True)[1]["webhooks_failing"] is None  # no webhooks
+    assert health_for({}, status, body, None) == (200, {"ok": True})  # full report only
+
+
 async def test_health_lists_occurrences_of_a_built_app(tmp_path, tg):
     clock = TickClock(at("07:50"))
     app = make_app(tmp_path, tg, clock, StationsProvider(Provider(clock, every_day()), CODES))

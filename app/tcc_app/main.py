@@ -2,6 +2,7 @@
 supervised (7.12 rule 12): a part that ends is a fault and the process exits for a restart."""
 
 import asyncio
+import functools
 import logging
 import os
 import signal
@@ -14,8 +15,16 @@ import httpx
 
 from train_commute_companion.providers.base import Provider
 from train_commute_companion.providers.ns import NsProvider
-from train_commute_companion.runtime import LOOKAHEAD_AT, Clock, Runtime, SystemClock
+from train_commute_companion.runtime import (
+    LOOKAHEAD_AT,
+    Clock,
+    Runtime,
+    SystemClock,
+    WebhookPoster,
+    send_webhook_tests,
+)
 from train_commute_companion.store import JsonFileStore
+from train_commute_companion.webhook import check_secret, check_token, parse_urls
 
 from . import owntracks
 from .bot import Bot
@@ -49,6 +58,9 @@ class Settings:
     state_dir: Path
     lookahead_at: time = LOOKAHEAD_AT
     health_token: str | None = None
+    webhook_urls: tuple[str, ...] = ()
+    webhook_secret: str = ""  # empty: unset
+    webhook_token: str = ""
 
     @staticmethod
     def from_env(env: Mapping[str, str]) -> "Settings":
@@ -78,6 +90,23 @@ class Settings:
             raise ValueError(
                 "TCC_HEALTH_TOKEN must be at least 16 characters of printable ASCII without spaces"
             )
+        try:
+            webhook_urls = parse_urls(env.get("TCC_WEBHOOK_URLS", ""))
+        except ValueError as e:
+            raise ValueError(f"TCC_WEBHOOK_URLS {e}") from None
+        webhook_secret = webhook_token = ""
+        if webhook_urls:  # a secret or token without URLs is ignored
+            webhook_secret = _required(env, "TCC_WEBHOOK_SECRET")
+            webhook_token = _optional(env, "TCC_WEBHOOK_TOKEN") or ""
+            for name, value, check in (
+                ("TCC_WEBHOOK_SECRET", webhook_secret, check_secret),
+                ("TCC_WEBHOOK_TOKEN", webhook_token, check_token),
+            ):
+                try:
+                    if value:
+                        check(value)
+                except ValueError as e:
+                    raise ValueError(f"{name} {e}") from None
         return Settings(
             ns_key,
             bot_token,
@@ -87,6 +116,9 @@ class Settings:
             Path(_optional(env, "TCC_STATE_DIR") or "/data"),
             lookahead_at,
             health_token,
+            webhook_urls,
+            webhook_secret,
+            webhook_token,
         )
 
 
@@ -97,11 +129,17 @@ class App:
     notifier: TelegramNotifier
     bot: Bot
     follower: Follower
+    webhooks: WebhookPoster | None = None
 
 
 def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncClient) -> App:
     api = TelegramApi(s.bot_token, client)
     notifier = TelegramNotifier(api, s.chat_id, clock.now)
+    webhooks, webhook_test = None, None
+    if s.webhook_urls:  # the one client serves NS, Telegram and the webhooks
+        hook = (client, s.webhook_urls, s.webhook_secret, clock.now)
+        webhooks = WebhookPoster(*hook, token=s.webhook_token)
+        webhook_test = functools.partial(send_webhook_tests, *hook, token=s.webhook_token)
     rt = Runtime(
         profile_path=s.profiles,
         store=JsonFileStore(s.state_dir / "tcc-state.json"),
@@ -110,13 +148,14 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         clock=clock,
         known_stations=None,
         lookahead_at=s.lookahead_at,
+        webhooks=webhooks,
     )
     # the station list is fetched inside run_forever's start, with the watchdog running
     rt.require_stations = True
     # NsProvider fills `positions` with the station list; a test provider may have none
     follower = Follower(rt, lambda: getattr(provider, "positions", {}))
-    bot = Bot(api, rt, s.chat_id, s.state_dir / "telegram.json", follower)
-    return App(s, rt, notifier, bot, follower)
+    bot = Bot(api, rt, s.chat_id, s.state_dir / "telegram.json", follower, webhook_test)
+    return App(s, rt, notifier, bot, follower, webhooks)
 
 
 async def serve(app: App, port: int) -> int:
@@ -129,7 +168,12 @@ async def serve(app: App, port: int) -> int:
         secret = app.settings.owntracks_secret
         server = await start_web(
             port,
-            health=lambda: health_report(app.rt.view(), not runtime.done(), app.bot.confirmed),
+            health=lambda: health_report(
+                app.rt.view(),
+                not runtime.done(),
+                app.bot.confirmed,
+                app.webhooks.failing if app.webhooks else None,
+            ),
             owntracks=owntracks.handler(app.follower) if secret else None,
             secret=secret,
             health_token=app.settings.health_token,
@@ -172,7 +216,7 @@ async def _run(s: Settings) -> int:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, me.cancel)
-    async with httpx.AsyncClient() as client:  # one client for NS and Telegram
+    async with httpx.AsyncClient() as client:  # one client for NS, Telegram and webhooks
         clock = SystemClock()
         app = build(s, clock=clock, provider=NsProvider(s.ns_key, client, clock.now), client=client)
         try:

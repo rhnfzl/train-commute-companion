@@ -7,6 +7,7 @@ from tcc_app.commands import (
     command_word,
     parse_target,
     render_status,
+    render_webhook_tests,
     status_buttons,
 )
 from test_runtime import at
@@ -29,6 +30,7 @@ from train_commute_companion.view import (
     TransferView,
     WorksDay,
 )
+from train_commute_companion.webhook import WebhookTestResult
 
 DAY = date(2026, 10, 27)
 
@@ -196,3 +198,15 @@ def test_status_buttons_take_next_good():
 def test_command_word_strips_the_bot_name():
     assert command_word("/Status@SomeBot now") == "/status"
     assert command_word("  ") == ""
+
+
+def test_render_webhook_tests_names_hosts_and_results():
+    ok = WebhookTestResult("hooks.example.invalid", 200, 200)
+    bad = WebhookTestResult("hooks2.example.invalid", 503, "ConnectError")
+    assert render_webhook_tests([ok, bad]).splitlines() == [
+        "Webhook hooks.example.invalid: accepted the loud and the silent test.",
+        (
+            "Webhook hooks2.example.invalid (loud 503, silent ConnectError): not accepted."
+            " Check the receiver, its secret and its token."
+        ),
+    ]

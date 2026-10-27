@@ -37,7 +37,7 @@ Run every command below from the `examples/` directory of this checkout, where t
 - `/choose [profile] [outbound|return] HH:MM [train number] [YYYY-MM-DD]`: lock that train
 - `/leaving [profile] [outbound|return]`: I'm leaving now
 - `/skip [profile] [outbound|return|day] [YYYY-MM-DD]`: not travelling, alerts for it stop
-- `/test`: send the loud and the silent test alert
+- `/test`: send the loud and the silent test alert (and test each webhook)
 - `/help`: this list
 
 The same actions are buttons under the alerts and the `/status` reply.
@@ -54,12 +54,19 @@ Everything comes from the environment (`.env`):
 | `OWNTRACKS_SECRET` | optional; turns on the OwnTracks endpoint |
 | `TCC_HEALTH_TOKEN` | optional, 16+ printable ASCII characters without spaces; lets a caller with `Authorization: Bearer <token>` read the full `/health` report |
 | `TCC_LOOKAHEAD_AT` | when the planned-works look-ahead runs, `HH:MM`, default `06:00` |
+| `TCC_WEBHOOK_URLS` | optional; webhook URLs separated by spaces or commas, for example `http://localhost:8644/webhooks/commute` |
+| `TCC_WEBHOOK_SECRET` | required with `TCC_WEBHOOK_URLS`, 16+ characters; signs every webhook post |
+| `TCC_WEBHOOK_TOKEN` | optional bearer token sent with every webhook post (for OpenClaw), 16+ printable ASCII characters without spaces |
 
 ## Health
 
 `GET /health` on port 8080 answers 200 when all is well and 503 otherwise. It shows whether the runtime is alive and started, whether the state file writes, whether NS rejected the key, whether a profile was refused, how many alerts are undelivered, whether delivery was confirmed, and each journey's freshness. Every caller gets that status code and just `{"ok": true}` or `{"ok": false}`. The full report needs the header `Authorization: Bearer <TCC_HEALTH_TOKEN>` (set `TCC_HEALTH_TOKEN` first). The built-in Docker health check reads only the status code and needs no token.
 
 A machine that is off cannot warn about itself, so point an external uptime check at `/health`. Keep that on your home network and never forward port 8080 as a whole. For OwnTracks, expose only `/owntracks` (see its page).
+
+## Webhooks
+
+With `TCC_WEBHOOK_URLS` set, every alert is also posted as signed JSON to each URL; [Webhooks](webhooks.md) has the payload, the headers and how to verify them. The payload carries profile names, stations and times, so prefer a receiver on the same machine, and use https for one anywhere else. `/test` also sends a signed loud and a signed silent test to each webhook and replies with one line per webhook saying whether it accepted both; only your tap on the phone test confirms delivery. A webhook that is down never holds back a phone alert and never turns `/health` to 503: the full report's `webhooks_failing` is `true` while some webhook URL is resting after a failed post and `null` without webhooks. Like every other detail it shows only in the full report, with `TCC_HEALTH_TOKEN`.
 
 ## Good to know
 

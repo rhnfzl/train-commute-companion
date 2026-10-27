@@ -20,9 +20,13 @@ BODY_LIMIT = 64 * 1024
 READ_TIMEOUT_S = 10.0
 
 
-def health_report(view: RuntimeView, alive: bool, confirmed: bool) -> tuple[int, dict[str, Any]]:
-    """Board freshness and look-ahead health are shown, not folded into `ok`: the loud
-    `cannot_see_train` covers freshness, and a failed planned-works lookup should not page."""
+def health_report(
+    view: RuntimeView, alive: bool, confirmed: bool, webhooks_failing: bool | None = None
+) -> tuple[int, dict[str, Any]]:
+    """Board freshness, look-ahead and webhook health are shown, not folded into `ok`: the loud
+    `cannot_see_train` covers freshness, a failed planned-works lookup should not page, and the
+    phone, not a webhook, is the delivery that counts. `webhooks_failing` is None without
+    webhooks."""
     ok = (
         alive
         and view.started
@@ -41,6 +45,7 @@ def health_report(view: RuntimeView, alive: bool, confirmed: bool) -> tuple[int,
         "profile_refused": view.refusal,
         "undelivered": view.undelivered,
         "delivery_confirmed": confirmed,
+        "webhooks_failing": webhooks_failing,
         "requests": view.requests,
         "occurrences": [
             {

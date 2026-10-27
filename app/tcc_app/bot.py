@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import secrets
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -16,8 +16,16 @@ from typing import Any, TypeVar
 from train_commute_companion.lifecycle import Leaving, NotTravelling
 from train_commute_companion.model import Direction
 from train_commute_companion.runtime import Runtime
+from train_commute_companion.webhook import WebhookTestResult
 
-from .commands import _pretty, command_word, parse_target, render_status, status_buttons
+from .commands import (
+    _pretty,
+    command_word,
+    parse_target,
+    render_status,
+    render_webhook_tests,
+    status_buttons,
+)
 from .follow import Fix, Follower, number, stamp
 from .telegram import TelegramApi, TelegramError, split_text
 
@@ -40,7 +48,7 @@ HELP = (
     "/choose [profile] [outbound|return] HH:MM [train number] [YYYY-MM-DD]: lock that train\n"
     "/leaving [profile] [outbound|return]: I'm leaving now\n"
     "/skip [profile] [outbound|return|day] [YYYY-MM-DD]: not travelling, alerts for it stop\n"
-    "/test: send the loud and the silent test alert\n"
+    "/test: send the loud and the silent test alert (and test each webhook)\n"
     "/help: this list\n"
     "Data: NS"
 )
@@ -93,9 +101,10 @@ class Bot:
         chat_id: int | None,
         state_path: Path,
         follower: Follower | None = None,
+        webhook_test: Callable[[], Awaitable[Sequence[WebhookTestResult]]] | None = None,
     ) -> None:
         self._api, self._rt, self._chat, self._path = api, rt, chat_id, state_path
-        self._follower = follower
+        self._follower, self._webhook_test = follower, webhook_test
         loaded = load_state(state_path)
         self._trusted = loaded is not None and loaded.bot_id == api.bot_id
         if loaded is not None and self._trusted:
@@ -232,6 +241,9 @@ class Bot:
                 await self._test_pair()
         elif word == "/test":
             await self._test_pair()
+            # the phone pair and its button stay the rule-16 proof; a webhook only needs a 2xx
+            if self._webhook_test is not None:
+                await self._reply(render_webhook_tests(await self._webhook_test()))
         elif word == "/status":
             view = self._rt.view()
             await self._reply(render_status(view, self.confirmed), status_buttons(view))

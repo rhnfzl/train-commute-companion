@@ -9,15 +9,19 @@ from typing import Any
 import httpx
 import pytest
 from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
-from conftest import CHAT, STRANGER, TOKEN, FakeTelegram, error
+from conftest import CHAT, STRANGER, TOKEN, FakeTelegram, build_from_replay, error
 from tcc_app import bot as bot_mod
 from tcc_app.bot import Bot, ShellState, load_state, save_state
-from tcc_app.commands import render_status, status_buttons
+from tcc_app.commands import render_status, render_webhook_tests, status_buttons
 from tcc_app.telegram import TelegramApi
+from test_acceptance import REPLAYS, msg
+from test_main import SECRET, URL, URL2
 from test_runtime import PROFILE, Rig, at
+from webhook_receiver import Receiver
 
 from train_commute_companion.lifecycle import Commitment, DirectionState, LegState, LockSource
 from train_commute_companion.location import LocationEvent
+from train_commute_companion.webhook import WebhookTestResult
 
 ONE_PROFILE = PROFILE.split('  - id: "p2"')[0].replace("NAME", "office_a")
 OUT, RET = "p1|outbound|2026-10-27", "p1|return|2026-10-27"
@@ -258,6 +262,45 @@ async def test_test_pair_and_confirmation_persist(app, tmp_path):
     assert app.texts()[-1] == "Delivery confirmed. Setup is complete."
     assert app.bot.confirmed and load_state(app.path).confirmed_for == "123:1000001"
     assert app.new_bot().confirmed
+
+
+async def test_test_without_webhooks_is_as_today(app):
+    await app.bot.handle(app.msg("/test"))
+    assert app.texts() == [bot_mod.LOUD_TEST, bot_mod.SILENT_TEST]  # no webhook reply
+
+
+async def test_telegram_test_reports_each_webhook(tmp_path, tg):  # Review Focus 11
+    app, rp = build_from_replay(tmp_path, tg, REPLAYS / "direct.yaml",
+                                webhook_urls=(URL, URL2), webhook_secret=SECRET)  # fmt: skip
+    rx = Receiver(SECRET, lambda: rp.clock.now().timestamp())
+    other: list[str] = []
+
+    def route(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "hooks.example.invalid":
+            return rx.handler(request)
+        other.append(request.url.host)
+        return httpx.Response(503)
+
+    tg.other = route  # the runtime is not started: its first alert would post a real copy
+    await app.bot.handle(msg(app, "/test"))
+    loud, silent, reply = tg.sent
+    assert (loud["text"], loud["disable_notification"]) == (bot_mod.LOUD_TEST, False)
+    assert (silent["text"], silent["disable_notification"]) == (bot_mod.SILENT_TEST, True)
+    [[button]] = silent["reply_markup"]["inline_keyboard"]
+    assert reply["text"] == render_webhook_tests(
+        [WebhookTestResult("hooks.example.invalid", 200, 200),
+         WebhookTestResult("hooks2.example.invalid", 503, 503)]
+    )  # fmt: skip
+    assert [(p["severity"], p["test"]) for p in rx.posts] == [("loud", True), ("silent", True)]
+    assert rx.bad == 0 and other == ["hooks2.example.invalid"] * 2
+    assert not app.bot.confirmed  # the button is the proof
+    assert app.webhooks is not None and not app.webhooks.failing
+    await app.rt.webhooks_idle()
+    assert app.rt._copies == {} and not (tmp_path / "tcc-state.json").exists()  # never stored
+    await app.bot.handle(tap(button["callback_data"], 2))
+    assert tg.sent[-1]["text"] == "Delivery confirmed. Setup is complete."
+    assert app.bot.confirmed
+    await app.bot.close()
 
 
 async def test_help_sends_the_test_pair_until_confirmed(app):

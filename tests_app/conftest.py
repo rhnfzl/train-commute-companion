@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import json
 import re
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -32,6 +33,8 @@ class FakeTelegram:
         self.polls: list[dict[str, Any]] = []  # getUpdates params, failed ones included
         self.updates: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.fail: Callable[[str], httpx.Response | Exception | None] = lambda method: None
+        # every request to another host (a webhook receiver) goes here
+        self.other: Callable[[httpx.Request], httpx.Response] | None = None
         self._backlog: list[dict[str, Any]] = []  # served until a later offset confirms them
         self._clients: list[httpx.AsyncClient] = []
 
@@ -45,6 +48,9 @@ class FakeTelegram:
             await c.aclose()
 
     async def handler(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host != "api.telegram.org":
+            assert self.other is not None, f"unexpected request to {request.url.host}"
+            return self.other(request)
         method = request.url.path.rsplit("/", 1)[-1]
         self.calls.append(method)
         params = json.loads(request.content) if request.content else {}
@@ -159,8 +165,11 @@ async def feed(app: Any, lat: float, lon: float, when: str | datetime, acc: floa
     await app.follower.drain()
 
 
-def build_from_replay(tmp_path: Path, tg: FakeTelegram, path: Path) -> tuple[App, Replay]:
-    """The app on a replay's clock and scripted NS, with the station list a real provider has."""
+def build_from_replay(
+    tmp_path: Path, tg: FakeTelegram, path: Path, **settings: Any
+) -> tuple[App, Replay]:
+    """The app on a replay's clock and scripted NS, with the station list a real provider has;
+    `settings` replace fields of its `Settings`."""
     rp = load_replay(path)
     cfg, errors = parse_profiles(rp.profile_path.read_text(encoding="utf-8"), None)
     assert not errors
@@ -169,7 +178,7 @@ def build_from_replay(tmp_path: Path, tg: FakeTelegram, path: Path) -> tuple[App
         for p in cfg
         for c in (p.home_station, p.work_station, *p.outbound.transfers, *p.return_.transfers)
     )
-    s = Settings("k", TOKEN, CHAT, None, rp.profile_path, tmp_path)
+    s = dataclasses.replace(Settings("k", TOKEN, CHAT, None, rp.profile_path, tmp_path), **settings)
     app = build(
         s, clock=rp.clock, provider=StationsProvider(rp.provider, codes), client=tg.client()
     )

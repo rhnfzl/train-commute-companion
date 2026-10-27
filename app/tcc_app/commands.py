@@ -1,4 +1,5 @@
-"""Telegram commands, pure: parsing a target (7.8) and rendering `/status` (7.13). No I/O."""
+"""Telegram commands, pure: parsing a target (7.8), rendering `/status` (7.13) and the `/test`
+webhook results. No I/O."""
 
 import re
 from collections.abc import Sequence
@@ -9,6 +10,7 @@ from typing import Any
 from train_commute_companion.calendar import TZ
 from train_commute_companion.model import Connection, Direction
 from train_commute_companion.view import LegView, OccurrenceView, RuntimeView
+from train_commute_companion.webhook import WebhookTestResult
 
 from .telegram import callback_data
 
@@ -204,3 +206,12 @@ def status_buttons(view: RuntimeView) -> dict[str, Any] | None:
 def command_word(text: str) -> str:
     words = text.split()
     return words[0].lower().split("@", 1)[0] if words else ""
+
+
+def render_webhook_tests(results: Sequence[WebhookTestResult]) -> str:
+    return "\n".join(
+        f"Webhook {r.host}: accepted the loud and the silent test."
+        if r.ok
+        else f"Webhook {r.summary()}: not accepted. Check the receiver, its secret and its token."
+        for r in results
+    )
