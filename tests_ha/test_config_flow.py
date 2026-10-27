@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
 from harness import (
     NOTIFY,
@@ -10,18 +11,22 @@ from harness import (
     PROFILES,
     fake_phone,
     profiles_path,
+    rebound,
     setup_tcc,
+    state_path,
     write_profiles,
 )
 from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
+from webhook_receiver import Receiver
 
 from custom_components.train_commute_companion import notifier
 from custom_components.train_commute_companion.config_flow import notify_services
 from custom_components.train_commute_companion.const import DOMAIN
 from train_commute_companion.providers.base import AuthError
+from train_commute_companion.store import JsonFileStore
 
 CHECK_KEY = "custom_components.train_commute_companion.config_flow.check_key"
 SETUP = "custom_components.train_commute_companion.async_setup_entry"
@@ -404,3 +409,161 @@ async def test_options_flow_aborts_with_only_a_non_phone_target(hass):
         r["flow_id"], {"next_step_id": "settings"}
     )
     assert r["type"] is FlowResultType.ABORT and r["reason"] == "no_mobile_app"
+
+
+# --- options flow: webhooks ---
+
+URL, URL2 = "https://hooks.example.invalid/tcc", "https://hooks2.example.invalid/tcc"
+SECRET, WTOKEN = "test-webhook-secret-0001", "test-webhook-token-0001"
+HOOKS = {"webhook_urls": [URL], "webhook_secret": SECRET, "webhook_token": ""}
+
+
+async def loaded(hass, status=200, **options):
+    """A loaded entry whose webhook clients, the flow's test send included, reach `rx`."""
+    rx = Receiver(SECRET, None, status)
+    h = await setup_tcc(hass, PROFILE, options=options, receiver=rx)
+    # with webhooks set, the start's alerts are posted too; the record starts after them
+    await h.host.run(lambda rt: rt.webhooks_idle())
+    rx.requests.clear()
+    rx.posts.clear()
+    return h, rx
+
+
+async def open_webhooks(hass, entry):
+    r = await hass.config_entries.options.async_init(entry.entry_id)
+    assert r["type"] is FlowResultType.MENU
+    assert r["menu_options"] == ["validate", "settings", "webhooks"]
+    r = await hass.config_entries.options.async_configure(
+        r["flow_id"], {"next_step_id": "webhooks"}
+    )
+    assert r["type"] is FlowResultType.FORM and r["step_id"] == "webhooks"
+    return r
+
+
+async def submit(hass, r, urls="", secret="", token=""):
+    data = {"webhook_urls": urls, "webhook_secret": secret, "webhook_token": token}
+    r = await hass.config_entries.options.async_configure(r["flow_id"], data)
+    await hass.async_block_till_done()
+    return r
+
+
+def stored_copies(hass, entry) -> tuple:
+    return JsonFileStore(state_path(hass, entry)).load().webhook_copies
+
+
+@pytest.mark.usefixtures("tcc_freezer")
+async def test_options_webhooks_saved_after_accepted_test_sends(hass):  # owner decision Q2(b)
+    h, rx = await loaded(hass)
+    old, before = dict(h.entry.options), len(h.pushes)
+    r = await submit(hass, await open_webhooks(hass, h.entry), f"{URL}\n{URL2}", SECRET)
+    assert r["type"] is FlowResultType.CREATE_ENTRY
+    assert rx.bad == 0 and len(rx.posts) == 4
+    sends: dict[str, list] = {}
+    for req, post in zip(rx.requests, rx.posts, strict=True):
+        sends.setdefault(req.url.host, []).append((post["severity"], post["test"]))
+    test_pair = [("loud", True), ("silent", True)]
+    assert sends == {"hooks.example.invalid": test_pair, "hooks2.example.invalid": test_pair}
+    assert dict(h.entry.options) == {
+        **old,
+        "webhook_urls": [URL, URL2],
+        "webhook_secret": SECRET,
+        "webhook_token": "",
+    }
+    assert len(h.pushes) == before  # the phone gets no test push
+    h = await rebound(h)
+    await h.host.run(lambda rt: rt.webhooks_idle())
+    assert stored_copies(hass, h.entry) == () and len(rx.requests) == 4
+
+
+@pytest.mark.parametrize("failure", ["401", "503", "connect"])
+@pytest.mark.usefixtures("tcc_freezer")
+async def test_options_webhooks_refuse_saving_when_a_test_send_fails(hass, failure):
+    h, rx = await loaded(hass, status=503 if failure == "503" else 401)
+    if failure == "connect":
+
+        def refuse(request):
+            raise httpx.ConnectError("refused", request=request)
+
+        rx.handler = refuse
+    old = dict(h.entry.options)
+    r = await submit(hass, await open_webhooks(hass, h.entry), URL, SECRET)
+    assert r["type"] is FlowResultType.FORM and r["step_id"] == "webhooks"
+    assert r["errors"] == {"base": "webhook_test_failed"}
+    got = "ConnectError" if failure == "connect" else failure
+    failed = r["description_placeholders"]["failed"]
+    assert failed == f"hooks.example.invalid (loud {got}, silent {got})"
+    assert "/tcc" not in failed and SECRET not in failed
+    assert dict(h.entry.options) == old
+    rx.status = 200
+    if failure == "connect":
+        del rx.handler
+    r = await submit(hass, r, URL, SECRET)
+    assert r["type"] is FlowResultType.CREATE_ENTRY
+    assert h.entry.options["webhook_urls"] == [URL]
+
+
+@pytest.mark.usefixtures("tcc_freezer")
+async def test_options_webhooks_unchanged_save_sends_no_test(hass):
+    h, rx = await loaded(hass, **HOOKS)
+    r = await submit(hass, await open_webhooks(hass, h.entry), URL, SECRET)
+    assert r["type"] is FlowResultType.CREATE_ENTRY and not rx.requests
+    r = await submit(hass, await open_webhooks(hass, h.entry), URL, SECRET, WTOKEN)
+    assert r["type"] is FlowResultType.CREATE_ENTRY
+    assert [p["severity"] for p in rx.posts] == ["loud", "silent"] and rx.bad == 0
+    assert all(q.headers["authorization"] == f"Bearer {WTOKEN}" for q in rx.requests)
+    assert h.entry.options["webhook_token"] == WTOKEN
+
+
+@pytest.mark.usefixtures("tcc_freezer")
+async def test_options_webhooks_refuse_bad_url_weak_secret_and_short_token(hass):
+    h, rx = await loaded(hass)
+    old = dict(h.entry.options)
+    r = await open_webhooks(hass, h.entry)
+    for urls, secret, token, error in (
+        (
+            "https://hooks.example.invalid:99999/tcc",
+            SECRET,
+            "",
+            {"webhook_urls": "bad_webhook_url"},
+        ),
+        ("ftp://hooks.example.invalid/tcc", SECRET, "", {"webhook_urls": "bad_webhook_url"}),
+        (
+            f"{URL}\nhttps://u:p@hooks.example.invalid/tcc",
+            SECRET,
+            "",
+            {"webhook_urls": "bad_webhook_url"},
+        ),
+        (URL, "", "", {"webhook_secret": "weak_webhook_secret"}),
+        (URL, "too-short", "", {"webhook_secret": "weak_webhook_secret"}),
+        (URL, SECRET, "too-short", {"webhook_token": "weak_webhook_token"}),
+        (URL, SECRET, "t\u00e9st-webhook-token-01", {"webhook_token": "weak_webhook_token"}),
+        (URL, SECRET, "test webhook token 01", {"webhook_token": "weak_webhook_token"}),
+    ):
+        r = await submit(hass, r, urls, secret, token)
+        assert r["type"] is FlowResultType.FORM and r["errors"] == error, (urls, secret, token)
+    assert dict(h.entry.options) == old and not rx.requests
+
+
+@pytest.mark.usefixtures("tcc_freezer")
+async def test_options_webhooks_empty_turns_them_off(hass):
+    h, rx = await loaded(hass, **HOOKS)
+    r = await open_webhooks(hass, h.entry)
+    suggested = {str(k): k.description["suggested_value"] for k in r["data_schema"].schema}
+    assert suggested == {"webhook_urls": URL, "webhook_secret": SECRET, "webhook_token": ""}
+    r = await submit(hass, r)
+    assert r["type"] is FlowResultType.CREATE_ENTRY and not rx.requests
+    assert h.entry.options["webhook_urls"] == [] and h.entry.options["webhook_secret"] == ""
+
+
+@pytest.mark.usefixtures("tcc_freezer")
+async def test_settings_save_keeps_webhook_options(hass):  # Review Focus 8
+    h, rx = await loaded(hass, **HOOKS)
+    before = len(h.pushes)
+    other = Path(hass.config.config_dir) / "other.yaml"
+    other.write_text(PROFILE)
+    r = await settings(hass, h.entry, **current(h.entry, profiles_path=str(other)))
+    await hass.async_block_till_done()
+    assert r["type"] is FlowResultType.CREATE_ENTRY
+    assert len(h.pushes) == before and not rx.requests
+    assert h.entry.options["profiles_path"] == str(other)
+    assert {k: h.entry.options[k] for k in HOOKS} == HOOKS

@@ -69,6 +69,16 @@ Every alert fires the event `train_commute_companion_alert` before the push, so 
 - NS moved your train: NS has moved your usual train; the integration follows the new time and never rewrites your file.
 - Alerts are not reaching your phone: calls to the notify service fail. Check the app or pick another phone in the options.
 
+## Webhooks
+
+Webhooks are optional. Under Configure, Webhooks, enter one URL per line (for example `http://localhost:8644/webhooks/commute`), a secret of at least 16 characters, and a bearer token only if your receiver wants one. Every alert is then also posted as signed JSON to each URL; [Webhooks](webhooks.md) has the payload, the headers and how to verify them. Leave the URLs empty to turn webhooks off.
+
+Saving a changed URL, secret or token first sends each URL a signed loud and a signed silent test. If any URL does not accept both, nothing is saved, the form names the host and both answers, and the old settings keep running. Saving without a change sends no test. Your phone stays the proof that alerts arrive.
+
+The payload carries your profile names, stations and times. Use a receiver on this machine where you can, and https for any receiver off it.
+
+A receiver that fails or is down never holds back a phone alert. It shows only as a warning in the Home Assistant log, never as a repair issue or a sensor.
+
 ## Limits
 
 - NS trip data reaches about 10 days ahead, so the look-ahead for planned works does too. A day further out is not checked yet, rather than looking falsely clean.

@@ -1,7 +1,7 @@
 """Config flow: the entry exists only once the user confirmed both test pushes (rule 16)."""
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import voluptuous as vol
@@ -25,13 +25,18 @@ from homeassistant.helpers.selector import (
 from train_commute_companion.model import Severity
 from train_commute_companion.providers.base import AuthError, ProviderError
 from train_commute_companion.providers.ns import NsProvider
-from train_commute_companion.runtime import SystemClock
+from train_commute_companion.runtime import SystemClock, send_webhook_tests
+from train_commute_companion.webhook import check_secret, check_token, parse_urls
 
+from . import host as host_mod
 from . import notifier as notifier_mod
 from .const import (
     CONF_LOUD_STYLE,
     CONF_NOTIFY,
     CONF_PROFILES_PATH,
+    CONF_WEBHOOK_SECRET,
+    CONF_WEBHOOK_TOKEN,
+    CONF_WEBHOOK_URLS,
     DEFAULT_LOUD_STYLE,
     DOMAIN,
     LOUD_STYLES,
@@ -44,6 +49,25 @@ HOST_TIMEOUT_S = 10
 TEST_LOUD = "Train Commute Companion test: this is how a loud alert arrives."
 TEST_SILENT = "Train Commute Companion test: this is how a silent update arrives."
 TITLE = "Train Commute Companion"
+WEBHOOKS_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_WEBHOOK_URLS): TextSelector(TextSelectorConfig(multiline=True)),
+        vol.Optional(CONF_WEBHOOK_SECRET): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.PASSWORD)
+        ),
+        vol.Optional(CONF_WEBHOOK_TOKEN): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.PASSWORD)
+        ),
+    }
+)
+
+
+def _fails(check: Callable[[str], None], value: str) -> bool:
+    try:
+        check(value)
+    except ValueError:
+        return True
+    return False
 
 
 async def check_key(hass: HomeAssistant, api_key: str) -> frozenset[str] | str:
@@ -232,7 +256,9 @@ class TccOptionsFlow(_TestPushMixin, OptionsFlowWithReload):  # type: ignore[mis
         self._path = opts.get(CONF_PROFILES_PATH, "")
         self._service = opts[CONF_NOTIFY]
         self._style = opts.get(CONF_LOUD_STYLE, DEFAULT_LOUD_STYLE)
-        return self.async_show_menu(step_id="init", menu_options=["validate", "settings"])
+        return self.async_show_menu(
+            step_id="init", menu_options=["validate", "settings", "webhooks"]
+        )
 
     async def _known_stations(self) -> tuple[frozenset[str] | None, str | None]:
         """The station list and, when it could not be had, the report line saying why."""
@@ -296,9 +322,77 @@ class TccOptionsFlow(_TestPushMixin, OptionsFlowWithReload):  # type: ignore[mis
             return await self._test_menu()
         return await self.async_step_test_ok()
 
+    def _webhooks_form(
+        self,
+        values: Mapping[str, Any],
+        errors: dict[str, str] | None = None,
+        placeholders: dict[str, str] | None = None,
+    ) -> ConfigFlowResult:
+        # suggested values, not defaults: a default would refill a field the user cleared
+        return self.async_show_form(
+            step_id="webhooks",
+            data_schema=self.add_suggested_values_to_schema(WEBHOOKS_SCHEMA, values),
+            errors=errors or {},
+            description_placeholders=placeholders,
+        )
+
+    async def async_step_webhooks(
+        self, user_input: Mapping[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        opts = self.config_entry.options
+        saved = (
+            opts.get(CONF_WEBHOOK_URLS, []),
+            opts.get(CONF_WEBHOOK_SECRET, ""),
+            opts.get(CONF_WEBHOOK_TOKEN, ""),
+        )
+        if user_input is None:
+            return self._webhooks_form(
+                {
+                    CONF_WEBHOOK_URLS: "\n".join(saved[0]),
+                    CONF_WEBHOOK_SECRET: saved[1],
+                    CONF_WEBHOOK_TOKEN: saved[2],
+                }
+            )
+        text: str = user_input.get(CONF_WEBHOOK_URLS, "")
+        secret: str = user_input.get(CONF_WEBHOOK_SECRET, "")
+        token: str = user_input.get(CONF_WEBHOOK_TOKEN, "")
+        errors: dict[str, str] = {}
+        urls: tuple[str, ...] = ()
+        try:
+            urls = parse_urls(text)
+        except ValueError:
+            errors[CONF_WEBHOOK_URLS] = "bad_webhook_url"
+        if text.strip() and _fails(check_secret, secret):
+            errors[CONF_WEBHOOK_SECRET] = "weak_webhook_secret"
+        if token and _fails(check_token, token):
+            errors[CONF_WEBHOOK_TOKEN] = "weak_webhook_token"
+        if errors:
+            return self._webhooks_form(user_input, errors)
+        if urls and (list(urls), secret, token) != saved:
+            # owner decision Q2(b): nothing is saved unless every URL accepted both test sends
+            # making the client loads the CA bundle, a blocking call on hass.loop
+            client = await self.hass.async_add_executor_job(host_mod.make_webhook_client)
+            async with client:
+                results = await send_webhook_tests(
+                    client, urls, secret, host_mod.make_clock().now, token=token
+                )
+            if failed := [r.summary() for r in results if not r.ok]:
+                return self._webhooks_form(
+                    user_input, {"base": "webhook_test_failed"}, {"failed": "; ".join(failed)}
+                )
+        return self.async_create_entry(
+            data={
+                **opts,
+                CONF_WEBHOOK_URLS: list(urls),
+                CONF_WEBHOOK_SECRET: secret,
+                CONF_WEBHOOK_TOKEN: token,
+            }
+        )
+
     async def async_step_test_ok(self, user_input: None = None) -> ConfigFlowResult:
         return self.async_create_entry(
             data={
+                **self.config_entry.options,
                 CONF_PROFILES_PATH: self._path,
                 CONF_NOTIFY: self._service,
                 CONF_LOUD_STYLE: self._style,

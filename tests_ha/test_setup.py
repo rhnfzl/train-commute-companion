@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import threading
 import time as wall
@@ -7,7 +8,9 @@ from datetime import date, time
 from unittest.mock import AsyncMock, Mock
 
 import harness
+import httpx
 import pytest
+from builders import make_leg
 from harness import (
     NOTIFY,
     PROFILE,
@@ -22,11 +25,14 @@ from harness import (
 )
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
     async_mock_service,
 )
+from test_config_flow import HOOKS, SECRET, URL, open_webhooks, stored_copies, submit
+from webhook_receiver import Receiver
 
 from custom_components.train_commute_companion import async_setup_entry, async_unload_entry
 from custom_components.train_commute_companion import coordinator as coordinator_mod
@@ -521,3 +527,110 @@ async def test_cancelled_setup_leaves_no_runtime_thread(hass):
     with pytest.raises(asyncio.CancelledError):
         await task
     assert no_runtime_thread()
+
+
+# --- webhooks ---
+
+
+def cancel_first_train(h) -> None:
+    first = h.provider.world[0]
+    gone = make_leg("AAA", "UT", "08:12", "08:40", number="1234", cancelled=True)
+    h.provider.world[0] = replace(first, legs=(gone, *first.legs[1:]))
+
+
+async def posted(h) -> None:
+    """Waits for the runtime's webhook pass, then refreshes HA's view."""
+    await h.host.run(lambda rt: rt.webhooks_idle())
+    await h.entry.runtime_data.coordinator.async_refresh()
+
+
+async def with_hooks(hass, status=200, **options):
+    rx = Receiver(SECRET, None, status)
+    h = await setup_tcc(hass, PROFILE, options={**HOOKS, **options}, receiver=rx)
+    await posted(h)
+    return h, rx
+
+
+async def test_alert_reaches_phone_and_signed_webhook(hass):
+    h, rx = await with_hooks(hass)
+    pushes, posts = len(h.pushes), len(rx.posts)
+    cancel_first_train(h)
+    await drive(h, "08:06")
+    await posted(h)
+    new, hooks = h.pushes[pushes:], rx.posts[posts:]
+    assert rx.bad == 0 and len(new) == 1 and len(hooks) == 1
+    assert hooks[0]["text"] == new[0].data["message"] and "cancelled" in hooks[0]["text"]
+    assert hooks[0]["severity"] == "loud" and loud(new[0]) and hooks[0]["test"] is False
+
+
+async def test_unload_closes_the_webhook_client(hass):
+    h, rx = await with_hooks(hass)
+    assert len(h.clients) == 1 and not h.clients[0].is_closed
+    before = len(rx.requests)
+    assert await hass.config_entries.async_unload(h.entry.entry_id)
+    assert h.clients[0].is_closed and len(rx.requests) == before
+
+
+async def test_without_webhook_options_no_client_is_made(hass):
+    def refuse() -> httpx.AsyncClient:
+        raise AssertionError("no webhook client without webhook options")
+
+    harness.PATCH.setattr(host_mod, "make_webhook_client", refuse)
+    h = await setup_tcc(hass, PROFILE)
+    assert h.entry.state is ConfigEntryState.LOADED and h.host.alive
+    assert await h.host.run(lambda rt: rt._webhooks) is None
+
+
+async def test_options_turning_webhooks_off_drops_saved_copies(hass):  # Review Focus 13
+    h, rx = await with_hooks(hass, status=503)
+    cancel_first_train(h)
+    await drive(h, "08:06")
+    await posted(h)
+    assert stored_copies(hass, h.entry)  # a copy is owed
+    tried = len(rx.requests)
+    r = await submit(hass, await open_webhooks(hass, h.entry))  # no URLs: no test send
+    assert r["type"] is FlowResultType.CREATE_ENTRY and len(rx.requests) == tried
+    h = await rebound(h)
+    assert await h.host.run(lambda rt: rt._webhooks) is None
+    await drive(h, "08:08")
+    assert stored_copies(hass, h.entry) == ()
+    rx.status = 200
+    r = await submit(hass, await open_webhooks(hass, h.entry), URL, SECRET)
+    assert r["type"] is FlowResultType.CREATE_ENTRY
+    assert [p["test"] for p in rx.posts[tried:]] == [True, True]
+    h = await rebound(h)
+    await drive(h, "08:12")
+    await posted(h)
+    assert len(rx.requests) == tried + 2  # the old alert is never posted
+    assert stored_copies(hass, h.entry) == ()
+
+
+async def test_dead_webhook_raises_no_notify_failing(hass):  # Review Focus 1
+    h, rx = await with_hooks(hass, status=503)
+    pushes = len(h.pushes)
+    cancel_first_train(h)
+    await drive(h, "08:06")
+    await posted(h)
+    assert len(h.pushes) == pushes + 1 and rx.requests
+    assert h.entry.runtime_data.coordinator.data.undelivered == 0
+    assert ir.async_get(hass).async_get_issue(DOMAIN, "notify_failing") is None
+
+
+async def test_ha_logs_never_show_the_webhook_path(hass, caplog):  # Review Focus 5
+    caplog.set_level(logging.DEBUG, "httpx")
+    caplog.set_level(logging.DEBUG, "httpcore")
+    route = "https://hooks.example.invalid/tcc/route-token-123"
+    h, rx = await with_hooks(hass, status=503, webhook_urls=[route])
+    cancel_first_train(h)
+    await drive(h, "08:06")
+    await posted(h)
+    failed = len(rx.requests)
+    rx.status = 200
+    await drive(h, "08:10")  # after the 60 s rest
+    await posted(h)
+    assert failed and len(rx.requests) > failed
+    assert all(q.url.path == "/tcc/route-token-123" for q in rx.requests)
+    warned = "webhook to hooks.example.invalid failed (503)"
+    assert any(warned in r.getMessage() for r in caplog.records)  # the records were captured
+    for record in caplog.records:
+        assert "route-token-123" not in record.getMessage() and SECRET not in record.getMessage()

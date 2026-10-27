@@ -10,7 +10,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
-from train_commute_companion.runtime import Runtime
+from train_commute_companion.runtime import Runtime, WebhookPoster
 from train_commute_companion.store import JsonFileStore
 
 from . import host as host_mod
@@ -19,6 +19,9 @@ from .const import (
     CONF_NOTIFY,
     CONF_PROFILES_PATH,
     CONF_STARTED,
+    CONF_WEBHOOK_SECRET,
+    CONF_WEBHOOK_TOKEN,
+    CONF_WEBHOOK_URLS,
     DEFAULT_LOUD_STYLE,
     DOMAIN,
     PLATFORMS,
@@ -49,6 +52,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
     )
     notify_service: str = entry.options[CONF_NOTIFY]
     loud_style: str = entry.options.get(CONF_LOUD_STYLE, DEFAULT_LOUD_STYLE)
+    webhook_urls = tuple(entry.options.get(CONF_WEBHOOK_URLS, ()))
+    webhook_secret: str = entry.options.get(CONF_WEBHOOK_SECRET, "")
+    webhook_token: str = entry.options.get(CONF_WEBHOOK_TOKEN, "")
     entry_id = entry.entry_id
 
     @callback
@@ -65,6 +71,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
     def build() -> host_mod.Parts:
         clock = host_mod.make_clock()
         provider, close = host_mod.make_provider(api_key, clock)
+        webhooks = None
+        if webhook_urls:
+            client = host_mod.make_webhook_client()
+            webhooks = WebhookPoster(
+                client,
+                webhook_urls,
+                webhook_secret,
+                clock.now,
+                token=webhook_token,
+                stopped=host.retired.is_set,
+            )
+            close_provider = close
+
+            async def close() -> None:
+                try:
+                    await close_provider()
+                finally:
+                    await client.aclose()
+
         rt = Runtime(
             profile_path=Path(profiles_path),
             store=EntryMarkedStore(JsonFileStore(state_path), started, mark, host.retired, lock),
@@ -72,6 +97,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
             notifier=notifier,
             clock=clock,
             known_stations=None,
+            webhooks=webhooks,
         )
         rt.require_stations = True
         return host_mod.Parts(rt, clock, provider, close)

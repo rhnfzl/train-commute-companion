@@ -2,12 +2,13 @@
 
 import asyncio
 import os
-from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from builders import AMS, ONE_TRANSFER, only_occurrence  # noqa: F401  (re-exported for tests)
 from freezegun.api import FrozenDateTimeFactory
@@ -16,6 +17,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
 from test_runtime import FakeClock, Provider, at
+from webhook_receiver import Receiver
 
 from custom_components.train_commute_companion import host as host_mod
 from custom_components.train_commute_companion import notifier as notifier_mod
@@ -107,6 +109,7 @@ class Harness:
     clock: FakeClock
     provider: HaProvider
     pushes: list[ServiceCall]
+    clients: list[httpx.AsyncClient] = field(default_factory=list)
 
     @property
     def hass(self) -> HomeAssistant:
@@ -134,6 +137,7 @@ def prepare(
     world: Sequence[Connection],
     *,
     replay: tuple[ReplayClock, ReplayStations] | None = None,
+    options: Mapping[str, Any] | None = None,
 ) -> tuple[MockConfigEntry, FakeClock, HaProvider, list[ServiceCall]]:
     """Everything `setup_tcc` does before setting the entry up. `replay` swaps in a replay's
     clock and provider for the scripted ones."""
@@ -159,10 +163,24 @@ def prepare(
             "profiles_path": str(profiles_path(hass)),
             "notify_service": NOTIFY,
             "loud_style": "time_sensitive",
+            **(options or {}),
         },
     )
     entry.add_to_hass(hass)
     return entry, clock, provider, pushes
+
+
+def use_receiver(receiver: Receiver) -> list[httpx.AsyncClient]:
+    """Every webhook client the integration makes goes to `receiver`; returns them as made."""
+    assert PATCH is not None, "use pytest.mark.usefixtures('tcc_freezer')"
+    clients: list[httpx.AsyncClient] = []
+
+    def make() -> httpx.AsyncClient:
+        clients.append(httpx.AsyncClient(transport=receiver.transport()))
+        return clients[-1]
+
+    PATCH.setattr(host_mod, "make_webhook_client", make)
+    return clients
 
 
 async def _start(h: Harness) -> None:
@@ -179,11 +197,18 @@ async def setup_tcc(
     now: str = "07:50",
     world: Sequence[Connection] = ONE_TRANSFER,
     start: bool = True,
+    options: Mapping[str, Any] | None = None,
+    receiver: Receiver | None = None,
 ) -> Harness:
-    entry, clock, provider, pushes = prepare(hass, profile_text, now, world)
+    entry, clock, provider, pushes = prepare(hass, profile_text, now, world, options=options)
+    clients: list[httpx.AsyncClient] = []
+    if receiver is not None:
+        # bound before setup: the runtime can post a first alert before the test holds h
+        clients = use_receiver(receiver)
+        receiver.now = lambda: clock.now().timestamp()
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    h = Harness(entry, entry.runtime_data.host, clock, provider, pushes)
+    h = Harness(entry, entry.runtime_data.host, clock, provider, pushes, clients)
     if start:
         await _start(h)
     return h

@@ -9,6 +9,9 @@ CONF_PROFILES_PATH = "profiles_path"
 CONF_NOTIFY = "notify_service"
 CONF_STARTED = "started"
 CONF_LOUD_STYLE = "loud_style"
+CONF_WEBHOOK_URLS = "webhook_urls"
+CONF_WEBHOOK_SECRET = "webhook_secret"
+CONF_WEBHOOK_TOKEN = "webhook_token"
 REFRESH_S = 15
 NOTIFY_TIMEOUT_S = 20
 # HA's 10 s local-push confirm window, then its 10 s remote fallback, plus margin

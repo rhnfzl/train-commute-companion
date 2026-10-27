@@ -48,6 +48,10 @@ def make_provider(
     return NsProvider(api_key, client, clock.now), client.aclose
 
 
+def make_webhook_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient()
+
+
 def _log_crash(task: asyncio.Task[None]) -> None:
     if not task.cancelled() and (e := task.exception()) is not None:
         _LOGGER.error("runtime stopped unexpectedly", exc_info=e)

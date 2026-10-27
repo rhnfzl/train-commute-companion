@@ -65,7 +65,8 @@
         "title": "Train Commute Companion",
         "menu_options": {
           "validate": "Check the profiles file",
-          "settings": "Change settings"
+          "settings": "Change settings",
+          "webhooks": "Webhooks"
         }
       },
       "validate": {
@@ -94,13 +95,31 @@
           "test_resend": "Send both again",
           "settings": "Back to settings"
         }
+      },
+      "webhooks": {
+        "title": "Webhooks",
+        "description": "Every alert is also sent as signed JSON to these URLs. Saving a change first sends each URL a signed loud and a signed silent test, which it must accept. Your phone stays the proof that alerts arrive.",
+        "data": {
+          "webhook_urls": "URLs",
+          "webhook_secret": "Secret",
+          "webhook_token": "Bearer token"
+        },
+        "data_description": {
+          "webhook_urls": "One URL per line. Leave empty to turn webhooks off.",
+          "webhook_secret": "At least 16 characters. Give the same secret to the receiver.",
+          "webhook_token": "Optional. Only for receivers that want a token, such as OpenClaw. Sent to every URL."
+        }
       }
     },
     "error": {
       "file_missing": "No profiles file at {path}. Copy the starter file there first (examples/profiles.yaml in the repository).",
       "file_unreadable": "The profiles file cannot be read. Check its permissions.",
       "path_not_allowed": "Home Assistant may not read this path. Put the file in the config folder or allow its folder in allowlist_external_dirs.",
-      "send_failed": "The test notification to notify.{service} did not arrive. Check the companion app or pick another target."
+      "send_failed": "The test notification to notify.{service} did not arrive. Check the companion app or pick another target.",
+      "bad_webhook_url": "Each line must be an http or https URL without a user name or password.",
+      "weak_webhook_secret": "The secret must be at least 16 characters, or a valid whsec_ value.",
+      "weak_webhook_token": "The token must be at least 16 characters of plain ASCII, without spaces.",
+      "webhook_test_failed": "A test send was not accepted: {failed}. Check the receiver, its secret and its token, then save again."
     },
     "abort": {
       "validated": "Checked. Nothing was changed.",
