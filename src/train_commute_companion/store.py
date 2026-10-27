@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -33,6 +33,8 @@ class PersistedState:
     obligations: tuple[Obligation, ...]
     started_before: bool
     webhook_copies: tuple[WebhookCopy, ...] = ()  # owed webhook copies (rule 22)
+    # `url_id` -> end of its rest (UTC) for every webhook URL whose last try failed
+    webhook_down: Mapping[str, datetime] = field(default_factory=dict)
 
 
 class Store(Protocol):

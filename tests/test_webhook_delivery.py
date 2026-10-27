@@ -128,8 +128,18 @@ class RecStore(MemoryStore):
         self.copies.append(s.webhook_copies)
 
 
+class SyncRuntime(Runtime):
+    """Waits for the webhook pass after each delivery, so a test reads its posts at once."""
+
+    async def _deliver(self) -> None:
+        await super()._deliver()
+        await self.webhooks_idle()
+
+
 class WRig(Rig):
-    """The runtime rig with a WebhookPoster (kept across restarts, as its rest is) on `urls`."""
+    """The runtime rig with a WebhookPoster on `urls`, built anew at every restart as a real
+    restart does (its rest and outage come back from the store). `sync`: wait for each
+    webhook pass (else it runs in its own task, as in production)."""
 
     def __init__(
         self,
@@ -138,8 +148,10 @@ class WRig(Rig):
         urls: tuple[str, ...] = (URL,),
         hooks: bool = True,
         text: str | None = None,
+        sync: bool = True,
     ) -> None:
         tmp.mkdir(parents=True, exist_ok=True)
+        self.sync = sync
         self.ends = {h: Endpoint(lambda: self.clock.now()) for h in (HOST, HOST2)}
         self.client = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda r: self.ends[r.url.host].ahandler(r))
@@ -155,7 +167,7 @@ class WRig(Rig):
         self.rt = self.new()
 
     def new(self) -> Runtime:
-        return Runtime(
+        return (SyncRuntime if self.sync else Runtime)(
             profile_path=self.path,
             store=self.store,
             provider=self.provider,
@@ -164,6 +176,11 @@ class WRig(Rig):
             known_stations=None,
             webhooks=self.poster,
         )
+
+    async def restart(self) -> Runtime:
+        if self.poster is not None:
+            self.poster = WebhookPoster(self.client, self.poster.urls, SECRET, self.clock.now)
+        return await super().restart()
 
 
 async def wstarted(tmp: Path, now: str = "07:50", **kw: Any) -> WRig:
@@ -535,11 +552,11 @@ async def test_a_pass_cancelled_during_a_post_keeps_the_new_copy(tmp_path):  # r
     alert(rig, 1)
     task = asyncio.create_task(rig.rt.watchdog_once())
     await asyncio.wait_for(rig.end.entered.wait(), 2)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    await rig.rt._stop_posting()  # shutdown cuts the POST off
+    await task
     (c,) = stored_copies(rig)
     assert c.obligation.event.text == "App: alert 1." and rig.rt._copies == {c.id: c}
+    assert c.first_try == rig.clock.now()  # the cut-off try counts (owner decision Q1)
     assert not loads(PersistedState, rig.store.text).obligations  # the phone took it
 
 
@@ -732,8 +749,8 @@ async def test_rewrite_during_an_accepted_first_post_ends_the_copy(tmp_path, two
     await asyncio.wait_for(rig.end.entered.wait(), 2)
     o = bundle_of(rig)
     c = rig.rt._copies[event_id(o.id)]
-    assert c.first_try is None  # its first POST is in flight
     t0 = rig.clock.now()
+    assert c.first_try == t0 and c.last_try is None  # its first POST is in flight
     rig.clock.jump(5)
     rig.provider.times = CONTINUE
     second = asyncio.create_task(rig.rt.lookahead_once())
@@ -1025,12 +1042,12 @@ async def test_webhook_test_sends_are_signed_marked_and_never_stored(tmp_path, c
         "x", t,
     )  # fmt: skip
     await rig.poster.post(e, "tcc_x", [URL])
-    rest = dict(rig.poster._rest)
+    rest = dict(rig.poster.down)
     assert rig.poster.failing and URL in rest
     a.status = 200
     caplog.clear()
     res = await send_webhook_tests(rig.client, [URL, URL2], SECRET, rig.clock.now, token=TOKEN)
-    assert res[0].ok and rig.poster.failing and rig.poster._rest == rest
+    assert res[0].ok and rig.poster.failing and rig.poster.down == rest
     await rig.rt.watchdog_once()
     assert stored_copies(rig) == () and rig.rt._copies == {}
     mine = [r.getMessage() for r in caplog.records if r.name == "train_commute_companion.runtime"]
@@ -1055,3 +1072,117 @@ async def test_without_webhooks_the_state_is_as_today(tmp_path):
     assert stored_copies(rig) == ()
     assert kinds(rig.rt.events_log) == kinds(plain.rt.events_log)
     assert [e.text for e in rig.rt.events_log] == [e.text for e in plain.rt.events_log]
+
+
+# --- codex group review: backlog, failed look-ahead writes, cut-off tries, restarts ---
+
+
+async def test_urgent_advice_reaches_the_phone_while_a_backlog_drains(tmp_path):
+    rig = WRig(tmp_path, "16:54", sync=False)  # the webhook pass in its own task, as in production
+    rig.provider.window = timedelta(hours=1)
+    rig.end.gate = asyncio.Event()  # a slow receiver: every backlog POST waits for it
+    rig.end.gate_if = lambda b: b["kind"] == "key_rejected"
+    await rig.rt.start()
+    for i in range(100):
+        alert(rig, i)
+    await asyncio.wait_for(rig.rt.watchdog_once(), 2)
+    await asyncio.wait_for(rig.end.entered.wait(), 2)  # the first backlog POST is in flight
+    rig.provider.world = cancelled_usual_world()
+    await asyncio.wait_for(rig.rt.poll_once(), 2)  # never waits behind the receiver
+    leave = [e for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW]
+    assert len(leave) == 1 and "17:22" in leave[0].text and rig.end.accepted == []
+    await asyncio.wait_for(rig.rt.watchdog_once(), 2)  # the watchdog neither
+    rig.end.gate.set()
+    await asyncio.wait_for(rig.rt.webhooks_idle(), 5)
+    assert len(rig.end.of(EventKind.KEY_REJECTED)) == 100
+    assert len(rig.end.of(EventKind.LEAVE_NOW)) == 1 and rig.rt._copies == {}
+
+
+@pytest.mark.parametrize("branch", ["rewritten", "carried"])
+async def test_failed_look_ahead_write_keeps_the_changed_copy(tmp_path, branch):  # rule 22
+    rig = await mixed_rig(tmp_path, urls=(URL, URL2))
+    a, b = rig.ends[HOST], rig.ends[HOST2]
+    if branch == "carried":  # the bundle stays phone-pending; one receiver took it
+        rig.notifier.fails = lambda e: True
+        b.status = 503
+    else:  # the phone took the bundle; no receiver did
+        a.status = b.status = 503
+    await rig.rt.lookahead_once()
+    o = bundle_of(rig)
+    cid = event_id(o.id)
+    assert cid in rig.rt._copies
+    rig.store.fail = True
+    await withdraw(rig)  # the run's write fails
+    c = rig.rt._copies[cid]
+    assert WARNING in c.obligation.event.text and "NS moved your" not in c.obligation.event.text
+    assert cid in rig.rt._held_copies  # judged on what the failed write tried, not the old state
+    a.status = b.status = 200
+    rig.notifier.fails = lambda e: False
+    await tick(rig)  # judged on what the failed write tried: posted, never dropped
+    got = [(i, t) for i, t in wed_posts(b) if WARNING in t]
+    assert got == [(cid, c.obligation.event.text)] and cid not in rig.rt._copies
+    rig.store.fail = False
+    await tick(rig)
+    assert [(i, t) for i, t in wed_posts(b) if WARNING in t] == got  # once
+
+
+async def test_carried_bundle_keeps_an_acceptance_the_store_missed(tmp_path):  # rule 22
+    rig = await mixed_rig(tmp_path)
+    rig.notifier.fails = lambda e: True  # the bundle stays phone-pending
+    await rig.rt._lookahead(rig.rt.config.profiles[0], OUT, PlannedWorks((), "complete"))
+    rig.store.fail = True
+    await rig.rt._deliver()  # the receiver takes the bundle; the delivery write fails
+    o = bundle_of(rig)
+    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)] and rig.rt._copies == {}
+    rig.store.fail = False
+    await withdraw(rig)  # retire carries the warning into a new message
+    (n,) = [
+        x
+        for x in rig.rt.state.obligations
+        if x.look_ahead == ("p1", OUT, WED) and WARNING in x.event.text
+    ]
+    assert n.id != o.id and n.webhook_copied
+    rig.notifier.fails = lambda e: False
+    await tick(rig)
+    assert [e.key for e in rig.rt.events_log].count(n.event.key) == 1  # the phone, once
+    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)]  # the receiver, never again
+
+
+async def test_a_try_cut_off_by_shutdown_still_starts_the_two_hours(tmp_path, caplog):  # Q1
+    caplog.set_level(logging.WARNING, logger="train_commute_companion")
+    rig = await wstarted(tmp_path, "20:00")
+    rig.end.gate = asyncio.Event()
+    alert(rig, 1)
+    task = asyncio.create_task(rig.rt.watchdog_once())
+    await asyncio.wait_for(rig.end.entered.wait(), 2)
+    await rig.rt._stop_posting()  # shutdown during the first POST
+    await task
+    rig.end.gate = None
+    rig.clock.set("22:01")
+    await rig.restart()
+    assert rig.end.of(EventKind.KEY_REJECTED) == [] and rig.rt._copies == {}
+    assert len(rig.end.times) == 1
+    assert len(logged(caplog, logging.WARNING, "gave up a webhook copy after 2 h")) == 1
+
+
+async def test_restart_keeps_the_rest_and_the_outage(tmp_path, caplog):  # rule 22
+    caplog.set_level(logging.WARNING, logger="train_commute_companion")
+    rig = await wstarted(tmp_path, "20:00")
+    rig.end.status = 503
+    alert(rig, 1)
+    await rig.rt.watchdog_once()
+    assert len(rig.end.times) == 1 and rig.poster.failing
+    old = rig.poster
+    rig.clock.jump(1 / 60)
+    await rig.restart()  # a new poster, as a real restart has
+    assert rig.poster is not old and rig.poster.failing  # failing comes back from the store
+    alert(rig, 2)
+    await rig.rt.watchdog_once()
+    assert len(rig.end.times) == 1  # still resting: no request
+    rig.clock.t = rig.end.times[0] + timedelta(seconds=61)
+    await rig.rt.watchdog_once()
+    assert len(rig.end.times) == 2
+    assert len(logged(caplog, logging.WARNING, "webhook to")) == 1  # one warning per outage
+    rig.end.status = 200
+    await tick(rig)
+    assert not rig.poster.failing and loads(PersistedState, rig.store.text).webhook_down == {}

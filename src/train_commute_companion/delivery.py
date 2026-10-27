@@ -1,6 +1,6 @@
 """Durable delivery obligations: revalidated right before sending (7.12 rule 5)."""
 
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Literal, Protocol
@@ -119,11 +119,16 @@ async def deliver(
 
 
 async def post_copy(
-    c: WebhookCopy, view: LedgerView, port: WebhookPort, now: datetime
+    c: WebhookCopy,
+    view: LedgerView,
+    port: WebhookPort,
+    now: datetime,
+    started: Callable[[WebhookCopy], None] = lambda c: None,
 ) -> WebhookCopy | None:
     """One try of a webhook copy, judged as its phone obligation is (rule 5). None: finished
     (every URL accepted, or dropped). Otherwise the copy to keep; the give-up clock starts
-    only with a real request."""
+    only with a real request, and `started` gets the copy with its first try before that
+    request goes out, so a try cut off by shutdown still counts (owner decision Q1)."""
     verdict = revalidate(c.obligation, view, now)
     if verdict == "drop":
         return None
@@ -132,10 +137,15 @@ async def post_copy(
     todo = [u for u in port.urls if url_id(u) not in c.done]
     if not todo:
         return None
+    if not port.due(todo):
+        return c
+    if c.first_try is None:
+        c = replace(c, first_try=now)
+        started(c)
     tried, ok = await port.post(view.current(c.obligation), c.id, todo)
     if not tried:
         return c
     done = c.done + tuple(url_id(u) for u in todo if u in ok)
     if all(url_id(u) in done for u in port.urls):
         return None
-    return replace(c, done=done, first_try=c.first_try or now, last_try=now)
+    return replace(c, done=done, last_try=now)

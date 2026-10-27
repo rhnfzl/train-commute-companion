@@ -1,6 +1,7 @@
 """The delivery port: shells implement it; the core only asks whether a message got through."""
 
 from collections.abc import Collection
+from datetime import datetime
 from typing import Any, Protocol
 
 from train_commute_companion.model import AlertEvent
@@ -14,6 +15,13 @@ class WebhookPort(Protocol):
     """Outbound webhooks. Never counts as delivered: the phone does (7.12 rule 16)."""
 
     urls: tuple[str, ...]
+    # url -> end of its rest, in UTC, for every URL whose last try failed; written with the
+    # state (by `url_id`) so a restart keeps the rest and the outage (rule 22)
+    down: dict[str, datetime]
+
+    def due(self, urls: Collection[str]) -> frozenset[str]:
+        """The given URLs a post now would try: none resting, none once stopped."""
+        ...
 
     async def post(
         self, event: AlertEvent, msg_id: str, urls: Collection[str]

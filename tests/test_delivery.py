@@ -185,6 +185,10 @@ class Port:
     def __init__(self, urls: tuple[str, ...], accept: set[str], rest: set[str] | None = None):
         self.urls, self.accept, self.rest = urls, accept, rest or set()
         self.calls: list[tuple[AlertEvent, str, tuple[str, ...]]] = []
+        self.down: dict[str, datetime] = {}
+
+    def due(self, urls):
+        return frozenset(u for u in urls if u not in self.rest)
 
     async def post(self, event, msg_id, urls):
         self.calls.append((event, msg_id, tuple(urls)))

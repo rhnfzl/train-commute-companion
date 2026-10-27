@@ -370,20 +370,24 @@ class WebhookPoster:
         _install_log_filter()
         self._client, self.urls, self._secret, self._now = client, tuple(urls), secret, now
         self._token, self._stopped = token, stopped
-        self._rest: dict[str, datetime] = {}  # url -> end of its rest, in UTC
-        self._down: set[str] = set()  # urls whose last try failed
+        self.down: dict[str, datetime] = {}  # url -> end of its rest, in UTC (WebhookPort)
 
     @property
     def failing(self) -> bool:
-        return bool(self._down)
+        return bool(self.down)
+
+    def due(self, urls: Collection[str]) -> frozenset[str]:
+        if self._stopped():
+            return frozenset()
+        t = _utc(self._now())
+        return frozenset(u for u in urls if u not in self.down or t >= self.down[u])
 
     async def post(
         self, event: AlertEvent, msg_id: str, urls: Collection[str]
     ) -> tuple[frozenset[str], frozenset[str]]:
-        if self._stopped():
-            return frozenset(), frozenset()
         start = self._now()
-        todo = [u for u in urls if u not in self._rest or _utc(start) >= self._rest[u]]
+        due = self.due(urls)
+        todo = [u for u in urls if u in due]
         if not todo:
             return frozenset(), frozenset()
         b = body(event)
@@ -394,16 +398,14 @@ class WebhookPoster:
             host = httpx.URL(u).host
             if _accepted(r):
                 ok.add(u)
-                self._rest.pop(u, None)
-                if u in self._down:
-                    self._down.discard(u)
+                if self.down.pop(u, None) is not None:
                     log.info("webhook to %s works again", host)
                 continue
-            self._rest[u] = _utc(start) + timedelta(seconds=REST_S)
-            if u in self._down:
+            again = u in self.down
+            self.down[u] = _utc(start) + timedelta(seconds=REST_S)
+            if again:
                 log.debug("webhook to %s failed again (%s)", host, r)
             else:
-                self._down.add(u)
                 log.warning("webhook to %s failed (%s); next try after %d s", host, r, REST_S)
         return frozenset(todo), frozenset(ok)
 
@@ -960,6 +962,8 @@ class Runtime:
         # per occurrence and train: what the last healthy poll showed of it (rule 13)
         self._seen: dict[str, dict[TrainId, WatchedLeg]] = {}
         self._sending = asyncio.Lock()
+        self._post_task: asyncio.Task[None] | None = None  # the running webhook pass
+        self._post_again = False
         self.requests = 0  # NS publishes no quota (7.1): counted and logged
         # set while start() reconciles: messages stored before it wait for the fresh poll
         self._since: datetime | None = None
@@ -1255,7 +1259,11 @@ class Runtime:
                     x.supersede(mine)
         try:
             composed = self._compose(cand)
-            write = _prune(replace(composed, webhook_copies=tuple(self._copies.values())))
+            port = self._webhooks
+            down = {} if port is None else {url_id(u): t for u, t in port.down.items()}
+            write = _prune(
+                replace(composed, webhook_copies=tuple(self._copies.values()), webhook_down=down)
+            )
             self._store.save(write)
         except StorageError as e:
             self._pend(cand, stage, op)
@@ -1395,9 +1403,47 @@ class Runtime:
     async def _deliver(self) -> None:
         """Every pending obligation, revalidated right before sending (rule 5). Merges by id,
         so obligations added by another task while a send awaited are kept. Serialised: the
-        poll, watchdog and file watch all deliver, and two passes would send one alert twice."""
+        poll, watchdog and file watch all deliver, and two passes would send one alert twice.
+        The webhook copies go after, in a task of their own: a slow receiver never holds up a
+        phone send or the loop that delivers (an alert's advice can expire)."""
         async with self._sending:
             await self._deliver_pass()
+        self._post_soon()
+
+    def _post_soon(self) -> None:
+        """A webhook pass now, or one more round of the running one (copies made meanwhile)."""
+        if self._webhooks is None:
+            return
+        if self._post_task is not None and not self._post_task.done():
+            self._post_again = True
+            return
+        self._post_task = asyncio.get_running_loop().create_task(self._post_passes())
+
+    async def _post_passes(self) -> None:
+        port = self._webhooks
+        assert port is not None
+        again = True
+        while again:
+            self._post_again = False
+            before = dict(self._copies)
+            try:
+                await self._post_copies(port, _View(self), _View(self, held=True))
+            except Exception:  # a broken pass must not stop the next one
+                log.exception("webhook pass failed")
+            finally:  # a copy that ended or was tried is recorded, also when shutdown cancels
+                if self._copies != before:
+                    self._delivered(set(), {}, (), True)
+            again = self._post_again
+
+    async def webhooks_idle(self) -> None:
+        """Waits until no webhook pass runs (a clean shutdown, tests)."""
+        while (t := self._post_task) is not None and not t.done():
+            await asyncio.wait({t})
+
+    async def _stop_posting(self) -> None:
+        if (t := self._post_task) is not None and not t.done():
+            t.cancel()
+            await asyncio.wait({t})
 
     def _waits(self, o: Obligation) -> bool:
         """Not judged yet: written before this start (judged once the reconcile ran, rule 11),
@@ -1499,16 +1545,6 @@ class Runtime:
                     kept[o.id] = r
         finally:  # each acknowledged send is recorded, also when shutdown cancels the pass
             self._delivered(finished, kept, told, copies)
-        if port is None:
-            return
-        # the phone outcomes are applied first: a look-ahead run or a poll while a POST awaits
-        # must not take a sent alert for a pending one
-        before = dict(self._copies)
-        try:
-            await self._post_copies(port, view, held_view)
-        finally:  # a copy that ended or was tried is recorded, also when shutdown cancels
-            if self._copies != before:
-                self._delivered(set(), {}, (), True)
 
     async def _post_copies(self, port: WebhookPort, view: _View, held_view: _View) -> None:
         """After the phone sends: each owed copy once. Never tried first, oldest first, then
@@ -1532,7 +1568,15 @@ class Runtime:
             if self._waits(c.obligation):
                 continue
             v = held_view if c.id in self._held_copies else view
-            self._merge_copy(port, c, await post_copy(c, v, port, now))
+            cur = c
+
+            def started(x: WebhookCopy) -> None:  # the first try is written before it goes out
+                nonlocal cur
+                cur = self._copies[x.id] = x
+                self._delivered(set(), {}, (), True)
+
+            r = await post_copy(c, v, port, now, started)
+            self._merge_copy(port, cur, r)
 
     def _delivered(
         self,
@@ -2413,7 +2457,9 @@ class Runtime:
     ) -> LookAheadLedger:
         """A look-ahead run as owed webhook copies see it (rules 5, 18): a copy carried by
         `retire` follows its message, a copy whose bundled adoption was withdrawn after its
-        phone send keeps its other facts, and every owed copy keeps the facts it is judged on."""
+        phone send keeps its other facts, and every owed copy keeps the facts it is judged on.
+        A copy changed here is judged on what the write tried (the held view) until it lands:
+        a failed write must not drop it against the state before this run (rule 22)."""
         was = {o.id: o for o in stored.pending}
         pending = {o.id: o for o in new_ledger.pending}
         for old, new in carried_ids(stored, new_ledger).items():
@@ -2423,8 +2469,9 @@ class Runtime:
             c = next((c for c in self._copies.values() if c.obligation.id == old), None)
             if c is not None:  # the same copy: its webhook-id, receipts and tries stay
                 self._copies[c.id] = replace(c, obligation=n)
+                self._held_copies.add(c.id)
                 pending[new] = n
-            elif was[old].webhook_copied:  # its copy ended: no second one
+            elif was[old].webhook_copied or old in self._copied:  # it ended: no second one
                 pending[new] = n
         rewritten: dict[str, tuple[tuple[str, str, bool, bool], ...]] = {}
         gone = {v.version for v in current.versions} - {v.version for v in new_hist.versions}
@@ -2448,6 +2495,7 @@ class Runtime:
                 event=replace(o.event, kind=kind, text=text),
             )
             self._copies[c.id] = replace(c, obligation=o)
+            self._held_copies.add(c.id)
             rewritten[o.id] = rest
         owed = {c.obligation.id for c in self._copies.values()}
         carry = {i: f for i, f in stored.facts.items() if i in owed}
@@ -2478,8 +2526,11 @@ class Runtime:
             loaded, lost = None, str(e)
         if loaded is not None:
             self._st = self._migrated(loaded)
-            if self._webhooks is not None:
+            if (port := self._webhooks) is not None:
                 self._copies = {c.id: c for c in loaded.webhook_copies}
+                # a restart keeps each URL's rest and outage: no extra try, no second warning
+                saved = loaded.webhook_down
+                port.down.update({u: saved[url_id(u)] for u in port.urls if url_id(u) in saved})
             elif n := len(loaded.webhook_copies):
                 # nothing could post them, and a later poster would get stale alerts
                 log.info("dropped %d webhook copies: webhooks are off", n)
@@ -2580,4 +2631,7 @@ class Runtime:
 
         # main first: start() loads the store before its first await, so the watchdog never
         # judges the empty state
-        await asyncio.gather(main(), every(c, WATCHDOG_EVERY_S, self.watchdog_once))
+        try:
+            await asyncio.gather(main(), every(c, WATCHDOG_EVERY_S, self.watchdog_once))
+        finally:
+            await self._stop_posting()
