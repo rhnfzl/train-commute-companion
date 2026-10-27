@@ -181,6 +181,16 @@ def test_status_buttons_take_next_good():
     long = make_connection([make_leg("AAA", "RTD", "08:44", "09:30", number="9" * 40)])
     row = status_buttons(view(occ(next_good=long)))["inline_keyboard"][0]  # type: ignore[index]
     assert row[2]["callback_data"] == "c|p1|outbound|2026-10-27|08:44"
+    # delayed: the label shows the reported time, the data the planned one the core looks up
+    for number, data in (("2345", "08:44|2345"), ("9" * 40, "08:44")):
+        late = make_connection(
+            [make_leg("AAA", "RTD", "08:44", "09:30", number=number, delay_dep=3)]
+        )
+        row = status_buttons(view(occ(next_good=late)))["inline_keyboard"][0]  # type: ignore[index]
+        assert (row[2]["text"], row[2]["callback_data"]) == (
+            "Take 08:47",
+            f"c|p1|outbound|2026-10-27|{data}",
+        )
 
 
 def test_command_word_strips_the_bot_name():

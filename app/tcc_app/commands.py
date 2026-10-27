@@ -188,12 +188,14 @@ def status_buttons(view: RuntimeView) -> dict[str, Any] | None:
             if (data := callback_data(tag, k.profile_id, k.direction.value, day)) is not None
         ]
         if o.next_good is not None:
-            hm, num = _hm(_next_time(o.next_good)), o.next_good.legs[0].train.train_number
+            # the core names a train by its planned departure; the label shows the reported one
+            train = o.next_good.legs[0].train
+            hm, num = _hm(train.planned_departure), train.train_number
             data = callback_data(
                 "c", k.profile_id, k.direction.value, day, hm, num
             ) or callback_data("c", k.profile_id, k.direction.value, day, hm)
             if data is not None:
-                row.append({"text": f"Take {hm}", "callback_data": data})
+                row.append({"text": f"Take {_hm(_next_time(o.next_good))}", "callback_data": data})
         if row:
             rows.append(row)
     return {"inline_keyboard": rows} if rows else None

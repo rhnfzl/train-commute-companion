@@ -8,11 +8,11 @@ from typing import Any
 
 import httpx
 import pytest
-from builders import AMS, ONE_TRANSFER, only_occurrence
+from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from conftest import CHAT, STRANGER, TOKEN, FakeTelegram, error
 from tcc_app import bot as bot_mod
 from tcc_app.bot import Bot, ShellState, load_state, save_state
-from tcc_app.commands import render_status
+from tcc_app.commands import render_status, status_buttons
 from tcc_app.telegram import TelegramApi
 from test_runtime import PROFILE, Rig, at
 
@@ -200,6 +200,23 @@ async def test_buttons_answer_first_then_act(app):
         "Locked the 08:44 for Office A.",
         "Not travelling: alerts for that journey stop.",
     ]
+
+
+async def test_take_button_for_a_delayed_train_locks_it(app):
+    late = make_connection([
+        make_leg("AAA", "UT", "08:44", "09:08", number="1236", delay_dep=3),
+        make_leg("UT", "RTD", "09:16", "09:50", number="5680"),
+    ])  # fmt: skip
+    app.rig.provider.world = [ONE_TRANSFER[0], late]
+    app.rig.clock.set("07:52")
+    await app.rt.poll_once()
+    buttons = status_buttons(app.rt.view())
+    assert buttons is not None
+    take = buttons["inline_keyboard"][0][-1]
+    assert take == {"text": "Take 08:47", "callback_data": "c|p1|outbound|2026-10-27|08:44|1236"}
+    await app.bot.handle(tap(take["callback_data"]))
+    assert only_occurrence(app.rt).lock.legs[0].train.planned_departure == at("08:44")
+    assert app.texts() == ["Locked the 08:44 for Office A."]
 
 
 async def test_other_chat_is_ignored_for_commands_buttons_and_location(app, caplog):
