@@ -263,7 +263,7 @@ def advise(
     pass `is_good` (which also enforces catching it with the buffer, so advice ends by itself
     at the escape train's departure minus buffer). Without the usual's planned arrival only
     lateness is not judged: an absent or unrideable journey is still bad."""
-    record = s.advice or AdviceRecord(None, None, False)
+    record = s.advice or AdviceRecord(None, None, False, delivered=False)
     if not _gate(s, ctx):
         return record, []
     prof, d = ctx.profile, ctx.direction
@@ -280,7 +280,7 @@ def advise(
         # renewed after a withdrawal: a new episode with its own delivery identity (7.6)
         text = leave_now_text(best[1], ctx.now.tzinfo)
         ev = _event(ctx, EventKind.LEAVE_NOW, Severity.LOUD, text, train, ctx.now.isoformat())
-        return AdviceRecord(train, ctx.now, False), [ev]
+        return AdviceRecord(train, ctx.now, False, delivered=False), [ev]
     if advised is None or record.withdrawn or bad:
         return record, []
     if not record.delivered:  # never told: nothing to withdraw, its LEAVE_NOW is not sent

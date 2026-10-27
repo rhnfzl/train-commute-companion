@@ -2157,6 +2157,22 @@ class Runtime:
             for x in s.alert_keys:
                 if x.startswith(_SENT):
                     keys.setdefault(_LIVE + x[len(_SENT) :], "1")
+            a = s.advice
+            # a record saved before `delivered` loads as told; its LEAVE_NOW still owed was not
+            if (
+                a is not None
+                and not a.withdrawn
+                and a.sent_at is not None
+                and any(
+                    o.event.kind is EventKind.LEAVE_NOW
+                    and o.occurrence is not None
+                    and _okey(o.occurrence) == k
+                    and o.event.train == a.advised_train
+                    and _utc(o.event.created_at) == _utc(a.sent_at)
+                    for o in st.obligations
+                )
+            ):
+                s = replace(s, advice=replace(a, delivered=False))
             occs[k] = self._frozen(replace(s, alert_keys=keys))
         obligations = tuple(  # stored with the planned departure frozen as expiry
             replace(o, expires_at=None) if o.event.kind is EventKind.LEAVE_NOW else o

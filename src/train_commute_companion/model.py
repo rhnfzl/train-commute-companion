@@ -220,8 +220,10 @@ class AdviceRecord:
     # baseline exists yet: the 7.6 reference, never a replacement's arrival
     usual_arrival: datetime | None = None
     # the episode's LEAVE_NOW reached the user; pending until then. An undelivered episode that
-    # stops holding is ended silently (`withdrawn` with this False), so it can start again
-    delivered: bool = False
+    # stops holding is ended silently (`withdrawn` with this False), so it can start again.
+    # Absent in records saved before the field existed, so it counts as told; every new episode
+    # passes False explicitly.
+    delivered: bool = True
 
 
 @dataclass(frozen=True, slots=True)

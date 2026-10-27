@@ -1591,3 +1591,63 @@ async def test_shutdown_mid_pass_keeps_a_sent_lookahead_message_told(tmp_path):
     n = len(rig.notifier.attempts)
     await rig.restart()
     assert EventKind.TIMETABLE_ADOPTED not in kinds(rig.notifier.attempts[n:])
+
+
+def _strip_delivered(text: str) -> str:
+    """The stored text as an older release wrote it: advice records without `delivered`."""
+
+    def walk(v):
+        if isinstance(v, dict):
+            v.pop("delivered", None) if "advised_train" in v else None
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+
+    raw = json.loads(text)
+    walk(raw)
+    return json.dumps(raw)
+
+
+async def test_legacy_advice_withdrawn_after_an_upgrade_restart(tmp_path):  # Review Focus 10
+    rig = Rig(tmp_path, "16:54")
+    rig.provider.world = cancelled_usual_world()
+    await rig.rt.start()  # LEAVE_NOW sent and confirmed
+    assert rig.occ("p1|return|2026-10-27").advice.delivered
+    rig.store.text = _strip_delivered(rig.store.text)
+    rt = await rig.restart()
+    assert rig.occ("p1|return|2026-10-27").advice.delivered
+    rig.clock.set("16:56")
+    rig.provider.world = [
+        make_connection([make_leg("RTD", "AAA", "17:52", "18:30", number="7952")]),
+        *escape_world(),
+    ]
+    await rt.poll_once()
+    got = kinds(rig.notifier.attempts)
+    assert got.count(EventKind.EARLIER_TRAIN_WITHDRAWN) == 1
+    assert rig.occ("p1|return|2026-10-27").advice.withdrawn
+
+
+async def test_legacy_advice_still_owed_is_not_withdrawn_after_an_upgrade_restart(
+    tmp_path,
+):  # Review Focus 10
+    rig = Rig(tmp_path, "16:54")
+    rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
+    rig.provider.world = cancelled_usual_world()
+    await rig.rt.start()
+    assert any(o.event.kind is EventKind.LEAVE_NOW for o in rig.rt.state.obligations)
+    rig.store.text = _strip_delivered(rig.store.text)
+    rt = await rig.restart()
+    assert not rig.occ("p1|return|2026-10-27").advice.delivered
+    rig.clock.set("16:56")
+    rig.provider.world = [
+        make_connection([make_leg("RTD", "AAA", "17:52", "18:30", number="7952")]),
+        *escape_world(),
+    ]
+    await rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    await rt.watchdog_once()
+    assert EventKind.EARLIER_TRAIN_WITHDRAWN not in kinds(rig.notifier.attempts)
+    assert not any(o.event.kind is EventKind.LEAVE_NOW for o in rig.rt.state.obligations)
+    assert rig.occ("p1|return|2026-10-27").advice.withdrawn
