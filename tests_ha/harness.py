@@ -13,6 +13,7 @@ from builders import AMS, ONE_TRANSFER, only_occurrence  # noqa: F401  (re-expor
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
 from test_runtime import FakeClock, Provider, at
 
@@ -70,7 +71,8 @@ def fake_phone(
     **mock_kwargs: Any,
 ) -> list[ServiceCall]:
     """A notify service the notifier treats as a mobile_app phone: the real phone path's
-    contract (raise on failure, hang past the timeout) without a mobile_app entry."""
+    contract (raise on failure, a timeout re-raised as HomeAssistantError from the TimeoutError,
+    as mobile_app's relay helper does) without a mobile_app entry."""
     if handler is None:
         calls = async_mock_service(hass, "notify", name, **mock_kwargs)
     else:
@@ -84,10 +86,13 @@ def fake_phone(
     async def push(
         h: HomeAssistant, webhook_id: str, payload: dict[str, Any], *_a: Any, **_k: Any
     ) -> bool:
-        async with asyncio.timeout(notifier_mod.NOTIFY_TIMEOUT_S):
-            await h.services.async_call(
-                "notify", webhook_id.removeprefix("hook-"), payload, blocking=True
-            )
+        try:
+            async with asyncio.timeout(notifier_mod.NOTIFY_TIMEOUT_S):
+                await h.services.async_call(
+                    "notify", webhook_id.removeprefix("hook-"), payload, blocking=True
+                )
+        except TimeoutError as e:
+            raise HomeAssistantError("timeout sending notification") from e
         return True
 
     monkeypatch.setattr(notifier_mod, "mobile_target", target)

@@ -212,6 +212,15 @@ async def test_relay_accepts_is_true(hass, aioclient_mock, phone):
     assert aioclient_mock.mock_calls[0][2]["message"] == loud_event().text
 
 
+async def test_real_relay_timeout_backs_off(hass, aioclient_mock, phone):
+    # mobile_app turns the relay's TimeoutError into HomeAssistantError (rule 12)
+    aioclient_mock.post(RELAY, exc=TimeoutError())
+    n = build(hass)
+    assert not await send_from_thread(hass, make_event(key="a"), n)
+    assert not await send_from_thread(hass, make_event(key="b"), n)
+    assert aioclient_mock.call_count == 1  # the second failed fast, no relay call
+
+
 async def open_channel(hass, hass_ws_client, confirm=True):
     ws = await hass_ws_client(hass)
     await ws.send_json(
@@ -319,6 +328,28 @@ async def test_late_confirm_timer_is_unproven_and_false(
     channel = hass.data["mobile_app"]["push_channel"]["hook1"]
     for pending in channel.pending_confirms.values():
         pending["unsub_scheduled_push_failed"]()  # end HA's late timer, so none lingers
+
+
+async def test_local_push_unconfirmed_at_the_deadline_backs_off(
+    hass, hass_ws_client, aioclient_mock, phone, monkeypatch
+):
+    monkeypatch.setattr(
+        "homeassistant.components.mobile_app.push_notification.PUSH_CONFIRM_TIMEOUT", 30
+    )
+    monkeypatch.setattr(notifier_mod, "LOCAL_PUSH_SETTLE_S", 0.2)
+    await open_channel(hass, hass_ws_client)
+    channel = hass.data["mobile_app"]["push_channel"]["hook1"]
+    sent = []
+    real = channel.async_send_notification
+    monkeypatch.setattr(
+        channel, "async_send_notification", lambda m, f: (sent.append(m), real(m, f))
+    )
+    n = build(hass)
+    assert not await send_from_thread(hass, make_event(key="a"), n)
+    assert not await send_from_thread(hass, make_event(key="b"), n)
+    assert len(sent) == 1  # the second waited out no second deadline
+    for pending in channel.pending_confirms.values():
+        pending["unsub_scheduled_push_failed"]()
 
 
 @pytest.mark.parametrize("level", [logging.ERROR, logging.CRITICAL])

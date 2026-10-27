@@ -120,7 +120,12 @@ async def _push(
         return await _push_mobile(hass, webhook_id, payload, retired, tasks), False
     except (HomeAssistantError, TimeoutError) as err:
         _LOGGER.warning("push via notify.%s failed: %s", service, repr(err))
-        return False, isinstance(err, TimeoutError)
+        return False, _timeout(err)
+
+
+def _timeout(err: BaseException) -> bool:
+    """mobile_app re-raises a relay timeout as HomeAssistantError from the TimeoutError."""
+    return isinstance(err, TimeoutError) or isinstance(err.__cause__, TimeoutError)
 
 
 async def _push_mobile(
@@ -162,8 +167,10 @@ async def _push_mobile(
             done.set_result(ok)
 
     relays: set[asyncio.Task[None]] = set()
+    relay_timed_out = False
 
     async def relay(d: dict[str, Any]) -> None:
+        nonlocal relay_timed_out
         ok = False
         try:
             if retired is not None and retired.is_set():
@@ -171,6 +178,7 @@ async def _push_mobile(
             await mobile_notify._send_message(session, entry, d)
             ok = True
         except HomeAssistantError as err:
+            relay_timed_out = _timeout(err)
             _LOGGER.warning("remote fallback push to %s failed: %s", entry.title, repr(err))
         finally:
             settle(ok)
@@ -202,10 +210,11 @@ async def _push_mobile(
     try:
         # neither a confirmation nor a finished fallback by the deadline: unproven, so not delivered
         async with asyncio.timeout(LOCAL_PUSH_SETTLE_S):
-            return await asyncio.shield(done)  # a cancel must not mark it settled
+            ok = await asyncio.shield(done)  # a cancel must not mark it settled
     except TimeoutError:
+        # raised on, so the caller backs off instead of waiting out the next deadline (rule 12)
         _LOGGER.warning("local push to %s unconfirmed at the deadline", entry.title)
-        return False
+        raise
     finally:
         if not done.done():
             # nobody waits any more: HA must not relay this push later on our behalf
@@ -214,6 +223,9 @@ async def _push_mobile(
                 unsub()
             for t in relays:
                 t.cancel()
+    if not ok and relay_timed_out:
+        raise TimeoutError(f"remote fallback push to {entry.title} timed out")
+    return ok
 
 
 class HaNotifier:
@@ -246,6 +258,7 @@ class HaNotifier:
                     asyncio.run_coroutine_threadsafe(self._send(event), self.hass.loop)
                 )
         except TimeoutError:
+            self._timed_out_at = time.monotonic()  # hass never answered: back off too
             return False
 
     async def async_stop(self) -> None:
