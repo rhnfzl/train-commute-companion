@@ -40,6 +40,7 @@ from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer,
 from train_commute_companion.runtime import (
     GIVE_UP,
     MAX_COPIES,
+    POLL_EVERY_S,
     Runtime,
     WebhookPoster,
     send_webhook_tests,
@@ -1233,3 +1234,36 @@ async def test_restart_keeps_the_rest_and_the_outage(tmp_path, caplog):  # rule 
     rig.end.status = 200
     await tick(rig)
     assert not rig.poster.failing and loads(PersistedState, rig.store.text).webhook_down == {}
+
+
+async def test_run_forever_posts_the_copy_between_steps_without_a_wait(tmp_path):
+    # production's SystemClock.sleep is a real asyncio.sleep, so the background pass runs
+    # while the loops wait; here time runs 200x faster, as real sleeps on a real loop clock,
+    # and no driver awaits webhooks_idle()
+    rig = await wstarted(tmp_path, sync=False)
+    rig.clock.set("07:52")
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    loop, start, t0, fast = asyncio.get_running_loop(), 0.0, rig.clock.t, 200
+    polls: list[int] = []  # the receiver's post count at the start of every poll step
+    poll = rig.rt.poll_once
+
+    async def counted() -> None:
+        polls.append(len(rig.end.of(EventKind.CANCELLED)))
+        if len(polls) > 2:
+            raise asyncio.CancelledError
+        await poll()
+
+    async def sleep(seconds: float) -> None:
+        await asyncio.sleep(seconds / fast)
+
+    rig.clock.now = lambda: t0 + timedelta(seconds=(loop.time() - start) * fast)  # type: ignore[method-assign]
+    rig.clock.sleep = sleep  # type: ignore[method-assign]
+    rig.rt.poll_once = counted  # type: ignore[method-assign]
+    start = loop.time()
+    with pytest.raises(asyncio.CancelledError):
+        await rig.rt.run_forever(started=True)
+    (phone,) = [e for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
+    assert rig.end.of(EventKind.CANCELLED) == [json.loads(body(phone))]
+    assert polls == [0, 1, 1]  # posted after the poll that made it, before the next one
+    assert rig.end.times[-1] - phone.created_at < timedelta(seconds=POLL_EVERY_S)
+    assert rig.end.bad == 0
