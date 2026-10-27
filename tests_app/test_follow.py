@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from builders import AMS, ONE_TRANSFER, only_occurrence
-from conftest import CHAT, TOKEN, StationsProvider, TickClock, feed, spied
+from conftest import CHAT, STRANGER, TOKEN, StationsProvider, TickClock, feed, spied
 from tcc_app.follow import Fix
 from tcc_app.main import App, Settings, build
 from test_runtime import PROFILES_DIR, Provider, at, bump_mtime
@@ -59,6 +59,25 @@ async def test_first_fix_seeds_then_enter_and_leave_reach_the_core(app):
     await feed(app, *FAR, "08:30")
     assert spied(app) == [("UT", "enter"), ("UT", "leave")]
     assert "UT" in only_occurrence(app.rt).zone_reports  # 10.4: Telegram produces a zone event
+
+
+def _shared(lat: float, lon: float, when: str, chat: int, uid: int) -> dict:
+    msg = {"message_id": uid, "date": int(at(when).timestamp()), "chat": {"id": chat}}
+    return {"update_id": uid, "message": {**msg, "location": {"latitude": lat, "longitude": lon}}}
+
+
+async def test_strangers_location_never_reaches_the_follower(app):  # Review Focus 2, rule 15
+    async def share(chat: int) -> None:
+        for uid, (pos, when) in enumerate(((FAR, "08:20"), (UT, "08:24")), start=chat):
+            app.clock.t = at(when)
+            await app.bot.handle(_shared(*pos, when, chat, uid))
+            await app.follower.drain()
+
+    spied(app)
+    await share(STRANGER)  # a seed, then a move into a station zone
+    assert spied(app) == []
+    await share(CHAT)  # the same fixes from the owner prove the path is live
+    assert spied(app) == [("UT", "enter")]
 
 
 async def test_report_throttled_to_one_per_zone_per_2_min(app):
