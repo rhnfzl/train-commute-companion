@@ -1,15 +1,21 @@
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator, Callable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 from tcc_app.follow import Fix
+from tcc_app.main import App, Settings, build
 from test_runtime import FakeClock, at
 
+from train_commute_companion.model import Severity
+from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import PlannedWorks, Provider, ProviderAnswer, Query
+from train_commute_companion.replay import Replay, apply_event, load_replay
 
 CHAT = 1000001
 STRANGER = 2000002
@@ -151,3 +157,43 @@ async def feed(app: Any, lat: float, lon: float, when: str | datetime, acc: floa
     source = app.rt.view().profiles[0].location.source
     app.follower.feed(source, Fix(lat, lon, t, acc, frozenset(regions)))
     await app.follower.drain()
+
+
+def build_from_replay(tmp_path: Path, tg: FakeTelegram, path: Path) -> tuple[App, Replay]:
+    """The app on a replay's clock and scripted NS, with the station list a real provider has."""
+    rp = load_replay(path)
+    cfg, errors = parse_profiles(rp.profile_path.read_text(encoding="utf-8"), None)
+    assert not errors
+    codes = frozenset(
+        c
+        for p in cfg
+        for c in (p.home_station, p.work_station, *p.outbound.transfers, *p.return_.transfers)
+    )
+    s = Settings("k", TOKEN, CHAT, None, rp.profile_path, tmp_path)
+    app = build(
+        s, clock=rp.clock, provider=StationsProvider(rp.provider, codes), client=tg.client()
+    )
+    return app, rp
+
+
+LINE = re.compile(r"\d\d:\d\d (LOUD|SILENT) \w+: (.*)")
+
+
+def expected_lines(path: Path) -> list[tuple[Severity, str]]:
+    """A replay `.out` file's alerts; the closing `Data: NS` line is skipped."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [(Severity[m[1]], m[2]) for x in lines if (m := LINE.fullmatch(x))]
+
+
+async def drive_replay(app: App, rp: Replay) -> None:
+    """`replay_lines`' loop on `app.rt`: events, a poll on even minutes, the watchdog, 30 s steps."""
+    clock, pending = rp.clock, list(rp.timeline)
+    await app.rt.start()
+    while clock.now().astimezone(UTC) < rp.end.astimezone(UTC):
+        while pending and pending[0][0].astimezone(UTC) <= clock.now().astimezone(UTC):
+            await apply_event(app.rt, pending.pop(0)[1], clock.now())
+        now = clock.now()
+        if now.minute % 2 == 0 and now.second == 0:
+            await app.rt.poll_once()
+        await app.rt.watchdog_once()
+        await clock.sleep(30)
