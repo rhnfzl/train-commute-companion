@@ -10,6 +10,9 @@ from conftest import CHAT, TOKEN, FakeTelegram, StationsProvider, TickClock
 from tcc_app.main import App, Settings, build, main, serve, setup_logging
 from test_runtime import PROFILE, Provider, at
 
+from train_commute_companion.lifecycle import Leaving
+from train_commute_companion.store import JsonFileStore
+
 ONE_PROFILE = PROFILE.split('  - id: "p2"')[0].replace("NAME", "office_a")
 CODES = frozenset({"AAA", "UT", "RTD"})
 ENV = {"NS_API_KEY": "k", "TELEGRAM_BOT_TOKEN": TOKEN}
@@ -171,3 +174,34 @@ async def test_cancel_closes_server_and_parts(tmp_path, tg):  # Review Focus 5
     assert await asyncio.wait_for(reader.read(), 1) == b""  # the handler closed it, unanswered
     writer.close()
     assert asyncio.all_tasks() - before == set()
+
+
+async def test_action_cancelled_mid_delivery_is_already_written(tmp_path, tg):
+    """serve's cleanup cancels the Bot's runtime calls: an action is written before its first
+    await (rule 22), so a cancel during the delivery pass leaves file and memory equal."""
+    clock = TickClock(at("07:50"))
+    app = make_app(tmp_path, tg, clock)
+
+    async def refuse(event):
+        return False
+
+    app.notifier.send = refuse
+    await app.rt.start()  # its message stays pending
+    entered = asyncio.Event()
+
+    async def hang(event):
+        entered.set()
+        await asyncio.Event().wait()
+
+    app.notifier.send = hang
+    store = JsonFileStore(tmp_path / "tcc-state.json")
+    before = store.load()
+    task = asyncio.create_task(app.rt.act("p1", Leaving(None, clock.now())))
+    await asyncio.wait_for(entered.wait(), 2)  # inside the delivery pass, after the action
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    after = store.load()
+    assert after != before  # the Leaving tap was written
+    assert after == app.rt.state  # nothing changed in memory only
+    assert after is not None and after.obligations  # the unsent message is still owed
