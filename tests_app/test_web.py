@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 from conftest import StationsProvider, TickClock
-from tcc_app.web import BODY_LIMIT, health_report, start_web
+from tcc_app.web import BODY_LIMIT, health_for, health_report, start_web
 from test_main import CODES, make_app
 from test_runtime import Provider, at, every_day
 
@@ -94,6 +94,32 @@ async def test_health_endpoint_and_unknown_path():
         assert (await ask(port, huge))[0] == 400
         big = f"POST /owntracks HTTP/1.1\r\nContent-Length: {BODY_LIMIT + 1}\r\n\r\n".encode()
         assert (await ask(port, big))[0] == 413
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+FULL = (503, {"ok": False, "attribution": "Data: NS", "problems": ["x"]})
+
+
+@pytest.mark.parametrize("peer", [("127.0.0.1", 5000), ("::1", 5000, 0, 0)])
+def test_health_full_body_for_a_loopback_peer(peer):
+    assert health_for(peer, *FULL) == FULL
+
+
+@pytest.mark.parametrize("peer", [("203.0.113.9", 5000), ("2001:db8::1", 5000, 0, 0), None, ""])
+def test_health_is_ok_only_for_any_other_peer_with_the_same_status(peer):
+    assert health_for(peer, *FULL) == (503, {"ok": False})
+    assert health_for(peer, 200, {"ok": True, "x": 1}) == (200, {"ok": True})
+
+
+async def test_health_endpoint_gives_a_loopback_caller_the_full_body():
+    server = await start_web(0, health=lambda: FULL, host="127.0.0.1")
+    try:
+        status, body = await ask(
+            server.sockets[0].getsockname()[1], b"GET /health HTTP/1.1\r\n\r\n"
+        )
+        assert (status, json.loads(body)) == FULL
     finally:
         server.close()
         await server.wait_closed()

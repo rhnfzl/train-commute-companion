@@ -56,9 +56,9 @@ Everything comes from the environment (`.env`):
 
 ## Health
 
-`GET /health` on port 8080 answers 200 when all is well and 503 otherwise. It shows whether the runtime is alive and started, whether the state file writes, whether NS rejected the key, whether a profile was refused, how many alerts are undelivered, whether delivery was confirmed, and each journey's freshness.
+`GET /health` on port 8080 answers 200 when all is well and 503 otherwise. It shows whether the runtime is alive and started, whether the state file writes, whether NS rejected the key, whether a profile was refused, how many alerts are undelivered, whether delivery was confirmed, and each journey's freshness. That full report goes only to a caller on the container's own loopback (the built-in Docker health check); any other caller gets the same status code and just `{"ok": true}` or `{"ok": false}`.
 
-A machine that is off cannot warn about itself, so point an external uptime check at `/health`. Keep that on your home network: `/health` lists your journeys, so never forward port 8080 as a whole. For OwnTracks, expose only `/owntracks` (see its page).
+A machine that is off cannot warn about itself, so point an external uptime check at `/health`. Keep that on your home network and never forward port 8080 as a whole. For OwnTracks, expose only `/owntracks` (see its page).
 
 ## Good to know
 

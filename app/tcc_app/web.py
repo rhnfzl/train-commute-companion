@@ -5,6 +5,7 @@ import asyncio
 import base64
 import binascii
 import hmac
+import ipaddress
 import json
 import logging
 from collections.abc import Callable
@@ -124,6 +125,16 @@ def _response(
     return ("\r\n".join(head) + "\r\n\r\n").encode() + body
 
 
+def health_for(peer: Any, status: int, report: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """The full report only for a loopback peer (the Docker HEALTHCHECK); everyone else gets `ok`."""
+    try:
+        if ipaddress.ip_address(peer[0]).is_loopback:
+            return status, report
+    except (TypeError, ValueError, IndexError):  # no peer, or a unix socket: not loopback
+        pass
+    return status, {"ok": bool(report.get("ok"))}
+
+
 async def start_web(
     port: int,
     *,
@@ -140,7 +151,7 @@ async def start_web(
                 writer.write(_response(e.status))
             else:
                 if method == "GET" and path == "/health":
-                    status, report = health()
+                    status, report = health_for(writer.get_extra_info("peername"), *health())
                     writer.write(_response(status, json.dumps(report).encode()))
                 elif method == "POST" and path == "/owntracks" and owntracks and secret:
                     if not _authorized(headers.get("authorization"), secret):
