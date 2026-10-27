@@ -1,7 +1,9 @@
 import asyncio
 import json
+import urllib.error
 from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from conftest import StationsProvider, TickClock
@@ -102,24 +104,49 @@ async def test_health_endpoint_and_unknown_path():
 FULL = (503, {"ok": False, "attribution": "Data: NS", "problems": ["x"]})
 
 
-@pytest.mark.parametrize("peer", [("127.0.0.1", 5000), ("::1", 5000, 0, 0)])
-def test_health_full_body_for_a_loopback_peer(peer):
-    assert health_for(peer, *FULL) == FULL
+TOK = "test-health-token-0001"
 
 
-@pytest.mark.parametrize("peer", [("203.0.113.9", 5000), ("2001:db8::1", 5000, 0, 0), None, ""])
-def test_health_is_ok_only_for_any_other_peer_with_the_same_status(peer):
-    assert health_for(peer, *FULL) == (503, {"ok": False})
-    assert health_for(peer, 200, {"ok": True, "x": 1}) == (200, {"ok": True})
+def test_health_short_for_everyone_without_a_token():
+    assert health_for({}, *FULL, None) == (503, {"ok": False})
+    assert health_for({"authorization": f"Bearer {TOK}"}, *FULL, None) == (503, {"ok": False})
+    assert health_for({}, 200, {"ok": True, "x": 1}, None) == (200, {"ok": True})
 
 
-async def test_health_endpoint_gives_a_loopback_caller_the_full_body():
-    server = await start_web(0, health=lambda: FULL, host="127.0.0.1")
+@pytest.mark.parametrize("auth", [None, "Bearer wrong-token-000000", f"Basic {TOK}", TOK, "Bearer"])
+def test_health_full_only_with_the_right_bearer_token(auth):
+    headers = {} if auth is None else {"authorization": auth}
+    assert health_for(headers, *FULL, TOK) == (503, {"ok": False})
+    assert health_for({"authorization": f"bearer {TOK}"}, *FULL, TOK) == FULL
+
+
+async def test_health_endpoint_full_body_only_with_the_token():
+    server = await start_web(0, health=lambda: FULL, host="127.0.0.1", health_token=TOK)
+    port = server.sockets[0].getsockname()[1]
     try:
-        status, body = await ask(
-            server.sockets[0].getsockname()[1], b"GET /health HTTP/1.1\r\n\r\n"
-        )
+        status, body = await ask(port, b"GET /health HTTP/1.1\r\n\r\n")
+        assert (status, json.loads(body)) == (503, {"ok": False})
+        raw = f"GET /health HTTP/1.1\r\nAuthorization: Bearer {TOK}\r\n\r\n".encode()
+        status, body = await ask(port, raw)
         assert (status, json.loads(body)) == FULL
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_dockerfile_healthcheck_still_reads_the_status():
+    line = next(x for x in Path("Dockerfile").read_text().splitlines() if x.startswith("HEALTHCHECK"))
+    code = json.loads(line[line.index("["):])[-1]  # the CMD exec-form JSON array
+    assert "authorization" not in code.lower()
+    answer = (200, {"ok": True})
+    server = await start_web(0, health=lambda: answer, host="127.0.0.1", health_token=TOK)
+    port = server.sockets[0].getsockname()[1]
+    run = code.replace("8080", str(port))
+    try:
+        await asyncio.to_thread(exec, run)  # a 200 answer returns
+        answer = (503, {"ok": False})
+        with pytest.raises(urllib.error.HTTPError):
+            await asyncio.to_thread(exec, run)
     finally:
         server.close()
         await server.wait_closed()

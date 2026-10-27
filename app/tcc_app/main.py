@@ -48,6 +48,7 @@ class Settings:
     profiles: Path
     state_dir: Path
     lookahead_at: time = LOOKAHEAD_AT
+    health_token: str | None = None
 
     @staticmethod
     def from_env(env: Mapping[str, str]) -> "Settings":
@@ -66,6 +67,17 @@ class Settings:
                 lookahead_at = datetime.strptime(raw, "%H:%M").time()
             except ValueError:
                 raise ValueError("TCC_LOOKAHEAD_AT must be HH:MM") from None
+        health_token = _optional(env, "TCC_HEALTH_TOKEN")
+        # headers are parsed as stripped Latin-1, so anything else could never match
+        if health_token is not None and not (
+            len(health_token) >= 16
+            and health_token.isascii()
+            and health_token.isprintable()
+            and " " not in health_token
+        ):
+            raise ValueError(
+                "TCC_HEALTH_TOKEN must be at least 16 characters of printable ASCII without spaces"
+            )
         return Settings(
             ns_key,
             bot_token,
@@ -74,6 +86,7 @@ class Settings:
             Path(_optional(env, "TCC_PROFILES") or "/config/profiles.yaml"),
             Path(_optional(env, "TCC_STATE_DIR") or "/data"),
             lookahead_at,
+            health_token,
         )
 
 
@@ -119,6 +132,7 @@ async def serve(app: App, port: int) -> int:
             health=lambda: health_report(app.rt.view(), not runtime.done(), app.bot.confirmed),
             owntracks=owntracks.handler(app.follower) if secret else None,
             secret=secret,
+            health_token=app.settings.health_token,
         )
         bot = asyncio.create_task(app.bot.run(), name="telegram")
         done, _ = await asyncio.wait((runtime, bot), return_when=asyncio.FIRST_COMPLETED)

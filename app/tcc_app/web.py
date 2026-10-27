@@ -5,10 +5,9 @@ import asyncio
 import base64
 import binascii
 import hmac
-import ipaddress
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from http import HTTPStatus
 from typing import Any
 
@@ -125,13 +124,14 @@ def _response(
     return ("\r\n".join(head) + "\r\n\r\n").encode() + body
 
 
-def health_for(peer: Any, status: int, report: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-    """The full report only for a loopback peer (the Docker HEALTHCHECK); everyone else gets `ok`."""
-    try:
-        if ipaddress.ip_address(peer[0]).is_loopback:
-            return status, report
-    except (TypeError, ValueError, IndexError):  # no peer, or a unix socket: not loopback
-        pass
+def health_for(
+    headers: Mapping[str, str], status: int, report: dict[str, Any], token: str | None
+) -> tuple[int, dict[str, Any]]:
+    """The full report only with `Authorization: Bearer <token>`; the peer address is no trust
+    signal (a proxy in the same network namespace connects from loopback). Everyone else gets `ok`."""
+    scheme, _, given = headers.get("authorization", "").partition(" ")
+    if token and scheme.lower() == "bearer" and hmac.compare_digest(given.encode(), token.encode()):
+        return status, report
     return status, {"ok": bool(report.get("ok"))}
 
 
@@ -142,6 +142,7 @@ async def start_web(
     owntracks: Callable[[bytes], None] | None = None,
     secret: str | None = None,
     host: str = "0.0.0.0",
+    health_token: str | None = None,
 ) -> asyncio.Server:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -151,7 +152,7 @@ async def start_web(
                 writer.write(_response(e.status))
             else:
                 if method == "GET" and path == "/health":
-                    status, report = health_for(writer.get_extra_info("peername"), *health())
+                    status, report = health_for(headers, *health(), health_token)
                     writer.write(_response(status, json.dumps(report).encode()))
                 elif method == "POST" and path == "/owntracks" and owntracks and secret:
                     if not _authorized(headers.get("authorization"), secret):

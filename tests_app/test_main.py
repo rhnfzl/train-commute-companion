@@ -74,6 +74,18 @@ def test_settings_from_env_defaults_and_refusals():
     assert "25:00" not in str(e.value)
 
 
+def test_settings_health_token_optional_and_checked():
+    assert Settings.from_env(ENV).health_token is None
+    assert Settings.from_env({**ENV, "TCC_HEALTH_TOKEN": "test-health-token-0001"}).health_token == (
+        "test-health-token-0001"
+    )
+    for bad in ["short", "tést-health-token-01", "test-health token-01",
+                "test-health-token\n01", "test-health-token\x0701"]:  # fmt: skip
+        with pytest.raises(ValueError, match="TCC_HEALTH_TOKEN") as e:
+            Settings.from_env({**ENV, "TCC_HEALTH_TOKEN": bad})
+        assert bad not in str(e.value)
+
+
 async def test_build_passes_the_lookahead_time(tmp_path, tg):
     clock = TickClock(at("05:20"))
     app = make_app(tmp_path, tg, clock, lookahead_at=time(5, 30))
