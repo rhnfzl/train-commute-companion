@@ -318,6 +318,11 @@ def test_target_occurrence_rules():
     gone = replace(states[0], direction_state=DirectionState.EXPIRED, not_travelling=True)
     expired = [replace(gone, retained=()), states[1]]
     assert target_occurrence(expired, NotTravelling(None, False)) is expired[1]
+    # nothing open: a direction skip has no target, a whole day still names the newest day
+    only = [replace(gone, retained=())]
+    assert target_occurrence(only, NotTravelling(None, False)) is None
+    assert target_occurrence(only, NotTravelling(None, True)) is only[0]
+    assert target_occurrence([], NotTravelling(None, True)) is None
 
 
 def test_relock_retains_a_departed_train_whose_leg_is_still_pending():

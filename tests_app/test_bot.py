@@ -163,8 +163,8 @@ async def test_leaving_uses_the_runtime_clock(app):
 async def test_skip_direction_and_whole_day(app):
     await app.bot.handle(app.msg("/skip outbound"))
     assert app.rig.occ(OUT).not_travelling and app.rig.occ(RET) is None
-    # with no date the core targets only an open occurrence; the day names the expired one too
-    await app.bot.handle(app.msg("/skip day 2026-10-27", uid=2))
+    # a bare /skip after the morning skip still reaches the return (not created yet)
+    await app.bot.handle(app.msg("/skip", uid=2))
     assert app.rig.occ(RET).not_travelling
     assert app.texts() == [
         "Not travelling: alerts for that journey stop.",

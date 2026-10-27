@@ -561,7 +561,11 @@ def target_occurrence(
         )  # fmt: skip
     open_ = sorted((x for x in states if not _resolved(x)), key=lambda x: x.key.service_date)
     if isinstance(action, NotTravelling):
-        return next(iter(open_), None)
+        if open_ or not action.whole_day:
+            return next(iter(open_), None)
+        # whole day after a skipped direction (the other one may not exist yet): the newest
+        # occurrence names the commute day, and the caller fans out to both directions (7.8)
+        return max(states, key=lambda x: x.key.service_date, default=None)
     if isinstance(action, Choose):
         first = action.connection.legs[0].train
         # no clock here: a lock leg counts by its state (the user "rides" it, 7.13)
