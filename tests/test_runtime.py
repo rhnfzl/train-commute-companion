@@ -623,6 +623,22 @@ async def test_held_alarm_survives_a_recovery_written_through_a_rename(tmp_path)
     assert EventKind.CANCELLED in kinds(rig.notifier.attempts[n:])
 
 
+async def test_recurring_delay_is_told_again_while_the_store_fails(tmp_path):
+    rig = await started(tmp_path)  # 7.5, rule 22: a fact that ended and came back is news again
+    rig.store.fail = True
+    late = make_connection([
+        make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_dep=10, delay_arr=10),
+        make_leg("UT", "RTD", "08:50", "09:24", number="5678", delay_dep=10, delay_arr=10),
+    ])  # fmt: skip
+    for hhmm, world in (("07:52", [late]), ("07:54", [USUAL]), ("07:56", [late])):
+        rig.clock.set(hhmm)
+        rig.provider.world = world
+        await rig.rt.poll_once()
+        await rig.rt.watchdog_once()
+    told = [e.kind for e in rig.notifier.attempts if "1234" in e.key]
+    assert told[-3:] == [EventKind.DELAYED, EventKind.BACK_TO_NORMAL, EventKind.DELAYED]
+
+
 def _choice(c: Connection) -> Choose:
     return Choose(None, c, (ProviderAnswer(Query("AAA", "RTD", at("07:50")), (c,), at("07:50")),))
 

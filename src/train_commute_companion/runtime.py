@@ -1154,6 +1154,15 @@ class Runtime:
                 poll_records=x.poll_records if cur is None else cur.poll_records,
             )
         self._st = replace(base, occurrences=occs)
+        # a journey fact told from memory that a healthy poll ended leaves the ledger: its
+        # recurrence is news again (7.5), as it is with a working store
+        self._told = {
+            t
+            for t in self._told
+            if t[0] is None
+            or (s := self._st.occurrences.get(t[0])) is not None
+            and _SENT + t[1] in s.alert_keys
+        }
         self._shadow = self._compose(self._base)
 
     def _restage(self, base: PersistedState, cand: PersistedState) -> PersistedState:
