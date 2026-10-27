@@ -195,7 +195,8 @@ def expected_lines(path: Path) -> list[tuple[Severity, str]]:
 
 
 async def drive_replay(app: App, rp: Replay) -> None:
-    """`replay_lines`' loop on `app.rt`: events, a poll on even minutes, the watchdog, 30 s steps."""
+    """`replay_lines`' loop on `app.rt`: events, a poll on even minutes, the watchdog, 30 s steps;
+    each step lets a started webhook pass finish, as a real sleep would."""
     clock, pending = rp.clock, list(rp.timeline)
     await app.rt.start()
     while clock.now().astimezone(UTC) < rp.end.astimezone(UTC):
@@ -205,4 +206,5 @@ async def drive_replay(app: App, rp: Replay) -> None:
         if now.minute % 2 == 0 and now.second == 0:
             await app.rt.poll_once()
         await app.rt.watchdog_once()
+        await app.rt.webhooks_idle()
         await clock.sleep(30)

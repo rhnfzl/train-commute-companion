@@ -2,9 +2,11 @@
 adoption and `all_good` run through a real config entry, the host thread and the notifier."""
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from typing import Any
 
 import harness
 import pytest
@@ -24,7 +26,9 @@ from harness import (
 )
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import issue_registry as ir
+from test_config_flow import HOOKS, SECRET
 from test_runtime import usual_on
+from webhook_receiver import Receiver
 
 from custom_components.train_commute_companion import validate
 from custom_components.train_commute_companion.const import DOMAIN
@@ -38,6 +42,7 @@ pytestmark = pytest.mark.usefixtures("tcc_freezer")
 ROOT = Path(__file__).resolve().parents[1]
 REPLAYS = ROOT / "tests" / "replays"
 LINE = re.compile(r"(\d\d:\d\d) (LOUD|SILENT) \w+: (.*)")
+REPLAY_NAMES = ["direct", "one_transfer", "cancelled_second_leg", "transfer_broken_by_delay"]
 
 
 @dataclass
@@ -68,15 +73,32 @@ def codes(text: str) -> frozenset[str]:
     )
 
 
-async def setup_from_replay(hass, path: Path) -> tuple[Harness, Replay]:
+async def setup_from_replay(
+    hass,
+    path: Path,
+    *,
+    options: Mapping[str, Any] | None = None,
+    receiver: Receiver | None = None,
+) -> tuple[Harness, Replay]:
     rp = load_replay(path)
     text = rp.profile_path.read_text(encoding="utf-8")
+    clients = []
+    if receiver is not None:
+        # bound before setup: the client is made at host start, and the runtime's start below
+        # already delivers each replay's first alert
+        clients = harness.use_receiver(receiver)
+        receiver.now = lambda: rp.clock.now().timestamp()
     entry, clock, provider, pushes = prepare(
-        hass, text, "00:00", (), replay=(rp.clock, ReplayStations(rp.provider, codes(text)))
+        hass,
+        text,
+        "00:00",
+        (),
+        replay=(rp.clock, ReplayStations(rp.provider, codes(text))),
+        options=options,
     )
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    h = Harness(entry, entry.runtime_data.host, clock, provider, pushes)
+    h = Harness(entry, entry.runtime_data.host, clock, provider, pushes, clients)
     await h.host.run(lambda rt: rt.start())
     await entry.runtime_data.coordinator.async_refresh()
     await hass.async_block_till_done()
@@ -95,21 +117,37 @@ async def drive_replay(h: Harness, rp: Replay) -> None:
         if now.minute % 2 == 0 and now.second == 0:
             await h.host.run(lambda rt: rt.poll_once())
         await h.host.run(lambda rt: rt.watchdog_once())
+        await h.host.run(lambda rt: rt.webhooks_idle())  # as a real sleep would let it finish
         await clock.sleep(30)
         harness.FREEZER.move_to(clock.now())
         await coordinator.async_refresh()
     await h.hass.async_block_till_done()
 
 
-@pytest.mark.parametrize(
-    "name", ["direct", "one_transfer", "cancelled_second_leg", "transfer_broken_by_delay"]
-)
+@pytest.mark.parametrize("name", REPLAY_NAMES)
 async def test_replay_through_ha_delivers_every_alert_loud_or_silent(hass, name):
     h, rp = await setup_from_replay(hass, REPLAYS / f"{name}.yaml")
     await drive_replay(h, rp)
     want = expected_lines(REPLAYS / f"{name}.out")
     assert want
     assert [(sev(c), c.data["message"]) for c in h.pushes] == [(w.severity, w.text) for w in want]
+
+
+def test_ha_webhook_row_fixtures_hold_loud_and_silent():  # pure: no test order dependence
+    severities = {w.severity for n in REPLAY_NAMES for w in expected_lines(REPLAYS / f"{n}.out")}
+    assert severities == {"LOUD", "SILENT"}
+
+
+@pytest.mark.parametrize("name", REPLAY_NAMES)
+async def test_replay_through_ha_and_a_signed_webhook(hass, name):
+    rx = Receiver(SECRET, None)
+    h, rp = await setup_from_replay(hass, REPLAYS / f"{name}.yaml", options=HOOKS, receiver=rx)
+    await drive_replay(h, rp)
+    await h.host.run(lambda rt: rt.webhooks_idle())
+    want = [(w.severity, w.text) for w in expected_lines(REPLAYS / f"{name}.out")]
+    assert [(p["severity"].upper(), p["text"]) for p in rx.posts] == want and rx.bad == 0
+    assert all(p["test"] is False for p in rx.posts)
+    assert [(sev(c), c.data["message"]) for c in h.pushes] == want
 
 
 async def test_starter_file_runs_in_ha(hass):

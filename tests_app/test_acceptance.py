@@ -21,18 +21,28 @@ from conftest import (
     expected_lines,
     spied,
 )
+from tcc_app import bot as bot_mod
+from tcc_app.commands import render_webhook_tests
 from tcc_app.main import App, Settings, build, health_report, start_web
 from tcc_app.owntracks import handler
+from tcc_app.web import health_for
 from test_follow import FAR, UT, located_app
-from test_main import CODES, make_app
+from test_main import CODES, URL, make_app
+from test_main import SECRET as HOOK_SECRET
 from test_owntracks import SECRET, basic, post
 from test_runtime import PROFILES_DIR, Provider, at, bump_mtime, usual_on
+from webhook_receiver import Receiver
 
 from train_commute_companion.lookahead import BaselineHistory, BaselineVersion
 from train_commute_companion.model import Severity, Signature, SignatureLeg
+from train_commute_companion.store import JsonFileStore
+from train_commute_companion.webhook import PROBE_LOUD, PROBE_SILENT, WebhookTestResult
 
 REPLAYS = Path(__file__).resolve().parents[1] / "tests" / "replays"
 OUT = "p1|outbound|2026-10-27"
+REPLAY_NAMES = ["direct", "one_transfer", "two_transfers", "cancelled_second_leg",
+                "transfer_broken_by_delay"]  # fmt: skip
+HEALTH_TOKEN = "test-health-token-0001"
 
 
 def silent(m: dict[str, Any]) -> bool:
@@ -66,16 +76,97 @@ async def run_until(app: App, hhmm: str, step: int = 30) -> None:
         await clock.sleep(step)
 
 
-@pytest.mark.parametrize(
-    "name",
-    ["direct", "one_transfer", "two_transfers", "cancelled_second_leg", "transfer_broken_by_delay"],
-)
+@pytest.mark.parametrize("name", REPLAY_NAMES)
 async def test_replay_through_telegram_delivers_every_alert_loud_or_silent(tmp_path, tg, name):
     app, rp = build_from_replay(tmp_path, tg, REPLAYS / f"{name}.yaml")
     await drive_replay(app, rp)
     want = expected_lines(REPLAYS / f"{name}.out")
     assert want
     assert [(silent(m), m["text"]) for m in tg.sent] == [(s is Severity.SILENT, t) for s, t in want]
+
+
+def test_webhook_row_fixtures_hold_loud_and_silent():  # pure: no test order dependence
+    lines = [s for n in REPLAY_NAMES for s, _ in expected_lines(REPLAYS / f"{n}.out")]
+    assert set(lines) == {Severity.LOUD, Severity.SILENT}
+
+
+def want_posts(name: str) -> list[tuple[str, str]]:
+    return [(s.value, t) for s, t in expected_lines(REPLAYS / f"{name}.out")]
+
+
+async def replay_with_webhook(
+    tmp_path: Path, tg: FakeTelegram, name: str, status: int = 200, **settings: Any
+) -> tuple[App, Receiver]:
+    """The replay with one signed webhook; the receiver's clock is the replay's, bound late."""
+    rx = Receiver(HOOK_SECRET, lambda: rp.clock.now().timestamp(), status)
+    tg.other = rx.handler
+    app, rp = build_from_replay(tmp_path, tg, REPLAYS / f"{name}.yaml",
+                                webhook_urls=(URL,), webhook_secret=HOOK_SECRET, **settings)  # fmt: skip
+    await drive_replay(app, rp)
+    await app.rt.webhooks_idle()
+    return app, rx
+
+
+@pytest.mark.parametrize("name", REPLAY_NAMES)
+async def test_replay_through_telegram_and_a_signed_webhook(tmp_path, tg, name):
+    _, rx = await replay_with_webhook(tmp_path, tg, name)
+    want = want_posts(name)
+    assert [(p["severity"], p["text"]) for p in rx.posts] == want and rx.bad == 0
+    assert all(p["test"] is False for p in rx.posts)
+    assert [(silent(m), m["text"]) for m in tg.sent] == [(s == "silent", t) for s, t in want]
+
+
+async def test_telegram_test_then_replay_keeps_test_sends_apart(tmp_path, tg):  # Review Focus 11
+    rx = Receiver(HOOK_SECRET, lambda: rp.clock.now().timestamp())
+    tg.other = rx.handler
+    app, rp = build_from_replay(tmp_path, tg, REPLAYS / "direct.yaml",
+                                webhook_urls=(URL,), webhook_secret=HOOK_SECRET)  # fmt: skip
+    await app.bot.handle(msg(app, "/test"))
+    assert not (tmp_path / "tcc-state.json").exists()  # a test send is never stored
+    await drive_replay(app, rp)
+    await app.rt.webhooks_idle()
+    want = want_posts("direct")
+    assert rx.bad == 0
+    probes = [(p["severity"], p["text"], p["test"]) for p in rx.posts[:2]]
+    assert probes == [("loud", PROBE_LOUD, True), ("silent", PROBE_SILENT, True)]
+    assert [(p["severity"], p["text"]) for p in rx.posts[2:]] == want
+    assert all(p["test"] is False for p in rx.posts[2:])
+    ids = [r.headers["webhook-id"] for r in rx.requests]
+    assert len(set(ids)) == len(ids)  # test sends never share an id with an alert post
+    loud, quiet, reply, *alerts = tg.sent
+    assert (loud["text"], quiet["text"]) == (bot_mod.LOUD_TEST, bot_mod.SILENT_TEST)
+    assert reply["text"] == render_webhook_tests(
+        [WebhookTestResult("hooks.example.invalid", 200, 200)]
+    )
+    assert [(silent(m), m["text"]) for m in alerts] == [(s == "silent", t) for s, t in want]
+    stored = JsonFileStore(tmp_path / "tcc-state.json").load().webhook_copies
+    assert not {c.id for c in stored} & set(ids[:2])
+    await app.bot.close()
+
+
+async def test_dead_webhook_leaves_telegram_and_health_untouched(tmp_path, tg):  # Review Focus 1, 9
+    plain = FakeTelegram()
+    try:
+        (tmp_path / "bare").mkdir()
+        bare, rp = build_from_replay(tmp_path / "bare", plain, REPLAYS / "direct.yaml")
+        await drive_replay(bare, rp)
+    finally:
+        await plain.close()
+    app, rx = await replay_with_webhook(tmp_path, tg, "direct", 503, health_token=HEALTH_TOKEN)
+    assert rx.requests and rx.bad == 0
+    want = expected_lines(REPLAYS / "direct.out")
+    assert [(silent(m), m["text"]) for m in tg.sent] == [(s is Severity.SILENT, t) for s, t in want]
+    assert tg.sent == plain.sent
+    assert app.webhooks is not None and app.webhooks.failing
+    status, body = health_report(app.rt.view(), True, True, app.webhooks.failing)
+    base_status, base = health_report(bare.rt.view(), True, True)
+    assert (
+        (status, body["ok"], body["undelivered"]) == (base_status, base["ok"], 0) == (200, True, 0)
+    )
+    assert body["webhooks_failing"] is True and base["webhooks_failing"] is None
+    assert health_for({}, status, body, app.settings.health_token) == (200, {"ok": True})
+    bearer = {"authorization": f"Bearer {HEALTH_TOKEN}"}
+    assert health_for(bearer, status, body, app.settings.health_token) == (200, body)
 
 
 def paired(tmp_path: Path, tg: FakeTelegram, world: list, codes: frozenset[str] = CODES) -> App:
