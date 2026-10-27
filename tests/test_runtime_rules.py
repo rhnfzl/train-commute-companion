@@ -25,9 +25,10 @@ from test_runtime import (
 from train_commute_companion.delivery import Obligation
 from train_commute_companion.lifecycle import DirectionState, NotTravelling
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.lookahead import BaselineHistory, BaselineVersion
+from train_commute_companion.lookahead import BaselineHistory, BaselineVersion, render_message
 from train_commute_companion.model import (
     AlertEvent,
+    Direction,
     EventKind,
     Provenance,
     Severity,
@@ -43,6 +44,8 @@ from train_commute_companion.providers.base import (
 )
 from train_commute_companion.serde import dumps, loads
 from train_commute_companion.store import PersistedState
+
+OUT = Direction.OUTBOUND
 
 
 def at_risk_l1() -> object:
@@ -1753,3 +1756,77 @@ async def test_colliding_stored_ids_are_split_on_load(tmp_path):
     phone(rig, took)
     await rig.rt.watchdog_once()
     assert cancelled_by(took) == ["p1", "p2"] and not cancelled_owed(rig)
+
+
+# --- rule 5(b): a look-ahead bundle sends only its facts that still hold (Review Focus 12) ---
+
+
+def thu_world(leg0: bool, leg1: bool) -> list:
+    """Every usual journey, the outbound two days after DAY with leg 0 and leg 1 cancelled or
+    not."""
+    thu = DAY + timedelta(days=2)
+    l1 = make_leg("AAA", "UT", "08:12", "08:40", number="1234", day=thu, cancelled=leg0)
+    l2 = make_leg("UT", "RTD", "08:50", "09:24", number="5678", day=thu, cancelled=leg1)
+    return [
+        *(c for c in every_day() if c.legs[0].train.operating_date != thu),
+        make_connection([l1, l2]),
+        *returns_every_day("17:52"),
+    ]
+
+
+async def live_facts_bundle(rig: Rig, change: str, stale: bool, fail) -> tuple[Obligation, tuple]:
+    """Look-ahead runs on DAY at 05:40, 06:10 (and 06:40) on a rig not started yet; `fail(True)`
+    makes every delivery fail from the bundle under test on. "recovery": works on both legs,
+    then leg 0 is restored (both when `stale`). "relapse": works on both legs, delivered, both
+    back to normal, then leg 1 under works again (both when `stale`). Returns the bundle under
+    test, still owed, and the facts of it that still hold."""
+    thu = DAY + timedelta(days=2)
+
+    def owed() -> Obligation:
+        (o,) = [x for x in rig.rt.state.obligations if x.look_ahead == ("p1", OUT, thu)]
+        return o
+
+    rig.provider.world = thu_world(True, True)
+    fail(change == "recovery")
+    await rig.rt.start()
+    await rig.rt.lookahead_once()
+    if change == "recovery":
+        o = owed()
+        rig.clock.set("06:10")
+        rig.provider.world = thu_world(False, not stale)
+        await rig.rt.lookahead_once()
+        keep = f"{thu.isoformat()}|1|warn:"
+    else:
+        rig.clock.set("06:10")
+        rig.provider.world = thu_world(False, False)
+        fail(True)
+        await rig.rt.lookahead_once()
+        o = owed()
+        rig.clock.set("06:40")
+        rig.provider.world = thu_world(stale, True)
+        await rig.rt.lookahead_once()
+        keep = f"{thu.isoformat()}|0|restored"
+    facts = rig.rt.state.lookahead["p1|outbound"].facts[o.id]
+    assert len(facts) > 1  # a bundle
+    return o, () if stale else tuple(f for f in facts if f[0].startswith(keep))
+
+
+@pytest.mark.parametrize("stale", [False, True])
+@pytest.mark.parametrize("change", ["relapse", "recovery"])
+async def test_partial_relapse_or_recovery_phone_sends_only_live_facts(tmp_path, change, stale):
+    rig = Rig(tmp_path, "05:40")
+
+    def fail(down: bool) -> None:
+        rig.notifier.fails = lambda e: down
+
+    o, live = await live_facts_bundle(rig, change, stale, fail)
+    fail(False)
+    rig.notifier.attempts.clear()
+    await rig.rt.watchdog_once()
+    got = [(e.kind, e.text) for e in rig.notifier.attempts if e.key == o.event.key]
+    if stale:
+        assert got == []
+        return
+    p = rig.rt.config.profiles[0]
+    assert got == [render_message(p, o.look_ahead[2], live)]
+    assert "back to normal" not in got[0][1] if change == "recovery" else "works" not in got[0][1]

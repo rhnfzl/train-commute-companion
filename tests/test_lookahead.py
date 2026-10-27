@@ -29,6 +29,7 @@ from train_commute_companion.lookahead import (
     BaselineVersion,
     LookAheadLedger,
     _overlaps,
+    carried_ids,
     evaluate,
     forget_pending,
     probe_dates,
@@ -456,6 +457,29 @@ def test_superseded_adoption_bundled_with_a_warning_is_withdrawn():  # rules 18,
         assert any("2026-10-27|1|warn:" in o.fact_key for o in kept)  # the warning stays
         assert all(o.id in led2.facts for o in led2.pending)
         assert forget_pending(led2).per_date["2026-10-27|1"] == ()  # its mark moved with it
+
+
+def test_carried_ids_follow_the_moved_marks():
+    history = BaselineHistory((confirmed(),))
+    rs = [
+        r
+        for day in DAYS
+        for r in evaluate(
+            P, OUT, day, _mixed_answers(day, *SHIFTED.values(), ("08:55", "09:33")), CLEAR,
+            history.in_force(day),
+        )
+    ]  # fmt: skip
+    h, led, _ = run(history, rs)
+    tue = next(o for o in led.pending if o.look_ahead == ("p1", OUT, TUE))
+    out = run_lookahead(P, OUT, h, led, probes(h), 1, MON, NOW + timedelta(minutes=5))
+    assert out is not None
+    _, led2, _ = out
+    (carried,) = [
+        o for o in led2.pending if o.look_ahead == ("p1", OUT, TUE) and "|warn:" in o.fact_key
+    ]
+    assert carried_ids(led, led2) == {tue.id: carried.id}
+    again = run_lookahead(P, OUT, h, led, rs, 1, MON, NOW + timedelta(minutes=5))
+    assert again is not None and carried_ids(led, again[1]) == {}  # nothing retired
 
 
 def _delivered(led: LookAheadLedger, o: Obligation) -> LookAheadLedger:

@@ -1,5 +1,6 @@
 """The delivery port: shells implement it; the core only asks whether a message got through."""
 
+from collections.abc import Collection
 from typing import Any, Protocol
 
 from train_commute_companion.model import AlertEvent
@@ -7,6 +8,19 @@ from train_commute_companion.model import AlertEvent
 
 class Notifier(Protocol):
     async def send(self, event: AlertEvent) -> bool: ...
+
+
+class WebhookPort(Protocol):
+    """Outbound webhooks. Never counts as delivered: the phone does (7.12 rule 16)."""
+
+    urls: tuple[str, ...]
+
+    async def post(
+        self, event: AlertEvent, msg_id: str, urls: Collection[str]
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        """One try per given URL: the URLs tried and the URLs that accepted. A resting URL, or
+        every URL once stopped, is in neither."""
+        ...
 
 
 def event_fields(event: AlertEvent) -> dict[str, Any]:

@@ -518,13 +518,48 @@ def _mark(entry: str) -> str:
     return entry.partition("#")[0]  # no fingerprint holds "#"
 
 
+def _seed_day(per_date: Mapping[str, tuple[str, ...]], version: int) -> str | None:
+    tag = f"seed:{version}"
+    return next((k.split("|")[0] for k, v in per_date.items() if tag in v), None)
+
+
 def _owner(entry: str) -> str:
     return entry.partition("#")[2]  # "" for an entry stored before owners: counts as delivered
 
 
-def _seed_day(per_date: Mapping[str, tuple[str, ...]], version: int) -> str | None:
-    tag = f"seed:{version}"
-    return next((k.split("|")[0] for k, v in per_date.items() if tag in v), None)
+def render_message(
+    p: Profile, sd: date, fs: Sequence[tuple[str, str, bool, bool]]
+) -> tuple[EventKind, str]:
+    """One look-ahead message for direction and date `sd` from its facts (step 6 of
+    `run_lookahead`): its kind and text."""
+    warns = any("|warn:" in k for k, *_ in fs)
+    is_adopt = any(k.startswith("adopt:") for k, *_ in fs)
+    kind = (
+        EventKind.WORKS_AHEAD
+        if warns
+        else EventKind.TIMETABLE_ADOPTED
+        if is_adopt
+        else EventKind.RESTORED
+    )
+    text = (
+        f"{_title(p)}, {sd:%A} {sd.day} {sd:%b}: "
+        + ". ".join(dict.fromkeys(t for _, t, _, _ in fs))
+        + "."
+    )
+    if any(w for *_, w in fs):
+        text += " " + REPLACEMENT_HINT
+    return kind, text
+
+
+def carried_ids(old: LookAheadLedger, new: LookAheadLedger) -> dict[str, str]:
+    """The message ids whose marks a run moved to another message (step 6 moves the marks of
+    a message `retire` withdrew to the message that carries its other facts): old -> new."""
+    out = {}
+    for k, v in old.per_date.items():
+        for a, b in zip(v, new.per_date.get(k, ()), strict=False):
+            if _owner(a) and _owner(b) and _owner(a) != _owner(b):
+                out[_owner(a)] = _owner(b)
+    return out
 
 
 def run_lookahead(
@@ -745,21 +780,7 @@ def run_lookahead(
         *carried,
     ]:
         is_adopt = any(k.startswith("adopt:") for k, *_ in fs)
-        warns = any("|warn:" in k for k, *_ in fs)
-        kind = (
-            EventKind.WORKS_AHEAD
-            if warns
-            else EventKind.TIMETABLE_ADOPTED
-            if is_adopt
-            else EventKind.RESTORED
-        )
-        text = (
-            f"{_title(p)}, {sd:%A} {sd.day} {sd:%b}: "
-            + ". ".join(dict.fromkeys(t for _, t, _, _ in fs))
-            + "."
-        )
-        if any(w for *_, w in fs):
-            text += " " + REPLACEMENT_HINT
+        kind, text = render_message(p, sd, fs)
         fact_key = ";".join(k for k, *_ in fs)
         ev = AlertEvent(
             p.id,

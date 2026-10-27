@@ -109,6 +109,26 @@ Add a webhook route in Hermes, for example `http://localhost:8644/webhooks/commu
 
 OpenClaw checks no signature. Set the companion's bearer token setting to your OpenClaw hook token, and point the URL at a mapped hook whose template turns the payload's `text` into the agent `message`. OpenClaw refuses a token in the URL query, so use the bearer token. This setup has not been checked against a live OpenClaw.
 
+## Delivery
+
+Your phone is the channel that counts: an alert is delivered once the phone has it, and a webhook never counts as delivered. A webhook that is down never holds back or repeats a phone alert.
+
+- A copy of an alert that a receiver did not take (any answer other than a 2xx, a redirect, an error or no answer within 5 seconds) is kept, survives a restart, and is tried again on later delivery passes after a 60 second rest.
+- Before each try the copy is checked again, like a phone message: expired advice, a journey you said you are not travelling or a message a newer one covers is not sent, and a renamed profile shows its new name.
+- A look-ahead message is sent with only the facts that still hold at send time, so it never names a leg that is back to normal again or works that are over.
+- A copy is given up 2 hours after its first try, also while it waits for fresh NS data after a restart.
+- A receiver that stays down gets at most one try per 60 seconds. Its tries go to the owed copies in turn, so after an outage alerts can arrive out of order: order them by `created_at`. When alerts come faster than one a minute, at most 200 copies are kept and the oldest ones never tried are dropped, with one warning in the log each.
+- The log shows one warning per outage, naming the receiver's host only, and one line when it works again.
+- A restart, or a timeout after the receiver accepted, can send an alert again with the same `webhook-id`.
+- Turning webhooks off (no URLs) drops the copies still owed; they are not sent when you turn webhooks on again.
+- In Docker, `webhooks_failing` means "the last try to some webhook failed". It clears only on the next success, and it shows only in the full `/health` report, with `TCC_HEALTH_TOKEN`.
+
+## Test sends
+
+When you set up webhooks, each URL gets a signed loud and a signed silent test send. They have `"test": true` and their own `webhook-id`s. Home Assistant sends them when you save a changed webhook setting; Docker sends them on the Telegram `/test` command, after the phone test.
+
+Your receiver must answer both with a 2xx. If it does not, Home Assistant refuses to save the setting and shows the host with both results, and Telegram reports the URL as not accepted. Test sends are never retried or stored. Your phone, with your confirmation, stays the proof that alerts arrive.
+
 ## Security and privacy
 
 The payload carries your profile names, stations and times, and a receiver may be a third-party AI service. Use a receiver on this machine where you can, and https for any receiver off it.

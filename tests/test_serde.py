@@ -6,7 +6,7 @@ import pytest
 from lookahead_fixtures import NEXT_TUE, NOW, OUT, P, confirmed, ledger
 from test_lifecycle_follow import L1, L2, RIDE, at, journey, occ
 
-from train_commute_companion.delivery import Obligation
+from train_commute_companion.delivery import Obligation, WebhookCopy
 from train_commute_companion.health import PollRecord
 from train_commute_companion.lifecycle import OccurrenceState
 from train_commute_companion.lookahead import BaselineHistory
@@ -46,7 +46,8 @@ def full_state() -> PersistedState:
         "k",
         NOW,
     )
-    ob = Obligation("o", event, None, ("p1", OUT, NEXT_TUE), 1, 3, "f", NOW, 2)
+    ob = Obligation("o", event, None, ("p1", OUT, NEXT_TUE), 1, 3, "f", NOW, 2, True)
+    copy = WebhookCopy("tcc_x", ob, ("ab12",), NOW, NOW)
     retained = journey([L1, L2], RIDE)
     legs = (
         replace(retained.legs[0], onward_from=at("08:44"), accepted_at=at("08:50")),
@@ -65,8 +66,9 @@ def full_state() -> PersistedState:
     hist = BaselineHistory((confirmed(1), confirmed(2, date(2026, 11, 1))), floor=4)
     led = ledger(hist, per_date={"2026-11-03|j": ("a", "b")}, pending=(ob,), last_run=NOW)
     return PersistedState(
-        cfg, {1: Config(1, ()), 2: cfg}, {"p1": hist}, {"p1": led}, {"k": s}, (ob,), True
-    )
+        cfg, {1: Config(1, ()), 2: cfg}, {"p1": hist}, {"p1": led}, {"k": s}, (ob,), True,
+        (copy,),
+    )  # fmt: skip
 
 
 def test_round_trip_every_persisted_type():
@@ -117,3 +119,14 @@ def test_advice_record_saved_before_delivered_loads_as_told():
     del raw["delivered"]
     assert decode(AdviceRecord, raw).delivered is True
     assert decode(AdviceRecord, {**raw, "delivered": False}).delivered is False
+
+
+def test_old_files_load_without_copies():
+    raw = json.loads(dumps(full_state()))
+    del raw["webhook_copies"]
+    for o in (*raw["obligations"], *raw["lookahead"]["p1"]["pending"]):
+        del o["webhook_copied"]
+    back = loads(PersistedState, json.dumps(raw))
+    assert back.webhook_copies == ()
+    assert [o.webhook_copied for o in back.obligations] == [False]
+    assert [o.webhook_copied for o in back.lookahead["p1"].pending] == [False]

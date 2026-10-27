@@ -13,7 +13,8 @@ from train_commute_companion.model import (
     OccurrenceKey,
     Severity,
 )
-from train_commute_companion.notify import Notifier
+from train_commute_companion.notify import Notifier, WebhookPort
+from train_commute_companion.webhook import url_id
 
 APP_WARNINGS = frozenset(
     {EventKind.KEY_REJECTED, EventKind.PROFILE_REFUSED, EventKind.STORAGE_FAILED}
@@ -41,6 +42,21 @@ class Obligation:
     fact_key: str
     expires_at: datetime | None
     attempts: int
+    webhook_copied: bool = False  # its webhook copy was made (stored before: made next pass)
+
+
+@dataclass(frozen=True, slots=True)
+class WebhookCopy:
+    """A durable webhook copy of an alert, apart from its phone obligation: a receiver can
+    never change phone delivery. `id` is `webhook.event_id(obligation.id)`; `done` holds the
+    `url_id` of every URL that accepted it, never a URL; `last_try` is the latest pass in which
+    some URL was really tried."""
+
+    id: str
+    obligation: Obligation
+    done: tuple[str, ...] = ()
+    first_try: datetime | None = None
+    last_try: datetime | None = None
 
 
 class LedgerView(Protocol):
@@ -100,3 +116,26 @@ async def deliver(
     if await notifier.send(view.current(o)):
         return None
     return replace(o, attempts=o.attempts + 1)
+
+
+async def post_copy(
+    c: WebhookCopy, view: LedgerView, port: WebhookPort, now: datetime
+) -> WebhookCopy | None:
+    """One try of a webhook copy, judged as its phone obligation is (rule 5). None: finished
+    (every URL accepted, or dropped). Otherwise the copy to keep; the give-up clock starts
+    only with a real request."""
+    verdict = revalidate(c.obligation, view, now)
+    if verdict == "drop":
+        return None
+    if verdict == "hold":
+        return c
+    todo = [u for u in port.urls if url_id(u) not in c.done]
+    if not todo:
+        return None
+    tried, ok = await port.post(view.current(c.obligation), c.id, todo)
+    if not tried:
+        return c
+    done = c.done + tuple(url_id(u) for u in todo if u in ok)
+    if all(url_id(u) in done for u in port.urls):
+        return None
+    return replace(c, done=done, first_try=c.first_try or now, last_try=now)

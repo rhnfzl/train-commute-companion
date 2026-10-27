@@ -6,8 +6,10 @@ from builders import AMS
 
 from train_commute_companion.delivery import (
     Obligation,
+    WebhookCopy,
     deliver,
     pending_journey_warnings,
+    post_copy,
     revalidate,
     zone_report_stops_silent,
 )
@@ -18,6 +20,7 @@ from train_commute_companion.model import (
     OccurrenceKey,
     Severity,
 )
+from train_commute_companion.webhook import event_id, url_id
 
 NOW = datetime(2026, 10, 27, 8, 0, tzinfo=AMS)
 KEY = OccurrenceKey("p", Direction.OUTBOUND, date(2026, 10, 27))
@@ -174,3 +177,49 @@ def test_send_regenerates_the_message_from_current_state():  # rule 5
     kept = asyncio.run(deliver(frozen, Current(), n, NOW))
     assert [e.text for e in n.sent] == [now_text]
     assert kept is not None and kept.event == frozen.event  # the stored fact stays as written
+
+
+class Port:
+    """A stub webhook port: `accept` take it; `rest` are tried by nobody."""
+
+    def __init__(self, urls: tuple[str, ...], accept: set[str], rest: set[str] | None = None):
+        self.urls, self.accept, self.rest = urls, accept, rest or set()
+        self.calls: list[tuple[AlertEvent, str, tuple[str, ...]]] = []
+
+    async def post(self, event, msg_id, urls):
+        self.calls.append((event, msg_id, tuple(urls)))
+        tried = frozenset(u for u in urls if u not in self.rest)
+        return tried, frozenset(u for u in tried if u in self.accept)
+
+
+A, B = "https://hooks.example.invalid/tcc", "https://hooks2.example.invalid/tcc"
+
+
+async def test_post_copy_follows_revalidation():
+    o = ob(EventKind.DELAYED, Severity.SILENT)
+    c = WebhookCopy(event_id(o.id), o)
+    port = Port((A, B), {A})
+    assert await post_copy(c, View(holds=False), port, NOW) is None  # drop
+    assert await post_copy(c, View(quiet=True), port, NOW) is c  # hold
+    assert port.calls == []
+    now_text = "Office A: still late."
+
+    @dataclass
+    class Current(View):
+        def current(self, o: Obligation) -> AlertEvent:
+            return replace(o.event, text=now_text)
+
+    r = await post_copy(c, Current(), port, NOW)
+    assert [(e.text, i, us) for e, i, us in port.calls] == [(now_text, event_id(o.id), (A, B))]
+    assert r is not None and r.done == (url_id(A),) and r.first_try == r.last_try == NOW
+    later = NOW + timedelta(minutes=1)
+    port.accept = set()
+    r2 = await post_copy(r, View(), port, later)  # only B is owed; it fails
+    assert port.calls[-1][2] == (B,)
+    assert r2 is not None and r2.first_try == NOW and r2.last_try == later
+    port.accept = {B}
+    assert await post_copy(r2, View(), port, later) is None  # every URL took it
+    assert await post_copy(c, View(), Port((A, B), {A, B}), NOW) is None
+    resting = Port((A, B), {A, B}, rest={A, B})
+    same = await post_copy(c, View(), resting, NOW)  # nothing tried: the clock does not start
+    assert same is c and same.first_try is None and same.last_try is None

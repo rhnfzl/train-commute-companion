@@ -1,16 +1,20 @@
 """The runtime around the pure core: polling, the independent watchdog, the shared request
 budget, look-ahead, transactional reload and the restart reconcile (7.1, 7.11, 7.12 rules 5,
-10, 11, 12, 14, 21, 22, 5.2, 7.13). The only module with a clock, I/O and the notifier."""
+10, 11, 12, 14, 21, 22, 5.2, 7.13). The only module with a clock, I/O, the notifier and the
+webhook sender."""
 
 import asyncio
 import copy
 import logging
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Literal, Protocol
+
+import httpx
 
 from train_commute_companion.advice import (
     advice_query,
@@ -24,8 +28,10 @@ from train_commute_companion.classify import find_leg
 from train_commute_companion.delivery import (
     JOURNEY_WARNINGS,
     Obligation,
+    WebhookCopy,
     deliver,
     pending_journey_warnings,
+    post_copy,
     zone_report_stops_silent,
 )
 from train_commute_companion.health import PollRecord, WatchedLeg, board_health, cannot_see, offline
@@ -59,11 +65,13 @@ from train_commute_companion.lookahead import (
     LookAheadLedger,
     ProbeResult,
     _mark,
+    carried_ids,
     evaluate,
     forget_pending,
     probe_dates,
     probe_queries,
     rebase_on_edit,
+    render_message,
     reset_on_edit,
     run_lookahead,
     service_date,
@@ -87,7 +95,7 @@ from train_commute_companion.model import (
     UsualJourney,
 )
 from train_commute_companion.news import Fact, all_good, escalations, severity, unsent
-from train_commute_companion.notify import Notifier
+from train_commute_companion.notify import Notifier, WebhookPort
 from train_commute_companion.profile import ProfileError, load_config
 from train_commute_companion.providers.base import (
     AuthError,
@@ -108,6 +116,15 @@ from train_commute_companion.view import (
     moved,
     occurrence_view,
     works_ahead,
+)
+from train_commute_companion.webhook import (
+    WebhookTestResult,
+    body,
+    event_id,
+    headers,
+    probe_body,
+    probe_id,
+    url_id,
 )
 
 log = logging.getLogger(__name__)
@@ -148,6 +165,14 @@ _NAMES_LOCK = JOURNEY_WARNINGS | {EventKind.MISSED_FIRST_TRAIN, EventKind.MISSED
 _BREAKS = ("cancelled:", "cut_short:", "missing:")
 _GONE = (LegState.DONE, LegState.CANCELLED, LegState.RELOCKED)
 _APP = "app"  # profile name on application warnings, which belong to no profile
+# webhooks: one try is cut at TRY_DEADLINE_S in all (httpx.Timeout bounds each read only); a URL
+# that failed rests REST_S; a copy is given up GIVE_UP after its first try (owner decision Q1);
+# at most MAX_COPIES are owed (one try a minute cannot keep up with faster alerts)
+TRY_DEADLINE_S = 5.0
+TIMEOUT = httpx.Timeout(TRY_DEADLINE_S)
+REST_S = 60
+GIVE_UP = timedelta(hours=2)
+MAX_COPIES = 200
 
 PollError = Literal["auth", "rate", "provider", "parse", "timeout"]
 
@@ -279,6 +304,140 @@ def _fresh_state(key: OccurrenceKey, revision: int, baseline: int | None) -> Occ
     )  # fmt: skip
 
 
+_IN_TRY: ContextVar[bool] = ContextVar("tcc_webhook_try", default=False)
+# httpx logs each request URL at INFO and httpcore the headers at DEBUG; a logger's filter does
+# not cover its child loggers, so each one is named
+_QUIETED = ("httpx", "httpcore.connection", "httpcore.http11", "httpcore.http2", "httpcore.proxy")
+
+
+class _InTryFilter(logging.Filter):
+    """Drops every record emitted inside a webhook try: a URL path, a token or a signature
+    must never reach a log. Records of other clients and other tasks pass."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _IN_TRY.get()
+
+
+_FILTER = _InTryFilter()
+
+
+def _install_log_filter() -> None:
+    for name in _QUIETED:
+        lg = logging.getLogger(name)
+        if _FILTER not in lg.filters:
+            lg.addFilter(_FILTER)
+
+
+async def _try_once(
+    client: httpx.AsyncClient, url: str, body: bytes, hdrs: dict[str, str]
+) -> int | str:
+    """One POST: the status, or the error's class name (never its text, which names the URL).
+    The body of the answer is never read: leaving the block closes it, so a trickling or huge
+    answer cannot hold the pass past the deadline."""
+    token = _IN_TRY.set(True)
+    try:
+        async with (
+            asyncio.timeout(TRY_DEADLINE_S),
+            client.stream(
+                "POST", url, content=body, headers=hdrs, timeout=TIMEOUT, follow_redirects=False
+            ) as r,
+        ):
+            return r.status_code
+    except (httpx.HTTPError, TimeoutError) as e:  # TimeoutError: the deadline
+        return type(e).__name__
+    finally:
+        _IN_TRY.reset(token)
+
+
+def _accepted(r: int | str) -> bool:
+    return isinstance(r, int) and 200 <= r <= 299
+
+
+class WebhookPoster:
+    """The webhook port over httpx: one try per URL per call, every URL concurrently; a URL
+    that failed rests REST_S. One warning per outage, never anything about the phone."""
+
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        urls: Sequence[str],
+        secret: str,
+        now: Callable[[], datetime],
+        *,
+        token: str = "",
+        stopped: Callable[[], bool] = lambda: False,
+    ) -> None:
+        _install_log_filter()
+        self._client, self.urls, self._secret, self._now = client, tuple(urls), secret, now
+        self._token, self._stopped = token, stopped
+        self._rest: dict[str, datetime] = {}  # url -> end of its rest, in UTC
+        self._down: set[str] = set()  # urls whose last try failed
+
+    @property
+    def failing(self) -> bool:
+        return bool(self._down)
+
+    async def post(
+        self, event: AlertEvent, msg_id: str, urls: Collection[str]
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        if self._stopped():
+            return frozenset(), frozenset()
+        start = self._now()
+        todo = [u for u in urls if u not in self._rest or _utc(start) >= self._rest[u]]
+        if not todo:
+            return frozenset(), frozenset()
+        b = body(event)
+        hdrs = headers(self._secret, msg_id, int(start.timestamp()), b, self._token)
+        results = await asyncio.gather(*(_try_once(self._client, u, b, hdrs) for u in todo))
+        ok = set()
+        for u, r in zip(todo, results, strict=True):
+            host = httpx.URL(u).host
+            if _accepted(r):
+                ok.add(u)
+                self._rest.pop(u, None)
+                if u in self._down:
+                    self._down.discard(u)
+                    log.info("webhook to %s works again", host)
+                continue
+            self._rest[u] = _utc(start) + timedelta(seconds=REST_S)
+            if u in self._down:
+                log.debug("webhook to %s failed again (%s)", host, r)
+            else:
+                self._down.add(u)
+                log.warning("webhook to %s failed (%s); next try after %d s", host, r, REST_S)
+        return frozenset(todo), frozenset(ok)
+
+
+async def send_webhook_tests(
+    client: httpx.AsyncClient,
+    urls: Sequence[str],
+    secret: str,
+    now: Callable[[], datetime],
+    *,
+    token: str = "",
+) -> tuple[WebhookTestResult, ...]:
+    """Setup test sends (owner decision Q2(b)): a signed loud and a signed silent test to every
+    URL, concurrently. Never stored, never retried, and apart from any `WebhookPoster`'s rest
+    and `failing`."""
+    _install_log_filter()
+
+    async def one(url: str) -> WebhookTestResult:
+        got: list[int | str] = []
+        for sev in (Severity.LOUD, Severity.SILENT):
+            t = now()
+            b = probe_body(sev, t)
+            hdrs = headers(secret, probe_id(sev, t), int(t.timestamp()), b, token)
+            got.append(await _try_once(client, url, b, hdrs))
+        res = WebhookTestResult(httpx.URL(url).host, got[0], got[1])
+        if res.ok:
+            log.info("webhook test to %s: accepted", res.host)
+        else:
+            log.info("webhook test to %s: not accepted (loud %s, silent %s)", res.host, *got)
+        return res
+
+    return tuple(await asyncio.gather(*(one(u) for u in urls)))
+
+
 class _LoggingNotifier:
     def __init__(self, inner: Notifier, log_to: list[AlertEvent]) -> None:
         self._inner, self._log = inner, log_to
@@ -336,7 +495,7 @@ class _View:
             versions = {v.version for v in hist.versions}
             if o.baseline_version is not None and o.baseline_version not in versions:
                 return False
-            return self._look_ahead_holds(o, _dkey(pid, d), day)
+            return self._look_ahead_holds(o, day)
         if o.occurrence is None:
             return True
         s = self._occ(o.occurrence)
@@ -350,38 +509,51 @@ class _View:
             return not zone_report_stops_silent(s, {p.destination(d), zone})
         return True
 
-    def _look_ahead_holds(self, o: Obligation, dk: str, day: date) -> bool:
-        """Rule 5(b): a held look-ahead message is dropped once its journey ended or none of its
-        per-date facts is still the latest one the ledger records. An adoption or its withdrawal
-        keeps the whole message. Reads the stored facts, never o.fact_key: ";" also joins the
-        legs inside a whole-journey fingerprint."""
-        rt = self._rt
-        led = self._s.lookahead.get(dk)
-        fs = () if led is None else led.facts.get(o.id, ())
-        if led is None or not fs or any(k.startswith(("adopt:", "cancel:")) for k, *_ in fs):
-            return True  # stored before facts were kept, or an adoption: judged as before
-        # o.expires_at (the dated journey end) drops it in revalidate; without one (stored before
-        # it was kept, or no baseline) the end is unknown: kept until two days after its date
-        if (
-            o.expires_at is None
-            and day + timedelta(days=2) <= rt._clock.now().astimezone(TZ).date()
-        ):
-            return False
-        per_date = False
-        for k, *_ in fs:
-            parts = k.split("|", 2)  # "<date>|<leg>|warn:<fp>[|loud]" or "...|restored"
+    def _stored_facts(self, o: Obligation) -> tuple[tuple[str, str, bool, bool], ...]:
+        assert o.look_ahead is not None
+        led = self._s.lookahead.get(_dkey(o.look_ahead[0], o.look_ahead[1]))
+        return () if led is None else tuple(led.facts.get(o.id, ()))
+
+    def _live_facts(self, o: Obligation) -> tuple[tuple[str, str, bool, bool], ...] | None:
+        """Rule 5(b): the stored facts of a look-ahead message that still hold: a per-date fact
+        while it is the latest one the ledger records for its leg; an adoption or its
+        withdrawal always (judged by `baseline_version`). None when no facts were stored for it
+        (stored before facts were kept). Reads the stored facts, never o.fact_key: ";" also
+        joins the legs inside a whole-journey fingerprint."""
+        assert o.look_ahead is not None
+        led = self._s.lookahead.get(_dkey(o.look_ahead[0], o.look_ahead[1]))
+        fs = self._stored_facts(o)
+        if led is None or not fs:
+            return None
+        live = []
+        for f in fs:
+            parts = f[0].split("|", 2)  # "<date>|<leg>|warn:<fp>[|loud]" or "...|restored"
             if len(parts) < 3 or not (parts[2].startswith("warn:") or parts[2] == "restored"):
+                live.append(f)
                 continue
-            per_date = True
             date_, leg, rest = parts
             entries = [_mark(x) for x in led.per_date.get(f"{date_}|{leg}", ())]
             last = next((x for x in reversed(entries) if x.startswith(("warn:", "restored:"))), "")
-            if rest == "restored":
-                if last.startswith("restored:"):
-                    return True
-            elif last == rest.removesuffix("|loud"):
-                return True
-        return not per_date
+            if (
+                last.startswith("restored:")
+                if rest == "restored"
+                else last == rest.removesuffix("|loud")
+            ):
+                live.append(f)
+        return tuple(live)
+
+    def _look_ahead_holds(self, o: Obligation, day: date) -> bool:
+        """Rule 5(b): a held look-ahead message is dropped once its journey ended or none of its
+        facts still holds. An adoption or its withdrawal keeps the whole message."""
+        live = self._live_facts(o)
+        if live is None or any(k.startswith(("adopt:", "cancel:")) for k, *_ in live):
+            return True  # stored before facts were kept, or an adoption: judged as before
+        # o.expires_at (the dated journey end) drops it in revalidate; without one (stored before
+        # it was kept, or no baseline) the end is unknown: kept until two days after its date
+        today = self._rt._clock.now().astimezone(TZ).date()
+        if o.expires_at is None and day + timedelta(days=2) <= today:
+            return False
+        return bool(live)
 
     def _still(self, o: Obligation, s: OccurrenceState) -> bool:
         """Rule 5(b): the message's fact, regenerated from the current state and the latest
@@ -471,6 +643,12 @@ class _View:
         return p is not None and _in_quiet(p.alerts.quiet_hours, now)
 
     def current(self, o: Obligation) -> AlertEvent:
+        if o.look_ahead is not None:
+            # rule 5(b): a bundle names only its facts that still hold, from the current profile
+            live, p = self._live_facts(o), _find(self._s.config, o.look_ahead[0])
+            if live and p is not None and len(live) < len(self._stored_facts(o)):
+                kind, text = render_message(p, o.look_ahead[2], live)
+                return replace(o.event, kind=kind, text=text, profile_name=p.name)
         e = self._regenerated(o, self._relocked(o, o.event))
         p = _find(self._s.config, e.profile_id)
         if p is None or p.name == e.profile_name:
@@ -637,6 +815,7 @@ def _prune(st: PersistedState) -> PersistedState:
     live |= {st.config.revision} if st.config else set()
     live |= {o.route_revision for o in st.obligations}
     live |= {o.route_revision for v in st.lookahead.values() for o in v.pending}
+    live |= {c.obligation.route_revision for c in st.webhook_copies}  # read by fact_holds
     snaps = {r: c for r, c in st.config_snapshots.items() if r in live}
     return st if snaps == st.config_snapshots else replace(st, config_snapshots=snaps)
 
@@ -728,8 +907,17 @@ class Runtime:
         clock: Clock,
         known_stations: frozenset[str] | None,
         lookahead_at: time = LOOKAHEAD_AT,
+        webhooks: WebhookPort | None = None,
     ) -> None:
         self._path = profile_path
+        self._webhooks = webhooks
+        # rule 22: the one live record of owed webhook copies, written with every save and never
+        # rebuilt from `_st` (a failed write resets `_st`). `_held_copies`: copies of alerts
+        # held in memory, judged with the held view. `_copied`: obligations whose copy was made
+        # since the last delivery write landed (a failed write resets their `webhook_copied`)
+        self._copies: dict[str, WebhookCopy] = {}
+        self._held_copies: set[str] = set()
+        self._copied: set[str] = set()
         self._lookahead_at = lookahead_at
         self._refusal: str | None = None
         self._started = False
@@ -1066,7 +1254,9 @@ class Runtime:
                 if isinstance(x, _Delta):
                     x.supersede(mine)
         try:
-            self._store.save(write := _prune(self._compose(cand)))
+            composed = self._compose(cand)
+            write = _prune(replace(composed, webhook_copies=tuple(self._copies.values())))
+            self._store.save(write)
         except StorageError as e:
             self._pend(cand, stage, op)
             if self._store_ok:  # one loud storage_failed per outage, held in memory only
@@ -1209,12 +1399,71 @@ class Runtime:
         async with self._sending:
             await self._deliver_pass()
 
+    def _waits(self, o: Obligation) -> bool:
+        """Not judged yet: written before this start (judged once the reconcile ran, rule 11),
+        or judged on observations while its occurrence has no healthy answer (rule 5b)."""
+        if self._since is not None and _utc(o.event.created_at) < _utc(self._since):
+            return True
+        k = None if o.occurrence is None else _okey(o.occurrence)
+        return o.event.kind in _OBSERVED and k in self._st.occurrences and k not in self._boards
+
+    def _drop_copy(self, cid: str) -> None:
+        self._copies.pop(cid, None)
+        self._held_copies.discard(cid)
+
+    def _copy(self, o: Obligation) -> bool:
+        """The webhook copy of an obligation handed to the phone; True when one was made."""
+        self._copied.add(o.id)
+        cid = event_id(o.id)
+        if cid in self._copies:
+            return False
+        if len(self._copies) >= MAX_COPIES:  # overload: a never-tried copy goes first (Q1)
+            pool = [c for c in self._copies.values() if c.first_try is None]
+            old = min(
+                pool or self._copies.values(), key=lambda c: _utc(c.obligation.event.created_at)
+            )
+            self._drop_copy(old.id)
+            log.warning("dropped a webhook copy: more than %d owed", MAX_COPIES)
+        self._copies[cid] = WebhookCopy(cid, o)
+        if o.id in self._held:
+            self._held_copies.add(cid)
+        return True
+
+    def _merge_copy(self, port: WebhookPort, c: WebhookCopy, r: WebhookCopy | None) -> None:
+        """A copy's try result, merged into what is there now: `act`, a poll or the look-ahead
+        run can change the copies while the POST awaits."""
+        cur = self._copies.get(c.id)
+        if cur is None:
+            return  # skipped or given up meanwhile: never restored
+        if cur is c:
+            if r is None:
+                self._drop_copy(c.id)
+            elif r is not c:
+                self._copies[c.id] = r
+            return
+        if r is None:  # every URL `c` still owed took the text sent at the try
+            self._drop_copy(c.id)
+            return
+        tries = [t for t in (cur.last_try, r.last_try) if t is not None]
+        merged = replace(
+            cur,
+            done=cur.done + tuple(u for u in r.done if u not in cur.done),
+            first_try=cur.first_try or r.first_try,
+            last_try=max(tries, key=_utc, default=None),
+        )
+        if all(url_id(u) in merged.done for u in port.urls):
+            self._drop_copy(c.id)
+        else:
+            self._copies[c.id] = merged
+
     async def _deliver_pass(self) -> None:
         view = _View(self)  # reads the state as it is when each message is judged (rule 5)
         held_view = _View(self, held=True)
         finished: set[str] = set()
         kept: dict[str, Obligation] = {}
         told: list[tuple[Obligation, bool]] = []  # finished LEAVE_NOW, sent (else dropped)
+        port = self._webhooks
+        copies = False  # the webhook copies changed
         try:
             for o in (*self._st.obligations, *self._held.values(), *self._notes.values()):
                 if o.id in self._gone:
@@ -1222,20 +1471,17 @@ class Runtime:
                 mem = o.id in self._held or o.id in self._notes
                 if not mem and all(x.id != o.id for x in self._st.obligations):
                     continue  # removed by a change written while an earlier send awaited
-                if self._since is not None and _utc(o.event.created_at) < _utc(self._since):
-                    continue  # written before this start: judged once the reconcile ran (r11)
-                k = None if o.occurrence is None else _okey(o.occurrence)
-                if (
-                    o.event.kind in _OBSERVED
-                    and k in self._st.occurrences
-                    and k not in self._boards
-                ):
-                    continue  # judged on observations: waits for a healthy answer (rule 5b)
+                if self._waits(o):
+                    continue
+                if port is not None and not o.webhook_copied and o.id not in self._copied:
+                    copies |= self._copy(o)
                 # a fresh clock per message: a slow send must not leave the next one judged early
                 n = len(self.events_log)  # the logging notifier appends what it sent
                 v = held_view if o.id in self._held else view
                 r = await deliver(o, v, self._notifier, self._clock.now())
                 sent = len(self.events_log) > n
+                if r is not None and port is not None and not r.webhook_copied:
+                    r = replace(r, webhook_copied=True)
                 if r is None and o.event.kind is EventKind.LEAVE_NOW:
                     told.append((o, sent))
                 # where it is now: a write landing during the send may have written a held one
@@ -1252,15 +1498,50 @@ class Runtime:
                 elif r != o:
                     kept[o.id] = r
         finally:  # each acknowledged send is recorded, also when shutdown cancels the pass
-            self._delivered(finished, kept, told)
+            self._delivered(finished, kept, told, copies)
+        if port is None:
+            return
+        # the phone outcomes are applied first: a look-ahead run or a poll while a POST awaits
+        # must not take a sent alert for a pending one
+        before = dict(self._copies)
+        try:
+            await self._post_copies(port, view, held_view)
+        finally:  # a copy that ended or was tried is recorded, also when shutdown cancels
+            if self._copies != before:
+                self._delivered(set(), {}, (), True)
+
+    async def _post_copies(self, port: WebhookPort, view: _View, held_view: _View) -> None:
+        """After the phone sends: each owed copy once. Never tried first, oldest first, then
+        least recently tried first, so a failing URL's one try per rest goes to every copy in
+        turn. The give-up check comes before every wait (owner decision Q1)."""
+        for c in sorted(
+            self._copies.values(),
+            key=lambda c: (
+                c.first_try is not None,
+                _utc(c.last_try or c.obligation.event.created_at),
+                _utc(c.obligation.event.created_at),
+            ),
+        ):
+            if self._copies.get(c.id) is not c:
+                continue  # removed or replaced since
+            now = self._clock.now()
+            if c.first_try is not None and _utc(now) - _utc(c.first_try) >= GIVE_UP:
+                self._drop_copy(c.id)
+                log.warning("gave up a webhook copy after 2 h")
+                continue
+            if self._waits(c.obligation):
+                continue
+            v = held_view if c.id in self._held_copies else view
+            self._merge_copy(port, c, await post_copy(c, v, port, now))
 
     def _delivered(
         self,
         finished: set[str],
         kept: Mapping[str, Obligation],
         told: Sequence[tuple[Obligation, bool]],
+        copies: bool = False,
     ) -> None:
-        if not finished and not kept and not told:
+        if not finished and not kept and not told and not copies:
             return
 
         def outcome(st: PersistedState) -> PersistedState:
@@ -1275,7 +1556,8 @@ class Runtime:
         self._st = outcome(self._st)
         self._archive(self._clock.now())
         self._gone |= finished
-        self._save(stage=False, op=outcome)
+        if self._save(stage=False, op=outcome):
+            self._copied.clear()  # their `webhook_copied` is written
 
     # --- provider access under the shared budget ---
 
@@ -1650,6 +1932,10 @@ class Runtime:
         keys = [target.key]
         if isinstance(action, NotTravelling) and action.whole_day:
             keys = list(whole_day_keys(p, target.key))  # its own route revision's day_offset
+        if isinstance(action, NotTravelling):  # written with the skip: an archived occurrence
+            for c in list(self._copies.values()):  # would no longer read as skipped
+                if c.obligation.event.kind in JOURNEY_WARNINGS and c.obligation.occurrence in keys:
+                    self._drop_copy(c.id)
         cfg = self._st.config
         revision = cfg.revision if cfg else target.route_revision
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
@@ -2102,6 +2388,7 @@ class Runtime:
             log.info("look-ahead for %s discarded: configuration or baseline changed", dk)
             return
         new_hist, new_ledger, _ = out
+        new_ledger = self._copies_through(p, d, stored, current, new_hist, new_ledger)
         mine = {o.id for o in stored.pending}
         obligations = (
             *(o for o in self._st.obligations if o.id not in mine),
@@ -2114,6 +2401,61 @@ class Runtime:
             obligations=tuple(obligations),
         )
         self._save(keep=True, stage=False)
+
+    def _copies_through(
+        self,
+        p: Profile,
+        d: Direction,
+        stored: LookAheadLedger,
+        current: BaselineHistory,
+        new_hist: BaselineHistory,
+        new_ledger: LookAheadLedger,
+    ) -> LookAheadLedger:
+        """A look-ahead run as owed webhook copies see it (rules 5, 18): a copy carried by
+        `retire` follows its message, a copy whose bundled adoption was withdrawn after its
+        phone send keeps its other facts, and every owed copy keeps the facts it is judged on."""
+        was = {o.id: o for o in stored.pending}
+        pending = {o.id: o for o in new_ledger.pending}
+        for old, new in carried_ids(stored, new_ledger).items():
+            if old not in was or new not in pending:
+                continue
+            n = replace(pending[new], webhook_copied=True)
+            c = next((c for c in self._copies.values() if c.obligation.id == old), None)
+            if c is not None:  # the same copy: its webhook-id, receipts and tries stay
+                self._copies[c.id] = replace(c, obligation=n)
+                pending[new] = n
+            elif was[old].webhook_copied:  # its copy ended: no second one
+                pending[new] = n
+        rewritten: dict[str, tuple[tuple[str, str, bool, bool], ...]] = {}
+        gone = {v.version for v in current.versions} - {v.version for v in new_hist.versions}
+        for c in list(self._copies.values()):
+            o = c.obligation
+            if o.look_ahead is None or o.look_ahead[:2] != (p.id, d) or o.id in was:
+                continue
+            if o.baseline_version not in gone:
+                continue
+            fs = stored.facts.get(o.id, ())
+            rest = tuple(f for f in fs if f[0] != f"adopt:{o.baseline_version}")
+            if not rest or len(rest) == len(fs):
+                continue  # only the adoption (dropped at its next try), or none bundled
+            day = o.look_ahead[2]
+            kind, text = render_message(p, day, rest)
+            b = new_hist.in_force(day)
+            o = replace(
+                o,
+                baseline_version=b.version if b else None,
+                fact_key=";".join(k for k, *_ in rest),
+                event=replace(o.event, kind=kind, text=text),
+            )
+            self._copies[c.id] = replace(c, obligation=o)
+            rewritten[o.id] = rest
+        owed = {c.obligation.id for c in self._copies.values()}
+        carry = {i: f for i, f in stored.facts.items() if i in owed}
+        return replace(
+            new_ledger,
+            pending=tuple(pending.values()),
+            facts={**carry, **rewritten, **new_ledger.facts},
+        )
 
     # --- start, reconcile and the loops ---
 
@@ -2136,6 +2478,11 @@ class Runtime:
             loaded, lost = None, str(e)
         if loaded is not None:
             self._st = self._migrated(loaded)
+            if self._webhooks is not None:
+                self._copies = {c.id: c for c in loaded.webhook_copies}
+            elif n := len(loaded.webhook_copies):
+                # nothing could post them, and a later poster would get stale alerts
+                log.info("dropped %d webhook copies: webhooks are off", n)
         self._st = self._durable = replace(self._st, started_before=True)
         if lost is not None:  # rule 22: fresh state, loud, and a write clears "state lost"
             self._app_warning(EventKind.STORAGE_FAILED, f"saved state was lost ({lost}).", now)
