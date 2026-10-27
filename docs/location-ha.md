@@ -29,6 +29,6 @@ Station zones are not set up by hand. The companion takes each station's positio
 
 ## What it does
 
-Leaving a zone, entering one, and reports from inside a station zone are sent as they happen. Reports from one zone are sent at most once every 2 minutes, because each one costs a live NS request. A state that is `unavailable` or `unknown`, has no coordinates, or repeats the previous coordinates is ignored. Starting Home Assistant inside a zone sends nothing.
+Leaving a zone, entering one, and reports from inside a station zone are sent as they happen. Reports from one zone are sent at most once every 2 minutes, because each one costs a live NS request. A state that is `unavailable` or `unknown`, has no coordinates, repeats the previous coordinates, or has a `gps_accuracy` larger than the station radius is ignored. Starting Home Assistant inside a zone sends nothing.
 
 Location only adds alerts. It can make a warning arrive sooner, or tell the companion you are still at a station after your train left. It never removes or delays a warning that times alone would give.

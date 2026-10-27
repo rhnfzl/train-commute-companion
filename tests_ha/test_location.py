@@ -210,6 +210,16 @@ async def test_station_radius_comes_from_profile(hass):
     assert await spied(h) == [("UT", "enter")]
 
 
+async def test_fix_less_accurate_than_the_station_radius_is_ignored(hass):  # 8, rule 6
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    set_person(hass, 52.1, 5.1, gps_accuracy=4000)  # centred on UT, but anywhere for kilometres
+    assert await spied(h) == []
+    set_person(hass, 52.1, 5.1, gps_accuracy=20)  # the same point, now accurate
+    assert await spied(h) == [("UT", "enter")]
+
+
 async def test_zones_for_names_places_by_role_and_skips_missing_entities(hass):
     h = await setup_tcc(hass, VIA_UT)
     profile = h.entry.runtime_data.coordinator.data.profiles[0]

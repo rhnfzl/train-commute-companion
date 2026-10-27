@@ -38,6 +38,10 @@ def _fix(state: State | None) -> tuple[float, float] | None:
     return None if lat is None or lon is None else (lat, lon)
 
 
+def _acc(state: State) -> float | None:
+    return _num(state.attributes.get("gps_accuracy"))
+
+
 def zones_for(
     hass: HomeAssistant,
     profile: Profile,
@@ -136,18 +140,22 @@ class LocationTracker:
             self._gen[pid] = gen = object()
             state = self._hass.states.get(entity)  # 7.2: the state found now only seeds the zone
             if (pos := _fix(state)) is not None and state is not None:
-                self._spawn(self._handle(pid, gen, epoch, pos, state.last_updated, seed=True), pid)
+                at, acc = state.last_updated, _acc(state)
+                self._spawn(self._handle(pid, gen, epoch, pos, at, acc, seed=True), pid)
 
     @callback
     def _on_change(self, event: Event[EventStateChangedData]) -> None:
         new, old = event.data["new_state"], event.data["old_state"]
         pos = _fix(new)
+        if new is None or pos is None:
+            return
         # an unchanged fix is no news: last_updated also moves on an attribute change (rule 7)
-        if new is None or pos is None or (old is not None and _fix(old) == pos):
+        if old is not None and _fix(old) == pos and _acc(old) == _acc(new):
             return
         for pid, (entity, epoch) in self._tracked.items():
             if entity == event.data["entity_id"]:
-                self._spawn(self._handle(pid, self._gen[pid], epoch, pos, new.last_updated), pid)
+                at = new.last_updated
+                self._spawn(self._handle(pid, self._gen[pid], epoch, pos, at, _acc(new)), pid)
 
     def _spawn(self, coro: Coroutine[Any, Any, None], pid: str) -> None:
         task = self._entry.async_create_task(self._hass, coro, f"tcc location {pid}")
@@ -172,6 +180,7 @@ class LocationTracker:
         epoch: int,
         pos: tuple[float, float],
         at: datetime,
+        acc: float | None,
         *,
         seed: bool = False,
     ) -> None:
@@ -193,6 +202,8 @@ class LocationTracker:
                 if data.location_epochs.get(pid, 0) != epoch:  # a lagging view drops it too
                     return
                 source = profile.location
+                if acc is not None and acc > source.station_radius_m:
+                    return  # it cannot place the user in a station circle (8, rule 6)
                 positions = await host.positions()
                 if not live():
                     return
