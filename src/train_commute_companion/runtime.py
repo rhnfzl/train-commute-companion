@@ -1053,13 +1053,15 @@ class Runtime:
         recomputes it (`keep`, or its own `op`) to replay onto whatever is written next. Its new
         alerts go from memory. A first configuration runs anyway: nothing else could."""
         cand = self._st if cand is None else cand
+        # only what this change did: restaging carries other waiting changes it must not replace
+        mine = _Delta(self._durable, cand) if op is None and keep else None
         if self._base is not None and cand is not self._base:
             cand = self._restage(self._durable, cand)  # what waits on other occurrences too
-        if op is None and keep:
-            op = _Delta(self._durable, cand)
+        if mine is not None:
+            op = mine
             for x in self._ops:  # a newer action supersedes an older one (rule 22)
                 if isinstance(x, _Delta):
-                    x.supersede(op)
+                    x.supersede(mine)
         try:
             self._store.save(write := _prune(self._compose(cand)))
         except StorageError as e:

@@ -666,6 +666,21 @@ async def test_choice_after_an_unwritten_skip_is_travelling(tmp_path):
     assert rig.occ().lock.legs[0].train == LATER.legs[0].train
 
 
+async def test_lookahead_written_after_a_failed_poll_keeps_an_unwritten_skip(tmp_path):
+    rig = await started(tmp_path)  # rule 22: a look-ahead write replaces no user action
+    rig.store.fail = True
+    await rig.rt.act("p1", NotTravelling(None, False))
+    rig.clock.set("07:52")
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    await rig.rt.poll_once()  # fails too, staging a replacement journey
+    rig.store.fail = False
+    await rig.rt.lookahead_once()  # storage is back through a look-ahead write
+    assert rig.store.load().occurrences["p1|outbound|2026-10-27"].not_travelling
+    assert rig.occ().not_travelling
+    await rig.restart()
+    assert rig.occ().not_travelling
+
+
 async def _three_lookahead_days(rig: Rig, fail_third: bool) -> None:
     rig.provider.world = every_day()
     await rig.rt.start()
