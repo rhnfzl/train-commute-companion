@@ -172,21 +172,59 @@ def needed(
 
 
 def still_advised(
-    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, train: TrainId
+    s: OccurrenceState,
+    ctx: Ctx,
+    answer: ProviderAnswer,
+    train: TrainId,
+    reference: datetime | None,
 ) -> Connection | None:
     """Rule 5(b): the advised train's connection as `answer` shows it now, while advice is
-    still gated and the connection still passes `is_good` with the current catch."""
+    still gated, waiting is still bad and the train still saves enough and passes `is_good`
+    with the current catch (so its current departure minus buffer is its expiry)."""
     if not _gate(s, ctx):
         return None
+    found = _candidates(s, ctx, answer, reference)
+    return next((c for _, c in found if c.legs[0].train == train), None)
+
+
+def _candidates(
+    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, reference: datetime | None
+) -> list[tuple[timedelta, Connection]]:
+    """(saving, connection) for every earlier first train that beats waiting by the minimum
+    saving and passes `is_good` with the current catch; empty while waiting is not bad (7.6)."""
+    prof, d = ctx.profile, ctx.direction
+    usual = prof.journey(d)
+    # what waiting means: the lock's first train, else the effective usual first departure
+    wait_from = (
+        s.lock.legs[0].train.planned_departure if s.lock else ctx.schedule.first_departure
+    ).astimezone(UTC)
     kw = _kw(s, ctx)
-    return next(
-        (
-            c
-            for c in answer.connections
-            if c.legs[0].train == train and is_good(c, answer, **kw).ok  # type: ignore[arg-type]
-        ),
-        None,
-    )
+    ride, broken, bad = _judge(s, ctx, answer, reference)
+    ride_arr = None if ride is None else _arrival(ride)
+    if ride is not None:
+        wait_from = _departure(ride)
+    if broken:
+        # board 59: what you ride if you wait is the first later good train, not the cancelled one
+        later = [c for c in answer.connections if c is not ride and _departure(c) >= wait_from]
+        rep, _ = choose_replacement(
+            answer,
+            usual_remaining=usual.transfers,
+            candidates=later,
+            **kw,  # type: ignore[arg-type]
+        )
+        ride_arr = None if rep is None else _arrival(rep)
+    found: list[tuple[timedelta, Connection]] = []
+    if bad:
+        need = timedelta(minutes=prof.alerts.earlier_train_min_saving_min)
+        for c in answer.connections:
+            arr = _arrival(c)
+            if arr is None or _departure(c) >= wait_from:
+                continue
+            saving = (ride_arr or _FAR) - arr  # no baseline: soonest arrival wins
+            if saving < need or not is_good(c, answer, **kw).ok:  # type: ignore[arg-type]
+                continue
+            found.append((saving, c))
+    return found
 
 
 def leave_now_text(c: Connection, tz: tzinfo | None) -> str:
@@ -210,44 +248,11 @@ def advise(
     if not _gate(s, ctx):
         return record, []
     prof, d = ctx.profile, ctx.direction
-    usual = prof.journey(d)
-    # what waiting means: the lock's first train, else the effective usual first departure
-    wait_from = (
-        s.lock.legs[0].train.planned_departure if s.lock else ctx.schedule.first_departure
-    ).astimezone(UTC)
-    kw = _kw(s, ctx)
-    catch = catch_from_state(s, usual.buffer_min, ctx.now)
-    ride, broken, bad = _judge(s, ctx, answer, usual_planned_arrival)
-    ride_arr = None if ride is None else _arrival(ride)
-    if ride is not None:
-        wait_from = _departure(ride)
-    if broken:
-        # board 59: what you ride if you wait is the first later good train, not the cancelled one
-        later = [c for c in answer.connections if c is not ride and _departure(c) >= wait_from]
-        rep, _ = choose_replacement(
-            answer,
-            usual_remaining=usual.transfers,
-            candidates=later,
-            **kw,  # type: ignore[arg-type]
-        )
-        ride_arr = None if rep is None else _arrival(rep)
-    best: tuple[timedelta, Connection] | None = None
-    if bad:
-        need = timedelta(minutes=prof.alerts.earlier_train_min_saving_min)
-        for c in answer.connections:
-            arr = _arrival(c)
-            if arr is None or _departure(c) >= wait_from:
-                continue
-            saving = (ride_arr or _FAR) - arr  # no baseline: soonest arrival wins
-            if saving < need or not is_good(c, answer, **kw).ok:  # type: ignore[arg-type]
-                continue
-            # largest saving; a tie goes to the earlier train
-            if (
-                best is None
-                or saving > best[0]
-                or (saving == best[0] and _departure(c) < _departure(best[1]))
-            ):
-                best = (saving, c)
+    catch = catch_from_state(s, prof.journey(d).buffer_min, ctx.now)
+    cands = _candidates(s, ctx, answer, usual_planned_arrival)
+    # largest saving; a tie goes to the earlier train
+    best = min(cands, key=lambda x: (-x[0], _departure(x[1])), default=None)
+    bad = needed(s, ctx, answer, usual_planned_arrival)
     advised = record.advised_train
     if best is not None:
         train = best[1].legs[0].train

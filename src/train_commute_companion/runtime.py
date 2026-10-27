@@ -406,11 +406,12 @@ class _View:
             if a is None or ctx is None or origin is None:
                 return False
             if e.kind is EventKind.LEAVE_NOW:
+                ref = rt._usual_arrival(s, ctx, origin)
                 return (
                     e.train is not None
                     and a.advised_train == e.train
                     and not a.withdrawn
-                    and still_advised(s, ctx, origin, e.train) is not None
+                    and still_advised(s, ctx, origin, e.train, ref) is not None
                 )
             return a.withdrawn and not needed(s, ctx, origin, rt._usual_arrival(s, ctx, origin))
         return True  # choose_refused: the answer to a command the user gave, true as said
@@ -470,7 +471,11 @@ class _View:
         body = None
         if e.kind is EventKind.LEAVE_NOW:
             origin = _origin_answer(answers, ctx)
-            c = None if origin is None else still_advised(s, ctx, origin, e.train)
+            c = (
+                None
+                if origin is None
+                else still_advised(s, ctx, origin, e.train, rt._usual_arrival(s, ctx, origin))
+            )
             body = None if c is None else leave_now_text(c, ctx.now.tzinfo)
         elif e.kind is EventKind.NEXT_CONNECTION:
             pool = _pool(answers)
@@ -760,11 +765,8 @@ class Runtime:
     # --- the serialised writer: state, ledger and obligations in one save (rule 5, 22) ---
 
     def _obligation(self, e: AlertEvent, s: OccurrenceState | None, now: datetime) -> Obligation:
-        expires = None
-        if e.kind is EventKind.LEAVE_NOW and e.train is not None and s is not None:
-            p = self._profile_for(s)
-            buffer = p.journey(s.key.direction).buffer_min if p else 0
-            expires = _utc(e.train.planned_departure) - timedelta(minutes=buffer)
+        # a LEAVE_NOW has no fixed expiry: still_advised checks its current departure minus
+        # buffer at send time (is_good), so a delayed escape train still catchable goes out
         if s is not None:
             revision = s.route_revision
         else:
@@ -777,7 +779,7 @@ class Runtime:
             revision,
             None if s is None else s.baseline_version,
             e.key,
-            expires,
+            None,
             0,
         )
 
@@ -1780,7 +1782,11 @@ class Runtime:
                 if x.startswith(_SENT):
                     keys.setdefault(_LIVE + x[len(_SENT) :], "1")
             occs[k] = self._frozen(replace(s, alert_keys=keys))
-        return replace(st, occurrences=occs)
+        obligations = tuple(  # stored with the planned departure frozen as expiry
+            replace(o, expires_at=None) if o.event.kind is EventKind.LEAVE_NOW else o
+            for o in st.obligations
+        )
+        return replace(st, occurrences=occs, obligations=obligations)
 
     async def run_forever(self, *, started: bool = False) -> None:
         """Starts (unless `started`) with the watchdog already running, so a slow reconcile is

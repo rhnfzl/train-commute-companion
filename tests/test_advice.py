@@ -3,7 +3,7 @@ from datetime import date, datetime
 
 from builders import AMS, make_connection, make_leg
 
-from train_commute_companion.advice import advise
+from train_commute_companion.advice import advise, still_advised
 from train_commute_companion.lifecycle import (
     Commitment,
     Ctx,
@@ -148,6 +148,15 @@ def test_no_advice_when_earlier_train_cannot_be_caught():
     c = ctx(at("17:20"))  # 17:22 train is inside the 5 min buffer
     _, events = advise(fresh(c), c, answer(EARLY, SLOW), USUAL_ARRIVAL)
     assert events == []
+
+
+def test_still_advised_needs_the_saving_too():
+    c = ctx(at("17:00"))
+    train = EARLY.legs[0].train
+    assert still_advised(fresh(c), c, answer(EARLY, SLOW), train, USUAL_ARRIVAL) == EARLY
+    # the advised train now arrives 18:48, 6 min after waiting's ride (18:42): no longer advised
+    slower = conn("17:22", "17:56", "1000", delay_arr=52)
+    assert still_advised(fresh(c), c, answer(slower, SLOW), train, USUAL_ARRIVAL) is None
 
 
 def test_buffer_boundary_exactly_catchable_one_minute_short_not():

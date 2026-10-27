@@ -592,6 +592,55 @@ async def test_held_leave_now_states_the_current_departure(tmp_path):
     assert len(leave) == 1 and "leaves at 17:26" in leave[0]
 
 
+async def test_held_leave_now_is_dropped_when_its_saving_is_gone(tmp_path):
+    rig = Rig(tmp_path, "16:54")
+    rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
+    rig.provider.world = escape_world()
+    await rig.rt.start()
+    rig.clock.set("16:56")
+    # the usual stays absent (bad); the escape train now arrives 19:06, after waiting's 19:00
+    slow = make_leg("RTD", "AAA", "17:22", "18:00", number="7922", delay_arr=66)
+    rig.provider.world = [make_connection([slow]), *escape_world()[1:]]
+    await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    assert EventKind.LEAVE_NOW not in kinds(rig.rt.events_log)
+    assert not any(o.event.kind is EventKind.LEAVE_NOW for o in rig.rt.state.obligations)
+
+
+async def test_held_leave_now_for_a_delayed_train_still_goes_out(tmp_path):
+    rig = Rig(tmp_path, "16:54")
+    rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
+    rig.provider.world = escape_world()
+    await rig.rt.start()
+    late = make_leg("RTD", "AAA", "17:22", "18:00", number="7922", delay_dep=6, delay_arr=6)
+    rig.provider.world = [make_connection([late]), *escape_world()[1:]]
+    rig.clock.set("17:19")  # planned 17:22 minus the 5 min buffer, plus 2 min; leaves 17:28
+    await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    leave = [e.text for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW]
+    assert len(leave) == 1 and "leaves at 17:28" in leave[0]
+
+
+async def test_stored_leave_now_loses_its_frozen_expiry_on_load(tmp_path):
+    rig = Rig(tmp_path, "16:54")
+    rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
+    rig.provider.world = escape_world()
+    await rig.rt.start()
+    st = rig.rt.state  # an older store froze the planned departure minus buffer as expiry
+    frozen = tuple(replace(o, expires_at=at("17:17")) for o in st.obligations)
+    rig.store.save(replace(st, obligations=frozen))
+    late = make_leg("RTD", "AAA", "17:22", "18:00", number="7922", delay_dep=6, delay_arr=6)
+    rig.provider.world = [make_connection([late]), *escape_world()[1:]]
+    rig.clock.set("17:19")
+    rt = await rig.restart()
+    rig.notifier.fails = lambda e: False
+    await rt.watchdog_once()
+    leave = [e.text for e in rig.notifier.attempts if e.kind is EventKind.LEAVE_NOW]
+    assert leave[-1:] and "leaves at 17:28" in leave[-1]
+
+
 async def test_held_all_good_dropped_once_a_train_is_cancelled(tmp_path):
     rig = Rig(tmp_path)
     rig.notifier.fails = lambda e: e.kind is EventKind.ALL_GOOD
