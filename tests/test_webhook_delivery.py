@@ -662,10 +662,10 @@ class Mixed(Provider):
         return ProviderAnswer(q, tuple(make_connection(x) for x in legs), self.clock.now())
 
 
-async def mixed_rig(tmp: Path, urls: tuple[str, ...] = (URL,)) -> WRig:
+async def mixed_rig(tmp: Path, urls: tuple[str, ...] = (URL,), sync: bool = True) -> WRig:
     """05:40 on DAY, a confirmed baseline at 08:12; the next look-ahead run tells tomorrow's
     adoption bundled with a works warning."""
-    rig = WRig(tmp, "05:40", urls=urls, text=P1)
+    rig = WRig(tmp, "05:40", urls=urls, text=P1, sync=sync)
     rig.provider = Mixed(rig.clock, [])
     rig.rt = rig.new()
     await rig.rt.start()
@@ -1144,6 +1144,49 @@ async def test_carried_bundle_keeps_an_acceptance_the_store_missed(tmp_path):  #
     assert n.id != o.id and n.webhook_copied
     rig.notifier.fails = lambda e: False
     await tick(rig)
+    assert [e.key for e in rig.rt.events_log].count(n.event.key) == 1  # the phone, once
+    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)]  # the receiver, never again
+
+
+async def test_background_write_keeps_the_mark_of_an_in_flight_phone_send(tmp_path):  # rule 22
+    rig = await mixed_rig(tmp_path, sync=False)
+    phone = asyncio.Event()
+    entered = asyncio.Event()
+    send = rig.notifier.send
+
+    async def held(e: AlertEvent) -> bool:  # the bundle's phone send waits, then fails
+        if WARNING in e.text and not phone.is_set():
+            entered.set()
+            await phone.wait()
+            return False
+        return await send(e)
+
+    rig.notifier.send = held  # type: ignore[method-assign]
+    rig.end.gate = asyncio.Event()
+    rig.end.gate_if = lambda b: b["kind"] == "key_rejected"
+    alert(rig, 1)
+    await rig.rt.watchdog_once()
+    await asyncio.wait_for(rig.end.entered.wait(), 2)  # a webhook pass is in flight
+    await rig.rt.watchdog_once()  # queues a second round of it
+    run = asyncio.create_task(rig.rt.lookahead_once())
+    await asyncio.wait_for(entered.wait(), 2)  # the bundle's copy is made, its phone send waits
+    o = bundle_of(rig)
+    rig.end.gate.set()
+    # the queued round takes the bundle and writes while the phone send waits
+    await asyncio.wait_for(rig.rt.webhooks_idle(), 2)
+    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)] and rig.rt._copies == {}
+    await withdraw(rig)  # retire carries the warning while the phone send is in flight
+    phone.set()
+    await run
+    await rig.rt.webhooks_idle()
+    (n,) = [
+        x
+        for x in rig.rt.state.obligations
+        if x.look_ahead == ("p1", OUT, WED) and WARNING in x.event.text
+    ]
+    assert n.id != o.id and n.webhook_copied
+    await tick(rig)
+    await rig.rt.webhooks_idle()
     assert [e.key for e in rig.rt.events_log].count(n.event.key) == 1  # the phone, once
     assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)]  # the receiver, never again
 

@@ -1588,9 +1588,14 @@ class Runtime:
         if not finished and not kept and not told and not copies:
             return
 
+        marks = set(self._copied)  # written too: a phone send in flight is not in `kept` yet
+
         def outcome(st: PersistedState) -> PersistedState:
             def survive(xs: Iterable[Obligation]) -> tuple[Obligation, ...]:
-                return tuple(kept.get(o.id, o) for o in xs if o.id not in finished)
+                return tuple(
+                    replace(o, webhook_copied=True) if o.id in marks else o
+                    for o in (kept.get(x.id, x) for x in xs if x.id not in finished)
+                )
 
             # look-ahead messages live in their ledger too, so a delivered one counts as told
             ledgers = {k: replace(v, pending=survive(v.pending)) for k, v in st.lookahead.items()}
@@ -1600,8 +1605,8 @@ class Runtime:
         self._st = outcome(self._st)
         self._archive(self._clock.now())
         self._gone |= finished
-        if self._save(stage=False, op=outcome):
-            self._copied.clear()  # their `webhook_copied` is written
+        if self._save(stage=False, op=outcome):  # held messages are not in the write: kept
+            self._copied = {i for i in self._copied if i in self._held or i in self._notes}
 
     # --- provider access under the shared budget ---
 
