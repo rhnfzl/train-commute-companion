@@ -31,6 +31,7 @@ from pytest_homeassistant_custom_component.common import (
 from custom_components.train_commute_companion import async_setup_entry, async_unload_entry
 from custom_components.train_commute_companion import coordinator as coordinator_mod
 from custom_components.train_commute_companion import host as host_mod
+from custom_components.train_commute_companion import notifier as notifier_mod
 from custom_components.train_commute_companion.const import CONF_STARTED, DOMAIN, REFRESH_S
 from custom_components.train_commute_companion.coordinator import TccCoordinator
 from train_commute_companion import store as core_store
@@ -227,11 +228,28 @@ async def test_undelivered_alert_raises_notify_failing_repair(hass):
     await coordinator.async_refresh()
     issue = ir.async_get(hass).async_get_issue(DOMAIN, "notify_failing")
     assert issue is not None and issue.translation_placeholders == {"service": NOTIFY}
-    back = async_mock_service(hass, "notify", NOTIFY)
+    back = harness.fake_phone(hass, harness.PATCH)
     await h.host.run(lambda rt: rt.watchdog_once())
     await coordinator.async_refresh()
     assert any("profile change refused" in c.data["message"] for c in back)
     assert ir.async_get(hass).async_get_issue(DOMAIN, "notify_failing") is None
+
+
+@pytest.mark.parametrize("upgrade", [False, True])
+async def test_vanished_phone_target_raises_notify_failing(hass, upgrade):
+    # upgrade: the stored target is a user-made mobile_app service, never a phone
+    stray = async_mock_service(hass, "notify", "mobile_app_fake")
+    if upgrade:
+        harness.PATCH.setattr(harness, "NOTIFY", "mobile_app_fake")
+    h = await setup_tcc(hass, PROFILE)
+    before = len(h.pushes)
+    if not upgrade:  # the phone is gone: HA no longer maps the service to a mobile_app entry
+        harness.PATCH.setattr(notifier_mod, "mobile_target", lambda hass, service: None)
+    write_profiles(hass, OVERLAP)
+    await h.host.run(lambda rt: rt.check_file())
+    await tick(hass, REFRESH_S + 1)
+    assert ir.async_get(hass).async_get_issue(DOMAIN, "notify_failing") is not None
+    assert not stray and len(h.pushes) == before
 
 
 async def test_dead_runtime_schedules_reload(hass):

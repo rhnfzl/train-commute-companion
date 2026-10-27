@@ -1,10 +1,12 @@
 """Drives a real config entry with a scripted NS world and a fake clock that HA time follows."""
 
+import asyncio
 import os
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from builders import AMS, ONE_TRANSFER, only_occurrence  # noqa: F401  (re-exported for tests)
@@ -15,6 +17,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 from test_runtime import FakeClock, Provider, at
 
 from custom_components.train_commute_companion import host as host_mod
+from custom_components.train_commute_companion import notifier as notifier_mod
 from custom_components.train_commute_companion.const import DOMAIN
 from custom_components.train_commute_companion.host import RuntimeHost
 from train_commute_companion.model import Connection
@@ -57,6 +60,39 @@ class ReplayStations:
 
     async def stations(self) -> frozenset[str]:
         return self.codes
+
+
+def fake_phone(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str = NOTIFY,
+    handler: Callable[[ServiceCall], Awaitable[None]] | None = None,
+    **mock_kwargs: Any,
+) -> list[ServiceCall]:
+    """A notify service the notifier treats as a mobile_app phone: the real phone path's
+    contract (raise on failure, hang past the timeout) without a mobile_app entry."""
+    if handler is None:
+        calls = async_mock_service(hass, "notify", name, **mock_kwargs)
+    else:
+        hass.services.async_register("notify", name, handler)
+        calls = []
+    real_target = notifier_mod.mobile_target
+
+    def target(h: HomeAssistant, service: str) -> str | None:
+        return f"hook-{name}" if service == name else real_target(h, service)
+
+    async def push(
+        h: HomeAssistant, webhook_id: str, payload: dict[str, Any], *_a: Any, **_k: Any
+    ) -> bool:
+        async with asyncio.timeout(notifier_mod.NOTIFY_TIMEOUT_S):
+            await h.services.async_call(
+                "notify", webhook_id.removeprefix("hook-"), payload, blocking=True
+            )
+        return True
+
+    monkeypatch.setattr(notifier_mod, "mobile_target", target)
+    monkeypatch.setattr(notifier_mod, "_push_mobile", push)
+    return calls
 
 
 @dataclass
@@ -103,7 +139,7 @@ def prepare(
         clock, provider = replay  # type: ignore[assignment]
     FREEZER.move_to(clock.now())
     write_profiles(hass, profile_text)
-    pushes = async_mock_service(hass, "notify", NOTIFY)
+    pushes = fake_phone(hass, PATCH)
 
     async def close() -> None:
         pass

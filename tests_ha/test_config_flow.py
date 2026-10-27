@@ -4,13 +4,22 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from harness import NOTIFY, PROFILE, PROFILES, profiles_path, setup_tcc, write_profiles
+from harness import (
+    NOTIFY,
+    PROFILE,
+    PROFILES,
+    fake_phone,
+    profiles_path,
+    setup_tcc,
+    write_profiles,
+)
 from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
 
 from custom_components.train_commute_companion import notifier
+from custom_components.train_commute_companion.config_flow import notify_services
 from custom_components.train_commute_companion.const import DOMAIN
 from train_commute_companion.providers.base import AuthError
 
@@ -59,8 +68,8 @@ async def flow_to_test_menu(hass, style=None):
     return await step(hass, r, data)
 
 
-async def test_entry_created_only_after_both_test_pushes_confirmed(hass):
-    calls = async_mock_service(hass, "notify", NOTIFY)
+async def test_entry_created_only_after_both_test_pushes_confirmed(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
     r = await flow_to_test_menu(hass)
     assert [level(c) for c in calls] == ["time-sensitive", "passive"]
     assert [c.data["message"] for c in calls] == [
@@ -79,8 +88,8 @@ async def test_entry_created_only_after_both_test_pushes_confirmed(hass):
     assert r["title"] == "Train Commute Companion"
 
 
-async def test_critical_style_test_push_is_critical(hass):
-    calls = async_mock_service(hass, "notify", NOTIFY)
+async def test_critical_style_test_push_is_critical(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
     r = await flow_to_test_menu(hass, "critical")
     assert [level(c) for c in calls] == ["critical", "passive"]
     with patch(SETUP, return_value=True):
@@ -88,8 +97,8 @@ async def test_critical_style_test_push_is_critical(hass):
     assert r["options"]["loud_style"] == "critical"
 
 
-async def test_resend_sends_both_again(hass):
-    calls = async_mock_service(hass, "notify", NOTIFY)
+async def test_resend_sends_both_again(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
     r = await flow_to_test_menu(hass)
     r = await step(hass, r, {"next_step_id": "test_resend"})
     assert r["type"] is FlowResultType.MENU and r["step_id"] == "test"
@@ -98,18 +107,18 @@ async def test_resend_sends_both_again(hass):
 
 
 @pytest.mark.parametrize("failure", ["missing", "raising", "hanging"])
-async def test_failed_test_push_stays_on_notify_step(hass, failure):
+async def test_failed_test_push_stays_on_notify_step(hass, failure, monkeypatch):
     async def hang(call):
         await asyncio.sleep(3600)
 
     if failure == "raising":
-        async_mock_service(hass, "notify", NOTIFY, raise_exception=HomeAssistantError("no"))
+        fake_phone(hass, monkeypatch, raise_exception=HomeAssistantError("no"))
     else:
-        hass.services.async_register("notify", NOTIFY, hang)
+        fake_phone(hass, monkeypatch, handler=hang)
     r = await flow_to_notify(hass)
     assert r["step_id"] == "notify"
     if failure == "missing":
-        hass.services.async_register("notify", "mobile_app_other", hang)
+        fake_phone(hass, monkeypatch, "mobile_app_other", handler=hang)
         hass.services.async_remove("notify", NOTIFY)
     with patch.object(notifier, "NOTIFY_TIMEOUT_S", 0.05):
         r = await step(hass, r, {"notify_service": NOTIFY})
@@ -119,8 +128,8 @@ async def test_failed_test_push_stays_on_notify_step(hass, failure):
     assert not hass.config_entries.async_entries(DOMAIN)
 
 
-async def test_user_step_errors(hass):
-    async_mock_service(hass, "notify", NOTIFY)
+async def test_user_step_errors(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
     write_profiles(hass, PROFILE)
     path = str(profiles_path(hass))
     r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
@@ -293,8 +302,8 @@ def current(entry, **change):
     }
 
 
-async def test_options_settings_path_checked_like_setup(hass):
-    async_mock_service(hass, "notify", NOTIFY)
+async def test_options_settings_path_checked_like_setup(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
     entry = add_entry(hass)
     before = dict(entry.options)
     for path, error in (
@@ -308,8 +317,8 @@ async def test_options_settings_path_checked_like_setup(hass):
     assert dict(entry.options) == before
 
 
-async def test_options_settings_path_only_saves_without_test_push(hass):
-    calls = async_mock_service(hass, "notify", NOTIFY)
+async def test_options_settings_path_only_saves_without_test_push(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
     entry = add_entry(hass)
     other = Path(hass.config.config_dir) / "other.yaml"
     other.write_text(PROFILE)
@@ -320,9 +329,9 @@ async def test_options_settings_path_only_saves_without_test_push(hass):
     assert entry.options["profiles_path"] == str(other)
 
 
-async def test_options_new_notify_target_needs_test_before_saving(hass):
-    async_mock_service(hass, "notify", NOTIFY)
-    tablet = async_mock_service(hass, "notify", "mobile_app_tablet")
+async def test_options_new_notify_target_needs_test_before_saving(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    tablet = fake_phone(hass, monkeypatch, "mobile_app_tablet")
     entry = add_entry(hass)
     r = await settings(hass, entry, **current(entry, notify_service="mobile_app_tablet"))
     assert r["type"] is FlowResultType.MENU and r["step_id"] == "test"
@@ -337,8 +346,8 @@ async def test_options_new_notify_target_needs_test_before_saving(hass):
     assert entry.options["notify_service"] == "mobile_app_tablet"
 
 
-async def test_options_new_loud_style_needs_test_before_saving(hass):
-    calls = async_mock_service(hass, "notify", NOTIFY)
+async def test_options_new_loud_style_needs_test_before_saving(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
     entry = add_entry(hass)
     r = await settings(hass, entry, **current(entry, loud_style="critical"))
     assert r["type"] is FlowResultType.MENU
@@ -352,13 +361,46 @@ async def test_options_new_loud_style_needs_test_before_saving(hass):
     assert entry.options["loud_style"] == "critical"
 
 
-async def test_options_failed_test_push_returns_to_settings(hass):
-    async_mock_service(hass, "notify", NOTIFY)
-    async_mock_service(
-        hass, "notify", "mobile_app_tablet", raise_exception=HomeAssistantError("no")
-    )
+async def test_options_failed_test_push_returns_to_settings(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    fake_phone(hass, monkeypatch, "mobile_app_tablet", raise_exception=HomeAssistantError("no"))
     entry = add_entry(hass)
     r = await settings(hass, entry, **current(entry, notify_service="mobile_app_tablet"))
     assert r["type"] is FlowResultType.FORM and r["step_id"] == "settings"
     assert r["errors"] == {"base": "send_failed"}
     assert entry.options["notify_service"] == NOTIFY
+
+
+async def test_flow_offers_only_real_phone_targets(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    async_mock_service(hass, "notify", "mobile_app_fake")
+    assert notify_services(hass) == [NOTIFY]
+
+
+async def test_flow_aborts_when_only_a_non_phone_target_exists(hass):
+    async_mock_service(hass, "notify", "mobile_app_fake")
+    r = await flow_to_notify(hass)
+    assert r["type"] is FlowResultType.ABORT and r["reason"] == "no_mobile_app"
+
+
+async def test_options_flow_offers_only_real_phone_targets(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    async_mock_service(hass, "notify", "mobile_app_fake")
+    entry = add_entry(hass)
+    r = await hass.config_entries.options.async_init(entry.entry_id)
+    r = await hass.config_entries.options.async_configure(
+        r["flow_id"], {"next_step_id": "settings"}
+    )
+    assert r["step_id"] == "settings"
+    options = r["data_schema"].schema["notify_service"].config["options"]
+    assert [o if isinstance(o, str) else o["value"] for o in options] == [NOTIFY]
+
+
+async def test_options_flow_aborts_with_only_a_non_phone_target(hass):
+    async_mock_service(hass, "notify", "mobile_app_fake")
+    entry = add_entry(hass)
+    r = await hass.config_entries.options.async_init(entry.entry_id)
+    r = await hass.config_entries.options.async_configure(
+        r["flow_id"], {"next_step_id": "settings"}
+    )
+    assert r["type"] is FlowResultType.ABORT and r["reason"] == "no_mobile_app"

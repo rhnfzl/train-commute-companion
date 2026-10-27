@@ -112,15 +112,15 @@ async def _push(
     tasks: set[asyncio.Task[None]] | None = None,
 ) -> tuple[bool, bool]:
     """Returns (delivered, timed_out)."""
+    # a service that is not a mobile_app phone proves nothing about delivery (7.12 rules 5, 16)
+    if (webhook_id := mobile_target(hass, service)) is None:
+        _LOGGER.warning("notify.%s is not a mobile_app phone; push not sent", service)
+        return False, False
     try:
-        if (webhook_id := mobile_target(hass, service)) is not None:
-            return await _push_mobile(hass, webhook_id, payload, retired, tasks), False
-        async with asyncio.timeout(NOTIFY_TIMEOUT_S):
-            await hass.services.async_call("notify", service, payload, blocking=True)
+        return await _push_mobile(hass, webhook_id, payload, retired, tasks), False
     except (HomeAssistantError, TimeoutError) as err:
         _LOGGER.warning("push via notify.%s failed: %s", service, repr(err))
         return False, isinstance(err, TimeoutError)
-    return True, False
 
 
 async def _push_mobile(

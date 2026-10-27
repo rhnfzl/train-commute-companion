@@ -27,6 +27,7 @@ from train_commute_companion.providers.base import AuthError, ProviderError
 from train_commute_companion.providers.ns import NsProvider
 from train_commute_companion.runtime import SystemClock
 
+from . import notifier as notifier_mod
 from .const import (
     CONF_LOUD_STYLE,
     CONF_NOTIFY,
@@ -58,7 +59,9 @@ async def check_key(hass: HomeAssistant, api_key: str) -> frozenset[str] | str:
 
 def notify_services(hass: HomeAssistant) -> list[str]:
     names = hass.services.async_services_for_domain("notify")
-    return sorted(n for n in names if n.startswith(MOBILE_PREFIX))
+    return sorted(
+        n for n in names if n.startswith(MOBILE_PREFIX) and notifier_mod.mobile_target(hass, n)
+    )
 
 
 async def send_tests(hass: HomeAssistant, service: str, loud_style: str) -> bool:

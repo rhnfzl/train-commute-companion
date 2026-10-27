@@ -4,6 +4,7 @@ from datetime import date, datetime
 
 import pytest
 from aiohttp import ClientError
+from harness import fake_phone
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import (
@@ -72,8 +73,8 @@ def test_loud_styles_constants():
     assert DEFAULT_LOUD_STYLE == "time_sensitive"
 
 
-async def test_loud_payload_default_is_time_sensitive(hass):
-    calls = async_mock_service(hass, "notify", "mobile_app_phone")
+async def test_loud_payload_default_is_time_sensitive(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
     assert await send_from_thread(hass, loud_event())
     data = calls[0].data["data"]
     assert data["push"]["interruption-level"] == "time-sensitive" and "critical" not in str(data)
@@ -81,8 +82,8 @@ async def test_loud_payload_default_is_time_sensitive(hass):
     assert calls[0].data["message"] == loud_event().text
 
 
-async def test_loud_payload_critical_when_chosen(hass):
-    calls = async_mock_service(hass, "notify", "mobile_app_phone")
+async def test_loud_payload_critical_when_chosen(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
     assert await send_from_thread(hass, loud_event(), loud_style="critical")
     data = calls[0].data["data"]
     assert (
@@ -96,8 +97,8 @@ def test_unknown_loud_style_raises():
         notify_payload(Severity.LOUD, "x", "siren")
 
 
-async def test_silent_payload_has_no_sound(hass):
-    calls = async_mock_service(hass, "notify", "mobile_app_phone")
+async def test_silent_payload_has_no_sound(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
     assert await send_from_thread(hass, make_event(Severity.SILENT))
     assert calls[0].data["data"] == {
         "push": {"interruption-level": "passive"},
@@ -107,15 +108,22 @@ async def test_silent_payload_has_no_sound(hass):
     assert "sound" not in str(calls[0].data)
 
 
+async def test_non_phone_target_is_not_called_and_not_delivered(hass):
+    calls = async_mock_service(hass, "notify", "mobile_app_fake")  # user-made, no mobile_app entry
+    payload = notify_payload(Severity.LOUD, "x")
+    assert await notifier_mod._push(hass, "mobile_app_fake", payload) == (False, False)
+    assert calls == []
+
+
 async def test_missing_service_returns_false(hass):
     assert not await send_from_thread(hass, loud_event())
 
 
-async def test_raising_service_returns_false(hass):
+async def test_raising_service_returns_false(hass, monkeypatch):
     async def boom(call):
         raise HomeAssistantError("nope")
 
-    hass.services.async_register("notify", "mobile_app_phone", boom)
+    fake_phone(hass, monkeypatch, handler=boom)
     assert not await send_from_thread(hass, loud_event())
 
 
@@ -125,7 +133,7 @@ async def test_hanging_service_times_out_false(hass, monkeypatch):
     async def hang(call):
         await asyncio.sleep(30)
 
-    hass.services.async_register("notify", "mobile_app_phone", hang)
+    fake_phone(hass, monkeypatch, handler=hang)
     assert not await send_from_thread(hass, loud_event())
 
 
@@ -139,7 +147,7 @@ async def test_after_a_timeout_next_send_fails_fast_then_recovers(hass, monkeypa
         if hang:
             await asyncio.sleep(30)
 
-    hass.services.async_register("notify", "mobile_app_phone", svc)
+    fake_phone(hass, monkeypatch, handler=svc)
     n = build(hass)
     assert not await send_from_thread(hass, make_event(key="a"), n)
     assert not await send_from_thread(hass, make_event(key="b"), n)
@@ -410,8 +418,8 @@ async def test_stopped_notifier_cancels_a_running_fallback(
     assert task.cancelled() and n._tasks == set()
 
 
-async def test_retired_notifier_neither_fires_nor_pushes(hass):
-    calls = async_mock_service(hass, "notify", "mobile_app_phone")
+async def test_retired_notifier_neither_fires_nor_pushes(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
     events = async_capture_events(hass, EVENT_ALERT)
     n = build(hass)
     n.retired.set()
