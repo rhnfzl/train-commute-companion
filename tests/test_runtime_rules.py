@@ -1338,6 +1338,27 @@ def _set_expiry(rig: Rig, expires: object) -> None:
     rig.rt._save()
 
 
+@pytest.mark.parametrize("restart", [False, True])
+async def test_held_works_warning_survives_a_recovery_written_through_a_rename(tmp_path, restart):
+    rig = Rig(tmp_path, "05:40")  # rule 5(c), 22: a held warning keeps the revision it is on
+    rig.provider.world = _cancelled_l2(DAY + timedelta(days=1))
+    rig.notifier.fails = lambda e: True
+    await rig.rt.start()
+    rig.store.fail = True
+    await rig.rt.lookahead_once()
+    rig.store.fail = False
+    rig.write("office_c")
+    rig.clock.jump(1)
+    await rig.rt.check_file()  # storage is back through a name-only edit
+    assert rig.store.load().config.revision == 2
+    rig.notifier.fails = lambda e: False
+    rig.notifier.attempts.clear()
+    if restart:
+        await rig.restart()
+    await rig.rt.watchdog_once()
+    assert _ahead(rig, EventKind.WORKS_AHEAD)
+
+
 async def test_held_works_warning_crossing_midnight_survives_midnight_and_restart(tmp_path):
     # a 23:40 journey whose transfer leaves at 00:05: its works warning outlives its date
     wed = DAY + timedelta(days=1)
