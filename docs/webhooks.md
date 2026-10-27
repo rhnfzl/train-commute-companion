@@ -76,6 +76,7 @@ Check every request before you act on it. This function needs only the Python st
 ```python
 import base64, hashlib, hmac, time
 
+
 def verify(secret, headers, body, now=None, tolerance=300):
     """True when the request is from your companion and fresh; False for anything else,
     malformed requests included. `body` is the raw bytes."""
@@ -117,7 +118,7 @@ Your phone is the channel that counts: an alert is delivered once the phone has 
 - Before each try the copy is checked again, like a phone message: expired advice, a journey you said you are not travelling or a message a newer one covers is not sent, and a renamed profile shows its new name.
 - A look-ahead message is sent with only the facts that still hold at send time, so it never names a leg that is back to normal again or works that are over.
 - A copy is given up 2 hours after its first try, also while it waits for fresh NS data after a restart.
-- A receiver that stays down gets at most one try per 60 seconds. Its tries go to the owed copies in turn, so after an outage alerts can arrive out of order: order them by `created_at`. When alerts come faster than one a minute, at most 200 copies are kept and the oldest ones never tried are dropped, with one warning in the log each.
+- A receiver that stays down gets at most one try per 60 seconds. Its tries go to the owed copies in turn, so after an outage alerts can arrive out of order: order them by `created_at`. When alerts come faster than one a minute, at most 200 copies are kept: the oldest copy never tried is dropped first, else the oldest copy, with one warning in the log each.
 - The log shows one warning per outage, naming the receiver's host only, and one line when it works again.
 - A restart, or a timeout after the receiver accepted, can send an alert again with the same `webhook-id`.
 - Turning webhooks off (no URLs) drops the copies still owed; they are not sent when you turn webhooks on again.
