@@ -56,7 +56,13 @@ def parse_target(view: RuntimeView, args: Sequence[str]) -> Target | str:
     profile = None
     named = next((a for a in args if a.startswith("p=")), None)
     if named is not None:
-        profile = find(named[2:])
+        at = args.index(named)
+        # a spaced name arrives split by whitespace: take the longest run of words that names a profile
+        for end in range(len(args), at, -1):
+            profile = find(" ".join([named[2:], *args[at + 1 : end]]))
+            if profile is not None:
+                args = [a for j, a in enumerate(args) if not at < j < end]
+                break
         if profile is None:
             return f"No profile {named[2:]}. One of: {names}."
     direction = service_date = departure = train = None

@@ -97,6 +97,13 @@ def test_parse_target_two_profiles_asks_which():
     assert parse_target(v, ["office b"]) == Target("p2", "office_b")
 
 
+def test_parse_target_spaced_name_split_by_whitespace():
+    v = view(names=("office_a", "office_b"))
+    want = Target("p2", "office_b", departure=time(8, 44))
+    assert parse_target(v, ["p=office", "b", "08:44"]) == want
+    assert parse_target(v, ["08:44", "p=office", "b"]) == want
+
+
 def test_parse_target_profile_id_like_a_keyword():
     v = view()
     v = (
