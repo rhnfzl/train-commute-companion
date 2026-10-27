@@ -204,6 +204,10 @@ def _dkey(pid: str, d: Direction) -> str:
     return f"{pid}|{d.value}"
 
 
+def _reasons(errors: Sequence[ProfileError]) -> str:
+    return "; ".join(f"{e.path}: {e.message}" for e in errors)
+
+
 def _title(name: str) -> str:
     return name.replace("_", " ").title()
 
@@ -1495,11 +1499,7 @@ class Runtime:
     # --- reload (5.2, rule 10) ---
 
     def _refuse(self, errors: Sequence[ProfileError] | str, now: datetime) -> None:
-        reason = (
-            errors
-            if isinstance(errors, str)
-            else "; ".join(f"{e.path}: {e.message}" for e in errors)
-        )
+        reason = errors if isinstance(errors, str) else _reasons(errors)
         self._refusal = reason
         self._app_warning(EventKind.PROFILE_REFUSED, f"profile change refused: {reason}.", now)
 
@@ -1516,13 +1516,15 @@ class Runtime:
                 await self._fetch_stations()
             cfg, errors = load_config(text, self.known_stations, old, today)
             unchecked = self.require_stations and self.known_stations is None
-            if unchecked and not errors and cfg is not old:
-                # 5.3: an edit (or a first configuration) whose codes cannot be checked waits;
-                # the last valid configuration keeps running meanwhile (5.2)
+            if unchecked and cfg is not None and cfg is not old:
+                # 5.3: an edit (or a first configuration, even one with a refused profile) whose
+                # codes cannot be checked waits; the last valid configuration keeps running (5.2)
                 reason = (
                     "the NS station list is unavailable, so station codes cannot be checked;"
                     " the last valid configuration keeps running and the change is tried again"
                 )
+                if errors:
+                    reason = f"{_reasons(errors)}; {reason}"
                 if not self._unchecked:
                     self._refuse(reason, now)
                 self._refusal = reason
@@ -1578,6 +1580,11 @@ class Runtime:
         baselines, ledgers = dict(self._st.baselines), dict(self._st.lookahead)
         for p in new.profiles:
             q = _find(old, p.id)
+            # removed and added again: its old history goes, so it starts from the file like a
+            # new profile (a first configuration has no earlier profiles to forget)
+            for d in Direction if q is None and old is not None else ():
+                baselines.pop(_dkey(p.id, d), None)
+                ledgers.pop(_dkey(p.id, d), None)
             for d in Direction if q is not None else ():
                 assert q is not None
                 dk = _dkey(p.id, d)

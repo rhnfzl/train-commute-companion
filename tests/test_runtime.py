@@ -776,6 +776,78 @@ async def test_station_list_down_at_restart_is_retried_while_the_file_is_unchang
     assert len(calls) == 2 and rt.refusal is None
 
 
+async def test_first_start_with_one_bad_profile_and_no_station_list_applies_nothing(tmp_path):
+    rig = Rig(tmp_path)
+    head, tail = PROFILE.replace("NAME", "office_a").rsplit("buffer_min: 5}", 1)
+    rig.write(text=head + "buffer_min: -5}" + tail)  # p2 is invalid, p1 is valid
+    rt = rig.rt
+    rt.require_stations = True
+    up = False
+
+    async def stations() -> frozenset[str]:
+        if not up:
+            raise ProviderError("station endpoint down")
+        return frozenset({"AAA", "UT", "RTD"})
+
+    rig.provider.stations = stations  # type: ignore[method-assign]
+    await rt.start()
+    assert rt.config is None
+    refused = [e for e in rt.events_log if e.kind is EventKind.PROFILE_REFUSED]
+    assert len(refused) == 1
+    text = refused[0].text
+    assert text.index("profiles[1]") < text.index("station list is unavailable")
+    rig.clock.jump(1)
+    await rt.check_file()  # still waiting: told once per wait
+    assert rt.config is None and kinds(rt.events_log).count(EventKind.PROFILE_REFUSED) == 1
+    up = True
+    rig.clock.jump(2)
+    await rt.check_file()
+    assert rt.known_stations == frozenset({"AAA", "UT", "RTD"})
+    assert rt.config is not None and [p.id for p in rt.config.profiles] == ["p1"]
+    assert rt.refusal is not None and "profiles[1]" in rt.refusal
+    assert "station list" not in rt.refusal
+
+
+def _nine_twelve_on(day: date) -> Connection:
+    return make_connection(
+        [
+            make_leg("AAA", "UT", "09:12", "09:40", number="1236", day=day),
+            make_leg("UT", "RTD", "09:50", "10:24", number="5680", day=day),
+        ]
+    )
+
+
+async def test_removed_and_readded_profile_starts_from_the_file(tmp_path):
+    from test_runtime_rules import sig
+
+    from train_commute_companion.lookahead import BaselineVersion
+
+    rig = Rig(tmp_path, "06:00")
+    hist = BaselineHistory((BaselineVersion(1, sig(time(8, 12), time(8, 50)), date(2026, 10, 1),
+                            True),))  # fmt: skip
+    rig.store.save(PersistedState(None, {}, {"p1|outbound": hist}, {}, {}, (), True))
+    rig.provider.world = [USUAL, _nine_twelve_on(DAY)]
+    await rig.rt.start()
+    assert rig.rt.state.baselines["p1|outbound"].versions == hist.versions
+    full = PROFILE.replace("NAME", "office_a")
+    rig.write(text='profiles:\n  - id: "p2"\n' + full.split('  - id: "p2"\n')[1])
+    await rig.rt.reload()
+    assert [p.id for p in rig.rt.config.profiles] == ["p2"]
+    rig.write(
+        text=full.replace(
+            '"08:12", buffer_min: 10, transfers', '"09:12", buffer_min: 10, transfers'
+        )
+    )
+    await rig.rt.reload()
+    assert rig.rt.config.revision == 3
+    assert "p1|outbound" not in rig.rt.state.baselines
+    rig.clock.set("07:50")
+    await rig.run_until("09:00")
+    s = rig.occ()
+    assert s is not None and s.lock is not None
+    assert s.lock.legs[0].train.planned_departure == at("09:12")
+
+
 async def test_store_ok_false_after_failed_write(tmp_path):
     rig = await started(tmp_path)
     assert rig.rt.store_ok is True
