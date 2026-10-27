@@ -1,6 +1,8 @@
 import asyncio
+import logging
 import shutil
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -90,12 +92,16 @@ async def test_positions_is_a_copy_read_on_the_runtime_thread(hass, host):
     assert await host.positions() == {}
 
 
-async def test_stop_cancels_run_forever_and_joins(hass, tmp_path):
+async def test_stop_cancels_run_forever_and_joins(hass, tmp_path, caplog):
     closed: list[bool] = []
     host = RuntimeHost(builder(tmp_path, closed=closed), autorun=True)
     await host.start()
     assert host.alive
+    t0 = time.monotonic()
     await host.stop()
+    # the drain resolves before the loop stops: no JOIN_TIMEOUT_S wait, no ERROR on each reload
+    assert time.monotonic() - t0 < 5
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
     await host.stop()
     assert not host.alive
     assert closed == [True]

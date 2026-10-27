@@ -120,7 +120,8 @@ def _valid_url(text: str) -> str | None:
         return None
     port_ok = url.port is None or 1 <= url.port <= 65535
     if url.scheme in ("http", "https") and url.host and port_ok and not url.userinfo:
-        return str(url)
+        # parsed twice: httpx keeps a default port under an upper-case scheme on the first pass
+        return str(httpx.URL(str(url)))
     return None
 
 

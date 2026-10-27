@@ -986,11 +986,15 @@ async def test_secret_and_url_never_logged_through_httpcore(caplog):  # Review F
         assert await poster.post(e, "tcc_x", [url]) == (frozenset({url}), frozenset({url}))
         async with httpx.AsyncClient() as other:  # outside a webhook try: still logged
             await other.get(f"http://127.0.0.1:{port}/plain")
+        # the options-flow test send runs this same path on hass.loop
+        (res,) = await send_webhook_tests(client, [url], SECRET, lambda: clock[0], token=TOKEN)
+        assert res.ok
         server.close()
         await server.wait_closed()
         clock[0] += timedelta(seconds=61)
         assert await poster.post(e, "tcc_x", [url]) == (frozenset({url}), frozenset())
-    assert len(heads) == 3 and "v1," in heads[1] and TOKEN in heads[1]  # it was all there
+    assert len(heads) == 5 and all("v1," in h and TOKEN in h for h in heads[3:])  # all there
+    assert "v1," in heads[1] and TOKEN in heads[1]
     texts = [r.getMessage() + (r.exc_text or "") for r in caplog.records]
     for bad in (SECRET, TOKEN, "route-token-123", "v1,"):
         assert not any(bad in t for t in texts), bad

@@ -166,6 +166,20 @@ def test_parse_urls(text, want):
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        f"{URL2} HTTPS://Hooks.Example.invalid:443/a {URL1}",
+        "https://b\u00fccher.example/p?q=\u00e4&x=1#f http://h.example/%7Euser/../x",
+        "http://[::1]:8123/api/webhook/x?y https://h.example",
+    ],
+)
+def test_parse_urls_is_stable_on_its_own_output(text):
+    # the options flow compares this output with the saved list to skip a test send
+    once = parse_urls(text)
+    assert parse_urls("\n".join(once)) == once == parse_urls(text)
+
+
+@pytest.mark.parametrize(
     "bad",
     [
         "ftp://hooks.example.invalid/x",

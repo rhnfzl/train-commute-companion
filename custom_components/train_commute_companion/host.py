@@ -139,7 +139,9 @@ class RuntimeHost:
                     if self._parts is not None:
                         await self._parts.close()
                 finally:
-                    asyncio.get_running_loop().stop()
+                    # deferred one turn: a direct stop() exits the loop before this task's done
+                    # callback resolves the cross-thread future, so stop() always timed out
+                    loop.call_soon(loop.stop)
 
         if thread.is_alive():
             if self._drain is None:
