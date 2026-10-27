@@ -719,6 +719,28 @@ async def test_poll_written_first_after_a_failed_rename_writes_no_lone_revision(
     _consistent(saved)
 
 
+async def test_profile_removed_after_a_failed_rename_keeps_its_journey_followed(tmp_path):
+    rig = await started(tmp_path)  # rule 10: a locked journey runs on after its profile goes
+    rig.store.fail = True
+    rig.write("office_c")
+    rig.clock.jump(1)
+    await rig.rt.check_file()
+    rig.store.fail = False
+    rig.clock.set("07:52")
+    await rig.rt.poll_once()
+    rig.write(text='profiles:\n  - id: "p2"' + PROFILE.split('  - id: "p2"')[1])
+    rig.clock.jump(1)
+    await rig.rt.check_file()
+    assert [p.id for p in rig.rt.config.profiles] == ["p2"]
+    for hhmm in ("07:56", "07:58"):
+        n = len(rig.provider.calls)
+        rig.clock.set(hhmm)
+        await rig.rt.poll_once()
+        assert rig.occ().lock is not None and len(rig.provider.calls) > n
+        assert [o.key.profile_id for o in rig.rt.view().occurrences] == ["p1"]
+        await rig.restart()
+
+
 async def test_lost_store_runs_fresh_and_sends_storage_failed(tmp_path):
     rig = Rig(tmp_path)
 
