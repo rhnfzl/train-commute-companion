@@ -1,11 +1,13 @@
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any
 
 import httpx
 import pytest
 from test_runtime import FakeClock, at
+
+from train_commute_companion.providers.base import PlannedWorks, Provider, ProviderAnswer, Query
 
 CHAT = 1000001
 STRANGER = 2000002
@@ -93,3 +95,32 @@ async def tg() -> AsyncIterator[FakeTelegram]:
 @pytest.fixture
 def clock() -> FakeClock:
     return FakeClock(at("07:50"))
+
+
+class TickClock(FakeClock):
+    """`sleep` advances the time, then yields for real, so `run_forever`'s loops take turns."""
+
+    async def sleep(self, seconds: float) -> None:
+        await super().sleep(seconds)
+        await asyncio.sleep(0.01)
+
+
+class StationsProvider:
+    """`inner` with a station list: `build` requires one before a configuration applies."""
+
+    def __init__(
+        self,
+        inner: Provider,
+        codes: frozenset[str],
+        positions: Mapping[str, tuple[float, float]] = {},
+    ) -> None:
+        self.inner, self.codes, self.positions = inner, codes, dict(positions)
+
+    async def trips(self, q: Query) -> ProviderAnswer:
+        return await self.inner.trips(q)
+
+    async def planned_works(self) -> PlannedWorks:
+        return await self.inner.planned_works()
+
+    async def stations(self) -> frozenset[str]:
+        return self.codes
