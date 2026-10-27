@@ -28,7 +28,7 @@ from train_commute_companion.model import (
     TrainId,
     TransferState,
 )
-from train_commute_companion.providers.base import ProviderAnswer
+from train_commute_companion.providers.base import ProviderAnswer, Query
 from train_commute_companion.transfer import check_transfer
 
 
@@ -171,6 +171,25 @@ def needed(
     return _judge(s, ctx, answer, reference)[2]
 
 
+def advice_query(
+    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, reference: datetime | None
+) -> Query | None:
+    """The origin searched again from the earliest catchable time, so a train before the one
+    `answer` was asked from is in view (7.6, rule 17); only while advice is gated and waiting is
+    bad or advice is out (a withdrawal needs to see the advised train)."""
+    if not _gate(s, ctx):
+        return None
+    a = s.advice
+    out = a is not None and a.advised_train is not None and not a.withdrawn
+    if not out and not needed(s, ctx, answer, reference):
+        return None
+    at = catch_from_state(s, ctx.profile.journey(ctx.direction).buffer_min, ctx.now).not_before
+    if at >= answer.query.at.astimezone(UTC):
+        return None
+    d = ctx.direction
+    return Query(ctx.profile.origin(d), ctx.profile.destination(d), at.astimezone(ctx.now.tzinfo))
+
+
 def still_advised(
     s: OccurrenceState,
     ctx: Ctx,
@@ -264,6 +283,8 @@ def advise(
         return AdviceRecord(train, ctx.now, False), [ev]
     if advised is None or record.withdrawn or bad:
         return record, []
+    if not record.delivered:  # never told: nothing to withdraw, its LEAVE_NOW is not sent
+        return replace(record, withdrawn=True), []
     # withdraw once: usual journey is back, the advised train still runs and is catchable
     leg, seen = find_leg(answer, advised, prof.origin(d))
     if leg is None or seen is not Observation.SEEN:

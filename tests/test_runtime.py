@@ -124,7 +124,8 @@ def pieces(c: Connection, origin: str, destination: str) -> list[Connection]:
 
 class Provider:
     """Replays a scripted world: every query gets the connections from its origin, fetched now.
-    `hook` runs inside a request (to move the clock, act or edit mid-flight); `error` raises."""
+    `hook` runs inside a request (to move the clock, act or edit mid-flight); `error` raises.
+    `window`: like NS, only connections leaving from the asked time up to that much later."""
 
     def __init__(self, clock: FakeClock, world: list[Connection]) -> None:
         self.clock = clock
@@ -133,6 +134,7 @@ class Provider:
         self.error: Callable[[Query], Exception | None] = lambda q: None
         self.hook: Callable[[Query], object] | None = None
         self.works_calls = 0
+        self.window: timedelta | None = None
 
     async def trips(self, q: Query) -> ProviderAnswer:
         self.calls.append(q)
@@ -144,6 +146,9 @@ class Provider:
         if err is not None:
             raise err
         conns = tuple(x for c in self.world for x in pieces(c, q.origin, q.destination))
+        if self.window is not None:
+            t, w = q.at.astimezone(UTC), self.window
+            conns = tuple(c for c in conns if t <= c.legs[0].train.planned_departure < t + w)
         return ProviderAnswer(q, conns, self.clock.now())
 
     async def planned_works(self) -> PlannedWorks:
@@ -430,6 +435,78 @@ async def test_store_write_failure_sends_from_memory_and_storage_failed(tmp_path
     rig.clock.set("07:56")
     await rig.rt.poll_once()
     assert kinds(rig.rt.events_log).count(EventKind.STORAGE_FAILED) == 2  # a new outage
+
+
+async def test_failed_poll_write_is_not_active_and_alerts_go_once_from_memory(tmp_path):
+    rig = await started(tmp_path)  # rule 22
+    written = rig.rt.state
+    rig.store.fail = True
+    rig.clock.set("07:52")
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    await rig.rt.poll_once()
+    assert rig.occ().lock == written.occurrences["p1|outbound|2026-10-27"].lock
+    assert rig.rt.state.obligations == written.obligations
+    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 1
+    for hhmm in ("07:54", "07:56"):  # recomputed from the written state: not sent again
+        rig.clock.set(hhmm)
+        await rig.rt.poll_once()
+        await rig.rt.watchdog_once()
+    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 1
+    rig.store.fail = False
+    await rig.rt.watchdog_once()  # the unwritten change is written and becomes active
+    assert rig.occ().lock.legs[0].train == LATER.legs[0].train
+    assert rig.store.load().occurrences["p1|outbound|2026-10-27"] == rig.occ()
+    rig.clock.set("07:58")
+    await rig.rt.poll_once()
+    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 1
+
+
+async def test_sent_alert_whose_removal_failed_is_not_sent_again(tmp_path):
+    rig = await started(tmp_path)
+    rig.notifier.fails = lambda e: e.kind is EventKind.CANCELLED
+    rig.clock.set("07:52")
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    await rig.rt.poll_once()
+    assert any(o.event.kind is EventKind.CANCELLED for o in rig.rt.state.obligations)
+    rig.store.fail = True
+    rig.notifier.fails = lambda e: False
+    for _ in range(3):
+        await rig.rt.watchdog_once()
+    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 2  # one fail, one sent
+    rig.store.fail = False
+    await rig.rt.watchdog_once()
+    assert not any(o.event.kind is EventKind.CANCELLED for o in rig.store.load().obligations)
+    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 2
+
+
+async def test_failed_reload_write_keeps_the_last_written_configuration(tmp_path):
+    rig = await started(tmp_path)  # 5.2 transactional reload, rule 22
+    rig.store.fail = True
+    rig.write(
+        text=PROFILE.replace("NAME", "office_a").replace(
+            '"08:12", buffer_min: 10, transfers', '"09:12", buffer_min: 10, transfers'
+        )
+    )
+    rig.clock.jump(1)
+    await rig.rt.check_file()
+    assert rig.rt.config.revision == 1 and rig.store.load().config.revision == 1
+    assert kinds(rig.notifier.attempts).count(EventKind.STORAGE_FAILED) == 1
+    rig.store.fail = False
+    await rig.rt.check_file()  # tried again although the file did not change
+    assert rig.rt.config.revision == 2 and rig.store.load().config.revision == 2
+
+
+async def test_failed_lookahead_write_changes_nothing_active(tmp_path):
+    rig = Rig(tmp_path, "05:40")
+    rig.provider.world = every_day()
+    await rig.rt.start()
+    before = (rig.rt.state.baselines, rig.rt.state.lookahead)
+    rig.store.fail = True
+    await rig.rt.lookahead_once()
+    assert (rig.rt.state.baselines, rig.rt.state.lookahead) == before
+    rig.store.fail = False
+    await rig.rt.lookahead_once()
+    assert rig.rt.state.lookahead and rig.store.load().lookahead == rig.rt.state.lookahead
 
 
 async def test_lost_store_runs_fresh_and_sends_storage_failed(tmp_path):

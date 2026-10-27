@@ -11,7 +11,13 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Literal, Protocol
 
-from train_commute_companion.advice import advise, leave_now_text, needed, still_advised
+from train_commute_companion.advice import (
+    advice_query,
+    advise,
+    leave_now_text,
+    needed,
+    still_advised,
+)
 from train_commute_companion.calendar import TZ, resolve_local
 from train_commute_companion.classify import find_leg
 from train_commute_companion.delivery import (
@@ -295,11 +301,14 @@ def _broken(s: OccurrenceState, t: TrainId | None) -> bool:
 class _View:
     """The delivery ledger view over the runtime's current state (7.12 rule 5)."""
 
-    def __init__(self, rt: "Runtime") -> None:
+    def __init__(self, rt: "Runtime", st: PersistedState | None = None) -> None:
+        """`st`: the state to judge against; a memory-only alert (rule 22) is judged against the
+        unwritten change it came from."""
         self._rt = rt
+        self._s = rt._st if st is None else st
 
     def _occ(self, key: OccurrenceKey) -> OccurrenceState | None:
-        return self._rt._st.occurrences.get(_okey(key))
+        return self._s.occurrences.get(_okey(key))
 
     def skipped(self, key: OccurrenceKey) -> bool:
         s = self._occ(key)
@@ -309,13 +318,13 @@ class _View:
         rt = self._rt
         if o.look_ahead is not None:
             pid, d, day = o.look_ahead
-            then = _find(rt._st.config_snapshots.get(o.route_revision), pid)
-            now = _find(rt._st.config, pid)
+            then = _find(self._s.config_snapshots.get(o.route_revision), pid)
+            now = _find(self._s.config, pid)
             if now is None or (then is not None and not _same_route(then, now)):
                 return False
-            if then is None and rt._st.config and o.route_revision != rt._st.config.revision:
+            if then is None and self._s.config and o.route_revision != self._s.config.revision:
                 return False
-            hist = rt._st.baselines.get(_dkey(pid, d), BaselineHistory())
+            hist = self._s.baselines.get(_dkey(pid, d), BaselineHistory())
             versions = {v.version for v in hist.versions}
             if o.baseline_version is not None and o.baseline_version not in versions:
                 return False
@@ -339,7 +348,7 @@ class _View:
         keeps the whole message. Reads the stored facts, never o.fact_key: ";" also joins the
         legs inside a whole-journey fingerprint."""
         rt = self._rt
-        led = rt._st.lookahead.get(dk)
+        led = self._s.lookahead.get(dk)
         fs = () if led is None else led.facts.get(o.id, ())
         if led is None or not fs or any(k.startswith(("adopt:", "cancel:")) for k, *_ in fs):
             return True  # stored before facts were kept, or an adoption: judged as before
@@ -433,7 +442,7 @@ class _View:
             and x.event.kind in family(o.event.kind)
             and x.event.train == o.event.train
             and _utc(x.event.created_at) > _utc(o.event.created_at)
-            for x in self._rt._st.obligations
+            for x in self._s.obligations
         )
 
     def revision_live(self, key: OccurrenceKey, rev: int) -> bool:
@@ -442,7 +451,7 @@ class _View:
             return False
         if s.route_revision == rev:
             return True
-        snaps = self._rt._st.config_snapshots
+        snaps = self._s.config_snapshots
         a, b = (
             _find(snaps.get(rev), key.profile_id),
             _find(snaps.get(s.route_revision), key.profile_id),
@@ -450,12 +459,12 @@ class _View:
         return a is not None and b is not None and _same_route(a, b)
 
     def in_quiet_hours(self, profile_id: str, now: datetime) -> bool:
-        p = _find(self._rt._st.config, profile_id)
+        p = _find(self._s.config, profile_id)
         return p is not None and _in_quiet(p.alerts.quiet_hours, now)
 
     def current(self, o: Obligation) -> AlertEvent:
         e = self._regenerated(o, self._relocked(o, o.event))
-        p = _find(self._rt._st.config, e.profile_id)
+        p = _find(self._s.config, e.profile_id)
         if p is None or p.name == e.profile_name:
             return e
         old, new = _title(e.profile_name), _title(p.name)
@@ -465,7 +474,7 @@ class _View:
     def _regenerated(self, o: Obligation, e: AlertEvent) -> AlertEvent:
         """Rule 5(b): an instruction states its connection as the latest answers show it."""
         rt = self._rt
-        s = None if o.occurrence is None else rt._st.occurrences.get(_okey(o.occurrence))
+        s = None if o.occurrence is None else self._s.occurrences.get(_okey(o.occurrence))
         if s is None or e.train is None:
             return e
         k = _okey(s.key)
@@ -505,7 +514,7 @@ class _View:
         clause is replaced: the lock's first train as the next good connection while nothing
         of it has left, else the train now followed and every onward leg still ahead."""
         rt = self._rt
-        s = None if o.occurrence is None else rt._st.occurrences.get(_okey(o.occurrence))
+        s = None if o.occurrence is None else self._s.occurrences.get(_okey(o.occurrence))
         if e.kind not in _NAMES_LOCK or e.train is None or s is None or s.lock is None:
             return e
         live = [x for x in s.lock.legs if x.state not in (LegState.CANCELLED, LegState.RELOCKED)]
@@ -531,6 +540,12 @@ class _View:
             )
             nxt = f"Now following your {now} train{onward}."
         return replace(e, text=f"{head.rstrip()} {nxt}{tail}")
+
+
+def _held_id(o: Obligation) -> tuple[str | None, str, Severity]:
+    """An alert's identity across recomputations of the same change (rule 22)."""
+    k = None if o.occurrence is None else _okey(o.occurrence)
+    return k, o.event.key, o.event.severity
 
 
 def _ident(t: TrainId) -> str:
@@ -561,8 +576,15 @@ def _states_current(key: str, kind: EventKind, keys: Mapping[str, str]) -> bool:
 
 
 def _origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> ProviderAnswer | None:
+    """Every answer asked from the origin as one, so an earlier train searched for advice and
+    the usual or locked train are judged together (7.6)."""
     origin = ctx.profile.origin(ctx.direction)
-    return next((a for a in answers if a.query.origin == origin), None)
+    mine = [a for a in answers if a.query.origin == origin]
+    if not mine:
+        return None
+    newest = max(mine, key=lambda a: _utc(a.fetched_at))
+    conns = tuple(c for a in mine for c in a.connections)
+    return ProviderAnswer(mine[0].query, conns, newest.fetched_at)
 
 
 async def every(clock: Clock, seconds: float, step: Callable[[], Awaitable[None]]) -> None:
@@ -605,7 +627,16 @@ class Runtime:
         self._st = PersistedState(None, {}, {}, {}, {}, (), False)
         self._budget = RequestBudget()
         self._store_ok = True
-        self._dirty = False
+        # rule 22: only a written state is active. `_durable` is the last one written (or
+        # loaded), `_staged` the newest change whose write failed (retried by the watchdog),
+        # `_held` the alerts of unwritten changes, sent from memory; `_finished` the obligations
+        # finished (sent or dropped) since the last write, `_told` the alerts sent from memory
+        self._durable = self._st
+        self._staged: PersistedState | None = None
+        self._held: dict[str, Obligation] = {}
+        self._finished: set[str] = set()
+        self._told: set[tuple[str | None, str, Severity]] = set()
+        self._refused_told: str | None = None
         self._mtime: int | None = None
         self._auth_outage = False
         self._auth_told: set[str] = set()
@@ -754,7 +785,7 @@ class Runtime:
             self._refusal,
             self._store_ok,
             self._auth_outage,
-            sum(o.attempts > 0 for o in st.obligations),
+            sum(o.attempts > 0 for o in (*st.obligations, *self._held.values())),
             self.requests,
             dict(self._loc_epoch),
             {
@@ -787,14 +818,16 @@ class Runtime:
             0,
         )
 
-    def _app_warning(self, kind: EventKind, body: str, now: datetime, tag: str = "") -> None:
+    def _app_obligation(self, kind: EventKind, body: str, now: datetime, tag: str) -> Obligation:
         e = AlertEvent(
             "", _APP, None, None, None, kind, Severity.LOUD, None,
             f"{_title(_APP)}: {body}", f"{kind.value}:{tag}:{now.isoformat()}", now,
         )  # fmt: skip
-        self._st = replace(
-            self._st, obligations=(*self._st.obligations, self._obligation(e, None, now))
-        )
+        return self._obligation(e, None, now)
+
+    def _app_warning(self, kind: EventKind, body: str, now: datetime, tag: str = "") -> None:
+        o = self._app_obligation(kind, body, now, tag)
+        self._st = replace(self._st, obligations=(*self._st.obligations, o))
 
     def _record(
         self, s: OccurrenceState, events: Sequence[AlertEvent], now: datetime, polled: bool
@@ -844,6 +877,7 @@ class Runtime:
         self,
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]],
         polled: bool = False,
+        stage: bool = True,
     ) -> None:
         now = self._clock.now()
         occs = dict(self._st.occurrences)
@@ -856,7 +890,7 @@ class Runtime:
             obligations += new
         self._st = replace(self._st, occurrences=occs, obligations=tuple(obligations))
         self._archive(now)
-        self._save()
+        self._save(stage)
 
     def _archive(self, now: datetime) -> None:
         """Rule 6: an occurrence leaves the store once it ended and its pending journey warnings
@@ -879,22 +913,82 @@ class Runtime:
         snaps = {r: c for r, c in self._st.config_snapshots.items() if r in live}
         self._st = replace(self._st, occurrences=occs, config_snapshots=snaps)
 
-    def _save(self) -> None:
+    def _save(self, stage: bool = True) -> bool:
+        """Rule 22: writes the changed state as one; only once written does it become active.
+        A failed write leaves the last written state active (keeping the poll records it saw,
+        so a fresh board does not read as stale), holds the change's new alerts to send from
+        memory and keeps the change for the watchdog to write again (`stage`; the watchdog's
+        own changes and finished deliveries are recomputed or kept in memory, so they never
+        displace a poll's, an action's, a reload's or a look-ahead's change). A first
+        configuration stays active anyway: nothing else could run."""
+        cand = self._clean(self._st)
         try:
-            self._store.save(self._st)
+            self._store.save(cand)
         except StorageError as e:
-            self._dirty = True
+            self._hold(cand)
+            self._staged = cand if stage or self._staged is None else self._staged
+            base = self._durable
+            if base.config is None and cand.config is not None:
+                base = replace(base, config=cand.config, config_snapshots=cand.config_snapshots)
+                self._durable = base
+            occs = {
+                k: replace(x, poll_records=cand.occurrences[k].poll_records)
+                if k in cand.occurrences else x
+                for k, x in base.occurrences.items()
+            }  # fmt: skip
+            self._st = replace(base, occurrences=occs)
             if self._store_ok:  # one loud storage_failed per outage, held in memory only
                 self._store_ok = False
                 log.error("store write failed: %s", e)
-                self._app_warning(
+                o = self._app_obligation(
                     EventKind.STORAGE_FAILED,
                     "could not save state, alerts may repeat or be lost.",
                     self._clock.now(),
+                    "",
                 )
-            return
-        self._dirty = False
+                self._held[o.id] = o
+            return False
+        self._st = self._durable = cand
+        self._staged = None
+        self._finished.clear()
+        # an alert sent from memory stays told until a written state records it as sent
+        self._told = {
+            t for t in self._told
+            if t[0] is not None and _SENT + t[1] not in getattr(
+                cand.occurrences.get(t[0]), "alert_keys", {}
+            )
+        }  # fmt: skip
+        written = {_held_id(o) for o in cand.obligations}
+        self._held = {i: o for i, o in self._held.items() if _held_id(o) not in written}
         self._store_ok = True
+        return True
+
+    def _clean(self, st: PersistedState) -> PersistedState:
+        """`st` without the obligations finished since the last write, and without new ones
+        that repeat an alert already sent from memory."""
+        old = {o.id for o in self._durable.obligations}
+        drop = self._finished | {
+            o.id for o in st.obligations if o.id not in old and _held_id(o) in self._told
+        }
+        if not drop:
+            return st
+        ledgers = {
+            k: replace(v, pending=tuple(o for o in v.pending if o.id not in drop))
+            for k, v in st.lookahead.items()
+        }
+        kept = tuple(o for o in st.obligations if o.id not in drop)
+        return replace(st, obligations=kept, lookahead=ledgers)
+
+    def _hold(self, cand: PersistedState) -> None:
+        """The new alerts of an unwritten change, sent from memory (rule 22); a repeat of a held
+        alert replaces it, a repeat of one already sent is not held again."""
+        old = {o.id for o in self._durable.obligations}
+        for o in cand.obligations:
+            ident = _held_id(o)
+            if o.id in old or o.id in self._held or ident in self._told:
+                continue
+            self._held = {i: x for i, x in self._held.items() if _held_id(x) != ident}
+            self._held[o.id] = o
 
     async def _deliver(self) -> None:
         """Every pending obligation, revalidated right before sending (rule 5). Merges by id,
@@ -905,22 +999,40 @@ class Runtime:
 
     async def _deliver_pass(self) -> None:
         view = _View(self)
+        held_view = _View(self, self._staged)
         finished: set[str] = set()
         kept: dict[str, Obligation] = {}
-        for o in self._st.obligations:
+        told: dict[str, bool] = {}  # finished LEAVE_NOW id -> sent (else dropped)
+        for o in (*self._st.obligations, *self._held.values()):
+            held = o.id in self._held
+            if o.id in self._finished:
+                continue  # finished while the store was down (rule 22)
             if self._since is not None and _utc(o.event.created_at) < _utc(self._since):
                 continue  # written before this start: judged once the reconcile poll ran (r11)
             k = None if o.occurrence is None else _okey(o.occurrence)
             if o.event.kind in _OBSERVED and k in self._st.occurrences and k not in self._boards:
                 continue  # judged on observations: waits for a healthy answer (rule 5b)
             # a fresh clock per message: a slow send must not leave the next one judged early
-            r = await deliver(o, view, self._notifier, self._clock.now())
+            n = len(self.events_log)  # the logging notifier appends what it sent
+            r = await deliver(o, held_view if held else view, self._notifier, self._clock.now())
+            if held:  # memory only: nothing to write
+                if r is None and len(self.events_log) > n:
+                    self._told.add(_held_id(o))
+                if r is None:
+                    self._held.pop(o.id, None)
+                elif o.id in self._held:
+                    self._held[o.id] = r
+                continue
             if r is None:
                 finished.add(o.id)
+                if o.event.kind is EventKind.LEAVE_NOW:
+                    told[o.id] = len(self.events_log) > n
             elif r != o:
                 kept[o.id] = r
         if not finished and not kept:
             return
+        self._finished |= finished
+        self._advice_told(told)
 
         def survive(xs: Iterable[Obligation]) -> tuple[Obligation, ...]:
             return tuple(kept.get(o.id, o) for o in xs if o.id not in finished)
@@ -929,7 +1041,23 @@ class Runtime:
         ledgers = {k: replace(v, pending=survive(v.pending)) for k, v in self._st.lookahead.items()}
         self._st = replace(self._st, obligations=survive(self._st.obligations), lookahead=ledgers)
         self._archive(self._clock.now())
-        self._save()
+        self._save(stage=False)
+
+    def _advice_told(self, told: Mapping[str, bool]) -> None:
+        """7.6: the advice episode a finished LEAVE_NOW belongs to is delivered once sent, and
+        ended silently once dropped unsent, so the same train can be advised again."""
+        occs = dict(self._st.occurrences)
+        for o in self._st.obligations:
+            k = None if o.occurrence is None else _okey(o.occurrence)
+            s = None if k is None else occs.get(k)
+            a = None if s is None else s.advice
+            if k is None or s is None or a is None or o.id not in told or a.sent_at is None:
+                continue
+            if a.advised_train != o.event.train or _utc(a.sent_at) != _utc(o.event.created_at):
+                continue  # an older episode's message
+            a = replace(a, delivered=True) if told[o.id] else replace(a, withdrawn=True)
+            occs[k] = replace(s, advice=a)
+        self._st = replace(self._st, occurrences=occs)
 
     # --- provider access under the shared budget ---
 
@@ -1058,6 +1186,12 @@ class Runtime:
             return  # the window only selects the first train (rule 19)
         gen = s.generation
         got = await self._fetch_all(queries_needed(s, ctx), True, ctx.schedule.window_end)
+        if not isinstance(got, str) and (usual := _origin_answer(got, ctx)) is not None:
+            # 7.6: an earlier catchable train is before the time the poll asked from; a failed
+            # search leaves advice to the poll's own answers and never fails the poll
+            q = advice_query(s, ctx, usual, self._usual_arrival(s, ctx, usual))
+            extra = None if q is None else await self._fetch(q, True, ctx.schedule.window_end)
+            got = got if extra is None or isinstance(extra, str) else (*got, extra)
         now = self._clock.now()
         s = self._st.occurrences.get(k)
         ctx = None if s is None else self._ctx(s, now)
@@ -1081,10 +1215,10 @@ class Runtime:
                 good = all_good(st, board, ctx)  # Q4: judged once, at the first poll with a lock
                 st = replace(st, all_good_evaluated=True)
                 events += [good] if good else []
-            if usual is not None:
+            if (merged := _origin_answer(answers, ctx)) is not None:
                 # no reference: an absent or broken usual still makes waiting bad (7.6)
-                arrival = self._usual_arrival(st, ctx, usual)
-                record, more = advise(st, ctx, usual, arrival)
+                arrival = self._usual_arrival(st, ctx, merged)
+                record, more = advise(st, ctx, merged, arrival)
                 if ctx.signature is None and arrival is not None:  # never a relock's arrival
                     record = replace(record, usual_arrival=arrival)
                 st, events = replace(st, advice=record), [*events, *more]
@@ -1242,8 +1376,9 @@ class Runtime:
 
     async def watchdog_once(self) -> None:
         now = self._clock.now()
-        if self._dirty:
-            self._save()  # retried writes (rule 22)
+        if self._staged is not None:  # the unwritten change, written again (rule 22)
+            self._st = self._staged
+            self._save()
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
         for k, s in self._st.occurrences.items():
             ctx = self._ctx(s, now)
@@ -1258,9 +1393,9 @@ class Runtime:
         before = self._st.occurrences
         self._archive(now)  # a window closing is itself no change
         if changes:
-            self._apply(changes)
+            self._apply(changes, stage=False)
         elif self._st.occurrences != before:
-            self._save()
+            self._save(stage=False)
         await self._deliver()
 
     # --- user actions and location ---
@@ -1501,11 +1636,15 @@ class Runtime:
     def _refuse(self, errors: Sequence[ProfileError] | str, now: datetime) -> None:
         reason = errors if isinstance(errors, str) else _reasons(errors)
         self._refusal = reason
+        if not self._store_ok and reason == self._refused_told:
+            return  # the same file retried while its write fails (rule 22): told once
+        self._refused_told = reason
         self._app_warning(EventKind.PROFILE_REFUSED, f"profile change refused: {reason}.", now)
 
     async def reload(self) -> None:
         now = self._clock.now()
         self._refusal = None
+        applied: Config | None = None
         try:
             text = self._path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
@@ -1535,7 +1674,10 @@ class Runtime:
                     self._refuse(errors, now)
                 if cfg is not None and cfg is not old:
                     self._apply_config(cfg, now)
+                    applied = cfg
         self._apply({})
+        if applied is not None and self._st.config is not applied:
+            self._mtime = None  # not written, so not active: the file watch tries again (r22)
         await self._deliver()
 
     def _stations_due(self) -> bool:
@@ -1764,7 +1906,7 @@ class Runtime:
             loaded, lost = None, str(e)
         if loaded is not None:
             self._st = self._migrated(loaded)
-        self._st = replace(self._st, started_before=True)
+        self._st = self._durable = replace(self._st, started_before=True)
         if lost is not None:  # rule 22: fresh state, loud, and a write clears "state lost"
             self._app_warning(EventKind.STORAGE_FAILED, f"saved state was lost ({lost}).", now)
         try:

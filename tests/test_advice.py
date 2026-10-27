@@ -127,13 +127,24 @@ def test_withdrawn_once():
     c = ctx(at("17:00"))
     s = fresh(c)
     rec, _ = advise(s, c, answer(EARLY, SLOW, LATER), USUAL_ARRIVAL)
-    s = replace(s, advice=rec)
+    s = replace(s, advice=replace(rec, delivered=True))  # the runtime marks it once sent
     ok = conn("17:52", "18:26", "1234")
     rec2, events = advise(s, c, answer(EARLY, ok, LATER), USUAL_ARRIVAL)
     assert [e.kind for e in events] == [EventKind.EARLIER_TRAIN_WITHDRAWN]
     assert events[0].severity is Severity.SILENT and rec2.withdrawn
     rec3, again = advise(replace(s, advice=rec2), c, answer(EARLY, ok, LATER), USUAL_ARRIVAL)
     assert again == [] and rec3 == rec2
+
+
+def test_untold_advice_ends_silently_and_can_start_again():  # 7.6
+    c = ctx(at("17:00"))
+    s = fresh(c)
+    rec, _ = advise(s, c, answer(EARLY, SLOW, LATER), USUAL_ARRIVAL)  # its LEAVE_NOW is unsent
+    ok = conn("17:52", "18:26", "1234")
+    rec2, events = advise(replace(s, advice=rec), c, answer(EARLY, ok, LATER), USUAL_ARRIVAL)
+    assert events == [] and rec2.withdrawn and not rec2.delivered
+    _, again = advise(replace(s, advice=rec2), c, answer(EARLY, SLOW, LATER), USUAL_ARRIVAL)
+    assert [e.kind for e in again] == [EventKind.LEAVE_NOW]
 
 
 def test_advice_is_not_repeated_for_the_same_train():
@@ -211,7 +222,10 @@ def test_renewed_disruption_after_withdrawal_advises_again_with_a_new_identity()
     rec, first = advise(s, c, answer(EARLY, SLOW, LATER), USUAL_ARRIVAL)
     ok = conn("17:52", "18:26", "1234")
     later = ctx(at("17:05"))
-    rec2, withdrawn = advise(replace(s, advice=rec), later, answer(EARLY, ok, LATER), USUAL_ARRIVAL)
+    told = replace(rec, delivered=True)  # the runtime marks it once sent
+    rec2, withdrawn = advise(
+        replace(s, advice=told), later, answer(EARLY, ok, LATER), USUAL_ARRIVAL
+    )
     assert [e.kind for e in withdrawn] == [EventKind.EARLIER_TRAIN_WITHDRAWN]
     again = ctx(at("17:08"))
     rec3, renewed = advise(
@@ -221,6 +235,7 @@ def test_renewed_disruption_after_withdrawal_advises_again_with_a_new_identity()
     assert renewed[0].key != first[0].key  # the ledger does not drop it as a repeat
     assert rec3.advised_train == EARLY.legs[0].train and not rec3.withdrawn
     # and a second withdrawal is its own message too
+    rec3 = replace(rec3, delivered=True)
     _, w2 = advise(replace(s, advice=rec3), ctx(at("17:10")), answer(EARLY, ok), USUAL_ARRIVAL)
     assert [e.kind for e in w2] == [EventKind.EARLIER_TRAIN_WITHDRAWN]
     assert w2[0].key != withdrawn[0].key

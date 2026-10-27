@@ -219,6 +219,9 @@ class AdviceRecord:
     # the usual journey's planned arrival, read from a healthy answer before any relock when no
     # baseline exists yet: the 7.6 reference, never a replacement's arrival
     usual_arrival: datetime | None = None
+    # the episode's LEAVE_NOW reached the user; pending until then. An undelivered episode that
+    # stops holding is ended silently (`withdrawn` with this False), so it can start again
+    delivered: bool = False
 
 
 @dataclass(frozen=True, slots=True)
