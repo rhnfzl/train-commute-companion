@@ -250,7 +250,7 @@ async def test_token_never_in_errors_or_logs(tg, caplog):  # Review Focus 4
     assert api.bot_id == "123"
     assert TOKEN not in caplog.text and all(TOKEN not in str(e) for e in raised)
     assert all(TOKEN not in r.getMessage() for r in caplog.records)
-    assert all(e.__cause__ is None and e.__suppress_context__ for e in raised)
+    assert all(e.__cause__ is None and e.__context__ is None for e in raised)
 
 
 def test_telegram_error_carries_code_and_retry_after():

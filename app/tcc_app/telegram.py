@@ -35,11 +35,14 @@ class TelegramApi:
 
     async def call(self, method: str, params: dict[str, Any], timeout: float = 20.0) -> Any:
         url = f"https://api.telegram.org/bot{self._token}/{method}"
+        failed = None
         try:
             r = await self._client.post(url, json=params, timeout=timeout)
             body = r.json()
         except (httpx.HTTPError, ValueError) as e:  # the httpx exception carries the URL
-            raise TelegramError(0, None, type(e).__name__) from None
+            failed = type(e).__name__
+        if failed is not None:  # raised outside `except`: no __context__ holds the URL
+            raise TelegramError(0, None, failed)
         if not isinstance(body, dict):
             raise TelegramError(0, None, "unexpected body")
         if body.get("ok") is True:
