@@ -12,6 +12,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from train_commute_companion.model import AlertEvent, Direction, Severity
+from train_commute_companion.notify import event_fields
 
 from .const import (
     DEFAULT_LOUD_STYLE,
@@ -69,24 +70,7 @@ def notify_payload(
 
 
 def event_data(event: AlertEvent, entry_id: str, device_id: str | None) -> dict[str, Any]:
-    t = event.train
-    return {
-        "config_entry_id": entry_id,
-        "device_id": device_id,
-        "profile_id": event.profile_id,
-        "profile_name": event.profile_name,
-        "direction": event.direction.value if event.direction else None,
-        "service_date": event.service_date.isoformat() if event.service_date else None,
-        "leg_index": event.leg_index,
-        "kind": event.kind.value,
-        "severity": event.severity.value,
-        "train_operating_date": t.operating_date.isoformat() if t else None,
-        "train_number": t.train_number if t else None,
-        "train_departure": t.planned_departure.isoformat() if t else None,
-        "text": event.text,
-        "key": event.key,
-        "created_at": event.created_at.isoformat(),
-    }
+    return {"config_entry_id": entry_id, "device_id": device_id, **event_fields(event)}
 
 
 def mobile_target(hass: HomeAssistant, service: str) -> str | None:
