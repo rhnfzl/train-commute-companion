@@ -58,5 +58,5 @@ strict = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
-pythonpath = ["tests", "."]
+testpaths = ["tests", "tests_app"]
+pythonpath = ["tests", ".", "app"]
