@@ -11,10 +11,19 @@ Data: NS.
 
 ## First run
 
-1. Copy `examples/docker-compose.yml` next to a new `.env` file holding `NS_API_KEY` and `TELEGRAM_BOT_TOKEN`. Leave `TELEGRAM_CHAT_ID` out for now.
+Run every command below from the `examples/` directory of this checkout, where the compose file builds the image from the checkout above it. Your `.env` and `config/` stay in `examples/` and are never committed.
+
+1. Create `examples/.env` holding `NS_API_KEY` and `TELEGRAM_BOT_TOKEN`. Leave `TELEGRAM_CHAT_ID` out for now. Then copy the example profile:
+
+   ```
+   cd examples
+   mkdir config
+   cp profiles.yaml config/
+   ```
+
 2. Start it with `docker compose up -d --build`, then send the bot a message from a **private chat**. Never use a group: every member could act and share location.
-3. The log shows a line with the chat id. Put it in `.env` as `TELEGRAM_CHAT_ID` and restart.
-4. Create a `config/` directory and copy `examples/profiles.yaml` into it. Replace `AAA` with your own station codes and check the file:
+3. The log (`docker compose logs tcc`) shows a line with the chat id. Put it in `.env` as `TELEGRAM_CHAT_ID` and apply it with `docker compose up -d --force-recreate tcc` (a plain `restart` keeps the old environment).
+4. In `config/profiles.yaml`, replace `AAA` with your own station codes and check the file:
 
    ```
    docker compose run --rm tcc tcc check-profile /config/profiles.yaml
@@ -54,7 +63,7 @@ A machine that is off cannot warn about itself, so point an external uptime chec
 ## Good to know
 
 - `/data` must be one volume: atomic writes and the `.started` marker live there. Run one container per state file.
-- A rejected NS key is retried with backoff (2, 5, 15, then 30 minutes). Fix the key and restart.
+- A rejected NS key is retried with backoff (2, 5, 15, then 30 minutes). Fix the key in `.env` and apply it with `docker compose up -d --force-recreate tcc`.
 - An alert can repeat after a crash between sending and saving (delivery is at least once).
 - `docker stop` is safe; the app exits cleanly.
 

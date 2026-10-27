@@ -37,6 +37,7 @@ SECRET = "test-secret"
         b'{"_type":"location","lat":52.1,"lon":5.1,"tst":true}',
         b'{"_type":"location","lat":52.1,"lon":5.1,"tst":1700000000,"acc":"bad"}',
         b"\xff\xfe",
+        b'{"_type":"location","t":"p","lat":52.1,"lon":5.1,"tst":1700000000}',
     ],
 )
 def test_parse_ignores(body):
@@ -113,16 +114,20 @@ async def test_owntracks_post_produces_a_zone_event(app_owntracks):  # noqa: F81
                              secret=SECRET, host="127.0.0.1")  # fmt: skip
     port = server.sockets[0].getsockname()[1]
 
-    async def send(lat: float, lon: float, hhmm: str, regions: list[str]) -> None:
+    async def send(lat: float, lon: float, hhmm: str, regions: list[str], **extra: str) -> None:
         clock: TickClock = app.clock
         clock.t = at(hhmm)
         body = {"_type": "location", "lat": lat, "lon": lon, "tst": int(at(hhmm).timestamp()),
-                "inregions": regions}  # fmt: skip
+                "inregions": regions, **extra}  # fmt: skip
         assert (await post(port, json.dumps(body).encode(), basic("u", SECRET)))[:1] == (200,)
         await app.follower.drain()
 
     try:
         await send(*FAR, "07:41", [])
+        # pings carry an old position with a fresh tst: never arrival evidence, at a station or
+        # a region, so neither the current nor a retained journey's stopped_following is hidden
+        await send(*UT, "07:42", ["work_area"], t="p")
+        assert only_occurrence(app.rt).zone_reports == {} and spied(app) == []
         await send(*UT, "07:42", [])
         assert "UT" in only_occurrence(app.rt).zone_reports  # 10.4: OwnTracks gives a zone event
         await send(*FAR, "07:43", ["work_area"])

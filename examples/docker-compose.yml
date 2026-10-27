@@ -1,11 +1,12 @@
 services:
   tcc:
-    build: ..
+    build: ..  # run from examples/: the checkout root holds the Dockerfile
     image: train-commute-companion:local
     restart: unless-stopped
     read_only: true
     # .env sits next to this file and holds the secrets (never commit it):
     #   NS_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, and optionally OWNTRACKS_SECRET
+    # after editing it: docker compose up -d --force-recreate tcc (restart keeps the old values)
     env_file: .env
     volumes:
       # a directory, so an editor that replaces profiles.yaml is still seen

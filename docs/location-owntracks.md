@@ -6,7 +6,7 @@ Location is off by default. A profile works fully on times alone. OwnTracks runs
 
 ## The endpoint
 
-Set `OWNTRACKS_SECRET` in the container's environment. Without it, `/owntracks` answers 404. The endpoint is `POST http://<host>:8080/owntracks` with HTTP Basic authentication: any user name, and the secret as the password.
+Set `OWNTRACKS_SECRET` in `.env` and apply it with `docker compose up -d --force-recreate tcc` (a plain `restart` keeps the old environment). Without it, `/owntracks` answers 404. The endpoint is `POST http://<host>:8080/owntracks` with HTTP Basic authentication: any user name, and the secret as the password.
 
 The phone must reach this endpoint from mobile data during the commute, for example through a VPN to your home network, or through a reverse proxy with TLS. An endpoint that is only reachable on your home network gets the queued positions after the commute, when they are too old to use, so it is for testing only. A plain HTTP endpoint sends the secret in clear: use TLS or a VPN outside your home network.
 

@@ -7,12 +7,15 @@ from .follow import Fix, Follower, number, stamp
 
 
 def parse(body: bytes) -> Fix | None:
-    """A `location` message, else None (other types, bad JSON, missing or malformed fields)."""
+    """A `location` message, else None (other types, pings, bad JSON, missing or malformed
+    fields)."""
     try:
         msg = json.loads(body)
     except ValueError:  # UnicodeDecodeError included
         return None
     if not isinstance(msg, dict) or msg.get("_type") != "location":
+        return None
+    if msg.get("t") == "p":  # a ping resends an old position with a new tst: no evidence
         return None
     lat, lon, at = number(msg.get("lat")), number(msg.get("lon")), stamp(msg.get("tst"))
     acc = number(msg.get("acc"))
