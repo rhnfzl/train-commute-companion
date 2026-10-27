@@ -19,6 +19,7 @@ class FakeTelegram:
         self.calls: list[str] = []  # every request's method, failed ones included
         self.sent: list[dict[str, Any]] = []  # sendMessage params of answered sends
         self.answered: list[str] = []  # answerCallbackQuery ids
+        self.polls: list[dict[str, Any]] = []  # getUpdates params, failed ones included
         self.updates: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.fail: Callable[[str], httpx.Response | Exception | None] = lambda method: None
         self._backlog: list[dict[str, Any]] = []  # served until a later offset confirms them
@@ -36,12 +37,14 @@ class FakeTelegram:
     async def handler(self, request: httpx.Request) -> httpx.Response:
         method = request.url.path.rsplit("/", 1)[-1]
         self.calls.append(method)
+        params = json.loads(request.content) if request.content else {}
+        if method == "getUpdates":
+            self.polls.append(params)
         failure = self.fail(method)
         if isinstance(failure, Exception):
             raise failure
         if failure is not None:
             return failure
-        params = json.loads(request.content) if request.content else {}
         if method == "sendMessage":
             self.sent.append(params)
             return ok({"message_id": len(self.sent)})
