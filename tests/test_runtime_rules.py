@@ -41,6 +41,7 @@ from train_commute_companion.providers.base import (
     RateLimited,
     ServerError,
 )
+from train_commute_companion.serde import dumps, loads
 from train_commute_companion.store import PersistedState
 
 
@@ -1651,3 +1652,104 @@ async def test_legacy_advice_still_owed_is_not_withdrawn_after_an_upgrade_restar
     assert EventKind.EARLIER_TRAIN_WITHDRAWN not in kinds(rig.notifier.attempts)
     assert not any(o.event.kind is EventKind.LEAVE_NOW for o in rig.rt.state.obligations)
     assert rig.occ("p1|return|2026-10-27").advice.withdrawn
+
+
+# --- Review Focus 7: two profiles on one train keep separate alerts (7.12 rules 5, 6, 22) ---
+
+
+async def two_on_one_train(tmp_path) -> Rig:
+    """p1 removed while its journey runs (rule 10) and p2, now on Tuesdays, both follow the 08:12
+    from AAA; one poll cancels it for both while the phone is down."""
+    rig = await started(tmp_path)
+    p2_only = PROFILE.split('  - id: "p2"')[1].replace("days: [sat]", "days: [tue]")
+    rig.write(text='profiles:\n  - id: "p2"' + p2_only)
+    rig.clock.jump(1)
+    await rig.rt.check_file()
+    rig.clock.set("07:52")
+    await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: True
+    rig.clock.set("07:54")
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    await rig.rt.poll_once()
+    return rig
+
+
+def phone(rig: Rig, took: list[AlertEvent], down_for: str | None = None) -> None:
+    """The phone takes every alert but `down_for`'s, and adds the ones it took to `took`."""
+
+    def fails(e: AlertEvent) -> bool:
+        if e.profile_id == down_for:
+            return True
+        took.append(e)
+        return False
+
+    rig.notifier.fails = fails
+
+
+def cancelled_owed(rig: Rig) -> list[Obligation]:
+    return [o for o in rig.rt.state.obligations if o.event.kind is EventKind.CANCELLED]
+
+
+def cancelled_by(took: list[AlertEvent]) -> list[str]:
+    return sorted(e.profile_id for e in took if e.kind is EventKind.CANCELLED)
+
+
+def restore_ids(rig: Rig, ids) -> None:
+    """Rewrites the stored obligation ids, through the real codec."""
+    st = loads(PersistedState, rig.store.text)
+    rig.store.text = dumps(replace(st, obligations=tuple(
+        replace(o, id=ids(o)) for o in st.obligations)))  # fmt: skip
+
+
+async def test_two_profiles_on_one_train_keep_separate_alerts(tmp_path):  # Review Focus 7
+    rig = await two_on_one_train(tmp_path)
+    owed = cancelled_owed(rig)
+    assert sorted(o.event.profile_id for o in owed) == ["p1", "p2"]
+    assert len({o.id for o in owed}) == 2
+    took: list[AlertEvent] = []
+    phone(rig, took, down_for="p2")
+    await rig.rt.watchdog_once()
+    assert rig.rt.view().undelivered == 1
+    assert [o.event.profile_id for o in cancelled_owed(rig)] == ["p2"]
+    phone(rig, took)
+    await rig.rt.watchdog_once()
+    assert cancelled_by(took) == ["p1", "p2"] and not cancelled_owed(rig)
+
+
+async def test_stored_obligation_ids_load_unchanged(tmp_path):
+    rig = await started(tmp_path)
+    rig.notifier.fails = lambda e: True
+    rig.clock.set("07:54")
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    await rig.rt.poll_once()
+    (o,) = cancelled_owed(rig)
+    old = f"{o.event.key}|{o.event.severity.value}|{o.event.created_at.isoformat()}"
+    restore_ids(rig, lambda x: old if x.id == o.id else x.id)
+    await rig.restart()
+    assert [x.id for x in cancelled_owed(rig)] == [old]
+    took: list[AlertEvent] = []
+    phone(rig, took)
+    await rig.rt.watchdog_once()
+    assert cancelled_by(took) == ["p1"]
+    assert not any(x.id == old for x in rig.store.load().obligations)
+
+
+async def test_colliding_stored_ids_are_split_on_load(tmp_path):
+    rig = await two_on_one_train(tmp_path)
+    (o, _) = cancelled_owed(rig)
+    old = f"{o.event.key}|{o.event.severity.value}|{o.event.created_at.isoformat()}"
+    restore_ids(rig, lambda x: old if x.event.kind is EventKind.CANCELLED else x.id)
+    await rig.restart()
+    owed = cancelled_owed(rig)
+    assert sorted(x.event.profile_id for x in owed) == ["p1", "p2"]
+    assert len({x.id for x in owed}) == 2
+    took: list[AlertEvent] = []
+    phone(rig, took, down_for="p2")
+    await rig.rt.watchdog_once()
+    assert rig.rt.view().undelivered == 1
+    rig.notifier.fails = lambda e: True
+    await rig.restart()
+    assert [x.event.profile_id for x in cancelled_owed(rig)] == ["p2"]
+    phone(rig, took)
+    await rig.rt.watchdog_once()
+    assert cancelled_by(took) == ["p1", "p2"] and not cancelled_owed(rig)

@@ -5,6 +5,7 @@ budget, look-ahead, transactional reload and the restart reconcile (7.1, 7.11, 7
 import asyncio
 import copy
 import logging
+from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -936,8 +937,10 @@ class Runtime:
             revision = s.route_revision
         else:
             revision = self._st.config.revision if self._st.config else 0
+        # one poll shares `now` and the key names neither profile nor direction (7.12 rule 6)
+        d = e.direction.value if e.direction else ""
         return Obligation(
-            f"{e.key}|{e.severity.value}|{now.isoformat()}",
+            f"{e.profile_id}|{d}|{e.key}|{e.severity.value}|{now.isoformat()}",
             e,
             None if s is None else s.key,
             None,
@@ -2177,6 +2180,18 @@ class Runtime:
         obligations = tuple(  # stored with the planned departure frozen as expiry
             replace(o, expires_at=None) if o.event.kind is EventKind.LEAVE_NOW else o
             for o in st.obligations
+        )
+        # an id stored before it named profile and direction is shared by two profiles' alerts
+        ids = Counter(o.id for o in obligations)
+        obligations = tuple(
+            o
+            if ids[o.id] == 1
+            else replace(
+                o,
+                id=f"{o.event.profile_id}|"
+                f"{o.event.direction.value if o.event.direction else ''}|{o.id}",
+            )
+            for o in obligations
         )
         return replace(st, occurrences=occs, obligations=obligations)
 

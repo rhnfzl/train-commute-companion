@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import date, datetime
 
 import pytest
@@ -470,6 +471,16 @@ async def test_bus_event_fired_once_per_fact_with_all_fields(hass):
     assert d["severity"] == "loud" and d["direction"] == "outbound" and d["device_id"] is None
     assert d["config_entry_id"] == "entry1" and d["train_number"] == "1234"
     assert d["service_date"] == "2026-10-27" and d["created_at"].startswith("2026-10-27T07:50")
+
+
+async def test_two_profiles_same_fact_fire_two_bus_events(hass):  # Review Focus 7
+    events = async_capture_events(hass, EVENT_ALERT)
+    n = build(hass)
+    p1 = loud_event()
+    p2 = replace(p1, profile_id="p2", profile_name="office_a")
+    for e in (p1, p2, p1, p2):  # then a retry of each
+        await send_from_thread(hass, e, n)
+    assert [x.data["profile_id"] for x in events] == ["p1", "p2"]
 
 
 async def test_bus_event_has_device_id_when_registered(hass):

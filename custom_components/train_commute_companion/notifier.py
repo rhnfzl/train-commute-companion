@@ -11,7 +11,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from train_commute_companion.model import AlertEvent, Severity
+from train_commute_companion.model import AlertEvent, Direction, Severity
 
 from .const import (
     DEFAULT_LOUD_STYLE,
@@ -243,7 +243,7 @@ class HaNotifier:
         self.entry_id = entry_id
         self.service = service
         self.loud_style = loud_style
-        self._fired: set[tuple[str, Severity, Any]] = set()
+        self._fired: set[tuple[str, Direction | None, str, Severity, Any]] = set()
         # this notifier's work on hass.loop (sends and relay fallbacks), cancelled on unload
         self._tasks: set[asyncio.Task[None]] = set()
         self._timed_out_at: float | None = None
@@ -280,7 +280,8 @@ class HaNotifier:
             self._tasks.discard(me)
 
     async def _deliver(self, event: AlertEvent) -> bool:
-        fact = (event.key, event.severity, event.created_at)
+        # the key names neither profile nor direction: two profiles on one train are two facts
+        fact = (event.profile_id, event.direction, event.key, event.severity, event.created_at)
         if fact not in self._fired:
             # shortcut: bounded by clearing, a repeat bus event after 1000 facts is harmless
             if len(self._fired) > _MEMORY_CAP:
