@@ -1303,18 +1303,23 @@ class Runtime:
             )
         known = {o.id for o in self._durable.obligations}
         taken = {_held_id(o) for o in self._held.values()} | self._told
+        # a held alert whose copy was made is written with its mark (rule 22)
+        held = {
+            k: replace(o, webhook_copied=True) if k in self._copied else o
+            for k, o in self._held.items()
+        }
         obls = [
-            self._held.get(o.id, o)
+            held.get(o.id, o)
             for o in st.obligations
             if o.id not in self._gone
-            and (o.id in known or o.id in self._held or _held_id(o) not in taken)
+            and (o.id in known or o.id in held or _held_id(o) not in taken)
         ]
         ids = {o.id for o in obls}
-        obls += [o for o in self._held.values() if o.id not in ids]
+        obls += [o for o in held.values() if o.id not in ids]
         ledgers = {
             k: replace(
                 v,
-                pending=tuple(self._held.get(o.id, o) for o in v.pending if o.id not in self._gone),
+                pending=tuple(held.get(o.id, o) for o in v.pending if o.id not in self._gone),
             )
             for k, v in st.lookahead.items()
         }
@@ -1605,8 +1610,9 @@ class Runtime:
         self._st = outcome(self._st)
         self._archive(self._clock.now())
         self._gone |= finished
-        if self._save(stage=False, op=outcome):  # held messages are not in the write: kept
-            self._copied = {i for i in self._copied if i in self._held or i in self._notes}
+        mem = set(self._held) | set(self._notes)  # read before a landed write empties `_held`
+        if self._save(stage=False, op=outcome):
+            self._copied = {i for i in self._copied if i in mem}
 
     # --- provider access under the shared budget ---
 

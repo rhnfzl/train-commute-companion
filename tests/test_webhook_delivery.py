@@ -1196,6 +1196,57 @@ async def test_background_write_keeps_the_mark_of_an_in_flight_phone_send(tmp_pa
     assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)]  # the receiver, never again
 
 
+async def test_background_write_keeps_the_mark_of_a_held_in_flight_phone_send(tmp_path):
+    # rule 22: the bundle is held after a failed write; a background write lands meanwhile
+    rig = await mixed_rig(tmp_path, sync=False)
+    phone = asyncio.Event()
+    entered = asyncio.Event()
+    send = rig.notifier.send
+
+    async def held(e: AlertEvent) -> bool:  # the bundle's phone send waits, then fails
+        if WARNING in e.text and not phone.is_set():
+            entered.set()
+            await phone.wait()
+            return False
+        return await send(e)
+
+    rig.notifier.send = held  # type: ignore[method-assign]
+    rig.end.gate = asyncio.Event()
+    rig.end.gate_if = lambda b: b["kind"] == "key_rejected"
+    alert(rig, 1)
+    await rig.rt.watchdog_once()
+    await asyncio.wait_for(rig.end.entered.wait(), 2)  # a webhook pass is in flight
+    await rig.rt.watchdog_once()  # queues a second round of it
+    rig.store.fail = True
+    run = asyncio.create_task(rig.rt.lookahead_once())
+    await asyncio.wait_for(entered.wait(), 2)  # the bundle is held, its copy made
+    (o,) = [
+        x
+        for x in rig.rt._held.values()
+        if x.look_ahead == ("p1", OUT, WED) and "adopt:" in x.fact_key
+    ]
+    rig.store.fail = False
+    rig.end.gate.set()
+    # the queued round takes the bundle and its write lands while the phone send waits
+    await asyncio.wait_for(rig.rt.webhooks_idle(), 2)
+    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)] and rig.rt._copies == {}
+    assert rig.store.seen[o.id].webhook_copied  # written with its mark: a restart posts none
+    await withdraw(rig)  # retire carries the warning while the phone send is in flight
+    phone.set()
+    await run
+    await rig.rt.webhooks_idle()
+    (n,) = [
+        x
+        for x in rig.rt.state.obligations
+        if x.look_ahead == ("p1", OUT, WED) and WARNING in x.event.text
+    ]
+    assert n.id != o.id and n.webhook_copied
+    await tick(rig)
+    await rig.rt.webhooks_idle()
+    assert [e.key for e in rig.rt.events_log].count(n.event.key) == 1  # the phone, once
+    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)]  # the receiver, never again
+
+
 async def test_a_try_cut_off_by_shutdown_still_starts_the_two_hours(tmp_path, caplog):  # Q1
     caplog.set_level(logging.WARNING, logger="train_commute_companion")
     rig = await wstarted(tmp_path, "20:00")
