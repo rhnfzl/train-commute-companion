@@ -1,6 +1,10 @@
-"""The HTTP side: `/health` for an uptime check (7.11, 7.12 rule 22) on a tiny asyncio server."""
+"""The HTTP side on a tiny asyncio server: `/health` for an uptime check (7.11, 7.12 rule 22) and
+`POST /owntracks` for OwnTracks HTTP mode (8)."""
 
 import asyncio
+import base64
+import binascii
+import hmac
 import json
 import logging
 from collections.abc import Callable
@@ -65,8 +69,9 @@ class _Refused(Exception):
         self.status = status
 
 
-async def _read(reader: asyncio.StreamReader) -> tuple[str, str, bytes]:
-    """Method, path without the query string, body. Raises `_Refused` with 400 or 413."""
+async def _read(reader: asyncio.StreamReader) -> tuple[str, str, dict[str, str], bytes]:
+    """Method, path without the query string, headers (lower-case names), body. Raises
+    `_Refused` with 400 or 413."""
     try:
         head = await reader.readuntil(b"\r\n\r\n")
     except (asyncio.LimitOverrunError, asyncio.IncompleteReadError):
@@ -91,14 +96,29 @@ async def _read(reader: asyncio.StreamReader) -> tuple[str, str, bytes]:
         body = await reader.readexactly(int(length))
     except asyncio.IncompleteReadError:
         raise _Refused(400) from None
-    return words[0], words[1].split("?", 1)[0], body
+    return words[0], words[1].split("?", 1)[0], headers, body
 
 
-def _response(status: int, body: bytes = b"", content_type: str = "application/json") -> bytes:
+def _authorized(header: str | None, secret: str) -> bool:
+    """HTTP Basic whose password is the secret; the user name is ignored."""
+    scheme, _, token = (header or "").partition(" ")
+    if scheme.lower() != "basic":
+        return False
+    try:
+        decoded = base64.b64decode(token.strip(), validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return hmac.compare_digest(decoded.partition(b":")[2], secret.encode())
+
+
+def _response(
+    status: int, body: bytes = b"", content_type: str = "application/json", extra: str = ""
+) -> bytes:
     head = [
         f"HTTP/1.1 {status} {HTTPStatus(status).phrase}",
         f"Content-Type: {content_type}",
         f"Content-Length: {len(body)}",
+        *([extra] if extra else []),
         "Connection: close",
     ]
     return ("\r\n".join(head) + "\r\n\r\n").encode() + body
@@ -115,14 +135,20 @@ async def start_web(
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             try:
-                method, path, _body = await asyncio.wait_for(_read(reader), READ_TIMEOUT_S)
+                method, path, headers, body = await asyncio.wait_for(_read(reader), READ_TIMEOUT_S)
             except _Refused as e:
                 writer.write(_response(e.status))
             else:
                 if method == "GET" and path == "/health":
                     status, report = health()
                     writer.write(_response(status, json.dumps(report).encode()))
-                else:  # POST /owntracks (owntracks, secret) is wired in by Task 13
+                elif method == "POST" and path == "/owntracks" and owntracks and secret:
+                    if not _authorized(headers.get("authorization"), secret):
+                        writer.write(_response(401, extra='WWW-Authenticate: Basic realm="tcc"'))
+                    else:
+                        owntracks(body)  # parses and feeds; the core is not awaited
+                        writer.write(_response(200, b"[]"))
+                else:
                     writer.write(_response(404))
             await writer.drain()
         except TimeoutError:

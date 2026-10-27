@@ -17,7 +17,9 @@ from train_commute_companion.providers.ns import NsProvider
 from train_commute_companion.runtime import LOOKAHEAD_AT, Clock, Runtime, SystemClock
 from train_commute_companion.store import JsonFileStore
 
+from . import owntracks
 from .bot import Bot
+from .follow import Follower
 from .telegram import TelegramApi, TelegramNotifier
 from .web import health_report, start_web
 
@@ -81,6 +83,7 @@ class App:
     rt: Runtime
     notifier: TelegramNotifier
     bot: Bot
+    follower: Follower
 
 
 def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncClient) -> App:
@@ -97,7 +100,10 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
     )
     # the station list is fetched inside run_forever's start, with the watchdog running
     rt.require_stations = True
-    return App(s, rt, notifier, Bot(api, rt, s.chat_id, s.state_dir / "telegram.json"))
+    # NsProvider fills `positions` with the station list; a test provider may have none
+    follower = Follower(rt, lambda: getattr(provider, "positions", {}))
+    bot = Bot(api, rt, s.chat_id, s.state_dir / "telegram.json", follower)
+    return App(s, rt, notifier, bot, follower)
 
 
 async def serve(app: App, port: int) -> int:
@@ -107,9 +113,12 @@ async def serve(app: App, port: int) -> int:
     runtime = asyncio.create_task(app.rt.run_forever(), name="runtime")
     server: asyncio.Server | None = None
     try:
+        secret = app.settings.owntracks_secret
         server = await start_web(
             port,
             health=lambda: health_report(app.rt.view(), not runtime.done(), app.bot.confirmed),
+            owntracks=owntracks.handler(app.follower) if secret else None,
+            secret=secret,
         )
         bot = asyncio.create_task(app.bot.run(), name="telegram")
         done, _ = await asyncio.wait((runtime, bot), return_when=asyncio.FIRST_COMPLETED)
@@ -129,6 +138,7 @@ async def serve(app: App, port: int) -> int:
             t.cancel()
         await asyncio.gather(*rest, return_exceptions=True)
         await app.bot.close()
+        await app.follower.close()
         if server is not None:
             await server.wait_closed()
 

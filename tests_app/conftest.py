@@ -1,10 +1,12 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Mapping
+from datetime import datetime
 from typing import Any
 
 import httpx
 import pytest
+from tcc_app.follow import Fix
 from test_runtime import FakeClock, at
 
 from train_commute_companion.providers.base import PlannedWorks, Provider, ProviderAnswer, Query
@@ -124,3 +126,28 @@ class StationsProvider:
 
     async def stations(self) -> frozenset[str]:
         return self.codes
+
+
+def spied(app: Any) -> list[tuple[str | None, str]]:
+    """What reached `rt.location`, as `(zone, kind)`; installs the spy on first use."""
+    if not hasattr(app, "calls"):
+        app.calls = calls = []
+        orig = app.rt.location
+
+        async def spy(profile_id: str, event: Any, *rest: Any, **kw: Any) -> None:
+            calls.append((event.zone, event.kind))
+            await orig(profile_id, event, *rest, **kw)
+
+        app.rt.location = spy
+    return list(app.calls)
+
+
+async def feed(app: Any, lat: float, lon: float, when: str | datetime, acc: float | None = None,
+               regions: tuple[str, ...] = (), now: str | datetime | None = None) -> None:  # fmt: skip
+    """One fix from the profile's source, handled at its own time (or at `now`)."""
+    t = at(when) if isinstance(when, str) else when
+    app.clock.t = t if now is None else at(now) if isinstance(now, str) else now
+    spied(app)
+    source = app.rt.view().profiles[0].location.source
+    app.follower.feed(source, Fix(lat, lon, t, acc, frozenset(regions)))
+    await app.follower.drain()

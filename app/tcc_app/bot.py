@@ -18,6 +18,7 @@ from train_commute_companion.model import Direction
 from train_commute_companion.runtime import Runtime
 
 from .commands import _pretty, command_word, parse_target, render_status, status_buttons
+from .follow import Fix, Follower, number, stamp
 from .telegram import TelegramApi, TelegramError, split_text
 
 log = logging.getLogger(__name__)
@@ -86,9 +87,15 @@ class _TimedOut(Exception):
 
 class Bot:
     def __init__(
-        self, api: TelegramApi, rt: Runtime, chat_id: int | None, state_path: Path
+        self,
+        api: TelegramApi,
+        rt: Runtime,
+        chat_id: int | None,
+        state_path: Path,
+        follower: Follower | None = None,
     ) -> None:
         self._api, self._rt, self._chat, self._path = api, rt, chat_id, state_path
+        self._follower = follower
         loaded = load_state(state_path)
         self._trusted = loaded is not None and loaded.bot_id == api.bot_id
         if loaded is not None and self._trusted:
@@ -192,11 +199,22 @@ class Bot:
         try:
             if cb:
                 await self._button(cb)
-            elif msg and isinstance(msg.get("text"), str) and "location" not in msg:
+            elif "location" in (msg or edited):
+                self._location(msg or edited)
+            elif msg and isinstance(msg.get("text"), str):
                 await self._message(msg)
-            # an edited message is read only for its location, and locations are Task 13's
+            # an edited message is read only for its location (live location moves edit it)
         except _TimedOut:
             await self._reply("NS did not answer in time; try again.")
+
+    def _location(self, msg: dict[str, Any]) -> None:
+        loc = _obj(msg.get("location"))
+        lat, lon = number(loc.get("latitude")), number(loc.get("longitude"))
+        at = stamp(msg.get("edit_date") or msg.get("date"))
+        acc = number(loc.get("horizontal_accuracy"))
+        if self._follower is None or lat is None or lon is None or at is None:
+            return
+        self._follower.feed("telegram", Fix(lat, lon, at, acc))
 
     async def _message(self, msg: dict[str, Any]) -> None:
         sent = msg.get("date")
