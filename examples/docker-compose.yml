@@ -1,0 +1,18 @@
+services:
+  tcc:
+    build: ..
+    image: train-commute-companion:local
+    restart: unless-stopped
+    read_only: true
+    # .env sits next to this file and holds the secrets (never commit it):
+    #   NS_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, and optionally OWNTRACKS_SECRET
+    env_file: .env
+    volumes:
+      # a directory, so an editor that replaces profiles.yaml is still seen
+      - ./config:/config:ro
+      - tcc-data:/data
+    ports:
+      - "8080:8080"
+
+volumes:
+  tcc-data:
