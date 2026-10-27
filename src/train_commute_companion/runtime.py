@@ -561,32 +561,50 @@ def _settled(d: Mapping[str, Obligation], i: str, r: Obligation | None) -> dict[
 _LEDGER = ("alert_keys", "poll_records")  # composed apart: the newest of each (rule 22)
 
 
-def _delta(old: PersistedState, new: PersistedState) -> Callable[[PersistedState], PersistedState]:
-    """Rule 22: what a change did to `old`, replayable onto a later state: the occurrence
-    fields it changed (not the ledger), the look-ahead histories and ledgers, and the
-    obligations it finished or updated. Its new obligations are held apart."""
-    occs: dict[str, OccurrenceState | dict[str, Any] | None] = {}
-    for k in old.occurrences.keys() | new.occurrences.keys():
-        a, b = old.occurrences.get(k), new.occurrences.get(k)
-        if b is None:
-            occs[k] = None
-        elif a is None:
-            occs[k] = b
-        elif diff := {
-            f.name: getattr(b, f.name)
-            for f in fields(b)
-            if f.name not in _LEDGER and getattr(a, f.name) != getattr(b, f.name)
-        }:
-            occs[k] = diff
-    bases = {k: v for k, v in new.baselines.items() if old.baselines.get(k) != v}
-    leds = {k: v for k, v in new.lookahead.items() if old.lookahead.get(k) != v}
-    was = {o.id: o for o in old.obligations}
-    now = {o.id: o for o in new.obligations}
-    changed = {i: o for i, o in now.items() if i in was and was[i] != o}
+class _Delta:
+    """Rule 22: what a kept change (a user action, a look-ahead run) did to `old`, replayable
+    onto a later state: the occurrence fields it changed (not the ledger), the look-ahead
+    histories and ledgers, and the obligations it finished or updated. Its new obligations are
+    held apart. A newer kept change supersedes what this one did to the same occurrence or
+    look-ahead key, and a look-ahead result replays only while its route still runs."""
 
-    def replay(st: PersistedState) -> PersistedState:
+    def __init__(self, old: PersistedState, new: PersistedState) -> None:
+        self.occs: dict[str, OccurrenceState | dict[str, Any] | None] = {}
+        for k in old.occurrences.keys() | new.occurrences.keys():
+            a, b = old.occurrences.get(k), new.occurrences.get(k)
+            if b is None:
+                self.occs[k] = None
+            elif a is None:
+                self.occs[k] = b
+            elif diff := {
+                f.name: getattr(b, f.name)
+                for f in fields(b)
+                if f.name not in _LEDGER and getattr(a, f.name) != getattr(b, f.name)
+            }:
+                self.occs[k] = diff
+        self.bases = {k: v for k, v in new.baselines.items() if old.baselines.get(k) != v}
+        self.leds = {k: v for k, v in new.lookahead.items() if old.lookahead.get(k) != v}
+        self.cfg = new.config
+        self.was = {o.id: o for o in old.obligations}
+        now = {o.id: o for o in new.obligations}
+        self.gone = self.was.keys() - now.keys()
+        self.changed = {i: o for i, o in now.items() if i in self.was and self.was[i] != o}
+
+    def supersede(self, newer: "_Delta") -> None:
+        for k in newer.occs:
+            self.occs.pop(k, None)
+        for k in newer.bases.keys() | newer.leds.keys():
+            self.bases.pop(k, None)
+            self.leds.pop(k, None)
+
+    def _runs(self, st: PersistedState, dk: str) -> bool:
+        pid = dk.split("|")[0]
+        then, now = _find(self.cfg, pid), _find(st.config, pid)
+        return then is not None and now is not None and _same_route(then, now)
+
+    def __call__(self, st: PersistedState) -> PersistedState:
         out = dict(st.occurrences)
-        for k, c in occs.items():
+        for k, c in self.occs.items():
             cur = out.get(k)
             if c is None:
                 out.pop(k, None)
@@ -599,9 +617,9 @@ def _delta(old: PersistedState, new: PersistedState) -> Callable[[PersistedState
                     if cur is None
                     else replace(c, alert_keys=cur.alert_keys, poll_records=cur.poll_records)
                 )
-        obls = tuple(
-            changed.get(o.id, o) for o in st.obligations if o.id not in was.keys() - now.keys()
-        )
+        obls = tuple(self.changed.get(o.id, o) for o in st.obligations if o.id not in self.gone)
+        bases = {k: v for k, v in self.bases.items() if self._runs(st, k)}
+        leds = {k: v for k, v in self.leds.items() if self._runs(st, k)}
         return replace(
             st,
             occurrences=out,
@@ -610,7 +628,16 @@ def _delta(old: PersistedState, new: PersistedState) -> Callable[[PersistedState
             obligations=obls,
         )
 
-    return replay
+
+def _prune(st: PersistedState) -> PersistedState:
+    """The configuration snapshots still referenced (rule 5(c) judges obligations on theirs),
+    computed on the whole write, held alerts included (rule 22)."""
+    live = {s.route_revision for s in st.occurrences.values()}
+    live |= {st.config.revision} if st.config else set()
+    live |= {o.route_revision for o in st.obligations}
+    live |= {o.route_revision for v in st.lookahead.values() for o in v.pending}
+    snaps = {r: c for r, c in st.config_snapshots.items() if r in live}
+    return st if snaps == st.config_snapshots else replace(st, config_snapshots=snaps)
 
 
 def _advice_told(st: PersistedState, told: Sequence[tuple[Obligation, bool]]) -> PersistedState:
@@ -1011,11 +1038,7 @@ class Runtime:
                 self._offline.discard(k)
                 continue
             occs[k] = s
-        cfg = self._st.config
-        live = {s.route_revision for s in occs.values()} | ({cfg.revision} if cfg else set())
-        live |= {o.route_revision for o in self._st.obligations}  # rule 5(c) judges them on it
-        snaps = {r: c for r, c in self._st.config_snapshots.items() if r in live}
-        self._st = replace(self._st, occurrences=occs, config_snapshots=snaps)
+        self._st = replace(self._st, occurrences=occs)  # snapshots are pruned on write
 
     def _save(
         self,
@@ -1032,10 +1055,15 @@ class Runtime:
         cand = self._st if cand is None else cand
         if self._base is not None and cand is not self._base:
             cand = self._restage(self._durable, cand)  # what waits on other occurrences too
+        if op is None and keep:
+            op = _Delta(self._durable, cand)
+            for x in self._ops:  # a newer action supersedes an older one (rule 22)
+                if isinstance(x, _Delta):
+                    x.supersede(op)
         try:
-            self._store.save(write := self._compose(cand))
+            self._store.save(write := _prune(self._compose(cand)))
         except StorageError as e:
-            self._pend(cand, keep, stage, op)
+            self._pend(cand, stage, op)
             if self._store_ok:  # one loud storage_failed per outage, held in memory only
                 self._store_ok = False
                 log.error("store write failed: %s", e)
@@ -1092,7 +1120,6 @@ class Runtime:
     def _pend(
         self,
         cand: PersistedState,
-        keep: bool,
         stage: bool,
         op: Callable[[PersistedState], PersistedState] | None,
     ) -> None:
@@ -1102,8 +1129,6 @@ class Runtime:
         base = self._durable
         if op is not None:
             self._ops.append(op)
-        elif keep:
-            self._ops.append(_delta(base, cand))
         if stage or self._base is None:
             self._base = self._restage(base, cand)
         known = {o.id for o in base.obligations}
@@ -1141,12 +1166,23 @@ class Runtime:
         def bare(x: OccurrenceState) -> OccurrenceState:
             return replace(x, alert_keys={}, poll_records=())
 
+        def revs(x: OccurrenceState | None) -> tuple[int, int] | None:
+            return None if x is None else (x.route_revision, x.settings_revision)
+
+        # a waiting configuration `cand` left as written is not carried (the file watch tries
+        # it again, 5.2), and neither is what it did to an occurrence: never revisions alone
+        stale = old.config != base.config and cand.config == base.config
         occs = {}
         for k in old.occurrences.keys() | cand.occurrences.keys():
             c, o, w = cand.occurrences.get(k), old.occurrences.get(k), base.occurrences.get(k)
             if c is None and w is not None:
                 continue  # ended by `cand`
-            if c is not None and (w is None and o is None or w is not None and bare(c) != bare(w)):
+            if stale and w is not None and revs(o) != revs(w):
+                if c is not None:
+                    occs[k] = c  # computed on the written configuration
+            elif c is not None and (
+                w is None and o is None or w is not None and bare(c) != bare(w)
+            ):
                 occs[k] = c
             elif o is not None:
                 occs[k] = o

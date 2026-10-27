@@ -600,6 +600,109 @@ async def test_unwritten_adoption_is_sent_from_memory_and_written_later(tmp_path
     assert [e.kind for e in rig.rt.events_log].count(EventKind.TIMETABLE_ADOPTED) == 1
 
 
+async def test_held_alarm_survives_a_recovery_written_through_a_rename(tmp_path):
+    rig = await started(tmp_path)  # rule 22: a held alert keeps the revision it is judged on
+    rig.store.fail = True
+    rig.notifier.fails = lambda e: True
+    rig.clock.set("07:52")
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    await rig.rt.poll_once()
+    assert any(e.kind is EventKind.CANCELLED for e in rig.notifier.attempts)
+    rig.store.fail = False
+    rig.write("office_c")
+    rig.clock.jump(1)
+    await rig.rt.check_file()  # storage is back through the rename
+    saved = rig.store.load()
+    assert saved.config.revision == 2
+    held = [o for o in saved.obligations if o.event.kind is EventKind.CANCELLED]
+    assert held and all(o.route_revision in saved.config_snapshots for o in held)
+    n = len(rig.notifier.attempts)
+    rig.notifier.fails = lambda e: False
+    await rig.restart()  # the alarm is sent from the file, not from memory
+    await rig.rt.watchdog_once()
+    assert EventKind.CANCELLED in kinds(rig.notifier.attempts[n:])
+
+
+def _choice(c: Connection) -> Choose:
+    return Choose(None, c, (ProviderAnswer(Query("AAA", "RTD", at("07:50")), (c,), at("07:50")),))
+
+
+async def test_newer_written_choice_wins_over_an_older_unwritten_one(tmp_path):
+    rig = await started(tmp_path)  # rule 22: a newer action supersedes an older one
+    rig.store.fail = True
+    await rig.rt.act("p1", _choice(LATER))
+    rig.store.fail = False
+    await rig.rt.act("p1", _choice(USUAL))
+    assert rig.occ().lock.legs[0].train == USUAL.legs[0].train
+    assert rig.store.load().occurrences["p1|outbound|2026-10-27"].lock == rig.occ().lock
+    await rig.rt.watchdog_once()
+    assert rig.occ().lock.legs[0].train == USUAL.legs[0].train
+
+
+async def test_choice_after_an_unwritten_skip_is_travelling(tmp_path):
+    rig = await started(tmp_path)  # rule 22: the later choice undoes the older skip
+    rig.store.fail = True
+    await rig.rt.act("p1", NotTravelling(None, False))
+    rig.store.fail = False
+    await rig.rt.act("p1", _choice(LATER))
+    assert not rig.occ().not_travelling
+    assert not rig.store.load().occurrences["p1|outbound|2026-10-27"].not_travelling
+    assert rig.occ().lock.legs[0].train == LATER.legs[0].train
+
+
+async def _three_lookahead_days(rig: Rig, fail_third: bool) -> None:
+    rig.provider.world = every_day()
+    await rig.rt.start()
+    await rig.rt.lookahead_once()
+    rig.clock.t = at("05:40", DAY + timedelta(days=1))
+    await rig.rt.lookahead_once()
+    rig.provider.world = every_day("08:20")
+    rig.clock.t = at("05:40", DAY + timedelta(days=2))
+    if fail_third:
+        rig.store.fail = True
+        await rig.rt.lookahead_once()
+        rig.store.fail = False
+    rig.write(text=_EDITS["departure"])
+    rig.clock.jump(1)
+    await rig.rt.check_file()
+
+
+async def test_route_edit_drops_an_unwritten_lookahead_result(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    rig, plain = Rig(tmp_path / "a", "05:40"), Rig(tmp_path / "b", "05:40")
+    await _three_lookahead_days(rig, fail_third=True)
+    await _three_lookahead_days(plain, fail_third=False)
+    assert rig.rt.config.revision == plain.rt.config.revision == 2
+    assert rig.store.load().baselines == plain.store.load().baselines
+    await rig.rt.watchdog_once()
+    assert rig.store.load().baselines == plain.store.load().baselines
+
+
+def _consistent(saved: PersistedState) -> None:
+    for s in saved.occurrences.values():
+        assert {s.route_revision, s.settings_revision} <= saved.config_snapshots.keys()
+        assert s.settings_revision <= saved.config.revision
+
+
+async def test_poll_written_first_after_a_failed_rename_writes_no_lone_revision(tmp_path):
+    rig = await started(tmp_path)  # 5.2, rule 22: a configuration and its revisions are one
+    rig.store.fail = True
+    rig.write("office_c")
+    rig.clock.jump(1)
+    await rig.rt.check_file()
+    rig.store.fail = False
+    rig.clock.set("07:52")
+    await rig.rt.poll_once()  # the first write to land is the poll's, on the written config
+    saved = rig.store.load()
+    assert saved.config.revision == 1
+    _consistent(saved)
+    await rig.rt.check_file()  # the file watch tries the edit again, as one write
+    saved = rig.store.load()
+    assert saved.config.revision == 2 and saved.config.profiles[0].name == "office_c"
+    _consistent(saved)
+
+
 async def test_lost_store_runs_fresh_and_sends_storage_failed(tmp_path):
     rig = Rig(tmp_path)
 
