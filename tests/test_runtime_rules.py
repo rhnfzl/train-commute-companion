@@ -730,6 +730,129 @@ async def test_no_earlier_search_while_waiting_is_fine(tmp_path):
     assert EventKind.LEAVE_NOW not in kinds(rig.rt.events_log)
 
 
+def running_usual_world() -> list:
+    return [
+        make_connection([make_leg("RTD", "AAA", "17:52", "18:30", number="7952")]),
+        *escape_world(),
+    ]
+
+
+async def test_newer_cancellation_on_the_advice_search_beats_an_older_recovery(tmp_path):
+    # the poll's own answer shows the usual 17:52 running again, the advice search answered a
+    # minute later shows it cancelled: the newer fact counts, the held advice still goes (7.6)
+    rig = Rig(tmp_path, "16:54")
+    rig.provider.window = timedelta(hours=1)
+    rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
+    rig.provider.world = cancelled_usual_world()
+    await rig.rt.start()
+
+    def split(q: Query) -> None:
+        if q.at == at("17:52"):
+            rig.provider.world = running_usual_world()
+        else:
+            rig.clock.jump(1)
+            rig.provider.world = cancelled_usual_world()
+
+    rig.clock.set("16:56")
+    rig.provider.hook = split
+    await rig.rt.poll_once()
+    rig.provider.hook = None
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    leave = [e for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW]
+    assert len(leave) == 1 and "17:22" in leave[0].text
+
+
+async def test_advice_search_shares_the_poll_deadline(tmp_path):
+    rig = Rig(tmp_path, "16:54")  # 7.1: one hard deadline for the poll, not one per request
+    rig.provider.window = timedelta(hours=1)
+    rig.provider.world = cancelled_usual_world()
+    rig.provider.hook = lambda q: rig.clock.jump(70 / 60)
+    await rig.rt.start()  # 70 s for the poll's own request, 70 s more for the advice search
+    assert len(rig.provider.calls) == 2
+    assert EventKind.LEAVE_NOW not in kinds(rig.rt.events_log)  # the late answer is not used
+
+
+async def test_rejected_key_on_the_advice_search_is_reported(tmp_path):
+    rig = Rig(tmp_path, "16:54")  # 7.11
+    rig.provider.window = timedelta(hours=1)
+    rig.provider.world = cancelled_usual_world()
+    rig.provider.error = lambda q: None if q.at == at("17:52") else AuthError()
+    await rig.rt.start()
+    assert rig.rt.key_rejected
+    assert EventKind.KEY_REJECTED in kinds(rig.rt.events_log)
+    rec = rig.occ("p1|return|2026-10-27").poll_records[-1]
+    assert (rec.ok, rec.error) == (False, "auth")
+
+
+async def test_skip_written_during_a_send_drops_the_next_message(tmp_path):
+    rig = Rig(tmp_path, "16:54")  # 7.8, rule 5: each message is judged on the state now
+    rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
+    rig.provider.world = escape_world()
+    await rig.rt.start()
+    rt = rig.rt
+    rt._app_warning(EventKind.KEY_REJECTED, "your NS key was rejected.", rig.clock.now())
+    st = rt._st
+    rt._st = replace(st, obligations=(st.obligations[-1], *st.obligations[:-1]))
+    inner = rig.notifier.send
+    skip: list[asyncio.Future[bool]] = []
+
+    async def send(e: AlertEvent) -> bool:
+        if e.kind is EventKind.KEY_REJECTED:  # "not travelling" is written while this sends
+            skip.append(asyncio.ensure_future(rt.act("p1", NotTravelling(DAY, False))))
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert rig.occ("p1|return|2026-10-27").not_travelling
+        return await inner(e)
+
+    rig.notifier.send = send  # type: ignore[method-assign]
+    rig.notifier.fails = lambda e: False
+    await rt.watchdog_once()
+    await skip[0]
+    assert EventKind.KEY_REJECTED in kinds(rt.events_log)
+    assert EventKind.LEAVE_NOW not in kinds(rt.events_log)
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_advice_dropped_while_the_store_fails_is_advised_again(tmp_path, restart):
+    rig = Rig(tmp_path, "16:54")  # rule 22, 7.6
+    rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
+    rig.provider.world = escape_world()
+    await rig.rt.start()
+    rig.store.fail = True
+    rig.clock.set("16:56")
+    slow = make_leg("RTD", "AAA", "17:22", "18:00", number="7922", delay_arr=66)
+    rig.provider.world = [make_connection([slow]), *escape_world()[1:]]
+    await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()  # dropped unsent while nothing can be written
+    rig.store.fail = False
+    await rig.rt.watchdog_once()
+    a = rig.store.load().occurrences["p1|return|2026-10-27"].advice
+    assert a.withdrawn and not a.delivered
+    rt = await rig.restart() if restart else rig.rt
+    rig.clock.set("16:58")
+    rig.provider.world = escape_world()  # the saving is back
+    await rt.poll_once()
+    leave = [e for e in rig.notifier.attempts if e.kind is EventKind.LEAVE_NOW]
+    assert leave and leave[-1] in rt.events_log and "17:22" in leave[-1].text
+
+
+async def test_advice_sent_while_the_store_fails_is_withdrawn_later(tmp_path):
+    rig = Rig(tmp_path, "16:54")  # rule 22, 7.6
+    rig.store.fail = True
+    rig.provider.world = cancelled_usual_world()
+    await rig.rt.start()  # the LEAVE_NOW goes from memory
+    assert EventKind.LEAVE_NOW in kinds(rig.rt.events_log)
+    rig.store.fail = False
+    await rig.rt.watchdog_once()
+    assert rig.store.load().occurrences["p1|return|2026-10-27"].advice.delivered
+    rig.clock.set("16:56")
+    rig.provider.world = running_usual_world()
+    await rig.rt.poll_once()
+    assert EventKind.EARLIER_TRAIN_WITHDRAWN in kinds(rig.rt.events_log)
+
+
 async def test_held_all_good_dropped_once_a_train_is_cancelled(tmp_path):
     rig = Rig(tmp_path)
     rig.notifier.fails = lambda e: e.kind is EventKind.ALL_GOOD

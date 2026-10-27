@@ -509,6 +509,56 @@ async def test_failed_lookahead_write_changes_nothing_active(tmp_path):
     assert rig.rt.state.lookahead and rig.store.load().lookahead == rig.rt.state.lookahead
 
 
+async def test_unwritten_choice_survives_a_later_failed_poll(tmp_path):
+    rig = await started(tmp_path)  # rule 22: a later change never discards an unwritten one
+    picked = ProviderAnswer(Query("AAA", "RTD", at("07:50")), (LATER,), at("07:50"))
+    rig.store.fail = True
+    await rig.rt.act("p1", Choose(None, LATER, (picked,)))
+    assert rig.occ().lock.legs[0].train == USUAL.legs[0].train  # not written, not active
+    rig.clock.set("07:52")
+    rig.provider.world = [USUAL, LATER]
+    await rig.rt.poll_once()  # its write fails too
+    rig.store.fail = False
+    await rig.rt.watchdog_once()
+    assert rig.occ().lock.legs[0].train == LATER.legs[0].train
+    assert rig.store.load().occurrences["p1|outbound|2026-10-27"].lock == rig.occ().lock
+
+
+async def test_unwritten_relock_survives_a_reload_written_first(tmp_path):
+    rig = await started(tmp_path)
+    rig.store.fail = True
+    rig.clock.set("07:52")
+    rig.provider.world = [make_connection([L1X, L2]), LATER]
+    await rig.rt.poll_once()  # the relock to LATER is not written
+    rig.store.fail = False
+    rig.write("office_c")
+    rig.clock.jump(1)
+    await rig.rt.check_file()  # an unrelated edit is the first write to land
+    assert rig.rt.refusal is None and rig.rt.config.profiles[0].name == "office_c"
+    assert rig.occ().lock.legs[0].train == LATER.legs[0].train
+    assert rig.store.load().occurrences["p1|outbound|2026-10-27"].lock == rig.occ().lock
+
+
+async def test_unwritten_adoption_is_sent_from_memory_and_written_later(tmp_path):
+    rig = Rig(tmp_path, "05:40")
+    rig.provider.world = every_day()
+    await rig.rt.start()
+    await rig.rt.lookahead_once()
+    rig.clock.t = at("05:40", DAY + timedelta(days=1))
+    await rig.rt.lookahead_once()
+    rig.provider.world = every_day("08:20")
+    rig.clock.t = at("05:40", DAY + timedelta(days=2))
+    rig.store.fail = True  # the outbound run's write fails, then the later runs' writes too
+    await rig.rt.lookahead_once()
+    adopted = [e for e in rig.rt.events_log if e.kind is EventKind.TIMETABLE_ADOPTED]
+    assert len(adopted) == 1
+    assert len(rig.store.load().baselines["p1|outbound"].versions) == 1
+    rig.store.fail = False
+    await rig.rt.watchdog_once()
+    assert len(rig.store.load().baselines["p1|outbound"].versions) == 2
+    assert [e.kind for e in rig.rt.events_log].count(EventKind.TIMETABLE_ADOPTED) == 1
+
+
 async def test_lost_store_runs_fresh_and_sends_storage_failed(tmp_path):
     rig = Rig(tmp_path)
 
