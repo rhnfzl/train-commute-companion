@@ -135,8 +135,10 @@ async def test_health_endpoint_full_body_only_with_the_token():
 
 
 async def test_dockerfile_healthcheck_still_reads_the_status():
-    line = next(x for x in Path("Dockerfile").read_text().splitlines() if x.startswith("HEALTHCHECK"))
-    code = json.loads(line[line.index("["):])[-1]  # the CMD exec-form JSON array
+    line = next(
+        x for x in Path("Dockerfile").read_text().splitlines() if x.startswith("HEALTHCHECK")
+    )
+    code = json.loads(line[line.index("[") :])[-1]  # the CMD exec-form JSON array
     assert "authorization" not in code.lower()
     answer = (200, {"ok": True})
     server = await start_web(0, health=lambda: answer, host="127.0.0.1", health_token=TOK)

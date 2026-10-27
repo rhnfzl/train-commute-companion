@@ -180,6 +180,33 @@ async def test_changed_payload_under_the_same_key_is_sent_in_full(tg, clock):
     assert tg.sent[-1]["text"] == renamed.text and len(tg.sent) == 3
 
 
+def for_p2(e: AlertEvent) -> AlertEvent:
+    return replace(e, profile_id="p2", profile_name="p2")  # same key: it names no profile
+
+
+async def test_one_profiles_bad_request_does_not_block_the_other(tg, clock):  # Codex group 1
+    n = notifier(tg, clock)
+    tg.fail = lambda m: error(400, "Bad Request: message is too long") if len(tg.calls) <= 2 \
+        else None  # fmt: skip
+    assert not await n.send(event())
+    assert await n.send(for_p2(event()))
+    assert not await n.send(event())  # p1 still waits out its own minute
+    assert len(tg.sent) == 1 and "|p2|" in tg.sent[0]["reply_markup"]["inline_keyboard"][0][0][
+        "callback_data"]  # fmt: skip
+
+
+async def test_multipart_progress_is_kept_per_profile(tg, clock):  # Codex group 1
+    n, failing = notifier(tg, clock), [True]
+    fail_third_part(tg, failing)
+    long = event(text="x" * 9000)
+    assert not await n.send(long)  # p1: two parts accepted
+    failing[0] = False
+    await clock.sleep(60)
+    assert await n.send(for_p2(long))
+    assert await n.send(long)  # p1 resumes at its third part
+    assert [len(m["text"]) for m in tg.sent] == [4096, 4096, 4096, 4096, 808, 808]
+
+
 async def test_no_chat_id_is_never_delivered(tg, clock):
     n = TelegramNotifier(TelegramApi(TOKEN, tg.client()), None, clock.now)
     assert not await n.send(event())

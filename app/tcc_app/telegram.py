@@ -98,21 +98,23 @@ class TelegramNotifier:
     def __init__(self, api: TelegramApi, chat_id: int | None, now: Callable[[], datetime]) -> None:
         self._api, self._chat, self._now = api, chat_id, now
         self._until: datetime | None = None  # global backoff end, UTC
-        self._key_until: dict[str, datetime] = {}  # one bad message's backoff end, UTC
-        # per key: the payload (text, silent, markup) and how many of its parts were accepted
-        self._parts_done: dict[str, tuple[tuple[str, bool, str], int]] = {}
+        # per alert (profile, direction, key: the key alone is shared by two profiles' alerts)
+        self._key_until: dict[tuple[str, str, str], datetime] = {}  # one bad message's backoff
+        # per alert: the payload (text, silent, markup) and how many of its parts were accepted
+        self._parts_done: dict[tuple[str, str, str], tuple[tuple[str, bool, str], int]] = {}
 
     async def send(self, event: AlertEvent) -> bool:
         now = self._now().astimezone(UTC)
         if self._chat is None or (self._until is not None and now < self._until):
             return False
-        key_until = self._key_until.get(event.key)
+        key = (event.profile_id, event.direction.value if event.direction else "", event.key)
+        key_until = self._key_until.get(key)
         if key_until is not None and now < key_until:
             return False
         silent = event.severity is Severity.SILENT
         markup = alert_buttons(event)
         payload = (event.text, silent, json.dumps(markup, sort_keys=True))
-        done_for, done = self._parts_done.get(event.key, (payload, 0))
+        done_for, done = self._parts_done.get(key, (payload, 0))
         parts = split_text(event.text)
         for i in range(done if done_for == payload else 0, len(parts)):
             params: dict[str, Any] = {
@@ -123,11 +125,11 @@ class TelegramNotifier:
             try:
                 await self._send_part(params)
             except TelegramError as e:
-                self._failed(event.key, e, now)
+                self._failed(key, e, now)
                 return False
-            self._parts_done[event.key] = (payload, i + 1)
-        self._parts_done.pop(event.key, None)
-        self._key_until.pop(event.key, None)
+            self._parts_done[key] = (payload, i + 1)
+        self._parts_done.pop(key, None)
+        self._key_until.pop(key, None)
         return True
 
     async def _send_part(self, params: dict[str, Any]) -> None:
@@ -142,7 +144,7 @@ class TelegramNotifier:
                 "sendMessage", {k: v for k, v in params.items() if k != "reply_markup"}
             )
 
-    def _failed(self, key: str, e: TelegramError, now: datetime) -> None:
+    def _failed(self, key: tuple[str, str, str], e: TelegramError, now: datetime) -> None:
         if e.code == 400 and not _chat_not_found(e):  # about this one message only
             self._key_until[key] = now + BACKOFF
             log.warning("Telegram refused a message (400: %s); retried in 60 s", e)
