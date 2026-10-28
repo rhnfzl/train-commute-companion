@@ -61,6 +61,8 @@ def _serve(loop: asyncio.AbstractEventLoop) -> None:
     try:
         loop.run_forever()
     finally:
+        # to_thread's asyncio_N workers end with the loop (close() does not wait); 5 s < join's 10 s
+        loop.run_until_complete(loop.shutdown_default_executor(timeout=5))
         # closed by its own thread, so a thread that outlives stop() still cleans up when it ends
         loop.close()
 

@@ -301,6 +301,18 @@ async def test_loops_keep_fixed_start_times():
     assert slept == [70, 70]
 
 
+@pytest.fixture
+def inline_file_reads(monkeypatch):
+    """For tests that count instant fake sleeps: the profile read runs inline, since a real
+    thread hop lets the watchdog's zero-time sleeps spin (and jump the clock) while it reads."""
+
+    async def inline(fn, /, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", inline)
+
+
+@pytest.mark.usefixtures("inline_file_reads")
 async def test_watchdog_runs_while_start_reconciles(tmp_path):
     rig = Rig(tmp_path)
     ran: list[str] = []
@@ -1133,6 +1145,7 @@ class Sleeps:
         self.rig.clock.jump(min(seconds, self.step) / 60)
 
 
+@pytest.mark.usefixtures("inline_file_reads")
 async def test_lookahead_catches_up_after_start_past_six(tmp_path):
     rig = Rig(tmp_path, "07:00")
     rig.clock.sleep = Sleeps(rig, 0, 40)  # type: ignore[method-assign]
@@ -1141,6 +1154,7 @@ async def test_lookahead_catches_up_after_start_past_six(tmp_path):
     assert rig.provider.works_calls == 1
 
 
+@pytest.mark.usefixtures("inline_file_reads")
 async def test_lookahead_retried_each_poll_interval_until_a_run_completes(tmp_path):
     rig = Rig(tmp_path, "06:00")
     plain = rig.provider.planned_works

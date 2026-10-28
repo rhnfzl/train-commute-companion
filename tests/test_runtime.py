@@ -1,9 +1,11 @@
 import asyncio
 import os
+import threading
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
@@ -1736,3 +1738,29 @@ async def test_dated_choose_or_leaving_refused_on_a_skipped_occurrence(tmp_path)
     assert "is being followed" in await rig.rt.choose_at("p1", time(8, 44), service_date=DAY)
     assert rig.occ() == before and not refused(rig.rt)
     assert await rig.rt.act("p1", NotTravelling(DAY, False)) is True  # explicit skip still lands
+
+
+class ThreadSpyPath(Path):  # Path subclasses work on 3.12+
+    threads: ClassVar[list[int]] = []
+
+    def read_text(self, *a, **k):
+        self.threads.append(threading.get_ident())
+        return super().read_text(*a, **k)
+
+    def stat(self, *a, **k):
+        self.threads.append(threading.get_ident())
+        return super().stat(*a, **k)
+
+
+async def test_profile_file_reads_run_off_the_loop(tmp_path):
+    rig = Rig(tmp_path)  # rule 12: a slow volume never stalls the loop
+    rig.path = ThreadSpyPath(rig.path)
+    rig.rt = rig.new()
+    await rig.rt.start()
+    ThreadSpyPath.threads.clear()
+    rig.write("office_c")
+    bump_mtime(rig.path)
+    await rig.rt.check_file()
+    assert {p.name for p in rig.rt.config.profiles} == {"office_c", "office_b"}
+    assert len(ThreadSpyPath.threads) == 2  # the stat and the read
+    assert threading.get_ident() not in ThreadSpyPath.threads

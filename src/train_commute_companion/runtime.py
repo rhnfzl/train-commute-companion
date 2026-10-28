@@ -2242,10 +2242,11 @@ class Runtime:
 
     async def reload(self) -> None:
         now = self._clock.now()
-        self._refusal = None
         applied: Config | None = None
         try:
-            text = self._path.read_text(encoding="utf-8")
+            # off the loop (rule 12); a view taken during the read keeps the old refusal
+            text = await asyncio.to_thread(self._path.read_text, encoding="utf-8")
+            self._refusal = None
         except (OSError, UnicodeDecodeError) as e:
             self._refuse(f"cannot read {self._path.name} ({e})", now)
         else:
@@ -2345,7 +2346,7 @@ class Runtime:
     async def check_file(self) -> None:
         """The file watch: reload when the file's mtime changes (or it disappears)."""
         try:
-            mtime: int | None = self._path.stat().st_mtime_ns
+            mtime: int | None = (await asyncio.to_thread(self._path.stat)).st_mtime_ns
         except OSError:
             mtime = None
         if mtime != self._mtime or (self._unchecked and self._stations_due()):  # tried again

@@ -8,7 +8,7 @@ import logging
 import os
 import secrets
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
@@ -113,6 +113,7 @@ class Bot:
             self.state = ShellState(confirmed_for=loaded.confirmed_for if loaded else None)
         self._nonce: str | None = None
         self._save_failing = False
+        self._save_lock = asyncio.Lock()  # one save at a time: no shared .tmp, the newest wins
         self._tasks: set[asyncio.Task[None]] = set()  # handlers, cancelled by close()
         self._core: set[asyncio.Task[Any]] = set()  # runtime calls, never cancelled here
 
@@ -143,7 +144,7 @@ class Bot:
         self.state.offset = ups[-1]["update_id"] + 1 if ups else 0
         self.state.bot_id = self._api.bot_id
         self._trusted = True
-        self._save()
+        await self._save()
         log.warning("no saved Telegram offset for this bot; queued updates discarded")
 
     async def _take(self, ups: list[dict[str, Any]]) -> None:
@@ -151,7 +152,7 @@ class Bot:
         while ups:
             old = self.state.offset
             self.state.offset = ups[-1]["update_id"] + 1
-            if self._save():
+            if await self._save():
                 self._spawn(ups)
                 return
             # the stale file may stay readable: confirm the batch to Telegram before handling it
@@ -165,18 +166,20 @@ class Bot:
             self._spawn(ups)
             ups = _updates(nxt)
 
-    def _save(self) -> bool:
-        try:
-            save_state(self._path, self.state)
-        except OSError as e:
-            if not self._save_failing:
-                log.warning("cannot save Telegram state (%s); retrying", type(e).__name__)
-            self._save_failing = True
-            return False
-        if self._save_failing:
-            log.warning("Telegram state saved again")
-        self._save_failing = False
-        return True
+    async def _save(self) -> bool:
+        async with self._save_lock:
+            snap = replace(self.state)  # the worker writes this copy, never a state being changed
+            try:
+                await asyncio.to_thread(save_state, self._path, snap)  # off the loop (rule 12)
+            except OSError as e:
+                if not self._save_failing:
+                    log.warning("cannot save Telegram state (%s); retrying", type(e).__name__)
+                self._save_failing = True
+                return False
+            if self._save_failing:
+                log.warning("Telegram state saved again")
+            self._save_failing = False
+            return True
 
     def _spawn(self, ups: list[dict[str, Any]]) -> None:
         for u in ups:
@@ -278,7 +281,7 @@ class Bot:
                 parts[1].encode(), self._nonce.encode()
             ):
                 self.state.confirmed_for = f"{self._api.bot_id}:{self._chat}"
-                self._save()
+                await self._save()
                 self._nonce = None
                 await self._reply("Delivery confirmed. Setup is complete.")
             else:

@@ -76,6 +76,19 @@ async def test_setup_and_unload_leave_no_runtime_thread(hass):
     assert no_runtime_thread()
 
 
+async def test_unload_leaves_no_runtime_executor_thread(hass):
+    h = await setup_tcc(hass, PROFILE)
+    write_profiles(hass, PROFILE)
+    await h.host.run(lambda rt: rt.check_file())  # the file reads start the loop's executor
+    # a worker still busy when the loop stops: close() alone would leave it running
+    await h.host.run(
+        lambda _: asyncio.get_running_loop().run_in_executor(None, wall.sleep, 0.2) and None
+    )
+    assert await hass.config_entries.async_unload(h.entry.entry_id)
+    assert no_runtime_thread()
+    assert not [t.name for t in threading.enumerate() if t.name.startswith("asyncio_")]
+
+
 async def test_failed_setup_leaves_no_runtime_thread(hass):
     entry, *_ = prepare(hass, PROFILE, "07:50", ())
 

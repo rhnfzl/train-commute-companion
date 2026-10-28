@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import threading
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -449,6 +451,54 @@ async def test_unconfirmable_batch_is_not_dispatched(app, tmp_path, monkeypatch)
     assert [p["offset"] for p in tg.polls[:4]] == [4, 6, 4, 6]  # the failed confirm, then again
     assert tg.calls.index("sendMessage") >= 4
     assert app.texts() == ["Marked as leaving now."]
+
+
+async def test_state_saves_run_off_the_loop(app, monkeypatch):
+    save_state(app.path, ShellState(4, "123", None))  # rule 12: a slow volume never stalls polling
+    bot = app.new_bot()
+    tg, saves = app.tg, []
+
+    def spy(path: Path, s: ShellState) -> None:
+        time.sleep(0.02)  # a handler dispatched before the save returned would send meanwhile
+        save_state(path, s)
+        saves.append((threading.get_ident(), s.offset, len(tg.sent)))
+
+    monkeypatch.setattr(bot_mod, "save_state", spy)
+    tg.updates.put_nowait(app.msg("/leaving", uid=5))
+    task = await running(bot, lambda: len(tg.sent) == 1)
+    await stop(task, bot)
+    [(thread, offset, sent)] = saves
+    assert thread != threading.get_ident() and (offset, sent) == (6, 0)
+    assert load_state(app.path) == ShellState(6, "123", None)
+
+
+async def test_overlapping_state_saves_keep_the_newest(app, monkeypatch):
+    await app.bot.handle(app.msg("/test"))
+    [[button]] = app.tg.sent[-1]["reply_markup"]["inline_keyboard"]
+    entered, gate, guard = threading.Event(), threading.Event(), threading.Lock()
+    active, peak, released = [0], [0], []
+
+    def spy(path: Path, s: ShellState) -> None:
+        with guard:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        if not entered.is_set():
+            entered.set()
+            released.append(gate.wait(2))
+        save_state(path, s)
+        with guard:
+            active[0] -= 1
+
+    monkeypatch.setattr(bot_mod, "save_state", spy)
+    first = asyncio.create_task(app.bot._take([app.msg("/help", uid=7, kind="edited_message")]))
+    await until(entered.is_set)
+    tap_task = asyncio.create_task(app.bot.handle(tap(button["callback_data"], 8)))
+    await until(lambda: app.bot.state.confirmed_for is not None)
+    await asyncio.sleep(0.01)  # the confirm's save waits for the first one
+    gate.set()
+    await asyncio.gather(first, tap_task)
+    assert released == [True] and peak[0] == 1
+    assert load_state(app.path) == ShellState(8, None, "123:1000001")
 
 
 # --- what is read from an update ---
