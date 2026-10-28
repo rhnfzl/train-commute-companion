@@ -106,6 +106,19 @@ def test_several_alighting_stops_use_the_latest():
     assert disagreement(copies, "UT", "UT") is None
 
 
+def test_a_late_planned_time_in_a_truncated_copy_never_moves_the_bound():
+    ut = TO_UT.stops[1]
+    late = replace(ut, planned_arrival=FULL.stops[2].planned_arrival + timedelta(minutes=30))
+    short = replace(TO_UT, stops=(TO_UT.stops[0], late))  # AAA, UT with UT planned after RTD
+    copies = [FULL, planned_at_alight(FULL), short]  # the full copies differ only at RTD
+    u = disagreement(copies, "UT", "RTD")
+    assert (u.station, u.copies) == (
+        "RTD",
+        ("arrives 09:24 (planned only)", "arrives 09:24 (live)"),
+    )
+    assert disagreement(copies, "RTD", "UT") == u
+
+
 def test_a_copy_cut_short_before_the_bound_is_clipped_by_time():
     # lock rides to RTD, a retained journey to UT; the cut copy lists UT but not RTD
     full = make_leg("AAA", "RTD", "08:12", "09:24", stops=["UT", "BBB"])  # AAA, UT, BBB, RTD
