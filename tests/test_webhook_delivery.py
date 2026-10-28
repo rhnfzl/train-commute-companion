@@ -98,7 +98,7 @@ class Endpoint(Receiver):
             self.requests.append(request)
             raise self.error("down", request=request)
         n = len(self.posts)
-        self.handler(request)
+        self._answer(request)  # its own gate is awaited above
         if 200 <= self.status <= 299 and len(self.posts) > n:
             self.accepted.append((request, self.posts[-1]))
         hdrs = {"location": self.location} if self.location else {}
@@ -1305,6 +1305,133 @@ async def test_a_try_cut_off_by_shutdown_still_starts_the_two_hours(tmp_path, ca
     assert rig.end.of(EventKind.KEY_REJECTED) == [] and rig.rt._copies == {}
     assert len(rig.end.times) == 1
     assert len(logged(caplog, logging.WARNING, "gave up a webhook copy after 2 h")) == 1
+
+
+def stored_down(rig: WRig) -> dict[str, datetime]:
+    return dict(loads(PersistedState, rig.store.text).webhook_down)
+
+
+async def test_a_try_cut_off_by_shutdown_rests_the_url_across_a_restart(tmp_path):
+    rig = await wstarted(tmp_path, "20:00")
+    rig.end.gate = asyncio.Event()
+    alert(rig, 1)
+    task = asyncio.create_task(rig.rt.watchdog_once())
+    await asyncio.wait_for(rig.end.entered.wait(), 2)
+    assert url_id(rig.poster.urls[0]) in stored_down(rig)  # before the cut
+    await rig.rt._stop_posting()  # shutdown during the POST
+    await task
+    rig.end.gate = None
+    rig.clock.jump(1 / 60)  # 20:00:01
+    await rig.restart()
+    await rig.rt.watchdog_once()
+    assert len(rig.end.times) == 1  # still resting
+    rig.clock.t = rig.end.times[0] + timedelta(seconds=61)
+    await rig.rt.watchdog_once()
+    assert len(rig.end.times) == 2
+
+
+async def test_a_cut_off_second_try_saves_its_rest(tmp_path):
+    rig = await wstarted(tmp_path, "20:00")
+    rig.end.status = 503
+    alert(rig, 1)
+    await rig.rt.watchdog_once()
+    first = rig.end.times[0]
+    assert stored_down(rig) == {url_id(URL): first + timedelta(seconds=60)}
+    rig.end.status = 200
+    rig.end.entered.clear()
+    rig.end.gate = asyncio.Event()
+    rig.clock.t = first + timedelta(seconds=60)  # 20:01:00, the rest just ended
+    task = asyncio.create_task(rig.rt.watchdog_once())
+    await asyncio.wait_for(rig.end.entered.wait(), 2)
+    await rig.rt._stop_posting()  # shutdown during the second POST
+    await task
+    rig.end.gate = None
+    assert stored_down(rig) == {url_id(URL): first + timedelta(seconds=120)}
+    rig.clock.t = first + timedelta(seconds=61)  # 20:01:01
+    await rig.restart()
+    await rig.rt.watchdog_once()
+    rig.clock.t = first + timedelta(seconds=119)
+    await rig.rt.watchdog_once()
+    assert len(rig.end.times) == 2  # nothing before 20:02:00
+    rig.clock.t = first + timedelta(seconds=120)
+    await rig.rt.watchdog_once()
+    assert len(rig.end.times) == 3
+
+
+async def test_post_reserves_only_the_urls_it_tries(caplog):
+    caplog.set_level(logging.DEBUG, logger="train_commute_companion")
+    t0 = datetime(2026, 10, 27, 20, 0, 10, tzinfo=AMS)
+    clock = [t0]
+    status = [503]  # the first two tries fail
+    gate: asyncio.Event | None = None
+    entered = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if gate is not None:
+            entered.set()
+            await gate.wait()
+        return httpx.Response(status[0])
+
+    e = AlertEvent(
+        "p1", "office_a", OUT, DAY, None, EventKind.CANCELLED, Severity.LOUD, None,
+        "Office A: cancelled.", "cancelled:x", t0,
+    )  # fmt: skip
+    rest2 = t0 + timedelta(seconds=20)  # 20:00:30
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        poster = WebhookPoster(client, (URL, URL2), SECRET, lambda: clock[0])
+        poster.down[URL2] = rest2
+        seen: list[dict[str, datetime]] = []
+        poster.on_reserve = lambda: seen.append(dict(poster.down))
+
+        async def held(at: datetime, urls: list[str]) -> asyncio.Task[Any]:
+            nonlocal gate
+            clock[0] = at
+            gate = asyncio.Event()
+            entered.clear()
+            task = asyncio.create_task(poster.post(e, "tcc_x", urls))
+            await asyncio.wait_for(entered.wait(), 2)
+            return task
+
+        task = await held(t0, [URL, URL2])
+        assert seen == [{URL: t0 + timedelta(seconds=60), URL2: rest2}]  # before the request
+        gate.set()  # type: ignore[union-attr]
+        assert await task == (frozenset({URL}), frozenset())
+        assert poster.down == {URL: t0 + timedelta(seconds=60), URL2: rest2}
+        assert len(logged(caplog, logging.WARNING, f"webhook to {HOST} failed")) == 1
+
+        poster.down.clear()
+        t1 = t0 + timedelta(seconds=61)
+        task = await held(t1, [URL])
+        assert not poster.failing  # a first try in the air is no outage yet
+        gate.set()  # type: ignore[union-attr]
+        await task
+        assert poster.failing
+        assert len(logged(caplog, logging.WARNING, f"webhook to {HOST} failed")) == 2
+
+        t2 = t1 + timedelta(seconds=61)
+        task = await held(t2, [URL])
+        assert poster.failing  # a retry of a down URL in the air still is one
+        gate.set()  # type: ignore[union-attr]
+        assert await task == (frozenset({URL}), frozenset())
+        assert poster.failing and poster.down == {URL: t2 + timedelta(seconds=60)}
+        assert len(logged(caplog, logging.WARNING, f"webhook to {HOST} failed")) == 2
+        assert len(logged(caplog, logging.DEBUG, f"webhook to {HOST} failed again")) == 1
+
+        status[0] = 200
+        task = await held(t2 + timedelta(seconds=61), [URL])
+        assert poster.failing  # only an accepted try clears it
+        n = len(seen)
+        gate.set()  # type: ignore[union-attr]
+        assert await task == (frozenset({URL}), frozenset({URL}))
+        assert poster.down == {} and not poster.failing
+        assert len(seen) == n + 1 and seen[-1] == {}  # saved again once the rest cleared
+        assert len(logged(caplog, logging.INFO, "works again")) == 1
+
+        gate = None
+        n = len(seen)
+        assert await poster.post(e, "tcc_x", [URL]) == (frozenset({URL}), frozenset({URL}))
+        assert len(seen) == n + 2 and seen[-1] == {} and not poster.failing
+        assert len(logged(caplog, logging.INFO, "works again")) == 1  # nothing was down
 
 
 async def test_restart_keeps_the_rest_and_the_outage(tmp_path, caplog):  # rule 22

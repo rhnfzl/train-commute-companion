@@ -4,7 +4,7 @@ import os
 import threading
 import time as wall
 from dataclasses import replace
-from datetime import date, time
+from datetime import date, time, timedelta
 from unittest.mock import AsyncMock, Mock
 
 import harness
@@ -47,6 +47,7 @@ from train_commute_companion.lookahead import (
     Signature,
     SignatureLeg,
 )
+from train_commute_companion.model import EventKind
 from train_commute_companion.store import JsonFileStore, StorageError
 
 pytestmark = pytest.mark.usefixtures("tcc_freezer")
@@ -569,6 +570,35 @@ async def test_unload_closes_the_webhook_client(hass):
     before = len(rx.requests)
     assert await hass.config_entries.async_unload(h.entry.entry_id)
     assert h.clients[0].is_closed and len(rx.requests) == before
+
+
+async def test_webhook_rest_survives_unload_mid_post(hass):
+    h, rx = await with_hooks(hass)
+
+    def alert(rt) -> None:
+        rt._app_warning(EventKind.KEY_REJECTED, "alert 1.", rt._clock.now(), "1")
+
+    rx.gate = threading.Event()
+    await h.host.run(alert)
+    await h.host.run(lambda rt: rt.watchdog_once())  # the copy's POST waits at the gate
+    assert await hass.async_add_executor_job(rx.entered.wait, 2)
+    tried = h.clock.now()
+    before = len(rx.requests)
+    assert await hass.config_entries.async_unload(h.entry.entry_id)  # retired, then cancelled
+    rx.gate = None
+    h.clock.jump(1 / 60)
+    harness.FREEZER.tick(1)
+    assert await hass.config_entries.async_setup(h.entry.entry_id)
+    await hass.async_block_till_done()
+    h = await rebound(h)
+    await h.host.run(lambda rt: rt.watchdog_once())
+    await posted(h)
+    assert len(rx.requests) == before  # still resting
+    h.clock.t = tried + timedelta(seconds=61)
+    harness.FREEZER.move_to(h.clock.t)
+    await h.host.run(lambda rt: rt.watchdog_once())
+    await posted(h)
+    assert len(rx.requests) == before + 1
 
 
 async def test_without_webhook_options_no_client_is_made(hass):

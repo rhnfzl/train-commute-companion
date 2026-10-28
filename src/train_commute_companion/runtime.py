@@ -372,10 +372,12 @@ class WebhookPoster:
         self._client, self.urls, self._secret, self._now = client, tuple(urls), secret, now
         self._token, self._stopped = token, stopped
         self.down: dict[str, datetime] = {}  # url -> end of its rest, in UTC (WebhookPort)
+        self.on_reserve: Callable[[], None] = lambda: None
+        self._in_flight: set[str] = set()  # reserved by a first try still in the air
 
     @property
     def failing(self) -> bool:
-        return bool(self.down)
+        return bool(self.down.keys() - self._in_flight)
 
     def due(self, urls: Collection[str]) -> frozenset[str]:
         if self._stopped():
@@ -393,21 +395,30 @@ class WebhookPoster:
             return frozenset(), frozenset()
         b = body(event)
         hdrs = headers(self._secret, msg_id, int(start.timestamp()), b, self._token)
-        results = await asyncio.gather(*(_try_once(self._client, u, b, hdrs) for u in todo))
+        was_down = {u for u in todo if u in self.down}
+        # reserved before the request: a cut-off try has an unknown result and counts as a try
+        self.down.update(dict.fromkeys(todo, _utc(start) + timedelta(seconds=REST_S)))
+        first = set(todo) - was_down
+        self._in_flight |= first
+        self.on_reserve()
+        try:
+            results = await asyncio.gather(*(_try_once(self._client, u, b, hdrs) for u in todo))
+        finally:
+            self._in_flight -= first
         ok = set()
         for u, r in zip(todo, results, strict=True):
             host = httpx.URL(u).host
             if _accepted(r):
                 ok.add(u)
-                if self.down.pop(u, None) is not None:
+                self.down.pop(u, None)
+                if u in was_down:
                     log.info("webhook to %s works again", host)
-                continue
-            again = u in self.down
-            self.down[u] = _utc(start) + timedelta(seconds=REST_S)
-            if again:
+            elif u in was_down:
                 log.debug("webhook to %s failed again (%s)", host, r)
             else:
                 log.warning("webhook to %s failed (%s); next try after %d s", host, r, REST_S)
+        if ok:
+            self.on_reserve()  # a restart never brings back a rest this try cleared
         return frozenset(todo), frozenset(ok)
 
 
@@ -919,6 +930,8 @@ class Runtime:
     ) -> None:
         self._path = profile_path
         self._webhooks = webhooks
+        if webhooks is not None:
+            webhooks.on_reserve = self._save_rest
         # rule 22: the one live record of owed webhook copies, written with every save and never
         # rebuilt from `_st` (a failed write resets `_st`). `_held_copies`: copies of alerts
         # held in memory, judged with the held view. `_copied`: obligations whose copy was made
@@ -1445,6 +1458,11 @@ class Runtime:
                 if self._copies != before:
                     self._delivered(set(), {}, (), True)
             again = self._post_again
+
+    def _save_rest(self) -> None:
+        """Writes the webhook rests now, synchronously, before a try's request leaves (rule 22:
+        a failed write takes the same path as any other)."""
+        self._delivered(set(), {}, (), True)
 
     async def webhooks_idle(self) -> None:
         """Waits until no webhook pass runs (a clean shutdown, tests)."""

@@ -9,6 +9,7 @@ import pytest
 from builders import ONE_TRANSFER
 from conftest import CHAT, TOKEN, FakeTelegram, StationsProvider, TickClock
 from tcc_app.main import App, Settings, build, main, serve, setup_logging
+from tcc_app.web import health_report
 from test_runtime import PROFILE, Provider, at
 from webhook_receiver import Receiver
 
@@ -305,3 +306,21 @@ async def test_disabled_webhooks_drop_saved_copies(tmp_path, tg):  # Review Focu
     await app.rt.webhooks_idle()
     assert len(rx.requests) == tried  # nothing posted after webhooks are on again
     assert stored_copies(tmp_path) == ()
+
+
+async def test_health_webhooks_failing_is_false_after_an_accepted_try(tmp_path, tg):
+    clock = TickClock(at("08:12"))
+    rx = Receiver(SECRET, lambda: clock.now().timestamp())
+    tg.other = rx.handler
+
+    def failing(app: App) -> object:
+        assert app.webhooks is not None
+        return health_report(app.rt.view(), True, True, app.webhooks.failing)[1]["webhooks_failing"]
+
+    app = make_app(tmp_path, tg, clock, **HOOKS)
+    await app.rt.start()
+    await warn(app, 1)
+    assert rx.posts and failing(app) is False
+    app = make_app(tmp_path, tg, clock, **HOOKS)  # restarted on the saved state
+    await app.rt.start()
+    assert failing(app) is False

@@ -186,6 +186,7 @@ class Port:
         self.urls, self.accept, self.rest = urls, accept, rest or set()
         self.calls: list[tuple[AlertEvent, str, tuple[str, ...]]] = []
         self.down: dict[str, datetime] = {}
+        self.on_reserve = lambda: None
 
     def due(self, urls):
         return frozenset(u for u in urls if u not in self.rest)

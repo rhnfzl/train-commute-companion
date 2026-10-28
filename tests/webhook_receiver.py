@@ -1,8 +1,10 @@
 """A test receiver that verifies each delivery with the recipe documented in docs/webhooks.md."""
 
+import asyncio
 import json
 import re
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Coroutine
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -31,8 +33,25 @@ class Receiver:
         self.requests: list[httpx.Request] = []
         self.posts: list[dict[str, Any]] = []
         self.bad = 0
+        # set: each request waits for it (a threading.Event: in HA the POST runs on the
+        # runtime thread's own loop); `entered` is set once a request waits
+        self.gate: threading.Event | None = None
+        self.entered = threading.Event()
 
-    def handler(self, request: httpx.Request) -> httpx.Response:
+    def handler(
+        self, request: httpx.Request
+    ) -> httpx.Response | Coroutine[Any, Any, httpx.Response]:
+        if (gate := self.gate) is not None:
+            return self._held(request, gate)  # MockTransport awaits it for an AsyncClient
+        return self._answer(request)
+
+    async def _held(self, request: httpx.Request, gate: threading.Event) -> httpx.Response:
+        self.entered.set()
+        while not gate.is_set():
+            await asyncio.sleep(0.01)  # a cancel lands here
+        return self._answer(request)
+
+    def _answer(self, request: httpx.Request) -> httpx.Response:
         if self.now is None:
             raise AssertionError("Receiver.now was never bound to a fake clock")
         self.requests.append(request)

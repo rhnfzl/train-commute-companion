@@ -1,6 +1,6 @@
 """The delivery port: shells implement it; the core only asks whether a message got through."""
 
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -18,6 +18,9 @@ class WebhookPort(Protocol):
     # url -> end of its rest, in UTC, for every URL whose last try failed; written with the
     # state (by `url_id`) so a restart keeps the rest and the outage (rule 22)
     down: dict[str, datetime]
+    # called right after a try reserved its rests in `down`, before its request leaves, and
+    # again after a try that cleared one, so the runtime writes them at once
+    on_reserve: Callable[[], None]
 
     def due(self, urls: Collection[str]) -> frozenset[str]:
         """The given URLs a post now would try: none resting, none once stopped."""
