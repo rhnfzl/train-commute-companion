@@ -156,19 +156,27 @@ def current_run(
     # by instant: two local 02:30s of the DST fold are an hour apart (7.13)
     top = runs[0][0].astimezone(UTC)
     at_top = [r for r in runs if r[0].astimezone(UTC) == top]
+    # transport is a fact of the newest fetch, whatever copy wins on stops; when its copies
+    # disagree, the non-train one counts (6.3: never a train that may be a bus)
+    flags = {r[1].leg.alternative_transport for r in at_top}
+    if len(flags) > 1:
+        log.warning("conflicting transport of train %s at one fetch", train.train_number)
+    mode = next(r[1].leg for r in at_top if r[1].leg.alternative_transport is (True in flags))
     bad = [r for r in at_top if stopped(r[1])]
     if bad:
         # rule 7.12: conflicting newest copies never read as running, a missed alarm costs more
         if len(bad) < len(at_top):
             log.warning("conflicting copies of train %s at one fetch", train.train_number)
-        return bad[0]
-    newest = max(at_top, key=rank)
-    n = newest[1]
-    seen, win = max(runs, key=rank)  # a truncated newer copy never reads as a cut short
-    if seen.astimezone(UTC) < top:
-        # departure time, platform and provenance always from the newest answer
-        win = classify_leg(replace(win.leg, stops=(n.leg.stops[0], *win.leg.stops[1:])), alight)
-    return seen, win
+        seen, win = bad[0]
+    else:
+        n = max(at_top, key=rank)[1]
+        seen, win = max(runs, key=rank)  # a truncated newer copy never reads as a cut short
+        if seen.astimezone(UTC) < top:
+            # departure time, platform and provenance always from the newest answer
+            stops = (n.leg.stops[0], *win.leg.stops[1:])
+            win = classify_leg(replace(win.leg, stops=stops), alight)
+    leg = replace(win.leg, alternative_transport=mode.alternative_transport, category=mode.category)
+    return seen, replace(win, leg=leg)
 
 
 def _pair(answers: Sequence[ProviderAnswer], inc: TrainId, out: TrainId) -> tuple[Leg, Leg] | None:

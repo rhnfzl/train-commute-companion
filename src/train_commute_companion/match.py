@@ -13,6 +13,12 @@ def matches_pattern(c: Connection, transfers: tuple[str, ...]) -> bool:
     return c.is_train_only and c.transfer_stations == transfers
 
 
+def train_only_now(answer: ProviderAnswer, c: Connection) -> bool:
+    """6.3 eligibility: the intended plan and every train's current copy are trains; `c`
+    itself stays the raw connection (its alight stops)."""
+    return c.is_train_only and current_connection(evidence(answer), c).is_train_only
+
+
 def _minute(t: datetime) -> datetime:
     return t.astimezone(UTC).replace(second=0, microsecond=0)
 
@@ -72,6 +78,7 @@ def usual_connection(
         if matches_pattern(c, transfers)
         and c.legs[0].board.code == origin
         and _minute(_dep(c.legs[0])) == want
+        and train_only_now(answer, c)
     ]
     if signature is not None:
         found = [c for c in found if _fits(c, signature, first_departure)] or found
@@ -96,7 +103,9 @@ def route_changed(
     if not locked_suffix:
         return None
     first = locked_suffix[0]
-    starts = [c for c in answer.connections if c.is_train_only and c.legs[0].train == first]
+    starts = [
+        c for c in answer.connections if c.legs[0].train == first and train_only_now(answer, c)
+    ]
     if not starts or any(c.transfer_stations == expected_transfers for c in starts):
         return None
     # the raw arrival only breaks a tie between copies of the same trains

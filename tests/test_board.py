@@ -307,3 +307,23 @@ def test_identity_is_judged_over_transfer_answers_too():
     assert is_good(c, origin, **early).ok
     g = is_good(c, pool, **early)
     assert not g.ok and g.reason == "leg uncertain"
+
+
+def test_a_truncated_newer_bus_copy_is_never_good():
+    full = one_leg("UT", "RTD", "08:50", "09:20", number="6666", stops=["XA"])
+    short = make_leg("UT", "XA", "08:50", "09:05", number="6666")
+    pool = polled([full], [one_leg_of(replace(short, alternative_transport=True))])
+    g = is_good(full, pool, **kw())
+    assert not g.ok and g.reason == "not train only"
+    assert choose_replacement(pool, usual_remaining=(), **kw()) == (None, "none")
+
+
+def test_tied_train_and_bus_copies_are_never_good_in_either_order():
+    bus = replace(V6666, legs=(replace(V6666.legs[0], alternative_transport=True),))
+    for order in ([V6666, bus], [bus, V6666]):
+        g = is_good(V6666, polled(order), **kw())
+        assert not g.ok and g.reason == "not train only"
+
+
+def one_leg_of(leg):
+    return make_connection([leg])

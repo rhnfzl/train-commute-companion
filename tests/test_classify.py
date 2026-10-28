@@ -328,3 +328,24 @@ def test_find_leg_judges_identity_over_every_answer_of_the_pool():
     pool = _Pool(origin.query, (c,), fetched(NEWER), (origin, transfer))
     assert find_leg(pool, r6666().train, "UT") == (None, Observation.UNCERTAIN)
     assert find_leg(origin, r6666().train, "UT")[1] is Observation.SEEN
+
+
+# transport is read from the newest fetch, apart from which copy wins on stops (6.3)
+def bus(leg):
+    return replace(leg, alternative_transport=True, category="BUS")
+
+
+def test_a_truncated_newer_bus_copy_keeps_its_transport():
+    full = r6666(stops=["XA"])
+    short = bus(r6666("XA", "09:05"))  # ends where its own connection changes
+    seen, cl = run_of(at_(OLDER, one(full)), at_(NEWER, one(short)))
+    assert seen == fetched(OLDER) and cl.leg.alight.code == "RTD"  # stops from the full copy
+    assert cl.leg.alternative_transport and cl.leg.category == "BUS"
+
+
+def test_tied_train_and_bus_copies_read_as_bus_in_either_order(caplog):
+    for order in ((one(r6666()), one(bus(r6666()))), (one(bus(r6666())), one(r6666()))):
+        caplog.clear()
+        _, cl = run_of(at_(NEWER, *order))
+        assert cl.leg.alternative_transport
+        assert "conflicting transport" in caplog.text

@@ -260,6 +260,11 @@ def all_good(s: OccurrenceState, board: Board, ctx: Ctx) -> AlertEvent | None:
             return None
         if _contrary(board.answers, x.train, x.board_station, x.alight_stop):
             return None
+        if any(
+            g.leg.alternative_transport
+            for g in _copies(board.answers, x.train, x.board_station, None)
+        ):
+            return None  # 6.3: a train any answer shows as other transport is never "on time"
         c = replace(classify_leg(found, x.alight_stop), observation=Observation.SEEN)
         times = (found.board.departure, found.alight.arrival)
         if c.kind is not LegKind.OK or any(
