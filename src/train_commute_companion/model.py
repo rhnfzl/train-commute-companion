@@ -112,6 +112,9 @@ class Stop:
     planned_track: str | None
     actual_track: str | None
     uic: str | None = None  # provider station number; planned works list stations by it
+    # the arrival side's platforms; `planned_track`/`actual_track` are the departure side's
+    planned_arrival_track: str | None = None
+    actual_arrival_track: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -315,3 +315,12 @@ async def test_status_transfer_uses_its_own_change(tmp_path):
         answers_a_minute_apart(w, [], [make_connection([runs_on]), no_change]),
     )
     assert o.transfers[0].state is TransferState.BROKEN
+
+
+def test_the_alighting_platform_is_the_arrival_side_first():
+    from train_commute_companion.view import _alight_track
+
+    s = make_leg("AAA", "UT", "08:12", "08:40").stops[1]
+    assert _alight_track(replace(s, planned_track="7", actual_arrival_track="6")) == "6"
+    assert _alight_track(replace(s, planned_track="7", planned_arrival_track="5")) == "5"
+    assert _alight_track(replace(s, planned_track="7")) == "7"

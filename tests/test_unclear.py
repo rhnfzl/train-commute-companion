@@ -227,8 +227,27 @@ def test_a_through_platform_never_meets_an_arrival_platform():
     assert disagreement(copies, "UT") is None  # the user gets off at UT: arrival 5 vs arrival 5
     assert disagreement(copies, "RTD") is None  # 7 (departure) and 5 (arrival) are not compared
     moved = [*end[:1], _ns_stop("UT", "1000002", "08:40", dep=False, atrack="6")]
-    assert disagreement(_ns_copies(thru, moved), "UT") is None  # thru's UT is not its last stop
+    # the user gets off at UT: thru's arrival platform there counts though UT is not its last stop
+    assert disagreement(_ns_copies(thru, moved), "UT").copies == ("platform 5", "platform 6")
     assert disagreement(_ns_copies(end, moved), "UT").copies == ("platform 5", "platform 6")
+
+
+def test_a_copy_with_no_departure_platform_says_nothing_about_it():
+    # both copies arrive UT on 5; only copy 2 states a departure platform, 7
+    first = _ns_stop("AAA", "1000001", "08:12", arr=False, track="1")
+    last = _ns_stop("RTD", "1000003", "09:24", dep=False, atrack="9")
+    one = _ns_stop("UT", "1000002", "08:40", atrack="5")
+    two = _ns_stop("UT", "1000002", "08:40", track="7", atrack="5")
+    assert disagreement(_ns_copies([first, one, last], [first, two, last]), "RTD") is None
+
+
+def test_through_copies_arriving_on_other_platforms_where_the_user_gets_off_disagree():
+    first = _ns_stop("AAA", "1000001", "08:12", arr=False, track="1")
+    last = _ns_stop("RTD", "1000003", "09:24", dep=False, atrack="9")
+    ut = lambda a: _ns_stop("UT", "1000002", "08:40", track="7", atrack=a)
+    copies = _ns_copies([first, ut("5"), last], [first, ut("6"), last])
+    assert disagreement(copies, "UT").copies == ("platform 5", "platform 6")
+    assert disagreement(copies, "RTD") is None  # riding through: UT's departure platform agrees
 
 
 def test_a_live_arrival_platform_is_not_a_live_departure_platform():

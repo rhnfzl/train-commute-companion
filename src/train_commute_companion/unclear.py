@@ -101,8 +101,9 @@ def _state(field: str, s: Stop, day: date) -> tuple[Value, str]:
         )
     if field == "canc":
         return _flag(s.cancelled, "stop cancelled", "stop served")
-    planned = s.planned_track or None  # "" is no track; a missing live track means as planned
-    track = s.actual_track or planned
+    arriving = field == "aplat"
+    planned = (s.planned_arrival_track if arriving else s.planned_track) or None  # "" is no track
+    track = (s.actual_arrival_track if arriving else s.actual_track) or planned  # missing: planned
     if track is None:
         text = "no platform"
     elif planned == track:
@@ -112,6 +113,15 @@ def _state(field: str, s: Stop, day: date) -> tuple[Value, str]:
     else:
         text = f"platform {track} (no planned platform)"
     return (planned, track), text
+
+
+def _platformed(field: str, s: Stop) -> bool:
+    """A stop that names a platform on one side only says nothing about the other side."""
+    if field not in ("plat0", "plat", "aplat"):
+        return True
+    dep = bool(s.planned_track or s.actual_track)
+    arr = bool(s.planned_arrival_track or s.actual_arrival_track)
+    return (arr or not dep) if field == "aplat" else (dep or not arr)
 
 
 def _bound(copies: Sequence[Leg], keys: list[list[str]], targets: list[str]) -> str | None:
@@ -194,9 +204,11 @@ def disagreement(copies: Sequence[Leg], alight: str, *also: str) -> Unclear | No
             if j != last and x != bound:  # a leg end gives only its own side
                 fields += ["pdep", "dep", "plat0" if j == 0 else "plat"]
             if j != 0 and x not in boards:
-                fields += ["parr", "arr"] + (["aplat"] if j == last else [])
+                # where the user gets off its arrival platform counts, through stop or not
+                fields += ["parr", "arr"] + (["aplat"] if j == last or x == bound else [])
             for f in fields:
-                stated.setdefault((x, f), {})[i] = _state(f, s, day)
+                if _platformed(f, s):
+                    stated.setdefault((x, f), {})[i] = _state(f, s, day)
 
     def order(k: tuple[str, str]) -> tuple[bool, datetime, str, int]:
         at = route.get(k[0], datetime.max.replace(tzinfo=UTC))
