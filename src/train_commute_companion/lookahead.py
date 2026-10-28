@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 
 from train_commute_companion.calendar import TZ, is_commute_day, resolve_local
-from train_commute_companion.classify import classify_leg
+from train_commute_companion.classify import classify_leg, current_connection
 from train_commute_companion.delivery import Obligation
 from train_commute_companion.lifecycle import FOLLOW_LIMIT
 from train_commute_companion.match import matches_pattern, usual_connection
@@ -242,17 +242,18 @@ def _nearest(conns: Sequence[Connection], ref: datetime) -> Connection | None:
     return min(near, key=lambda c: (abs(_dep(c.legs[0]) - at), _dep(c.legs[0])), default=None)
 
 
-def _kind(leg: Leg) -> LegKind:
-    return classify_leg(leg, leg.alight.code).kind
+def _kind(leg: Leg, alight: str) -> LegKind:
+    return classify_leg(leg, alight).kind
 
 
-def _transfer_issue(inc: Leg, out: Leg, p: Profile) -> str | None:
-    """A planned transfer below the 7.12 rule 9 minimum or refused by provider flags."""
-    if {_kind(inc), _kind(out)} & {LegKind.CANCELLED, LegKind.CUT_SHORT}:
-        return None  # the leg itself is the works fact
+def _transfer_issue(inc: Leg, out: Leg, alight: str, p: Profile) -> str | None:
+    """A planned transfer below the 7.12 rule 9 minimum or refused by provider flags. `inc`
+    and `out` are current copies (6.2), `alight` the raw outgoing leg's alighting stop."""
     station = out.board.code
+    if {_kind(inc, station), _kind(out, alight)} & {LegKind.CANCELLED, LegKind.CUT_SHORT}:
+        return None  # the leg itself is the works fact
     t = check_transfer(
-        classify_leg(inc, station), classify_leg(out, out.alight.code), station, p.transfer_min
+        classify_leg(inc, station), classify_leg(out, alight), station, p.transfer_min
     )
     # 7.10 checks the planned transfer: a reported delay must not hide a short change
     arr = next((s.planned_arrival for s in inc.stops[1:] if s.code == station), None)
@@ -269,15 +270,16 @@ def _transfer_issue(inc: Leg, out: Leg, p: Profile) -> str | None:
     return f"short:{station}:{t.margin_min if t.margin_min is not None else '?'}:{t.minimum}"
 
 
-def _leg_reasons(c: Connection) -> list[str]:
+def _leg_reasons(cur: Connection, c: Connection) -> list[str]:
+    """`cur` is `c` as the current copies show it, judged against `c`'s own alighting stops."""
     out = []
-    for i, leg in enumerate(c.legs):
-        k = _kind(leg)
+    for i, leg in enumerate(cur.legs):
+        k = _kind(leg, c.legs[i].alight.code)
         if k in (LegKind.CANCELLED, LegKind.CUT_SHORT):
             out.append(f"{k.value}:{i}")
         elif leg.messages:
             out.append(f"messages:{i}")
-    if c.status == "MAINTENANCE":
+    if cur.status == "MAINTENANCE":
         out.append("maintenance")
     return out
 
@@ -358,22 +360,29 @@ def evaluate(
             )
             legs.append(None if ref is None else _nearest(direct, ref))
 
+    def cur(c: Connection) -> Connection:
+        # every judgment reads the current copy of each train over all probe answers (6.2)
+        return current_connection(answers, c)
+
     chain_issues = {
         i: issue
         for i in range(n - 1)
         if (left := legs[i]) is not None
         and (right := legs[i + 1]) is not None
-        and (issue := _transfer_issue(left.legs[0], right.legs[0], p)) is not None
+        and (
+            issue := _transfer_issue(
+                cur(left).legs[0], cur(right).legs[0], right.legs[0].alight.code, p
+            )
+        )
+        is not None
     }
-    whole_issues = (
-        [
-            x
-            for i in range(len(whole.legs) - 1)
-            if (x := _transfer_issue(whole.legs[i], whole.legs[i + 1], p)) is not None
-        ]
-        if whole is not None
-        else []
-    )
+    whole_issues: list[str] = []
+    if whole is not None:
+        now = cur(whole)
+        for i in range(len(whole.legs) - 1):
+            x = _transfer_issue(now.legs[i], now.legs[i + 1], whole.legs[i + 1].alight.code, p)
+            if x is not None:
+                whole_issues.append(x)
     transfer_ok = not chain_issues and not whole_issues
 
     def result(li: int | None, c: Connection | None, reasons: list[str], head: str) -> ProbeResult:
@@ -383,7 +392,10 @@ def evaluate(
             and not is_works
             and transfer_ok
             and known
-            and all(_kind(x) is LegKind.OK for x in c.legs)
+            and all(
+                _kind(x, r.alight.code) is LegKind.OK
+                for x, r in zip(cur(c).legs, c.legs, strict=True)
+            )
             and not _covered(c, works)
         )
         if li is None and c is not None:  # a seed is anchored on the profile's first train
@@ -406,13 +418,13 @@ def evaluate(
         if c is None:
             out.append(result(i, None, ["missing"], "missing"))
             continue
-        reasons = _leg_reasons(c)
+        reasons = _leg_reasons(cur(c), c)
         if i in chain_issues:
             reasons.append(chain_issues[i])
         out.append(result(i, c, reasons, encode(signature_of(c, sd))))
     if whole_ans is not None:
         if whole is not None:
-            reasons = _leg_reasons(whole) + whole_issues
+            reasons = _leg_reasons(cur(whole), whole) + whole_issues
             out.append(result(None, whole, reasons, encode(signature_of(whole, sd))))
         elif pattern is not None:
             head = "pattern:" + encode(signature_of(pattern, sd))

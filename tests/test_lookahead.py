@@ -612,3 +612,21 @@ def test_route_edit_takes_back_a_recovery_held_before_owners():  # rule 5(c), 7.
     led = replace(forget_pending(_before_owners(led)), pending=(), facts={})
     _, _, events = run(history, good, led=led, now=_at(2))
     assert [e.key for e in events] == [held.key]
+
+
+def test_probe_reads_the_current_copy_of_a_train():  # 7.10, 7.12: never a falsely clean probe
+    a, b = legs(TUE)
+    gone = legs(TUE, cancel2=True)[1]
+    for pair in ((b, gone), (gone, b)):
+        answers = [
+            ans("AAA", "UT", make_connection([a])),
+            ans("UT", "RTD", *(make_connection([x]) for x in pair)),
+            ans("AAA", "RTD", make_connection([a, b])),
+        ]
+        rs = evaluate(P, OUT, TUE, answers, CLEAR, None)
+        assert [(r.works, r.clean) for r in rs if r.leg_index is not None] == [
+            (False, True),
+            (True, False),
+        ]
+        (whole,) = [r for r in rs if r.leg_index is None]
+        assert whole.works and "cancelled:1" in whole.fingerprint
