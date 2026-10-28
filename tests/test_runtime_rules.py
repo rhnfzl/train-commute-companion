@@ -779,6 +779,153 @@ async def test_newer_cancellation_on_the_advice_search_beats_an_older_recovery(t
     assert len(leave) == 1 and "17:22" in leave[0].text
 
 
+# --- advice reads the current copy of every train (6.2, 7.6) ---
+
+
+def test_origin_answer_keeps_distinct_connections_sharing_an_onward_train():
+    from test_lifecycle_follow import ans, conn
+    from test_lifecycle_follow import ctx as follow_ctx
+
+    from train_commute_companion.lifecycle import _Pool
+    from train_commute_companion.runtime import _origin_answer
+
+    older = ans("AAA", conn(L1, R2), when="07:50")  # the 08:12 and the 08:25 share the 09:05
+    newer = ans("AAA", LATER, when="07:52")
+    transfer = ans("UT", conn(R2), when="07:53")
+    got = _origin_answer((older, newer, transfer), follow_ctx(at("07:53")))
+    assert isinstance(got, _Pool)
+    assert got.connections == (LATER, conn(L1, R2))  # the newer answer's first
+    assert got.answers == (older, newer, transfer)  # every answer of the poll is evidence
+    assert got.query == older.query and got.fetched_at == newer.fetched_at
+
+
+async def held_then_split(tmp_path, main: list, search: list) -> list[AlertEvent]:
+    """A LEAVE_NOW for the 17:22 is held; the next poll's own answer shows `main`, the advice
+    search answered a minute later shows `search`. The LEAVE_NOW events sent afterwards."""
+    rig = Rig(tmp_path, "16:54")
+    rig.provider.window = timedelta(hours=1)
+    rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
+    rig.provider.world = cancelled_usual_world()
+    await rig.rt.start()
+
+    def split(q: Query) -> None:
+        if q.at == at("17:52"):
+            rig.provider.world = main
+        else:
+            rig.clock.jump(1)
+            rig.provider.world = search
+
+    rig.clock.set("16:56")
+    rig.provider.hook = split
+    await rig.rt.poll_once()
+    rig.provider.hook = None
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    return [e for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW]
+
+
+async def test_advice_goes_when_the_newer_answer_cancels_the_usual_and_an_older_copy_arrives_earlier(
+    tmp_path,
+):
+    early = make_leg("RTD", "AAA", "17:52", "18:30", number="7952", delay_arr=-1)  # 18:29
+    leave = await held_then_split(
+        tmp_path, [make_connection([early]), *escape_world()], cancelled_usual_world()
+    )
+    assert len(leave) == 1 and "17:22" in leave[0].text
+
+
+async def test_advice_goes_when_the_newer_answer_cuts_the_usual_short(tmp_path):
+    full = make_leg("RTD", "AAA", "17:52", "18:30", number="7952", stops=["UT"])
+    cut = make_leg("RTD", "AAA", "17:52", "18:30", number="7952", stops=["UT"], cut_after="UT")
+    leave = await held_then_split(
+        tmp_path,
+        [make_connection([full]), *escape_world()],
+        [make_connection([cut]), *escape_world()],
+    )
+    assert len(leave) == 1 and "17:22" in leave[0].text
+
+
+async def test_advice_goes_when_the_cut_short_copy_omits_the_destination(tmp_path):
+    from builders import _cut
+
+    full = make_leg("RTD", "AAA", "17:52", "18:30", number="7952", stops=["BBB", "UT"])
+    # the newer copy lists BBB cancelled and ends at UT: AAA is not in it at all
+    short = make_leg("RTD", "UT", "17:52", "18:20", number="7952", stops=["BBB"])
+    short = replace(short, stops=(short.stops[0], _cut(short.stops[1]), short.stops[2]))
+    onward = make_leg("UT", "AAA", "18:25", "18:35", number="7999")
+    leave = await held_then_split(
+        tmp_path,
+        [make_connection([full]), *escape_world()],
+        [make_connection([short, onward]), *escape_world()],
+    )
+    assert len(leave) == 1 and "17:22" in leave[0].text
+
+
+async def test_leave_now_withdrawn_when_a_newer_answer_cancels_it(tmp_path):
+    gone = [
+        make_connection([make_leg("RTD", "AAA", "17:52", "18:30", number="7952", cancelled=True)]),
+        *escape_world(escape_cancelled=True),
+    ]
+    assert await held_then_split(tmp_path, cancelled_usual_world(), gone) == []
+
+
+async def test_advice_saving_uses_the_current_arrival(tmp_path):
+    def world(escape_late: int) -> list:
+        return [
+            make_connection([make_leg("RTD", "AAA", "17:52", "18:30", number="7952",
+                                      delay_arr=12)]),  # waiting arrives 18:42
+            make_connection([make_leg("RTD", "AAA", "17:22", "18:00", number="7922",
+                                      delay_arr=escape_late)]),
+        ]  # fmt: skip
+
+    rig = Rig(tmp_path, "16:54")
+    rig.provider.hook = lambda q: (
+        None
+        if q.at == at("17:52")
+        else (rig.clock.jump(1), setattr(rig.provider, "world", world(50)))
+    )
+    rig.provider.world = world(30)  # the poll's own answer: the 17:22 arrives 18:30
+    await rig.rt.start()  # the advice search a minute later: it arrives 18:50
+    assert at("16:59") in [q.at for q in rig.provider.calls]
+    assert EventKind.LEAVE_NOW not in kinds(rig.rt.events_log)
+
+
+async def test_advice_never_offers_an_onward_train_a_transfer_answer_cancelled(tmp_path):
+    rig = Rig(tmp_path)
+    rig.write(text=PROFILE.replace("NAME", "office_a").replace(
+        "transfers: [UT]}", "transfers: [UT], earlier_train_advice: true}"))  # fmt: skip
+    rig.rt = rig.new()
+    early_l1 = make_leg("AAA", "UT", "08:04", "08:30", number="1300")
+    onward = make_leg("UT", "RTD", "08:36", "09:10", number="6666")
+    late = make_connection([make_leg("AAA", "UT", "08:44", "09:12", number="7777"),
+                            make_leg("UT", "RTD", "09:20", "09:54", number="8888")])  # fmt: skip
+
+    def world(onward_cancelled: bool) -> list:  # the usual 08:12 is cancelled
+        gone = make_leg("UT", "RTD", "08:36", "09:10", number="6666", cancelled=True)
+        mid = make_connection([early_l1, gone if onward_cancelled else onward])
+        return [make_connection([L1X, L2]), mid, late]
+
+    rig.provider.world = [USUAL, make_connection([early_l1, onward]), late]
+    await rig.rt.start()
+    assert rig.occ().lock.legs[0].train == L1.train
+    rig.clock.set("07:52")
+
+    def split(q: Query) -> None:
+        if q.origin == "UT":  # asked from the transfer station, after the origin answer
+            rig.clock.jump(1 / 6)
+            rig.provider.world = world(True)
+        else:
+            rig.provider.world = world(False)
+
+    rig.provider.hook = split
+    # the advice search fails: advice has only the poll's own answers
+    rig.provider.error = lambda q: ServerError() if q.at == at("08:02") else None
+    await rig.rt.poll_once()
+    assert [q.origin for q in rig.provider.calls[-3:]] == ["AAA", "UT", "AAA"]
+    assert EventKind.LEAVE_NOW not in kinds(rig.rt.events_log)
+    assert [x.train.train_number for x in rig.occ().lock.legs] == ["7777", "8888"]
+
+
 async def test_advice_search_shares_the_poll_deadline(tmp_path):
     rig = Rig(tmp_path, "16:54")  # 7.1: one hard deadline for the poll, not one per request
     rig.provider.window = timedelta(hours=1)

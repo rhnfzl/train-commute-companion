@@ -414,6 +414,168 @@ async def test_watchdog_alerts_after_clock_jump(tmp_path):
     assert kinds(rig.rt.events_log)[-1] is EventKind.CANNOT_SEE_TRAIN
 
 
+# --- the watchdog reads the current copy of a train (6.2, rules 12, 13, 20) ---
+
+L2_PLANNED = make_leg("UT", "RTD", "08:50", "09:24", number="5678", provenance=Provenance.PLANNED)
+
+
+def answer_by_origin(rig: Rig, by_origin: dict[str, list[Connection]]) -> None:
+    """Each request gets the connections listed for its origin, 10 s after the one before, so
+    a later answer of the same poll is newer."""
+
+    async def trips(q: Query) -> ProviderAnswer:
+        rig.provider.calls.append(q)
+        rig.clock.jump(1 / 6)
+        return ProviderAnswer(q, tuple(by_origin.get(q.origin, ())), rig.clock.now())
+
+    rig.provider.trips = trips  # type: ignore[method-assign]
+
+
+def blind(rig: Rig) -> list[AlertEvent]:
+    return [e for e in rig.rt.events_log if e.kind is EventKind.CANNOT_SEE_TRAIN]
+
+
+async def locked_poll_at_0830(tmp_path: Path, by_origin: dict[str, list[Connection]]) -> Rig:
+    rig = await started(tmp_path, "07:56")
+    assert rig.occ().lock is not None
+    rig.clock.set("08:30")  # the 08:50 onward leg is 20 min away
+    answer_by_origin(rig, by_origin)
+    await rig.rt.poll_once()
+    await rig.rt.watchdog_once()
+    return rig
+
+
+async def test_watchdog_reads_the_newest_copy_of_a_locked_leg(tmp_path):
+    # the older answer reports the 08:50's departure, the newer one only plans it
+    rig = await locked_poll_at_0830(
+        tmp_path, {"AAA": [USUAL], "UT": [make_connection([L2_PLANNED])]}
+    )
+    got = blind(rig)
+    assert len(got) == 1 and got[0].severity is Severity.LOUD
+    assert "no reported departure time" in got[0].text
+
+
+async def test_watchdog_unequal_stop_counts_read_the_newest_timing(tmp_path):
+    extra = tuple(replace(L2.alight, code=c, name=c) for c in ("ZZA", "ZZB", "ZZC"))
+    longer = replace(L2, stops=(*L2.stops, *extra))  # three more stops past RTD, reported
+    rig = await locked_poll_at_0830(
+        tmp_path, {"AAA": [make_connection([L1, longer])], "UT": [make_connection([L2_PLANNED])]}
+    )
+    got = blind(rig)
+    assert len(got) == 1 and "no reported departure time" in got[0].text
+
+
+async def test_watchdog_uncertain_identity_still_fires(tmp_path):
+    twin = make_leg("UT", "RTD", "08:50", "09:31", number="9999")  # boards in the same minute
+    rig = await locked_poll_at_0830(
+        tmp_path, {"AAA": [USUAL], "UT": [make_connection([L2]), make_connection([twin])]}
+    )
+    got = blind(rig)
+    assert len(got) == 1 and "uncertain" in got[0].text
+    last = rig.rt._seen["p1|outbound|2026-10-27"][L2.train].last_seen_at
+    assert last is not None and last < at("08:30")  # not refreshed by the uncertain answer
+
+
+async def test_leg_now_names_the_newest_platform(tmp_path):
+    from builders import _on_track
+
+    rig = await started(tmp_path, "07:56")
+    x = rig.occ().lock.legs[1]  # the 08:50 from UT
+    older = ProviderAnswer(
+        Query("AAA", "RTD", at("08:12")), (make_connection([L1, _on_track(L2, "5")]),), at("07:58")
+    )
+    newer = ProviderAnswer(
+        Query("UT", "RTD", at("08:50")), (make_connection([_on_track(L2, "7")]),), at("07:59")
+    )
+    rig.rt._boards["p1|outbound|2026-10-27"] = (older, newer)
+    assert rig.rt._leg_now("p1|outbound|2026-10-27", x) == ("08:50", " (platform 7)")
+
+
+async def test_cut_short_leg_at_its_last_served_stop_is_seen(tmp_path):
+    rig = await started(tmp_path, "07:56")
+    cut = make_leg("AAA", "UT", "08:12", "08:40", number="1234", stops=["BBB"], cut_after="BBB")
+    rig.clock.set("08:20")  # on the 08:12, which now ends at BBB with a reported arrival there
+    rig.provider.world = [make_connection([cut, L2])]
+    await rig.rt.poll_once()
+    await rig.rt.watchdog_once()
+    assert rig.occ().lock.legs[0].alight_stop == "BBB"
+    assert blind(rig) == []
+
+
+ZERO_BUFFER = PROFILE.replace("NAME", "office_a").replace(
+    '"08:12", buffer_min: 10, transfers', '"08:12", buffer_min: 0, transfers'
+)
+EARLY_L1 = make_leg("AAA", "UT", "08:12", "08:16", number="1234")
+ONWARD = make_leg("UT", "RTD", "08:20", "08:54", number="5678")
+
+
+def _no_planned_departure(leg):
+    board = replace(leg.board, planned_departure=None, departure=None)
+    return replace(leg, stops=(board, *leg.stops[1:]))
+
+
+_ONWARD_CASES = {
+    "planned": [make_connection([EARLY_L1, make_leg("UT", "RTD", "08:20", "08:54",
+                                                    number="5678", provenance=Provenance.PLANNED)])],
+    "missing": [make_connection([EARLY_L1, _no_planned_departure(ONWARD)])],
+    "uncertain": [
+        make_connection([EARLY_L1, ONWARD]),
+        make_connection([make_leg("AAA", "UT", "08:05", "08:15", number="1300"),
+                         make_leg("UT", "RTD", "08:20", "08:58", number="9999")]),
+    ],
+}  # fmt: skip
+
+
+async def before_lock_at_0755(tmp_path: Path, text: str, world: list[Connection]) -> Rig:
+    rig = Rig(tmp_path, "07:55")  # zero buffer: the auto lock is at 07:57
+    rig.write(text=text)
+    rig.rt = rig.new()
+    rig.provider.world = world
+    await rig.rt.start()
+    await rig.rt.watchdog_once()
+    assert rig.occ().lock is None
+    return rig
+
+
+@pytest.mark.parametrize("case", sorted(_ONWARD_CASES))
+async def test_watchdog_before_a_lock_checks_onward_legs(tmp_path, case):
+    rig = await before_lock_at_0755(tmp_path, ZERO_BUFFER, _ONWARD_CASES[case])
+    got = blind(rig)
+    assert len(got) == 1 and got[0].severity is Severity.LOUD
+
+
+async def test_watchdog_before_a_lock_checks_every_leg_of_a_two_transfer_usual(tmp_path):
+    third = make_leg("BBB", "RTD", "08:24", "08:54", number="6666", provenance=Provenance.PLANNED)
+    usual = make_connection([
+        make_leg("AAA", "UT", "08:12", "08:14", number="1234"),
+        make_leg("UT", "BBB", "08:18", "08:21", number="5678"),
+        third,
+    ])  # fmt: skip
+    text = ZERO_BUFFER.replace("transfers: [UT]}", "transfers: [UT, BBB]}").replace(
+        "{UT: 4}", "{UT: 4, BBB: 2}"
+    )
+    rig = await before_lock_at_0755(tmp_path, text, [usual])
+    got = blind(rig)
+    assert len(got) == 1 and "no reported departure time" in got[0].text
+
+
+async def test_watchdog_before_a_lock_reads_the_newest_usual_copy(tmp_path):
+    from train_commute_companion.runtime import _origin_answer
+
+    rig = await before_lock_at_0755(tmp_path, ZERO_BUFFER, [make_connection([EARLY_L1, ONWARD])])
+    assert blind(rig) == []
+    planned = make_leg("AAA", "UT", "08:12", "08:16", number="1234", provenance=Provenance.PLANNED)
+    q = Query("AAA", "RTD", at("08:12"))
+    older = ProviderAnswer(q, (make_connection([EARLY_L1, ONWARD]),), at("07:54"))
+    newer = ProviderAnswer(q, (make_connection([planned, ONWARD]),), rig.clock.now())
+    k = "p1|outbound|2026-10-27"
+    ctx = rig.rt._ctx(rig.occ(), rig.clock.now())
+    rig.rt._remember_usual(k, ctx, _origin_answer((older, newer), ctx))
+    await rig.rt.watchdog_once()
+    got = blind(rig)
+    assert len(got) == 1 and "no reported departure time" in got[0].text
+
+
 # --- store ---
 
 

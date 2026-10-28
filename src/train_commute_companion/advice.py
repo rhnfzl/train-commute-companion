@@ -5,7 +5,12 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta, tzinfo
 
 from train_commute_companion.board import choose_replacement, is_good, max_transfers
-from train_commute_companion.classify import classify_leg, find_leg
+from train_commute_companion.classify import (
+    classify_leg,
+    current_connection,
+    evidence,
+    find_leg,
+)
 from train_commute_companion.lifecycle import (
     Ctx,
     DirectionState,
@@ -42,14 +47,20 @@ def _departure(c: Connection) -> datetime:
     return c.legs[0].train.planned_departure.astimezone(UTC)
 
 
+def _trains(c: Connection) -> tuple[TrainId, ...]:
+    return tuple(x.train for x in c.legs)
+
+
 def _unrideable(c: Connection, answer: ProviderAnswer, profile_min: dict[str, int]) -> bool:
-    """A leg is cancelled or cut short, or a transfer is broken: waiting does not get you there."""
+    """A leg is cancelled or cut short, or a transfer is broken: waiting does not get you there.
+    Each leg is judged as the newest evidence shows it, against `c`'s own alighting stop (6.2)."""
+    cur = current_connection(evidence(answer), c)
     cls = [
         replace(
-            classify_leg(x, x.alight.code),
+            classify_leg(cur.legs[i], x.alight.code),
             observation=find_leg(answer, x.train, x.board.code)[1],
         )
-        for x in c.legs
+        for i, x in enumerate(c.legs)
     ]
     nxt = [*cls[1:], None]
     for x, n in zip(cls, nxt, strict=True):
@@ -147,21 +158,29 @@ def _kw(s: OccurrenceState, ctx: Ctx) -> dict[str, object]:
 def _judge(
     s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, reference: datetime | None
 ) -> tuple[Connection | None, bool, bool]:
-    """(the journey ridden by waiting, broken, bad) (7.6). Lateness needs the usual's planned
-    arrival; a journey that is not there or not rideable is bad without one."""
+    """(the journey ridden by waiting as its current copy, broken, bad) (7.6). Lateness needs
+    the usual's planned arrival; a journey that is not there or not rideable is bad without one."""
     prof = ctx.profile
     ride = _ridden(s, ctx, answer)
     # not seen in a healthy answer: the journey the user waits for is not there, so waiting
     # means the first later good train, like after a cancellation (7.6, rule 2)
-    ride_arr = None if ride is None else _arrival(ride)
     broken = ride is None or _unrideable(ride, answer, dict(prof.transfer_min))
+    cur = None if ride is None else current_connection(evidence(answer), ride)
+    # a current copy ending before the destination has no arrival there (broken says so)
+    ride_arr = (
+        _arrival(cur)
+        if cur is not None
+        and ride is not None
+        and cur.legs[-1].alight.code == ride.legs[-1].alight.code
+        else None
+    )
     limit = timedelta(minutes=prof.alerts.earlier_train_threshold_min)
     slow = (
         ride_arr is not None
         and reference is not None
         and ride_arr >= reference.astimezone(UTC) + limit
     )
-    return ride, broken, broken or slow
+    return cur, broken, broken or slow
 
 
 def needed(
@@ -224,7 +243,8 @@ def _candidates(
         wait_from = _departure(ride)
     if broken:
         # board 59: what you ride if you wait is the first later good train, not the cancelled one
-        later = [c for c in answer.connections if c is not ride and _departure(c) >= wait_from]
+        mine = None if ride is None else _trains(ride)
+        later = [c for c in answer.connections if _trains(c) != mine and _departure(c) >= wait_from]
         rep, _ = choose_replacement(
             answer,
             usual_remaining=usual.transfers,
@@ -235,14 +255,19 @@ def _candidates(
     found: list[tuple[timedelta, Connection]] = []
     if bad:
         need = timedelta(minutes=prof.alerts.earlier_train_min_saving_min)
-        for c in answer.connections:
-            arr = _arrival(c)
-            if arr is None or _departure(c) >= wait_from:
+        seen_in, done = evidence(answer), set()
+        for c in answer.connections:  # newest answer first: its copy of a journey is kept
+            if (trains := _trains(c)) in done:
+                continue
+            done.add(trains)
+            cur = current_connection(seen_in, c)  # saving and text use current times
+            arr = _arrival(cur)
+            if arr is None or _departure(cur) >= wait_from:
                 continue
             saving = (ride_arr or _FAR) - arr  # no baseline: soonest arrival wins
             if saving < need or not is_good(c, answer, **kw).ok:  # type: ignore[arg-type]
                 continue
-            found.append((saving, c))
+            found.append((saving, cur))
     return found
 
 

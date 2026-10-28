@@ -24,7 +24,7 @@ from train_commute_companion.advice import (
     still_advised,
 )
 from train_commute_companion.calendar import TZ, resolve_local
-from train_commute_companion.classify import find_leg
+from train_commute_companion.classify import current_run, evidence, find_leg
 from train_commute_companion.delivery import (
     APP_WARNINGS,
     JOURNEY_WARNINGS,
@@ -49,6 +49,7 @@ from train_commute_companion.lifecycle import (
     UserAction,
     _first_open,
     _left_note,
+    _Pool,
     _pool,
     apply_action,
     ends,
@@ -82,7 +83,6 @@ from train_commute_companion.messages import CHECK_APP
 from train_commute_companion.model import (
     AlertEvent,
     Config,
-    Connection,
     Direction,
     EventKind,
     LocationSettings,
@@ -883,21 +883,22 @@ def _states_current(key: str, kind: EventKind, keys: Mapping[str, str]) -> bool:
     return [keys.get(x) for x in slots] == said
 
 
-def _origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> ProviderAnswer | None:
-    """Every answer asked from the origin as one, so an earlier train searched for advice and
-    the usual or locked train are judged together (7.6)."""
+def _origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> _Pool | None:
+    """Every connection asked from the origin, newest answer first, so an earlier train searched
+    for advice and the usual or locked train are judged together (7.6). Every answer of the poll
+    is its evidence: each train is read as its current copy, so an older healthy copy never
+    hides a newer cancellation, also one asked from a transfer station (6.2)."""
     origin = ctx.profile.origin(ctx.direction)
-    mine = [a for a in answers if a.query.origin == origin]
+    mine = sorted(
+        (a for a in answers if a.query.origin == origin),
+        key=lambda a: _utc(a.fetched_at),
+        reverse=True,
+    )
     if not mine:
         return None
-    # newest first: a connection with a train a newer answer also shows is superseded, so an
-    # older healthy copy never hides a newer cancellation from advice (7.6)
-    conns: list[Connection] = []
-    for a in sorted(mine, key=lambda a: _utc(a.fetched_at), reverse=True):
-        newer = {g.train for c in conns for g in c.legs}
-        conns += [c for c in a.connections if not any(g.train in newer for g in c.legs)]
-    newest = max(mine, key=lambda a: _utc(a.fetched_at))
-    return ProviderAnswer(mine[0].query, tuple(conns), newest.fetched_at)
+    asked = next(a for a in answers if a.query.origin == origin).query  # the poll's own query
+    conns = tuple(c for a in mine for c in a.connections)
+    return _Pool(asked, conns, mine[0].fetched_at, tuple(answers))
 
 
 async def every(clock: Clock, seconds: float, step: Callable[[], Awaitable[None]]) -> None:
@@ -976,7 +977,7 @@ class Runtime:
         self._auth_told: set[str] = set()
         self._blind: dict[str, datetime] = {}  # occurrence -> start of its cannot_see outage
         # per occurrence before a lock: the usual train as the last healthy answer showed it
-        self._before: dict[str, WatchedLeg] = {}
+        self._before: dict[str, tuple[WatchedLeg, ...]] = {}
         self._offline: set[str] = set()
         # per occurrence and train: what the last healthy poll showed of it (rule 13)
         self._seen: dict[str, dict[TrainId, WatchedLeg]] = {}
@@ -1066,9 +1067,13 @@ class Runtime:
         its platform, for a message naming it."""
         answers = self._boards.get(k, ())
         leg = find_leg(_pool(answers), x.train, x.board_station)[0] if answers else None
-        dep = None if leg is None else leg.board.departure
+        run = None
+        if leg is not None:
+            run = current_run(answers, leg.train, x.board_station, x.intended_alight)
+        g = None if run is None else run[1].leg.board
+        dep = None if g is None else g.departure
         t = dep.value if dep is not None and dep.value is not None else x.train.planned_departure
-        track = None if leg is None else leg.board.actual_track or leg.board.planned_track
+        track = None if g is None else g.actual_track or g.planned_track
         return f"{t.astimezone(TZ):%H:%M}", f" (platform {track})" if track else ""
 
     def _signature(
@@ -1801,17 +1806,17 @@ class Runtime:
         st, events = t.state, list(t.events)
         current = s.generation == gen
         if current:  # a choice since the poll started makes the answer stale
-            origin = ctx.profile.origin(ctx.direction)
-            usual = next((a for a in answers if a.query.origin == origin), None)
-            if usual is not None and s.lock is None:
-                self._remember_usual(k, ctx, usual)
-            tick = on_tick(st, ctx, usual)
+            # the whole poll's evidence for the watchdog, the auto lock and advice (6.2)
+            merged = _origin_answer(answers, ctx)
+            if merged is not None and s.lock is None:
+                self._remember_usual(k, ctx, merged)
+            tick = on_tick(st, ctx, merged)
             st, events = tick.state, [*events, *tick.events]
             if st.lock is not None and not st.all_good_evaluated:
                 good = all_good(st, board, ctx)  # Q4: judged once, at the first poll with a lock
                 st = replace(st, all_good_evaluated=True)
                 events += [good] if good else []
-            if (merged := _origin_answer(answers, ctx)) is not None:
+            if merged is not None:
                 # no reference: an absent or broken usual still makes waiting bad (7.6)
                 arrival = self._usual_arrival(st, ctx, merged)
                 record, more = advise(st, ctx, merged, arrival)
@@ -1846,44 +1851,56 @@ class Runtime:
             return s.lock.planned_final_arrival
         return None
 
-    def _remember_usual(self, k: str, ctx: Ctx, answer: ProviderAnswer) -> None:
-        """Before a lock: what the healthy answer shows of the usual train (rules 13, 20), so
-        the watchdog judges it on the same terms as a locked leg, never on invented timing."""
+    def _remember_usual(self, k: str, ctx: Ctx, merged: _Pool) -> None:
+        """Before a lock: what the poll shows of every usual leg (rules 13, 20), each as its
+        current copy, so the watchdog judges it on the same terms as a locked leg, never on
+        invented timing."""
         p, d, first = ctx.profile, ctx.direction, ctx.schedule.first_departure
-        old = self._before.get(k)
-        c = usual_connection(answer, p.origin(d), first, p.journey(d).transfers, ctx.signature)
+        old = self._before.get(k, ())
+        c = usual_connection(merged, p.origin(d), first, p.journey(d).transfers, ctx.signature)
         none = Provenance.MISSING
         if c is None:
-            train, ob, dep = (
-                TrainId(ctx.schedule.key.service_date, "", first),
-                Observation.MISSING,
-                none,
-            )
-        else:
-            leg = c.legs[0]
-            train, ob = leg.train, find_leg(answer, leg.train, p.origin(d))[1]
-            dep = leg.board.departure.provenance if leg.board.departure else none
-        seen = answer.fetched_at if ob is Observation.SEEN else (old.last_seen_at if old else None)
-        self._before[k] = WatchedLeg(train, first, False, ob, dep, dep, seen)
+            train = TrainId(ctx.schedule.key.service_date, "", first)
+            seen = old[0].last_seen_at if old else None
+            missing = WatchedLeg(train, first, False, Observation.MISSING, none, none, seen)
+            self._before[k] = (missing,)
+            return
+        out = []
+        for i, g in enumerate(c.legs):
+            ob = find_leg(merged, g.train, g.board.code)[1]
+            run = current_run(evidence(merged), g.train, g.board.code, g.alight.code)
+            b = g.board if run is None else run[1].leg.board
+            dep = b.departure.provenance if b.departure else none
+            if ob is Observation.SEEN and run is not None:
+                seen = run[0]
+            else:
+                seen = old[i].last_seen_at if i < len(old) else None
+            at = first if i == 0 else g.train.planned_departure
+            out.append(WatchedLeg(g.train, at, False, ob, dep, dep, seen))
+        self._before[k] = tuple(out)
 
     def _remember(self, k: str, s: OccurrenceState, answers: Sequence[ProviderAnswer]) -> None:
-        newest = max(answers, key=lambda a: _utc(a.fetched_at))
-        merged = ProviderAnswer(
-            newest.query, tuple(c for a in answers for c in a.connections), newest.fetched_at
-        )
+        pool = _pool(answers)
         seen = self._seen.setdefault(k, {})
         for j in (*((s.lock,) if s.lock else ()), *s.retained):
             for x in j.legs:
-                leg, ob = find_leg(merged, x.train, x.board_station)
+                leg, ob = find_leg(pool, x.train, x.board_station)
                 old = seen.get(x.train)
                 dep = arr = Provenance.MISSING
+                # the current copy of the found train (6.2), never the first copy met
+                run = None
                 if leg is not None:
-                    dep = leg.board.departure.provenance if leg.board.departure else dep
-                    stop = next((st for st in leg.stops if st.code == x.alight_stop), leg.alight)
+                    run = current_run(answers, leg.train, x.board_station, x.intended_alight)
+                if run is not None:
+                    g = run[1].leg
+                    dep = g.board.departure.provenance if g.board.departure else dep
+                    # after a cut short the user rides to the last served stop, `alight_stop`
+                    stop = next((st for st in g.stops if st.code == x.alight_stop), g.alight)
                     arr = stop.arrival.provenance if stop.arrival else arr
+                # an uncertain or missing identity never refreshes it (rules 12, 13, 6.1)
                 last = (
-                    newest.fetched_at
-                    if ob is Observation.SEEN
+                    run[0]
+                    if ob is Observation.SEEN and run is not None
                     else (old.last_seen_at if old else None)
                 )
                 seen[x.train] = WatchedLeg(
@@ -1917,7 +1934,8 @@ class Runtime:
                 )  # fmt: skip
                 out.append(replace(base, riding_or_watched=riding))
         if s.lock is None and not s.retained and k in self._before:  # before a lock (rule 13)
-            out.append(replace(self._before[k], departure=ctx.schedule.first_departure))
+            head, *onward = self._before[k]  # any usual leg (rule 13)
+            out += [replace(head, departure=ctx.schedule.first_departure), *onward]
         elif s.lock is None and not s.retained:  # never answered yet: by board age only
             first = ctx.schedule.first_departure
             last_ok = board_health(s.poll_records, now).last_ok_at

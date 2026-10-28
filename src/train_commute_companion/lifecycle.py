@@ -20,7 +20,9 @@ from train_commute_companion.board import (
 from train_commute_companion.calendar import TZ, resolve_local
 from train_commute_companion.classify import (
     classify_leg,
+    current_connection,
     current_run,
+    evidence,
     find_leg,
     pair_transfer,
     served,
@@ -493,7 +495,9 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
         )
         assert locked is not None  # no lock existed
         first = usual.legs[0]
-        if _departure(usual) < now and classify_leg(first, first.alight.code).kind in _RUNS:
+        # the newest copy says whether it left: an older one may have won on arrival (6.2)
+        cur = current_connection(evidence(answer), usual)
+        if _departure(cur) < now and classify_leg(cur.legs[0], first.alight.code).kind in _RUNS:
             # the user may be on it; show where to go if not (7.12 rule 7)
             nxt = _next_good(s, ctx, answer, after=first.train)
             text = f"your usual {_hhmm(ctx.schedule.first_departure)} has left. " + (
@@ -507,7 +511,7 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
         # 7.2: a usual already broken now is relocked at once, with its warning, from this
         # answer; departure progress comes first, so a train the user may already be on is
         # warned about, never relocked away (7.4, rule 7). The first train has its note above.
-        pool = _pool((answer,))
+        pool = _pool(evidence(answer), answer.query)  # every answer of the poll is evidence
         locked, left = _advance_all(locked, ctx, pool, live=True)
         events += [e for e in left if e.train != first.train]
         t = _follow(locked, ctx, pool, (answer.query,))
@@ -782,13 +786,13 @@ def queries_needed(s: OccurrenceState, ctx: Ctx) -> list[Query]:
     return out
 
 
-def _pool(answers: Sequence[ProviderAnswer]) -> _Pool:
+def _pool(answers: Sequence[ProviderAnswer], query: Query | None = None) -> _Pool:
     """All answers plus every connection's suffixes, so a search from a transfer station can use
     an answer asked from earlier on the route (rule 3)."""
     conns = [c for a in answers for c in a.connections]
     frags = [Connection(c.legs[i:], c.status, None) for c in conns for i in range(1, len(c.legs))]
     newest = max(answers, key=lambda a: _utc(a.fetched_at))
-    return _Pool(answers[0].query, (*conns, *frags), newest.fetched_at, tuple(answers))
+    return _Pool(query or answers[0].query, (*conns, *frags), newest.fetched_at, tuple(answers))
 
 
 def _observe(
