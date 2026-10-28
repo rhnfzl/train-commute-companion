@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import date, datetime
 
-from builders import AMS, make_connection, make_leg
+from builders import AMS, _on_track, make_connection, make_leg, planned_at_alight
 
 from train_commute_companion.health import PollRecord
 from train_commute_companion.lifecycle import (
@@ -16,12 +16,14 @@ from train_commute_companion.lifecycle import (
     LockSource,
     OccurrenceState,
     Transition,
+    _stated,
     journey_of,
     on_poll,
     progress_of,
     queries_needed,
 )
 from train_commute_companion.model import (
+    AlertEvent,
     Connection,
     Direction,
     EventKind,
@@ -31,6 +33,8 @@ from train_commute_companion.model import (
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import ProviderAnswer, Query
 from train_commute_companion.schedule import dated_schedule
+from train_commute_companion.serde import dumps, loads
+from train_commute_companion.unclear import train_key
 
 PROFILES = """
 profiles:
@@ -575,3 +579,93 @@ def test_frozen_stop_takes_the_latest_arrival_of_any_copy():  # 7.12: never a mi
             s, ctx(at("08:20"), DIRECT), ans("AAA", *map(conn, pair)), ans("UT", conn(FROM_UT))
         )
         assert (EventKind.TRANSFER_BROKEN, Severity.LOUD) in kinds(t)
+
+
+# --- rule 23: copies of one followed train in one answer that disagree (data_unclear) ---
+
+T_PLANNED = planned_at_alight(T_FULL)
+SPLIT = (conn(T_FULL), conn(T_PLANNED))
+UNCLEAR_TEXT = (
+    "NS data unclear for IC 1234 at RTD. Copy 1: arrives 09:24 (planned only)."
+    " Copy 2: arrives 09:24 (live). Check the NS app or the station boards."
+)
+
+
+def unclear(t: Transition) -> list[AlertEvent]:
+    return [e for e in t.events if e.kind is EventKind.DATA_UNCLEAR]
+
+
+def test_disagreeing_copies_of_a_followed_train_send_one_loud_data_unclear():
+    t = poll(occ(journey([T_FULL])), ctx(at("07:52")), ans("AAA", *SPLIT))
+    (e,) = unclear(t)
+    assert e.severity is Severity.LOUD and e.train == T_FULL.train
+    assert e.text == "Office A: " + UNCLEAR_TEXT
+
+
+def test_data_unclear_is_sent_once_per_train_per_day():
+    c = ctx(at("07:52"))
+    s = poll(occ(journey([T_FULL])), c, ans("AAA", *SPLIT)).state
+    for world in (SPLIT, (conn(T_FULL),), SPLIT):  # same, agreeing, same again
+        t = poll(s, c, ans("AAA", *world))
+        assert unclear(t) == []
+        s = t.state
+
+
+def test_data_unclear_is_sent_again_when_the_values_change():
+    c = ctx(at("07:52"))
+    s = poll(occ(journey([T_FULL])), c, ans("AAA", *SPLIT)).state
+    (e,) = unclear(poll(s, c, ans("AAA", conn(T_FULL), conn(_on_track(T_FULL, "7")))))
+    assert "platform 7" in e.text
+
+
+def test_copies_in_different_answers_never_send_data_unclear():
+    t = poll(occ(journey([T_FULL])), ctx(at("07:52")),
+             ans("AAA", conn(T_PLANNED), when="07:50"), ans("AAA", conn(T_FULL), when="07:52"))  # fmt: skip
+    assert unclear(t) == []
+
+
+def test_a_retained_train_gets_the_if_you_are_on_prefix():
+    s = occ(journey(LATER.legs), retained=(journey([T_FULL], RIDE),))
+    (e,) = unclear(poll(s, ctx(at("08:30")), ans("AAA", *SPLIT, LATER)))
+    assert e.text == "Office A: if you are on the 08:12: " + UNCLEAR_TEXT
+
+
+def _cut(leg: LegProgress) -> LegProgress:  # recovery fixed the alighting stop at UT
+    return replace(leg, served_endpoint="RTD", alight_stop="UT", alight_frozen=True)
+
+
+def test_recovery_alighting_stop_bounds_data_unclear():
+    s = cut_at_ut(LegState.RIDING)  # lock: alight_stop UT, intended RTD; SPLIT differs only at RTD
+    t = poll(s, ctx(at("08:31"), DIRECT), ans("AAA", *SPLIT), ans("UT", conn(FROM_UT)))
+    assert unclear(t) == []
+    j = journey([T_FULL], RIDE)
+    s = occ(journey(LATER.legs), retained=(replace(j, legs=(_cut(j.legs[0]),)),))
+    assert unclear(poll(s, ctx(at("08:30")), ans("AAA", *SPLIT, LATER))) == []
+
+
+def test_a_train_in_lock_and_retained_is_compared_once():
+    j = journey([T_FULL], RIDE)  # lock rides to RTD, the retained copy of the train to UT
+    s = occ(j, retained=(replace(j, legs=(_cut(j.legs[0]),)),))
+    t = poll(s, ctx(at("08:30")), ans("AAA", *SPLIT))
+    (e,) = unclear(t)
+    assert e.text == "Office A: " + UNCLEAR_TEXT  # the lock's bound (RTD), no prefix
+    s = t.state
+    for _ in range(2):
+        s = loads(OccurrenceState, dumps(s))  # what the store keeps across a restart
+        t = poll(s, ctx(at("08:30")), ans("AAA", *SPLIT))
+        assert unclear(t) == []
+        s = t.state
+
+
+def test_reserved_characters_in_a_train_number_stay_out_of_the_event_key():
+    odd = replace(T_FULL, train=replace(T_FULL.train, train_number="12|a~7"))
+    t = poll(
+        occ(journey([odd])), ctx(at("07:52")), ans("AAA", conn(odd), conn(planned_at_alight(odd)))
+    )
+    (e,) = unclear(t)
+    assert "~" not in e.key and "|" not in e.key and e.train == odd.train
+    assert f"unclear#{train_key(odd.train)}" in t.state.alert_keys
+    # on-time following writes its own delay slots too, so check `_stated` on this event alone
+    assert (
+        _stated(replace(t.state, alert_keys={}), (e,)).state.alert_keys == {}
+    )  # no synthetic slot

@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import UTC, date, time, timedelta
 
 import pytest
-from builders import make_connection, make_leg
+from builders import _on_track, make_connection, make_leg, planned_at_alight
 from test_lifecycle_follow import FROM_UT, L1, L1X, L2, L2X, LATER, R2, RIDE, T_FULL, journey
 from test_runtime import (
     DAY,
@@ -464,6 +464,26 @@ async def test_platform_change_delivered_through_the_runtime(tmp_path):
     await rig.rt.poll_once()
     pc = [e for e in rig.rt.events_log if e.kind is EventKind.PLATFORM_CHANGE]
     assert len(pc) == 1 and "platform 5 (was 1)" in pc[0].text
+
+
+async def test_data_unclear_through_the_runtime_survives_a_restart(tmp_path):
+    rig = await started(tmp_path)
+    split = [make_connection([planned_at_alight(L1), L2]), make_connection([L1, L2])]
+    moved = [
+        make_connection([planned_at_alight(L1), L2]),
+        make_connection([_on_track(L1, "7"), L2]),
+    ]
+    for hhmm, world in (("07:52", [USUAL]), ("07:54", split), ("07:56", split),
+                        ("07:58", [USUAL]), ("08:00", split), ("08:02", moved)):  # fmt: skip
+        rig.clock.set(hhmm)
+        rig.provider.world = world
+        await rig.rt.poll_once()
+    sent = [e for e in rig.rt.events_log if e.kind is EventKind.DATA_UNCLEAR]
+    assert [e.severity for e in sent] == [Severity.LOUD, Severity.LOUD]  # 07:54 and 08:02
+    await rig.restart()
+    rig.clock.set("08:04")
+    await rig.rt.poll_once()  # world still `moved`
+    assert EventKind.DATA_UNCLEAR not in kinds(rig.rt.events_log)
 
 
 # --- finding 16: the run keeps a validated station list ---

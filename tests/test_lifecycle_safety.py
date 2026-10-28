@@ -566,11 +566,15 @@ def runs_on_and_no_change() -> ProviderAnswer:
 
 def test_locked_change_is_judged_on_its_own_connection():
     t = poll(occ(journey(LATER.legs)), ctx(at("07:50")), runs_on_and_no_change())
-    assert kinds(t)[0] == (EventKind.TRANSFER_BROKEN, Severity.LOUD)
+    # the answer lists the 1300 twice with different UT arrivals: a real data_unclear too
+    rest = [k for k in kinds(t) if k[0] is not EventKind.DATA_UNCLEAR]
+    assert rest[0] == (EventKind.TRANSFER_BROKEN, Severity.LOUD)
     assert kinds(t).count((EventKind.TRANSFER_BROKEN, Severity.LOUD)) == 1
+    assert kinds(t).count((EventKind.DATA_UNCLEAR, Severity.LOUD)) == 1
     s = occ(journey([L1, L2]), retained=(journey(LATER.legs),))
     t = poll(s, ctx(at("07:50")), ans("AAA", conn(L1, L2)), runs_on_and_no_change())
     assert kinds(t).count((EventKind.TRANSFER_BROKEN, Severity.LOUD)) == 1
+    assert kinds(t).count((EventKind.DATA_UNCLEAR, Severity.LOUD)) == 1
 
 
 def test_arrival_is_not_accepted_on_a_newer_truncated_answer_time():  # rule 6

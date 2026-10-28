@@ -35,6 +35,7 @@ from train_commute_companion.match import (
     route_changed,
     usual_connection,
 )
+from train_commute_companion.messages import body as message_body
 from train_commute_companion.model import (
     AdviceRecord,
     AlertEvent,
@@ -56,6 +57,7 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.providers.base import ProviderAnswer, Query
 from train_commute_companion.transfer import check_transfer, transfer_minimum
+from train_commute_companion.unclear import disagreement, newest_copies, train_key
 
 
 class LockSource(StrEnum):
@@ -1378,14 +1380,32 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
     s, events = _accept_all(s, ctx, pool, live)
     s, more = _advance_all(s, ctx, pool, live)
     events += more
+    seen: dict[str, tuple[LegProgress, set[str], str]] = {}
     for j in ((s.lock,) if live and s.lock else ()) + s.retained:
         on = (
             "" if j is s.lock else f"if you are on the {_hhmm(j.legs[0].train.planned_departure)}: "
         )
         for x in j.legs:
-            if _observed(x, ctx.now) and _observe(pool, x)[1] is Observation.MISSING:
+            if not _observed(x, ctx.now):
+                continue
+            if _observe(pool, x)[1] is Observation.MISSING:
                 text = f"{on}your {_name(x)} train is not in NS data."
                 events.append(_event(ctx, EventKind.MISSING, Severity.LOUD, text, x.train))
+            seen.setdefault(train_key(x.train), (x, set(), on))[1].add(x.alight_stop)
+    # rule 23: on top of the merge, copies of one answer that disagree are shown once per values
+    for tk, (x, alights, on) in seen.items():
+        u = disagreement(newest_copies(pool.answers, x.train, x.board_station), *sorted(alights))
+        slot = f"unclear#{tk}"
+        if u is None or s.alert_keys.get(slot) == u.fingerprint:
+            continue
+        s = replace(s, alert_keys={**s.alert_keys, slot: u.fingerprint})
+        text = on + message_body(
+            EventKind.DATA_UNCLEAR, label=u.label, station=u.station, copies=u.copies
+        )
+        event = _event(ctx, EventKind.DATA_UNCLEAR, Severity.LOUD, text, x.train)
+        date_ = ctx.schedule.key.service_date.isoformat()
+        key = f"{EventKind.DATA_UNCLEAR.value}:{date_}:{tk}:{u.fingerprint}"
+        events.append(replace(event, key=key))
     asked = tuple(a.query for a in board.answers)
     retained = []
     for r in s.retained:
