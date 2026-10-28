@@ -1,7 +1,9 @@
 """Per-leg classification and train identity (6.1, 6.2). Pure functions, no clock."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
+from itertools import pairwise
 
 from train_commute_companion.model import (
     ClassifiedLeg,
@@ -95,3 +97,143 @@ def find_leg(
         if key == (train.operating_date, train.train_number):
             return leg, Observation.SEEN
     return None, Observation.UNCERTAIN
+
+
+def evidence(answer: ProviderAnswer) -> tuple[ProviderAnswer, ...]:
+    # a lifecycle pool keeps one poll's answers apart
+    answers: tuple[ProviderAnswer, ...] = getattr(answer, "answers", ())
+    return answers or (answer,)
+
+
+def _newest_first(answers: Sequence[ProviderAnswer]) -> list[ProviderAnswer]:
+    return sorted(answers, key=lambda a: a.fetched_at.astimezone(UTC), reverse=True)
+
+
+def _reaches(leg: Leg, alight: str) -> bool:
+    return any(s.code == alight for s in leg.stops[1:])
+
+
+def _explicit_cut(leg: Leg, alight: str) -> bool:
+    """Only an unserved `alight`, or a cancelled stop before it, proves a cut short: a copy
+    from another connection simply ends where that connection changes (a passing stop or a
+    truncated list is no evidence)."""
+    end = next((i for i, s in enumerate(leg.stops) if i > 0 and s.code == alight), None)
+    if end is not None and not served(leg.stops[end]):
+        return True
+    between = leg.stops[1:] if end is None else leg.stops[1:end]
+    return any(s.cancelled and not served(s) for s in between)
+
+
+def current_run(
+    answers: Sequence[ProviderAnswer], train: TrainId, board: str, alight: str
+) -> tuple[datetime, ClassifiedLeg] | None:
+    """The current copy of `train` boarding at `board` over one poll's answers, and the
+    fetch time of the answer that showed its arrival (rule 6 times acceptance by it)."""
+    runs = [
+        (a.fetched_at, classify_leg(g, alight))
+        for a in _newest_first(answers)
+        for c in a.connections
+        for g in c.legs
+        if g.train == train and g.board.code == board
+    ]
+    if not runs:
+        return None
+
+    def rank(r: tuple[datetime, ClassifiedLeg]) -> tuple[bool, bool]:
+        # never by stop count: two copies that both reach `alight` tie, and max keeps the newest
+        return r[1].kind not in (LegKind.CANCELLED, LegKind.CUT_SHORT), _reaches(r[1].leg, alight)
+
+    # by instant: two local 02:30s of the DST fold are an hour apart (7.13)
+    top = runs[0][0].astimezone(UTC)
+    newest = max((r for r in runs if r[0].astimezone(UTC) == top), key=rank)
+    n = newest[1]
+    if n.kind is LegKind.CANCELLED or (
+        n.kind is LegKind.CUT_SHORT and _explicit_cut(n.leg, alight)
+    ):
+        return newest
+    seen, win = max(runs, key=rank)  # a truncated newer copy never reads as a cut short
+    if seen.astimezone(UTC) < top:
+        # departure time, platform and provenance always from the newest answer
+        win = classify_leg(replace(win.leg, stops=(n.leg.stops[0], *win.leg.stops[1:])), alight)
+    return seen, win
+
+
+def _pair(answers: Sequence[ProviderAnswer], inc: TrainId, out: TrainId) -> tuple[Leg, Leg] | None:
+    """The newest copy of the change from `inc` directly into `out`."""
+    for a in _newest_first(answers):
+        for c in a.connections:
+            for p, q in pairwise(c.legs):
+                if p.train == inc and q.train == out:
+                    return p, q
+    return None
+
+
+def _with_change(inc: Leg, out: Leg, pair: tuple[Leg, Leg] | None) -> tuple[Leg, Leg]:
+    if pair is None:
+        return (
+            replace(
+                inc,
+                change_possible=None,
+                transfer_time_to_next=None,
+                cross_platform=None,
+                reachable=None,
+            ),
+            replace(out, transfer_message_min=None, reachable=None),
+        )
+    p, q = pair
+    return (
+        replace(
+            inc,
+            change_possible=p.change_possible,
+            transfer_time_to_next=p.transfer_time_to_next,
+            cross_platform=p.cross_platform,
+            reachable=p.reachable,
+        ),
+        # rule 9: the transfer message belongs to the outgoing leg (transfer.py)
+        replace(out, transfer_message_min=q.transfer_message_min, reachable=q.reachable),
+    )
+
+
+def pair_transfer(
+    answers: Sequence[ProviderAnswer], inc: ClassifiedLeg, out: ClassifiedLeg
+) -> tuple[ClassifiedLeg, ClassifiedLeg]:
+    """The transfer fields of one change, from that change itself, or None when no answer
+    holds it."""
+    # a copy of the train from another connection carries that connection's change
+    a, b = _with_change(inc.leg, out.leg, _pair(answers, inc.leg.train, out.leg.train))
+    return replace(inc, leg=a), replace(out, leg=b)
+
+
+def current_connection(answers: Sequence[ProviderAnswer], c: Connection) -> Connection:
+    """`c` with each leg's current copy, for times, ranking and as a returned copy only: a
+    replaced leg may end before `c`'s alight stop, so it is never judged nor normalized again."""
+    legs: list[Leg] = []
+    for leg in c.legs:
+        run = current_run(answers, leg.train, leg.board.code, leg.alight.code)
+        if run is None:
+            legs.append(leg)
+            continue
+        g = run[1].leg
+        end = next((i for i, s in enumerate(g.stops) if i > 0 and s.code == leg.alight.code), None)
+        legs.append(
+            replace(
+                leg,
+                stops=g.stops if end is None else g.stops[: end + 1],
+                cancelled=g.cancelled,
+                part_cancelled=g.part_cancelled,
+                messages=g.messages,
+                alternative_transport=g.alternative_transport,
+                category=g.category,
+            )
+        )
+    reach: list[list[bool | None]] = [[] for _ in legs]
+    for i in range(len(legs) - 1):
+        # c holds the pair itself, so its own two legs are the fallback
+        pair = _pair(answers, c.legs[i].train, c.legs[i + 1].train) or (c.legs[i], c.legs[i + 1])
+        legs[i], legs[i + 1] = _with_change(legs[i], legs[i + 1], pair)
+        reach[i].append(pair[0].reachable)
+        reach[i + 1].append(pair[1].reachable)
+    for i, r in enumerate(reach):
+        if False in r:  # a leg in two changes stays unreachable when either change says so
+            legs[i] = replace(legs[i], reachable=False)
+    return replace(c, legs=tuple(legs))

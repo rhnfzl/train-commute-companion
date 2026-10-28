@@ -6,7 +6,14 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal, TypedDict, Unpack
 
-from train_commute_companion.classify import classify_leg, find_leg, sort_by_expected_departure
+from train_commute_companion.classify import (
+    _expected_departure,
+    classify_leg,
+    current_connection,
+    evidence,
+    find_leg,
+    pair_transfer,
+)
 from train_commute_companion.match import matches_pattern
 from train_commute_companion.model import (
     ClassifiedLeg,
@@ -75,12 +82,15 @@ def is_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) -> 
     total = kw["done_transfers"] + (kept is not None) + len(c.legs) - 1
     if total > kw["max_transfers"]:
         return bad("over the transfer cap")
+    # judge the current copy of every train (6.2) against `c`'s own alight stops
+    seen_in = evidence(answer)
+    cur = current_connection(seen_in, c)
     cls = [
         replace(
-            classify_leg(leg, leg.alight.code),
+            classify_leg(cur.legs[i], leg.alight.code),
             observation=find_leg(answer, leg.train, leg.board.code)[1],
         )
-        for leg in c.legs
+        for i, leg in enumerate(c.legs)
     ]
     for x in cls:
         if x.kind in (LegKind.CANCELLED, LegKind.CUT_SHORT):
@@ -90,12 +100,12 @@ def is_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) -> 
         # rule 20: a planned or missing time at either end of a leg is at risk, never good
         if not (solid(x.leg.board.departure) and solid(x.leg.alight.arrival)):
             return bad("leg has a planned or missing time")
-    first = c.legs[0].board.departure
+    first = cls[0].leg.board.departure
     assert first is not None and first.value is not None  # solid() above
     if first.value.astimezone(UTC) < kw["catch"].not_before.astimezone(UTC):
         return bad("first leg cannot be caught")
-    pairs = [(kept, cls[0], board)] if kept is not None else []
-    pairs += [(a, b, a.leg.alight.code) for a, b in itertools.pairwise(cls)]
+    pairs = [(*pair_transfer(seen_in, kept, cls[0]), board)] if kept is not None else []
+    pairs += [(a, b, leg.alight.code) for (a, b), leg in zip(itertools.pairwise(cls), c.legs)]
     for inc, out, station in pairs:
         tc = check_transfer(inc, out, station, pm)
         if tc.state is not TransferState.OK:
@@ -114,8 +124,12 @@ def choose_replacement(
     against the whole `answer`, so dropping a train from the ranking never hides that it shares
     a minute with a candidate (6.1)."""
     pool = answer.connections if candidates is None else candidates
-    good = [c for c in sort_by_expected_departure(pool) if is_good(c, answer, **kw).ok]
+    # ranked and returned as current copies, judged on the raw ones (their alight stops)
+    seen_in = evidence(answer)
+    cur = {id(c): current_connection(seen_in, c) for c in pool}
+    ranked = sorted(pool, key=lambda c: _expected_departure(cur[id(c)]))
+    good = [c for c in ranked if is_good(c, answer, **kw).ok]
     for c in good:
         if matches_pattern(c, usual_remaining):
-            return c, "usual_pattern"
-    return (good[0], "new_route") if good else (None, "none")
+            return cur[id(c)], "usual_pattern"
+    return (cur[id(good[0])], "new_route") if good else (None, "none")

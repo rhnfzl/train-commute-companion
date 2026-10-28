@@ -53,7 +53,7 @@ from train_commute_companion.lifecycle import (
 )
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.model import EventKind, Severity
-from train_commute_companion.providers.base import Query
+from train_commute_companion.providers.base import ProviderAnswer, Query
 
 DONE = (LegState.DONE,)
 LATE_L1 = make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_arr=12)  # 08:52 at UT
@@ -516,3 +516,87 @@ def test_choice_of_the_ridden_train_to_another_transfer_stop_moves_its_alighting
         ans("BBB", conn(b_r), when="08:22"),
     )
     assert not {EventKind.TRANSFER_BROKEN, EventKind.ROUTE_CHANGED} & {e.kind for e in t2.events}
+
+
+# item A: one rule picks the current copy of a train over one poll's answers (6.2, 7.4, 7.12)
+R2X = make_leg("UT", "RTD", "09:05", "09:39", number="6666", cancelled=True)
+I1300 = LATER.legs[0]  # 08:25 AAA to UT
+
+
+def test_relock_never_takes_a_train_a_newer_answer_cancelled():
+    s = usual_locked()
+    old = ans("AAA", conn(L1, L2), LATER, when="07:49")
+    new = ans("AAA", conn(L1X, L2), conn(I1300, R2X), when="07:50")
+    t = poll(s, ctx(at("07:50")), old, new)
+    assert t.state.lock is None or numbers(t.state) != ["1300", "6666"]
+    assert any("no connection found" in e.text for e in t.events if e.severity is Severity.LOUD)
+
+
+def test_newer_explicit_cut_short_alerts_over_an_older_full_run():
+    s = occ(journey([T_FULL], RIDE))
+    t = poll(
+        s,
+        ctx(at("08:14"), DIRECT),
+        ans("AAA", conn(T_FULL), when="08:13"),
+        ans("AAA", conn(T_BBB), when="08:14"),
+    )
+    assert kinds(t).count((EventKind.CUT_SHORT, Severity.LOUD)) == 1
+
+
+def test_truncated_newer_copy_is_not_a_cut_short():
+    to_bbb = replace(T_FULL, stops=T_FULL.stops[:2])  # a connection that changes at BBB
+    s = occ(journey([T_FULL], RIDE))
+    t = poll(
+        s,
+        ctx(at("08:14"), DIRECT),
+        ans("AAA", conn(T_FULL), when="08:13"),
+        ans("BBB", conn(to_bbb, FROM_BBB), when="08:14"),
+    )
+    assert EventKind.CUT_SHORT not in [e.kind for e in t.events]
+    assert t.state.lock is not None and t.state.lock.legs[0].alight_stop == "RTD"
+
+
+def runs_on_and_no_change() -> ProviderAnswer:
+    """1300 listed running on to RTD first (change possible), then 1300 into 6666 (not)."""
+    runs_on = replace(
+        make_leg("AAA", "RTD", "08:25", "09:24", number="1300", stops=["UT"]), change_possible=True
+    )
+    return ans("AAA", conn(runs_on), conn(replace(I1300, change_possible=False), R2), when="07:50")
+
+
+def test_locked_change_is_judged_on_its_own_connection():
+    t = poll(occ(journey(LATER.legs)), ctx(at("07:50")), runs_on_and_no_change())
+    assert kinds(t)[0] == (EventKind.TRANSFER_BROKEN, Severity.LOUD)
+    assert kinds(t).count((EventKind.TRANSFER_BROKEN, Severity.LOUD)) == 1
+    s = occ(journey([L1, L2]), retained=(journey(LATER.legs),))
+    t = poll(s, ctx(at("07:50")), ans("AAA", conn(L1, L2)), runs_on_and_no_change())
+    assert kinds(t).count((EventKind.TRANSFER_BROKEN, Severity.LOUD)) == 1
+
+
+def test_arrival_is_not_accepted_on_a_newer_truncated_answer_time():  # rule 6
+    s = occ(accepted_first(journey([L1, L2], (LegState.DONE, LegState.RIDING))))
+    s = poll(s, ctx(at("09:29")), ans("AAA", conn(L1, L2), when="09:29")).state
+    short = make_leg("UT", "BBB", "08:50", "09:10", number="5678")  # changes at BBB
+    full, cut = ans("AAA", conn(L1, L2), when="09:32"), ans("UT", conn(short), when="09:34")
+    s = poll(s, ctx(at("09:34")), full, cut).state
+    assert s.lock is not None and s.lock.legs[1].state is LegState.RIDING  # 09:32 is 3 min on
+
+
+def relocked_at_0750() -> OccurrenceState:
+    return poll(usual_locked(), ctx(at("07:50")), ans("AAA", conn(L1X, L2), LATER)).state
+
+
+def test_no_restore_while_the_newer_answer_shows_the_original_cancelled():  # rule 8, 10.1
+    old = ans("AAA", conn(L1, L2), LATER, when="07:54")
+    new = ans("AAA", conn(L1X, L2), LATER, when="07:55")
+    t = poll(relocked_at_0750(), ctx(at("07:55")), old, new)
+    assert numbers(t.state) == ["1300", "6666"]
+    assert EventKind.RESTORED not in [e.kind for e in t.events]
+
+
+def test_restore_once_the_newer_answer_shows_the_original_running():
+    old = ans("AAA", conn(L1X, L2), LATER, when="07:54")
+    new = ans("AAA", conn(L1, L2), LATER, when="07:55")
+    t = poll(relocked_at_0750(), ctx(at("07:55")), old, new)
+    assert numbers(t.state) == ["1234", "5678"]
+    assert kinds(t) == [(EventKind.RESTORED, Severity.SILENT)]

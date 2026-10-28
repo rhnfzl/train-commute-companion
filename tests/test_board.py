@@ -197,3 +197,81 @@ def test_catchability_across_the_repeated_hour_adds_real_minutes():
     now = datetime(2026, 10, 25, 2, 55, tzinfo=AMS)  # first 02:55, CEST
     got = catch_from(now, 10, None, False).not_before
     assert got.astimezone(UTC) == datetime(2026, 10, 25, 1, 5, tzinfo=UTC)
+
+
+# one poll's answers a minute apart: the current copy of each train decides (item A, 6.2)
+def at_answer(hhmm, *conns):
+    q = Query("UT", "RTD", dt(f"2026-10-27 {hhmm}"))
+    return ProviderAnswer(q, tuple(conns), q.at)
+
+
+def polled(*conns_by_answer):
+    from train_commute_companion.lifecycle import _pool
+
+    return _pool([at_answer(f"08:0{i}", *cs) for i, cs in enumerate(conns_by_answer)])
+
+
+V6666 = one_leg("UT", "RTD", "08:50", "09:20", number="6666")
+V1300 = one_leg("UT", "RTD", "09:05", "09:35", number="1300")
+
+
+def test_train_a_newer_answer_cancelled_is_never_good():
+    gone = one_leg("UT", "RTD", "08:50", "09:20", number="6666", cancelled=True)
+    pool = polled([V6666, V1300], [gone, V1300])
+    g = is_good(V6666, pool, **kw())
+    assert not g.ok and g.reason == "leg cancelled"
+    c, how = choose_replacement(pool, usual_remaining=(), **kw())
+    assert c is not None and c.legs[0].train.train_number == "1300" and how == "usual_pattern"
+    assert choose_replacement(polled([V6666], [gone]), usual_remaining=(), **kw()) == (None, "none")
+
+
+def two_legs(**late):
+    return make_connection(
+        [
+            make_leg("AAA", "UT", "08:12", "08:40", number="1300", **late),
+            make_leg("UT", "RTD", "08:46", "09:20", number="6666"),
+        ]
+    )
+
+
+def test_transfer_is_judged_on_the_newer_arrival():
+    older, newer = two_legs(), two_legs(delay_arr=5)  # 6 min to spare, then 1 against 4
+    early = kw(board_station="AAA", catch=Catchability(dt("2026-10-27 08:00")))
+    assert is_good(older, polled([older]), **early).ok
+    g = is_good(older, polled([older], [newer]), **early)
+    assert not g.ok and g.reason.startswith("transfer at UT broken")
+
+
+def test_newer_planned_only_time_is_never_good():
+    planned = one_leg("UT", "RTD", "08:50", "09:20", number="6666", provenance=Provenance.PLANNED)
+    g = is_good(V6666, polled([V6666], [planned]), **kw())
+    assert not g.ok and g.reason == "leg has a planned or missing time"
+
+
+def test_choose_replacement_returns_the_current_copy():
+    late = one_leg("UT", "RTD", "08:50", "09:20", number="6666", delay_dep=3)
+    c, _ = choose_replacement(polled([V6666], [late]), usual_remaining=(), **kw())
+    assert c is not None and c.legs[0].board.departure.value == dt("2026-10-27 08:53")
+
+
+def test_choose_replacement_ranks_by_current_departure():
+    x = one_leg("UT", "RTD", "08:20", "09:00", number="1300")
+    y = one_leg("UT", "RTD", "08:25", "09:05", number="6666")
+    x_late = one_leg("UT", "RTD", "08:20", "09:00", number="1300", delay_dep=22)
+    early = kw(catch=Catchability(dt("2026-10-27 08:00")))
+    c, _ = choose_replacement(polled([x, y], [x_late, y]), usual_remaining=(), **early)
+    assert c is not None and c.legs[0].train.train_number == "6666"
+
+
+def test_kept_pair_uses_its_own_change():
+    runs_on = replace(
+        make_leg("AAA", "RTD", "08:12", "09:24", number="1300", stops=["UT"]), change_possible=True
+    )
+    kept = classify_leg(runs_on, "UT")
+    into = make_leg("AAA", "UT", "08:12", "08:40", number="1300")
+    pool = polled([make_connection([runs_on]), make_connection([into, V6666.legs[0]])])
+    assert is_good(V6666, pool, **kw(kept_incoming=kept)).ok
+    no_change = make_connection([replace(into, change_possible=False), V6666.legs[0]])
+    pool = polled([make_connection([runs_on]), no_change])
+    g = is_good(V6666, pool, **kw(kept_incoming=kept))
+    assert not g.ok and "change not possible" in g.reason

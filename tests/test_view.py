@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import date, time
+from datetime import date, time, timedelta
 
 from builders import ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from test_runtime import PROFILE, FakeClock, MemoryStore, Notifier, Provider, at
@@ -276,3 +276,42 @@ async def test_view_lookahead_last_ok_stays_old_after_a_failed_works_lookup(tmp_
     w.clock.set("05:55")
     await w.rt.lookahead_once()
     assert w.rt.view().lookahead_last_ok["p1|outbound"] == good
+
+
+# item A: the view reads the current copy of each train over one poll's answers (6.2)
+def answers_a_minute_apart(w, older, newer):
+    t = w.clock.now()
+    q = Query("AAA", "RTD", t)
+    return (
+        ProviderAnswer(q, tuple(older), t - timedelta(minutes=1)),
+        ProviderAnswer(q, tuple(newer), t),
+    )
+
+
+async def test_next_good_skips_a_train_a_newer_answer_cancelled(tmp_path):
+    w = await locked(tmp_path)
+    first, nxt = ONE_TRANSFER
+    gone = make_leg("AAA", "UT", "08:44", "09:08", number="1236", cancelled=True)
+    s = only_occurrence(w.rt)
+    ctx = w.rt._ctx(s, w.clock.now())
+    o = occurrence_view(s, ctx, answers_a_minute_apart(w, ONE_TRANSFER, ONE_TRANSFER))
+    assert o.next_good is not None and o.next_good.legs[0].train.train_number == "1236"
+    newer = (first, make_connection([gone, nxt.legs[1]]))
+    o = occurrence_view(s, ctx, answers_a_minute_apart(w, ONE_TRANSFER, newer))
+    assert o.next_good is None or o.next_good.legs[0].train.train_number != "1236"
+
+
+async def test_status_transfer_uses_its_own_change(tmp_path):
+    w = await locked(tmp_path)
+    first, _ = ONE_TRANSFER
+    runs_on = replace(
+        make_leg("AAA", "RTD", "08:12", "09:24", number="1234", stops=["UT"]), change_possible=True
+    )
+    no_change = make_connection([replace(first.legs[0], change_possible=False), first.legs[1]])
+    s = only_occurrence(w.rt)
+    o = occurrence_view(
+        s,
+        w.rt._ctx(s, w.clock.now()),
+        answers_a_minute_apart(w, [], [make_connection([runs_on]), no_change]),
+    )
+    assert o.transfers[0].state is TransferState.BROKEN

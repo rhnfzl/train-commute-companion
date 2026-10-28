@@ -18,7 +18,13 @@ from train_commute_companion.board import (
     max_transfers,
 )
 from train_commute_companion.calendar import TZ, resolve_local
-from train_commute_companion.classify import classify_leg, find_leg, served
+from train_commute_companion.classify import (
+    classify_leg,
+    current_run,
+    find_leg,
+    pair_transfer,
+    served,
+)
 from train_commute_companion.health import PollRecord
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.match import (
@@ -679,7 +685,6 @@ def apply_action(s: OccurrenceState, ctx: Ctx, action: UserAction) -> Transition
 
 # --- follow, relock, restore (7.4, 7.12 rules 2, 3, 8, 21) ---
 
-_BAD = (LegKind.CANCELLED, LegKind.CUT_SHORT)
 _RUNS = (LegKind.OK, LegKind.DELAYED)
 _AT_RISK_LOUD = timedelta(minutes=30)
 _PLATFORM_LOUD = timedelta(minutes=15)
@@ -794,26 +799,11 @@ def _observe(
     leg, ob = find_leg(pool, x.train, x.board_station)
     if leg is None:
         return None, ob, None
-    newest_first = sorted(pool.answers, key=lambda a: _utc(a.fetched_at), reverse=True)
-    runs = [
-        (a.fetched_at, classify_leg(g, x.intended_alight))
-        for a in newest_first
-        for c in a.connections
-        for g in c.legs
-        if g.train == leg.train and g.board.code == x.board_station
-    ]
-    # by instant: two local 02:30s of the DST fold are an hour apart (7.13)
-    newest = [r for r in runs if _utc(r[0]) == _utc(runs[0][0])]
-
-    def far(r: tuple[datetime, ClassifiedLeg]) -> tuple[bool, int]:
-        return r[1].kind not in _BAD, len(r[1].leg.stops)
-
-    # one train shows in several connections, each cut where it changes: take the farthest
-    # run, unless the newest answer shows it cancelled at its boarding stop, which no older
-    # running copy can overrule
-    seen, best = max(newest, key=far)
-    if best.kind is not LegKind.CANCELLED:
-        seen, best = max(runs, key=far)
+    run = current_run(pool.answers, leg.train, x.board_station, x.intended_alight)
+    # find_leg found the leg in this pool, and every fragment comes from a raw connection of
+    # one of its answers
+    assert run is not None
+    seen, best = run
     return replace(best, observation=ob), ob, seen
 
 
@@ -1146,6 +1136,8 @@ def _follow(
             events.append(_at_risk(ctx, x, nxt, "a train is not reliably identified"))
         if cl is None:  # missing or uncertain: reported, never relocked on
             continue
+        if ncl is not None:  # this change's own transfer fields, not another connection's
+            cl, ncl = pair_transfer(pool.answers, cl, ncl)
         if cl.kind is LegKind.CANCELLED and x.state is not LegState.DONE:
             text = f"your {_name(x)} train is cancelled"
             kept = obs[i - 1] if i else None

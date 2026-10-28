@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from itertools import pairwise
 
+from train_commute_companion.classify import pair_transfer
 from train_commute_companion.health import BoardHealth, board_health
 from train_commute_companion.lifecycle import (
     Commitment,
@@ -179,6 +180,8 @@ def occurrence_view(
             minimum = transfer_minimum(station, ctx.profile.transfer_min, None, None)
             transfers.append(TransferView(station, TransferState.AT_RISK, None, minimum))
             continue
+        assert pool is not None  # inc was observed in it
+        inc, out = pair_transfer(pool.answers, inc, out)
         t = check_transfer(inc, out, station, ctx.profile.transfer_min)
         transfers.append(TransferView(station, t.state, t.margin_min, t.minimum))
 
