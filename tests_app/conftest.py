@@ -5,7 +5,7 @@ import re
 import shutil
 import tempfile
 import threading
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from datetime import UTC, datetime, time
 from pathlib import Path
 from typing import Any
@@ -235,9 +235,11 @@ def expected_lines(path: Path) -> list[tuple[Severity, str]]:
     return [(Severity[m[1]], m[2]) for x in lines if (m := LINE.fullmatch(x))]
 
 
-async def drive_replay(app: App, rp: Replay) -> None:
+async def drive_replay(
+    app: App, rp: Replay, each: Callable[[], Awaitable[None]] | None = None
+) -> None:
     """`replay_lines`' loop on `app.rt`: events, a poll on even minutes, the watchdog, 30 s steps;
-    each step lets a started webhook pass finish, as a real sleep would."""
+    each step lets a started webhook pass finish, as a real sleep would, then awaits `each`."""
     clock, pending = rp.clock, list(rp.timeline)
     await app.rt.start()
     while clock.now().astimezone(UTC) < rp.end.astimezone(UTC):
@@ -248,6 +250,8 @@ async def drive_replay(app: App, rp: Replay) -> None:
             await app.rt.poll_once()
         await app.rt.watchdog_once()
         await app.rt.webhooks_idle()
+        if each is not None:
+            await each()
         await clock.sleep(30)
 
 
