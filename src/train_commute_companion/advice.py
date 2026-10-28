@@ -64,7 +64,7 @@ def _unrideable(c: Connection, answer: ProviderAnswer, profile_min: dict[str, in
     ]
     nxt = [*cls[1:], None]
     for x, n in zip(cls, nxt, strict=True):
-        if x.kind is LegKind.CANCELLED:
+        if x.kind is LegKind.CANCELLED or x.leg.alternative_transport:  # 6.3: a bus is no train
             return True
         # a cut-short train with a listed onward leg from its last served stop is a way there
         if x.kind is LegKind.CUT_SHORT and not (

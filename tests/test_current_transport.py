@@ -75,3 +75,38 @@ def test_no_all_good_for_a_locked_train_any_answer_shows_as_a_bus():
         good, answers=(answer("AAA", "08:00", B), answer("AAA", "08:01", conn(L1, B2_BUS)))
     )
     assert all_good(s, bad, ctx(at("08:02"))) is None
+
+
+def test_a_locked_train_now_a_bus_alerts_loud_and_relocks():
+    from test_lifecycle_follow import kinds
+
+    from train_commute_companion.model import EventKind, Severity
+
+    t = poll(
+        occ(journey([L1, B2])),
+        ctx(at("08:02")),
+        *_pool(
+            [answer("AAA", "08:00", A, B), answer("UT", "08:01", conn(A2), conn(B2_BUS))]
+        ).answers,
+    )
+    assert (EventKind.CANCELLED, Severity.LOUD) in kinds(t)
+    assert numbers(t.state) == ["1234", "5678"]  # a train, never the bus
+
+
+def test_a_ridden_train_now_a_bus_is_kept_and_warned():
+    from test_lifecycle_follow import kinds
+
+    from train_commute_companion.lifecycle import LegState
+    from train_commute_companion.model import EventKind, Severity
+
+    s = occ(journey([L1, B2], (LegState.DONE, LegState.RIDING)))
+    t = poll(s, ctx(at("09:00")), answer("AAA", "09:00", conn(L1, B2_BUS)))
+    assert (EventKind.CANCELLED, Severity.LOUD) in kinds(t)
+    assert numbers(t.state) == ["1234", "6666"]  # the user may be aboard
+
+
+def test_advice_reads_a_locked_train_now_a_bus_as_unrideable():
+    from train_commute_companion.advice import _unrideable
+
+    assert _unrideable(B, pool(), {})
+    assert not _unrideable(A, pool(), {})

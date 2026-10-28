@@ -808,6 +808,12 @@ def _observe(
     # one of its answers
     assert run is not None
     seen, best = run
+    if best.leg.alternative_transport and best.kind is not LegKind.CANCELLED:
+        # 6.3: a train NS now runs as other transport is no train to follow; NS itself
+        # usually shows that as a cancellation, so it alerts and relocks as one
+        best = replace(
+            best, kind=LegKind.CANCELLED, dep_delay_min=0, arr_delay_min=None, last_served=None
+        )
     return replace(best, observation=ob), ob, seen
 
 
