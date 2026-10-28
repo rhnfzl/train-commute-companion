@@ -52,6 +52,13 @@ def _legs(legs: Sequence[Leg]) -> str:
     return text + (f", platform {track}." if track else ".")
 
 
+def _unclear(label: object, station: str, copies: object) -> str:
+    text = f"NS data unclear for {label or 'your train'}{' at ' + station if station else ''}."
+    if isinstance(copies, tuple):
+        text += "".join(f" Copy {i}: {c}." for i, c in enumerate(copies, 1))
+    return text + " Check the NS app or the station boards."
+
+
 def render(kind: EventKind, ctx: "Ctx", **facts: object) -> str:
     """Starts with the title-cased profile name and names legs by station names."""
     return f"{ctx.profile.name.replace('_', ' ').title()}: {body(kind, **facts)}"
@@ -105,5 +112,6 @@ def body(kind: EventKind, **facts: object) -> str:
         EventKind.OFFLINE: f"NS data is unavailable, {CHECK_APP}.",
         EventKind.CHOOSE_REFUSED: f"cannot follow that connection: {facts.get('reason', 'refused')}.",
         EventKind.NEXT_CONNECTION: nxt,
+        EventKind.DATA_UNCLEAR: _unclear(facts.get("label"), station, facts.get("copies")),
     }[kind]
     return text

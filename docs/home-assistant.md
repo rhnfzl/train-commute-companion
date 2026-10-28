@@ -63,6 +63,8 @@ A service or button used when there is nothing to act on, or with an unknown pro
 
 Every alert fires the event `train_commute_companion_alert` before the push, so automations see it even if the phone cannot be reached. Fields: `config_entry_id`, `device_id`, `profile_id`, `profile_name`, `direction`, `service_date`, `leg_index`, `kind`, `severity` (`loud` or `silent`), `train_operating_date`, `train_number`, `train_departure`, `text`, `key`, `created_at`.
 
+When copies of your train in one NS answer disagree, for example on a time or a platform, you get one loud alert with `kind` `data_unclear` that shows each copy's values; check the NS app or the station boards. It comes once per train per day, again only when the values change.
+
 ### Repairs
 
 - Profile file refused: your last edit or start-up file was not used.

@@ -71,6 +71,7 @@ class EventKind(StrEnum):
     OFFLINE = "offline"
     CHOOSE_REFUSED = "choose_refused"
     NEXT_CONNECTION = "next_connection"
+    DATA_UNCLEAR = "data_unclear"
 
 
 @dataclass(frozen=True, slots=True)

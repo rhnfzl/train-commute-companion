@@ -3,7 +3,7 @@ from dataclasses import replace
 from builders import make_connection, make_leg
 from test_lifecycle_follow import at, ctx
 
-from train_commute_companion.messages import render
+from train_commute_companion.messages import body, render
 from train_commute_companion.model import EventKind, Leg
 
 
@@ -74,3 +74,23 @@ def test_every_transfer_station_is_named_in_order():
         EventKind.CANCELLED, ctx(at("08:00")), leg=l1, replacement=make_connection([l1, l2, l3])
     )
     assert "change at UT then BBB." in t
+
+
+def test_data_unclear_lists_each_copy():
+    t = render(
+        EventKind.DATA_UNCLEAR,
+        ctx(at("08:00")),
+        label="IC 1234",
+        station="Utrecht Centraal",
+        copies=("arrives 08:40 (planned only)", "arrives 08:46 (live)"),
+    )
+    assert t == (
+        "Office A: NS data unclear for IC 1234 at Utrecht Centraal. Copy 1: arrives 08:40"
+        " (planned only). Copy 2: arrives 08:46 (live). Check the NS app or the station boards."
+    )
+
+
+def test_data_unclear_without_facts_still_reads():
+    assert body(EventKind.DATA_UNCLEAR) == (
+        "NS data unclear for your train. Check the NS app or the station boards."
+    )

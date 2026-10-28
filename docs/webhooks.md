@@ -37,7 +37,7 @@ The body is one JSON object, UTF-8, the same fields Home Assistant puts on its a
 | `direction` | string or null | `outbound` or `return`, null when the alert is not about one direction. |
 | `service_date` | string or null | The travel day, `YYYY-MM-DD`. |
 | `leg_index` | integer or null | Which leg of the journey, from 0; null when the alert is not about one leg. |
-| `kind` | string | What happened, such as `cancelled`, `transfer_at_risk` or `leave_now`; `test` in a test send. |
+| `kind` | string | What happened, such as `cancelled`, `transfer_at_risk`, `leave_now` or `data_unclear`; `test` in a test send. |
 | `severity` | string | `loud` (must not be missed) or `silent`. |
 | `train_operating_date` | string or null | The train's operating day, `YYYY-MM-DD`. |
 | `train_number` | string or null | The train number. |
