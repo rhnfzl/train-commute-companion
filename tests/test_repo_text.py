@@ -21,3 +21,9 @@ def test_no_station_literals_in_src():
     for d in ("src", "custom_components", "app"):
         for p in (ROOT / d).rglob("*.py"):
             assert not re.search(r'"(UT|RTD|AAA|BBB)"', p.read_text()), p
+
+
+def test_ha_docs_say_the_look_ahead_may_tell_data_unclear_ahead():
+    # 7.12 rule 23: one train-day can get one alert ahead and one on the day
+    text = (ROOT / "docs" / "home-assistant.md").read_text(encoding="utf-8")
+    assert "the look-ahead may also tell it once ahead of the day" in text
