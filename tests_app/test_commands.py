@@ -400,6 +400,32 @@ def test_every_tool_carries_the_warnings():  # Review Focus 3
         assert lines[-1] == "Data: NS"
 
 
+def test_every_tool_shows_every_warning_status_shows():  # Review Focus 3, codex group fix
+    stale = occ(health=BoardHealth(False, at("07:10"), 2, False))
+    ret = OccurrenceKey("p1", Direction.RETURN, DAY)
+    failed = occ(key=ret, health=BoardHealth(True, at("07:50"), 1, False))
+    moved = Moved("p1", Direction.OUTBOUND, "office_a.outbound: NS moved your 08:12 to 08:25")
+    v = view(stale, failed, moved=(moved,), store_ok=False,
+             lookahead_last_ok={"p1|outbound": FRESH, "p1|return": OLD})  # fmt: skip
+    warnings = [
+        "  NS data: not fresh since 07:10", "  NS data: fresh, last poll failed",
+        "State cannot be saved; retrying.", moved.text,
+        "Planned-works check: last ok Sun 25 Oct 04:00", "Delivery not confirmed yet: send /test.",
+    ]  # fmt: skip
+    status = render_status(v, False).splitlines()
+    for req in ({"tool": "get_status", "profile": "p1"}, NEXT, {**NEXT, "direction": "return"},
+                WORKS):  # fmt: skip
+        lines = answer(v, False, req)["text"].splitlines()
+        for w in warnings:
+            assert w in lines and w in status, (req, w)
+    # a stale board with fresh, empty works checks still says the board is stale
+    fresh = {"p1|outbound": FRESH, "p1|return": FRESH}
+    lines = answer(view(stale, lookahead_last_ok=fresh), True, WORKS)["text"].splitlines()
+    assert "  NS data: not fresh since 07:10" in lines and NO_WORKS in lines
+    nxt = answer(view(stale, lookahead_last_ok=fresh), True, NEXT)["text"].splitlines()
+    assert nxt.count("  NS data: not fresh since 07:10") == 1  # shown once, not twice
+
+
 def test_leg_lines_never_read_as_proven():  # rule 20, checklist M12
     riding = LegState.RIDING
     o = occ(

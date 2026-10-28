@@ -58,8 +58,12 @@ def test_dockerfile_installs_the_app_extra():
 
 def test_mcp_doc_is_local_only():
     doc = (ROOT / "docs/mcp.md").read_text()
-    for name in ("get_status", "get_next_connections", "get_works_ahead", "exec -T"):
+    for name in ("get_status", "get_next_connections", "get_works_ahead"):
         assert name in doc
+    # the relay runs in its own container: `exec` would need the app running and die with it,
+    # so the fixed "app is not running" error could never be answered
+    assert doc.count("run --rm --no-deps -T tcc python -m tcc_app.mcp_server") == 1
+    assert '"run", "--rm", "--no-deps", "-T", "tcc"' in doc and "exec" not in doc
     assert "no actions" in doc.lower()
     assert "ports:" not in doc and "0.0.0.0" not in doc and "http://" not in doc
     assert "mcp.md" in (ROOT / "docs/docker.md").read_text()

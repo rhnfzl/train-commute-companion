@@ -16,12 +16,12 @@ Every answer carries a `text` field with the same wording as Telegram, ending wi
 
 ## How it runs
 
-The app listens on a private socket, `mcp.sock`, in its data volume (`/data`), readable only by the app's own user. The MCP client starts a small stdio server inside the running container with `docker compose exec -T`; that server relays each tool call to the socket and holds nothing itself. The app must be running: when it is not, every tool answers "The commute app is not running, or its MCP socket is missing." and never old data.
+The app listens on a private socket, `mcp.sock`, in its data volume (`/data`), readable only by the app's own user. The MCP client starts a small stdio server in its own short-lived container with `docker compose run --rm --no-deps -T`, sharing the data volume; that server relays each tool call to the socket and holds nothing itself. It does not depend on the app container, so it keeps answering when the app is stopped or crashes. The app must be running for real answers: when it is not, every tool answers "The commute app is not running, or its MCP socket is missing." and never old data.
 
 ## Claude Code
 
 ```
-claude mcp add --transport stdio commute -- docker compose -f /path/to/train-commute-companion/examples/docker-compose.yml exec -T tcc python -m tcc_app.mcp_server
+claude mcp add --transport stdio commute -- docker compose -f /path/to/train-commute-companion/examples/docker-compose.yml run --rm --no-deps -T tcc python -m tcc_app.mcp_server
 ```
 
 ## Claude Desktop
@@ -35,7 +35,7 @@ Add an entry to `claude_desktop_config.json`:
       "command": "docker",
       "args": [
         "compose", "-f", "/path/to/train-commute-companion/examples/docker-compose.yml",
-        "exec", "-T", "tcc", "python", "-m", "tcc_app.mcp_server"
+        "run", "--rm", "--no-deps", "-T", "tcc", "python", "-m", "tcc_app.mcp_server"
       ]
     }
   }

@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from train_commute_companion.calendar import TZ
+from train_commute_companion.health import BoardHealth
 from train_commute_companion.model import Connection, Direction, Provenance, TimeObs
 from train_commute_companion.view import LegView, OccurrenceView, RuntimeView
 from train_commute_companion.webhook import WebhookTestResult
@@ -145,18 +146,20 @@ def _occurrence(o: OccurrenceView) -> list[str]:
         )
     if o.advice is not None and o.advice.advised_train is not None and not o.advice.withdrawn:
         out.append(f"  earlier train advised: the {_hm(o.advice.advised_train.planned_departure)}")
-    h = o.health
+    out.append(_health_line(o.health))
+    return out
+
+
+def _health_line(h: BoardHealth) -> str:
     if h.fresh:
-        out.append(
+        return (
             "  NS data: fresh, last poll failed" if h.consecutive_failures else "  NS data: fresh"
         )
-    else:
-        out.append(
-            f"  NS data: not fresh since {_hm(h.last_ok_at)}"
-            if h.last_ok_at
-            else "  NS data: not fresh"
-        )
-    return out
+    return (
+        f"  NS data: not fresh since {_hm(h.last_ok_at)}"
+        if h.last_ok_at
+        else "  NS data: not fresh"
+    )
 
 
 def _warnings(view: RuntimeView) -> list[str]:
@@ -173,7 +176,16 @@ def _warnings(view: RuntimeView) -> list[str]:
 
 
 def warning_lines(view: RuntimeView, confirmed: bool) -> list[str]:
-    return _warnings(view) + ([] if confirmed else ["Delivery not confirmed yet: send /test."])
+    """Every warning `/status` shows for this view, in its wording, so no MCP tool reads as all
+    good while `/status` does not (review focus 3)."""
+    health = [_health_line(o.health) for o in view.occurrences if not o.resolved]
+    return [
+        *dict.fromkeys(x for x in health if x != "  NS data: fresh"),
+        *_warnings(view),
+        *(m.text for m in view.moved),
+        *_check_lines(view),
+        *([] if confirmed else ["Delivery not confirmed yet: send /test."]),
+    ]
 
 
 def _stale(view: RuntimeView, ok: datetime) -> bool:
@@ -181,6 +193,10 @@ def _stale(view: RuntimeView, ok: datetime) -> bool:
 
 
 def works_lines(view: RuntimeView) -> list[str]:
+    return _works_ahead(view) + _check_lines(view)
+
+
+def _works_ahead(view: RuntimeView) -> list[str]:
     names = {d.profile_id: d.profile_name for d in view.directions}
     lines = []
     for key, days in view.works.items():
@@ -188,6 +204,11 @@ def works_lines(view: RuntimeView) -> list[str]:
         if days:
             dates = ", ".join(_day(w.service_date) for w in days)
             lines.append(f"Works ahead: {_pretty(names.get(pid, pid))} {d}: {dates}")
+    return lines
+
+
+def _check_lines(view: RuntimeView) -> list[str]:
+    lines = []
     for ok in view.lookahead_last_ok.values():
         if ok is None:
             lines.append("Planned-works check: not run yet")
@@ -280,7 +301,8 @@ def connections_tool(
         for o in occs
     ]
     lines = [x for o in occs for x in _occurrence(o)] or ["No journey is being followed now."]
-    lines += [*warning_lines(v, confirmed), "Data: NS"]
+    lines += [x for x in warning_lines(v, confirmed) if x not in lines]  # health shown once
+    lines.append("Data: NS")
     return {
         "profile": profile_id,
         "direction": direction.value,
@@ -291,7 +313,7 @@ def connections_tool(
 
 def works_tool(view: RuntimeView, confirmed: bool, profile_id: str) -> dict[str, Any]:
     v = for_profile(view, profile_id)
-    lines = works_lines(v)
+    lines = _works_ahead(v)
     directions = []
     for d in v.directions:
         key = f"{profile_id}|{d.direction.value}"

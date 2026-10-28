@@ -14,6 +14,18 @@ from test_acceptance import REPLAYS, msg
 
 ALL_REPLAYS = sorted(p.stem for p in REPLAYS.glob("*.yaml"))  # the single- and two-profile replays
 
+WARNINGS = ("  NS data: not fresh", "  NS data: fresh, last poll failed", "Planned-works check:",
+            "Profile file refused: ", "Your NS key was rejected.", "State cannot be saved",
+            "Delivery not confirmed yet")  # fmt: skip
+
+
+def _is_warning(line: str) -> bool:
+    return (
+        line.startswith(WARNINGS)
+        or line.endswith(" alerts not delivered yet.")
+        or ("NS moved your" in line)
+    )
+
 
 @pytest.mark.parametrize("name", ALL_REPLAYS)
 async def test_mcp_reads_agree_with_status(tmp_path, tg, sock, name):  # 10.4
@@ -35,6 +47,7 @@ async def test_mcp_reads_agree_with_status(tmp_path, tg, sock, name):  # 10.4
             pids = [p.id for p in app.rt.view().profiles]
             for pid in pids:
                 st = (await c.call_tool("get_status", {"profile": pid})).structured_content
+                warns = {x for x in st["text"].splitlines() if _is_warning(x)}
                 if len(pids) == 1:
                     assert st["text"].splitlines() == shown
                 else:  # one profile's status is a part of the whole
@@ -45,6 +58,7 @@ async def test_mcp_reads_agree_with_status(tmp_path, tg, sock, name):  # 10.4
                     nc = (
                         await c.call_tool("get_next_connections", {"profile": pid, "direction": d})
                     ).structured_content
+                    assert warns <= set(nc["text"].splitlines())  # every warning, not a subset
                     assert set(nc["text"].splitlines()) <= lines | {
                         "No journey is being followed now.",
                         hidden,
@@ -56,6 +70,7 @@ async def test_mcp_reads_agree_with_status(tmp_path, tg, sock, name):  # 10.4
                                 in lines
                             )
                 wa = (await c.call_tool("get_works_ahead", {"profile": pid})).structured_content
+                assert warns <= set(wa["text"].splitlines())
                 assert set(wa["text"].splitlines()) <= lines | {
                     NO_WORKS,
                     "Planned-works check: not run yet",
