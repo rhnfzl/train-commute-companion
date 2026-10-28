@@ -75,6 +75,10 @@ With `TCC_WEBHOOK_URLS` set, every alert is also posted as signed JSON to each U
 - An alert can repeat after a crash between sending and saving (delivery is at least once).
 - `docker stop` is safe; the app exits cleanly.
 
+## MCP
+
+A local MCP client such as Claude Code or Claude Desktop can read what `/status` shows through three read-only tools. There is no network port for it; see [MCP](mcp.md).
+
 ## Location
 
 Location is optional and off by default.

@@ -16,7 +16,8 @@ from builders import ONE_TRANSFER
 from tcc_app import bot as bot_mod
 from tcc_app.bot import ShellState, save_state
 from tcc_app.follow import Fix
-from tcc_app.main import App, Settings, build
+from tcc_app.main import App, Settings, build, mcp_answer
+from tcc_app.web import start_readout
 from test_runtime import PROFILE, FakeClock, at
 from test_runtime import Provider as FakeProvider
 
@@ -166,6 +167,18 @@ def sock() -> Iterator[Path]:
     d = Path(tempfile.mkdtemp(None, "tcc", "/tmp"))  # suffix, prefix, parent
     yield d / "mcp.sock"
     shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.fixture
+async def served(tmp_path: Path, tg: FakeTelegram, sock: Path) -> AsyncIterator[App]:
+    """A started app on the fake NS, its read-out on `sock`."""
+    app = make_app(tmp_path, tg, TickClock(at("07:50")))
+    await app.rt.start()
+    server = await start_readout(sock, mcp_answer(app))
+    assert server is not None
+    yield app
+    server.close()
+    await server.wait_closed()
 
 
 def spied(app: Any) -> list[tuple[str | None, str]]:

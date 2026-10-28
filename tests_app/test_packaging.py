@@ -1,4 +1,8 @@
+import os
 import re
+import subprocess
+import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,3 +34,32 @@ def test_documented_setup_builds_from_examples_and_recreates_on_env_changes():
         text = (ROOT / doc).read_text()
         assert not re.search(r"\band restart\b|compose restart", text), doc  # keeps the old env
         assert "docker compose up -d --force-recreate tcc" in text, doc
+
+
+def test_core_and_app_process_never_import_the_sdk():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    assert project["dependencies"] == ["PyYAML>=6", "httpx>=0.27"]
+    assert project["optional-dependencies"]["app"] == ["mcp>=2.3,<3"]
+    for f in (ROOT / "src").rglob("*.py"):
+        assert not re.search(r"^\s*(import|from) mcp\b", f.read_text(), re.MULTILINE), f
+    code = "import sys, tcc_app.main; print('mcp' in sys.modules)"
+    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True,
+                         env={**os.environ, "PYTHONPATH": "app"}, check=True)  # fmt: skip
+    assert out.stdout.strip() == "False"
+
+
+def test_dockerfile_installs_the_app_extra():
+    docker = (ROOT / "Dockerfile").read_text()
+    syncs = [x for x in docker.splitlines() if "uv sync --locked" in x]
+    assert len(syncs) == 2 and all("--extra app" in x for x in syncs)
+    smoke = next(x for x in docker.splitlines() if x.startswith("RUN python -c"))
+    assert "import tcc_app.mcp_server" in smoke
+
+
+def test_mcp_doc_is_local_only():
+    doc = (ROOT / "docs/mcp.md").read_text()
+    for name in ("get_status", "get_next_connections", "get_works_ahead", "exec -T"):
+        assert name in doc
+    assert "no actions" in doc.lower()
+    assert "ports:" not in doc and "0.0.0.0" not in doc and "http://" not in doc
+    assert "mcp.md" in (ROOT / "docs/docker.md").read_text()

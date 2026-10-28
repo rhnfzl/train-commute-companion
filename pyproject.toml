@@ -11,6 +11,9 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = ["PyYAML>=6", "httpx>=0.27"]
 
+[project.optional-dependencies]
+app = ["mcp>=2.3,<3"]
+
 [project.scripts]
 tcc = "train_commute_companion.cli:main"
 
