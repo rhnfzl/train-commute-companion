@@ -118,6 +118,20 @@ def _reaches(leg: Leg, alight: str) -> bool:
     return any(s.code == alight for s in leg.stops[1:])
 
 
+_TRUST = {Provenance.MISSING: 0, Provenance.PLANNED: 1, Provenance.REPORTED: 2}
+
+
+def _when(o: TimeObs | None, sign: int) -> tuple[int, float]:
+    """Sort key, worst first: the least trusted time, then the earliest (`sign` 1) or the
+    latest (`sign` -1)."""
+    t = None if o is None else o.value or o.planned
+    return (0 if o is None else _TRUST[o.provenance]), (sign * t.timestamp() if t else 0.0)
+
+
+def _arrival_at(leg: Leg, alight: str) -> TimeObs | None:
+    return next((s.arrival for s in leg.stops[1:] if s.code == alight), None)
+
+
 def _explicit_cut(leg: Leg, alight: str) -> bool:
     """Only an unserved `alight`, or a cancelled stop before it, proves a cut short: a copy
     from another connection simply ends where that connection changes (a passing stop or a
@@ -169,12 +183,22 @@ def current_run(
             log.warning("conflicting copies of train %s at one fetch", train.train_number)
         seen, win = bad[0]
     else:
-        n = max(at_top, key=rank)[1]
-        seen, win = max(runs, key=rank)  # a truncated newer copy never reads as a cut short
-        if seen.astimezone(UTC) < top:
-            # departure time, platform and provenance always from the newest answer
-            stops = (n.leg.stops[0], *win.leg.stops[1:])
-            win = classify_leg(replace(win.leg, stops=stops), alight)
+        # copies of one fetch that disagree on timing give the worst of each end, in any
+        # order (7.3, 7.12): the earliest departure and the latest arrival, least trusted first
+        top_rank = max(map(rank, at_top))
+        board_stop = min(
+            (r[1].leg.stops[0] for r in at_top if rank(r) == top_rank),
+            key=lambda s: _when(s.departure, 1),
+        )
+        best = max(map(rank, runs))  # a truncated newer copy never reads as a cut short
+        at = next(r[0] for r in runs if rank(r) == best).astimezone(UTC)
+        seen, win = min(
+            (r for r in runs if rank(r) == best and r[0].astimezone(UTC) == at),
+            key=lambda r: _when(_arrival_at(r[1].leg, alight), -1),
+        )
+        # departure time, platform and provenance always from the newest answer
+        stops = (board_stop, *win.leg.stops[1:])
+        win = classify_leg(replace(win.leg, stops=stops), alight)
     leg = replace(win.leg, alternative_transport=mode.alternative_transport, category=mode.category)
     return seen, replace(win, leg=leg)
 

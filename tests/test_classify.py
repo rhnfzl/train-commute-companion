@@ -349,3 +349,17 @@ def test_tied_train_and_bus_copies_read_as_bus_in_either_order(caplog):
         _, cl = run_of(at_(NEWER, *order))
         assert cl.leg.alternative_transport
         assert "conflicting transport" in caplog.text
+
+
+def test_current_run_same_fetch_timings_take_the_worst_in_any_order():
+    # 7.3, 7.12: copies at one fetch that disagree on times never depend on their order
+    early, late = r6666(delay_dep=0), r6666(delay_dep=2, delay_arr=5)
+    for order in ((one(early), one(late)), (one(late), one(early))):
+        _, cl = run_of(at_(NEWER, *order))
+        assert cl.arr_delay_min == 5  # the later arrival
+        assert cl.dep_delay_min == 0  # the earlier departure
+    planned = r6666(provenance=Provenance.PLANNED)
+    for order in ((one(early), one(planned)), (one(planned), one(early))):
+        _, cl = run_of(at_(NEWER, *order))
+        assert cl.leg.board.departure.provenance is Provenance.PLANNED
+        assert cl.leg.alight.arrival.provenance is Provenance.PLANNED
