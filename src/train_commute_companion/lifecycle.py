@@ -1549,13 +1549,13 @@ def _locate(
         if event.zone == _place_zone(p, p.origin(d)):
             return _left_origin(s, ctx, event, answer)
         return Transition(s, ())
-    pool = None if answer is None else _pool((answer,))
     seen = (*((answer,) if answer is not None else ()), *watched)  # `location_queries`
     missed = _missed(s, ctx, event, _pool(seen)) if seen else None
     if missed is not None:
         return missed
     if event.zone == p.origin(d):
-        return _at_first_station(s, ctx, pool)
+        # one evidence pool: a newer watched answer's cancellation also rules a train out (rule 1)
+        return _at_first_station(s, ctx, None if answer is None else _pool(seen))
     return Transition(s, ())
 
 

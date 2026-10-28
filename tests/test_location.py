@@ -179,3 +179,13 @@ def test_station_commits_same_auto_train_with_one_generation_step():
     t = locate(s, "08:00", event("AAA", "enter", "08:00"), USUAL)
     assert t.state.generation == s.generation + 1 and numbers(t.state) == ["1234", "5678"]
     assert t.state.lock is not None and t.state.lock.source is LockSource.STATION
+
+
+def test_station_lock_reads_the_watched_answers_too():  # 7.12 rule 1
+    # the newer answer from UT shows 6666 cancelled: entering the origin never locks it
+    s = occ(journey([L1, L2]))
+    r2x = make_leg("UT", "RTD", "09:05", "09:39", number="6666", cancelled=True)
+    origin = ans("AAA", conn(L1X, L2), LATER, when="08:00")
+    watched = (ans("UT", conn(r2x), when="08:01"),)
+    t = on_location(s, ctx(at("08:01")), event("AAA", "enter", "08:01"), origin, watched)
+    assert t.state.lock is not None and numbers(t.state) != ["1300", "6666"]
