@@ -26,6 +26,7 @@ from train_commute_companion.advice import (
 from train_commute_companion.calendar import TZ, resolve_local
 from train_commute_companion.classify import find_leg
 from train_commute_companion.delivery import (
+    APP_WARNINGS,
     JOURNEY_WARNINGS,
     Obligation,
     WebhookCopy,
@@ -457,13 +458,14 @@ class _LoggingNotifier:
 
 def _covers(x: Obligation, o: Obligation) -> bool:
     """Rule 5(b): `x` is a newer message about what `o` reported (same occurrence and train,
-    the same kind or both delay news)."""
+    the same kind or both delay news). Rule 5(a): a warning is never covered."""
 
     def family(k: EventKind) -> frozenset[EventKind]:
         return _DELAY_NEWS if k in _DELAY_NEWS else frozenset({k})
 
     return (
         o.occurrence is not None
+        and o.event.kind not in APP_WARNINGS | JOURNEY_WARNINGS
         and x.id != o.id
         and x.occurrence == o.occurrence
         and x.event.kind in family(o.event.kind)

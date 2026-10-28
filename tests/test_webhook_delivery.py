@@ -477,6 +477,26 @@ async def test_escalation_supersedes_the_queued_silent_copy(tmp_path, recover): 
     assert copies(rig, EventKind.PLATFORM_CHANGE) == []
 
 
+@pytest.mark.parametrize("restart", [False, True])
+async def test_a_newer_cancellation_never_ends_the_queued_one(tmp_path, restart):  # rule 5(a)
+    rig = await wstarted(tmp_path)
+    rig.end.error = httpx.ReadTimeout
+    for hhmm, world in (("07:52", [make_connection([L1X, L2]), LATER]),
+                        ("07:54", [make_connection([L1, L2]), LATER]),
+                        ("07:56", [make_connection([L1X, L2]), LATER])):  # fmt: skip
+        rig.clock.set(hhmm)
+        rig.provider.world = world
+        await rig.rt.poll_once()
+    assert kinds(rig.rt.events_log).count(EventKind.CANCELLED) == 2
+    if restart:
+        await rig.restart()
+    rig.end.error = None
+    await tick(rig)
+    await tick(rig)
+    assert len(rig.end.of(EventKind.CANCELLED)) == 2
+    assert copies(rig, EventKind.CANCELLED) == []
+
+
 async def test_quiet_hours_hold_the_copy_and_the_give_up_counts_from_the_first_try(
     tmp_path, caplog
 ):
