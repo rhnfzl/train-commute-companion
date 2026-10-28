@@ -630,3 +630,39 @@ def test_probe_reads_the_current_copy_of_a_train():  # 7.10, 7.12: never a false
         ]
         (whole,) = [r for r in rs if r.leg_index is None]
         assert whole.works and "cancelled:1" in whole.fingerprint
+
+
+def test_probe_reads_a_bus_copy_as_not_ok():  # 6.3, 7.10: a bus is never a clean train
+    a, b = legs(TUE)
+    bus = replace(b, alternative_transport=True, category="BUS")
+    for pair in ((b, bus), (bus, b)):
+        answers = [
+            ans("AAA", "UT", make_connection([a])),
+            ans("UT", "RTD", *(make_connection([x]) for x in pair)),
+            ans("AAA", "RTD", make_connection([a, b])),
+        ]
+        rs = evaluate(P, OUT, TUE, answers, CLEAR, None)
+        assert [(r.works, r.clean) for r in rs if r.leg_index is not None] == [
+            (False, True),
+            (True, False),
+        ]
+        (whole,) = [r for r in rs if r.leg_index is None]
+        assert whole.works and not whole.clean and "cancelled:1" in whole.fingerprint
+
+
+def test_probe_keeps_works_messages_from_every_copy():  # 7.10: never a falsely clean probe
+    a, b = legs(TUE)
+    told = replace(b, messages=("works between UT and RTD",))
+    for pair in ((b, told), (told, b)):
+        answers = [
+            ans("AAA", "UT", make_connection([a])),
+            ans("UT", "RTD", *(make_connection([x]) for x in pair)),
+            ans("AAA", "RTD", make_connection([a, b])),
+        ]
+        rs = evaluate(P, OUT, TUE, answers, CLEAR, None)
+        assert [(r.works, r.clean) for r in rs if r.leg_index is not None] == [
+            (False, True),
+            (True, False),
+        ]
+        (whole,) = [r for r in rs if r.leg_index is None]
+        assert whole.works and "messages:1" in whole.fingerprint

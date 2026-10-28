@@ -243,7 +243,8 @@ def _nearest(conns: Sequence[Connection], ref: datetime) -> Connection | None:
 
 
 def _kind(leg: Leg, alight: str) -> LegKind:
-    return classify_leg(leg, alight).kind
+    # 6.3: a train NS runs as other transport is no train, read as cancelled like `_observe`
+    return LegKind.CANCELLED if leg.alternative_transport else classify_leg(leg, alight).kind
 
 
 def _transfer_issue(inc: Leg, out: Leg, alight: str, p: Profile) -> str | None:

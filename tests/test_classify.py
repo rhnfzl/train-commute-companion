@@ -363,3 +363,51 @@ def test_current_run_same_fetch_timings_take_the_worst_in_any_order():
         _, cl = run_of(at_(NEWER, *order))
         assert cl.leg.board.departure.provenance is Provenance.PLANNED
         assert cl.leg.alight.arrival.provenance is Provenance.PLANNED
+
+
+# every judgement at one fetch is the worst of its copies, in any order (7.3, 7.12)
+def both(x, y):
+    return ((one(x), one(y)), (one(y), one(x)))
+
+
+def test_a_truncated_copy_still_gives_the_earliest_departure():
+    full, short = r6666(stops=["BBB"], delay_dep=5), r6666("BBB", "09:05")
+    for order in both(full, short):
+        _, cl = run_of(at_(NEWER, *order))
+        assert cl.kind is LegKind.OK
+        assert cl.dep_delay_min == 0 and cl.leg.alight.code == "RTD"
+
+
+def test_cut_short_copies_take_the_earliest_cut():
+    far = r6666(stops=["XA", "XB"], cut_after="XB")
+    near = r6666(stops=["XA", "XB"], cut_after="XA")
+    for order in both(far, near):
+        _, cl = run_of(at_(NEWER, *order))
+        assert cl.kind is LegKind.CUT_SHORT and cl.last_served.code == "XA"
+    for order in both(far, r6666(cancelled=True)):
+        _, cl = run_of(at_(NEWER, *order))
+        assert cl.kind is LegKind.CANCELLED
+
+
+def test_equal_time_copies_keep_a_changed_platform():
+    def on(track):
+        leg = r6666()
+        board = replace(leg.stops[0], planned_track="5", actual_track=track)
+        return replace(leg, stops=(board, *leg.stops[1:]))
+
+    for order in both(on("5"), on("7")):
+        _, cl = run_of(at_(NEWER, *order))
+        assert (cl.leg.board.planned_track, cl.leg.board.actual_track) == ("5", "7")
+    for order in both(on(None), on("7")):
+        assert run_of(at_(NEWER, *order))[1].leg.board.actual_track == "7"
+
+
+def test_equal_time_copies_keep_every_message():
+    a, b = replace(r6666(), messages=("works A",)), replace(r6666(), messages=("works B",))
+    for order in both(a, b):
+        assert run_of(at_(NEWER, *order))[1].leg.messages == ("works A", "works B")
+    for order in both(r6666(), a):
+        assert run_of(at_(NEWER, *order))[1].leg.messages == ("works A",)
+    cut = replace(r6666(stops=["XA"], cut_after="XA"), messages=("works B",))
+    for order in both(cut, a):
+        assert run_of(at_(NEWER, *order))[1].leg.messages == ("works A", "works B")

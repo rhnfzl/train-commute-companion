@@ -143,6 +143,20 @@ def _explicit_cut(leg: Leg, alight: str) -> bool:
     return any(s.cancelled and not served(s) for s in between)
 
 
+def _cut_at(c: ClassifiedLeg) -> tuple[bool, float, int]:
+    """Sort key, worst first: a cancellation, then the earliest last served stop (by its
+    planned time, then by the stops served up to it)."""
+    s = c.last_served
+    t = None if s is None else s.planned_arrival or s.planned_departure
+    calls = sum(map(served, c.leg.stops))
+    return c.kind is not LegKind.CANCELLED, t.timestamp() if t else 0.0, calls
+
+
+def _unchanged_track(s: Stop) -> tuple[bool, str]:
+    """Sort key, worst first: a platform other than planned, then by name for any order."""
+    return s.actual_track in (None, s.planned_track), s.actual_track or ""
+
+
 def current_run(
     answers: Sequence[ProviderAnswer], train: TrainId, board: str, alight: str
 ) -> tuple[datetime, ClassifiedLeg] | None:
@@ -181,15 +195,13 @@ def current_run(
         # rule 7.12: conflicting newest copies never read as running, a missed alarm costs more
         if len(bad) < len(at_top):
             log.warning("conflicting copies of train %s at one fetch", train.train_number)
-        seen, win = bad[0]
+        # in any order: a cancellation, else the earliest cut, then the worst departure
+        seen, win = min(bad, key=lambda r: (_cut_at(r[1]), _when(r[1].leg.board.departure, 1)))
     else:
         # copies of one fetch that disagree on timing give the worst of each end, in any
-        # order (7.3, 7.12): the earliest departure and the latest arrival, least trusted first
-        top_rank = max(map(rank, at_top))
-        board_stop = min(
-            (r[1].leg.stops[0] for r in at_top if rank(r) == top_rank),
-            key=lambda s: _when(s.departure, 1),
-        )
+        # order (7.3, 7.12): the earliest departure and the latest arrival, least trusted first;
+        # a truncated copy still runs, so its departure counts too
+        board_stop = min((r[1].leg.stops[0] for r in at_top), key=lambda s: _when(s.departure, 1))
         best = max(map(rank, runs))  # a truncated newer copy never reads as a cut short
         at = next(r[0] for r in runs if rank(r) == best).astimezone(UTC)
         seen, win = min(
@@ -199,6 +211,15 @@ def current_run(
         # departure time, platform and provenance always from the newest answer
         stops = (board_stop, *win.leg.stops[1:])
         win = classify_leg(replace(win.leg, stops=stops), alight)
+    # a changed platform from any newest copy is kept: a missed change costs more (7.12)
+    track = min((r[1].leg.board for r in at_top), key=_unchanged_track)
+    here = replace(
+        win.leg.board, planned_track=track.planned_track, actual_track=track.actual_track
+    )
+    # every newest copy's messages: works told by one copy are never lost (7.10)
+    said = sorted({r[1].leg.messages for r in (*at_top, (seen, win))})
+    messages = tuple(dict.fromkeys(m for ms in said for m in ms))
+    win = replace(win, leg=replace(win.leg, stops=(here, *win.leg.stops[1:]), messages=messages))
     leg = replace(win.leg, alternative_transport=mode.alternative_transport, category=mode.category)
     return seen, replace(win, leg=leg)
 
