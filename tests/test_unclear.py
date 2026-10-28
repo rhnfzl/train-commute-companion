@@ -308,6 +308,15 @@ def test_fingerprint_is_hex_and_follows_the_values():
     )  # other values, other fingerprint
 
 
+def test_a_uic_number_that_comes_and_goes_keeps_the_fingerprint():
+    # NS may send a stop with or without its UIC number from one poll to the next
+    uic = {"AAA": "1000001", "UT": "1000002"}
+    with_uic = lambda g: replace(g, stops=tuple(replace(s, uic=uic[s.code]) for s in g.stops))
+    u = disagreement([LATE, P], "UT")
+    assert disagreement([with_uic(LATE), with_uic(P)], "UT").fingerprint == u.fingerprint
+    assert disagreement([with_uic(LATE), P], "UT").fingerprint == u.fingerprint
+
+
 def test_reserved_characters_in_provider_strings_stay_out_of_keys():
     on = replace(A, stops=(replace(A.stops[0], planned_track="5|x"), A.stops[1]))
     u = disagreement([on, _on_track(on, "7#north")], "UT")

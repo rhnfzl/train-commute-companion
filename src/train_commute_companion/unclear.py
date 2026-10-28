@@ -238,8 +238,12 @@ def disagreement(copies: Sequence[Leg], alight: str, *also: str) -> Unclear | No
     cats = [g.category for g in copies if not g.alternative_transport] or [
         g.category for g in copies
     ]
+    # keyed by station name: NS may send a stop's UIC number in one poll and not the next
+    named = sorted(
+        json.dumps([(names[x][1] if x != _LEG else x, f, v) for x, f, v in c]) for c in kept
+    )
     return Unclear(
-        fingerprint=hashlib.sha256(json.dumps(kept).encode()).hexdigest()[:16],
+        fingerprint=hashlib.sha256(json.dumps(named).encode()).hexdigest()[:16],
         label=f"{min(cats)} {copies[0].train.train_number}",
         station=names[station][1],
         copies=tuple(found[c] for c in kept),
