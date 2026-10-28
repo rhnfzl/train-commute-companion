@@ -362,3 +362,14 @@ def test_all_good_judges_every_copy_at_the_newest_fetch():  # rule 20, 7.12: in 
         a = answer_at("08:01", make_connection([x, L2]), make_connection([y, L2]))
         e = all_good(s, replace(board(s), answers=(a,)), c)
         assert e is not None and e.text.endswith("platform 7.")
+
+
+def test_data_unclear_is_loud_by_default() -> None:
+    sev = severity(
+        EventKind.DATA_UNCLEAR,
+        minutes_to_departure=None,
+        breaks_transfer=False,
+        past_latest_arrival=False,
+        is_tomorrow=False,
+    )
+    assert sev is Severity.LOUD
