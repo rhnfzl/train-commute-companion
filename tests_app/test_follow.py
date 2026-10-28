@@ -160,6 +160,16 @@ async def test_owntracks_regions_give_home_leave(app_owntracks):
     assert lock.source is LockSource.LOCATION
 
 
+async def test_inaccurate_fix_never_makes_a_home_or_work_event(app_owntracks):  # plan-3 DEFER 3
+    app = app_owntracks
+    await feed(app, *FAR, "07:45", acc=20, regions=("home_area",))  # seeds inside home
+    await feed(app, *FAR, "07:46", acc=400)  # worse than the 150 m radius: no leave
+    await feed(app, *FAR, "07:47", acc=400, regions=("work_area",))  # no enter either
+    assert spied(app) == []
+    await feed(app, *FAR, "07:48", acc=20, regions=("work_area",))
+    assert spied(app) == [("home_area", "leave"), ("work_area", "enter")]
+
+
 async def test_owntracks_role_name_is_not_a_region(app_owntracks):
     app = app_owntracks
     await feed(app, *FAR, "07:45", regions=("home",))
