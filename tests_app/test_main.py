@@ -2,12 +2,14 @@ import asyncio
 import dataclasses
 import logging
 import socket
+import threading
 from datetime import time
 from pathlib import Path
 
 import pytest
 from builders import ONE_TRANSFER
-from conftest import CHAT, TOKEN, FakeTelegram, StationsProvider, TickClock
+from conftest import CHAT, TOKEN, FakeTelegram, StationsProvider, TickClock, gated_saves
+from tcc_app.bot import load_state
 from tcc_app.main import App, Settings, build, main, serve, setup_logging
 from tcc_app.web import health_report
 from test_runtime import PROFILE, Provider, at
@@ -194,6 +196,60 @@ async def test_cancel_closes_server_and_parts(tmp_path, tg):  # Review Focus 5
     assert await asyncio.wait_for(reader.read(), 1) == b""  # the handler closed it, unanswered
     writer.close()
     assert asyncio.all_tasks() - before == set()
+
+
+async def blocked_saves(app: App, monkeypatch) -> tuple[threading.Event, list[int]]:
+    """A running save blocked in its worker (offset 4) and a newer one queued (offset 8)."""
+    entered, gate, written, peak = gated_saves(monkeypatch)
+    app.bot.state.offset = 4
+    asyncio.create_task(app.bot._save())
+    await until(entered.is_set)
+    app.bot.state.offset = 8
+    asyncio.create_task(app.bot._save())
+    await asyncio.sleep(0.01)
+    assert len(app.bot.writes) == 2 and peak[0] == 1
+    return gate, written
+
+
+async def test_cancelled_serve_drains_telegram_saves(tmp_path, tg, monkeypatch):
+    app = make_app(tmp_path, tg, TickClock(at("07:50")))
+    before = asyncio.all_tasks()
+    task = asyncio.create_task(serve(app, free_port()))
+    await until(lambda: (tmp_path / "telegram.json").exists() and not app.bot.writes)
+    gate, written = await blocked_saves(app, monkeypatch)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done() and written == []  # shutdown waits for the worker
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert written == [4, 8] and load_state(tmp_path / "telegram.json").offset == 8
+    assert not app.bot.writes and asyncio.all_tasks() - before == set()
+
+
+async def test_runtime_crash_drains_telegram_saves(tmp_path, tg, monkeypatch):
+    app = make_app(tmp_path, tg, TickClock(at("07:50")))
+    fail = asyncio.Event()
+
+    async def boom():
+        await fail.wait()
+        raise RuntimeError("start failed")
+
+    async def tick():
+        pass
+
+    app.rt.start, app.rt.watchdog_once = boom, tick
+    before = asyncio.all_tasks()
+    task = asyncio.create_task(serve(app, free_port()))
+    await until(lambda: (tmp_path / "telegram.json").exists() and not app.bot.writes)
+    gate, written = await blocked_saves(app, monkeypatch)
+    fail.set()
+    await asyncio.sleep(0.05)
+    assert not task.done() and written == []
+    gate.set()
+    assert await task == 1
+    assert written == [4, 8] and load_state(tmp_path / "telegram.json").offset == 8
+    assert not app.bot.writes and asyncio.all_tasks() - before == set()
 
 
 async def test_action_cancelled_mid_delivery_is_already_written(tmp_path, tg):

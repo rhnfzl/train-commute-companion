@@ -114,7 +114,8 @@ class Bot:
         self._nonce: str | None = None
         self._save_failing = False
         self._save_lock = asyncio.Lock()  # one save at a time: no shared .tmp, the newest wins
-        self._writes: set[asyncio.Task[bool]] = set()  # saves, drained (never cancelled) by close()
+        # saves: drained by close(), never cancelled (serve's cleanup leaves them out too)
+        self.writes: set[asyncio.Task[bool]] = set()
         self._tasks: set[asyncio.Task[None]] = set()  # handlers, cancelled by close()
         self._core: set[asyncio.Task[Any]] = set()  # runtime calls, never cancelled here
 
@@ -170,8 +171,8 @@ class Bot:
     async def _save(self) -> bool:
         # a cancelled caller leaves the write running and the lock held until its worker ends
         task = asyncio.ensure_future(self._write())
-        self._writes.add(task)
-        task.add_done_callback(self._writes.discard)
+        self.writes.add(task)
+        task.add_done_callback(self.writes.discard)
         return await asyncio.shield(task)
 
     async def _write(self) -> bool:
@@ -204,7 +205,7 @@ class Bot:
         for task in list(self._tasks):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
-        await asyncio.gather(*self._writes, return_exceptions=True)
+        await asyncio.gather(*self.writes, return_exceptions=True)
 
     # --- one update ---
 

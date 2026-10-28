@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import pytest
 from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
-from conftest import CHAT, STRANGER, TOKEN, FakeTelegram, build_from_replay, error
+from conftest import CHAT, STRANGER, TOKEN, FakeTelegram, build_from_replay, error, gated_saves
 from tcc_app import bot as bot_mod
 from tcc_app.bot import Bot, ShellState, load_state, save_state
 from tcc_app.commands import render_status, render_webhook_tests, status_buttons
@@ -499,27 +499,6 @@ async def test_overlapping_state_saves_keep_the_newest(app, monkeypatch):
     await asyncio.gather(first, tap_task)
     assert released == [True] and peak[0] == 1
     assert load_state(app.path) == ShellState(8, None, "123:1000001")
-
-
-def gated_saves(monkeypatch) -> tuple[threading.Event, threading.Event, list[int], list[int]]:
-    """The first save blocks on the gate; written offsets in order, and the peak of overlap."""
-    entered, gate, guard = threading.Event(), threading.Event(), threading.Lock()
-    active, peak, written = [0], [0], []
-
-    def spy(path: Path, s: ShellState) -> None:
-        with guard:
-            active[0] += 1
-            peak[0] = max(peak[0], active[0])
-        if not entered.is_set():
-            entered.set()
-            gate.wait(2)
-        save_state(path, s)
-        with guard:
-            active[0] -= 1
-            written.append(s.offset)
-
-    monkeypatch.setattr(bot_mod, "save_state", spy)
-    return entered, gate, written, peak
 
 
 async def test_a_cancelled_save_still_blocks_the_next_one(app, monkeypatch):

@@ -2,6 +2,7 @@ import asyncio
 import dataclasses
 import json
 import re
+import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,6 +10,8 @@ from typing import Any
 
 import httpx
 import pytest
+from tcc_app import bot as bot_mod
+from tcc_app.bot import ShellState, save_state
 from tcc_app.follow import Fix
 from tcc_app.main import App, Settings, build
 from test_runtime import FakeClock, at
@@ -208,3 +211,24 @@ async def drive_replay(app: App, rp: Replay) -> None:
         await app.rt.watchdog_once()
         await app.rt.webhooks_idle()
         await clock.sleep(30)
+
+
+def gated_saves(monkeypatch) -> tuple[threading.Event, threading.Event, list[int], list[int]]:
+    """The first save blocks on the gate; written offsets in order, and the peak of overlap."""
+    entered, gate, guard = threading.Event(), threading.Event(), threading.Lock()
+    active, peak, written = [0], [0], []
+
+    def spy(path: Path, s: ShellState) -> None:
+        with guard:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        if not entered.is_set():
+            entered.set()
+            gate.wait(2)
+        save_state(path, s)
+        with guard:
+            active[0] -= 1
+            written.append(s.offset)
+
+    monkeypatch.setattr(bot_mod, "save_state", spy)
+    return entered, gate, written, peak

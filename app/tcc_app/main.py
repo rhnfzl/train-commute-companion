@@ -190,8 +190,9 @@ async def serve(app: App, port: int) -> int:
         if server is not None:
             server.close()
         # run_forever's gather leaves the watchdog running when start raises, and
-        # Server.close leaves open connection handlers running: every task begun here goes
-        rest = asyncio.all_tasks() - before - {asyncio.current_task()}
+        # Server.close leaves open connection handlers running: every task begun here goes,
+        # except a Telegram save, whose worker thread outlives a cancel (bot.close drains it)
+        rest = asyncio.all_tasks() - before - {asyncio.current_task()} - app.bot.writes
         for t in rest:
             t.cancel()
         await asyncio.gather(*rest, return_exceptions=True)
