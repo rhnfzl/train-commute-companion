@@ -190,18 +190,31 @@ def current_run(
     if len(flags) > 1:
         log.warning("conflicting transport of train %s at one fetch", train.train_number)
     mode = next(r[1].leg for r in at_top if r[1].leg.alternative_transport is (True in flags))
+    # copies of one fetch that disagree on timing give the worst of each end, in any order
+    # (7.3, 7.12): the earliest departure and the latest arrival, least trusted first; a
+    # truncated copy still runs, so its departure counts too
+    board_stop = min((r[1].leg.stops[0] for r in at_top), key=lambda s: _when(s.departure, 1))
     bad = [r for r in at_top if stopped(r[1])]
     if bad:
         # rule 7.12: conflicting newest copies never read as running, a missed alarm costs more
         if len(bad) < len(at_top):
             log.warning("conflicting copies of train %s at one fetch", train.train_number)
-        # in any order: a cancellation, else the earliest cut, then the worst departure
-        seen, win = min(bad, key=lambda r: (_cut_at(r[1]), _when(r[1].leg.board.departure, 1)))
+        # in any order: a cancellation, else the earliest cut
+        seen, win = min(bad, key=lambda r: _cut_at(r[1]))
+        if (end := win.last_served) is not None:
+            # the user changes at the cut: its latest arrival over every copy that serves it
+            arr = min(
+                (
+                    s.arrival
+                    for r in at_top
+                    for s in r[1].leg.stops[1:]
+                    if s.code == end.code and served(s)
+                ),
+                key=lambda o: _when(o, -1),
+            )
+            stops = tuple(replace(s, arrival=arr) if s is end else s for s in win.leg.stops)
+            win = classify_leg(replace(win.leg, stops=(board_stop, *stops[1:])), alight)
     else:
-        # copies of one fetch that disagree on timing give the worst of each end, in any
-        # order (7.3, 7.12): the earliest departure and the latest arrival, least trusted first;
-        # a truncated copy still runs, so its departure counts too
-        board_stop = min((r[1].leg.stops[0] for r in at_top), key=lambda s: _when(s.departure, 1))
         best = max(map(rank, runs))  # a truncated newer copy never reads as a cut short
         at = next(r[0] for r in runs if rank(r) == best).astimezone(UTC)
         seen, win = min(

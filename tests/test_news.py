@@ -343,3 +343,22 @@ def test_no_all_good_when_any_copy_says_the_change_is_not_possible():  # rule 20
         two = answer_at("08:01", make_connection([bad, L2]), make_connection([L1, L2]))
         for a in (one, two):
             assert all_good(s, replace(board(s), answers=(a,)), ctx(at("08:02"))) is None
+
+
+def test_all_good_judges_every_copy_at_the_newest_fetch():  # rule 20, 7.12: in any order
+    s = occ(LOCK)
+    c = ctx(at("08:02"))
+    dep = replace(L1.stops[0].departure, provenance=Provenance.PLANNED)
+    planned = replace(L1, stops=(replace(L1.stops[0], departure=dep), *L1.stops[1:]))
+    for x, y in ((L1, planned), (planned, L1)):
+        a = answer_at("08:01", make_connection([x, L2]), make_connection([y, L2]))
+        assert all_good(s, replace(board(s), answers=(a,)), c) is None
+
+    def on(track):
+        board_stop = replace(L1.stops[0], planned_track="5", actual_track=track)
+        return replace(L1, stops=(board_stop, *L1.stops[1:]))
+
+    for x, y in ((on("5"), on("7")), (on("7"), on("5"))):
+        a = answer_at("08:01", make_connection([x, L2]), make_connection([y, L2]))
+        e = all_good(s, replace(board(s), answers=(a,)), c)
+        assert e is not None and e.text.endswith("platform 7.")

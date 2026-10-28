@@ -46,6 +46,7 @@ from train_commute_companion.model import (
     SignatureLeg,
 )
 from train_commute_companion.profile import find_overlaps, parse_profiles
+from train_commute_companion.providers.base import PlannedWork, PlannedWorks
 from train_commute_companion.serde import dumps, loads
 
 SHIFTED = {"l1": ("08:15", "08:43"), "l2": ("08:49", "09:27")}
@@ -666,3 +667,58 @@ def test_probe_keeps_works_messages_from_every_copy():  # 7.10: never a falsely 
         ]
         (whole,) = [r for r in rs if r.leg_index is None]
         assert whole.works and "messages:1" in whole.fingerprint
+
+
+def test_probe_names_the_earliest_cut_of_any_copy():  # 7.10, 7.12: in any order
+    a, _ = legs(TUE)
+    xa, xb = (legs(TUE, stops2=("XA", "XB"), cut2=cut)[1] for cut in ("XA", "XB"))
+    for pair in ((xa, xb), (xb, xa)):
+        answers = [
+            ans("AAA", "UT", make_connection([a])),
+            ans("UT", "RTD", *(make_connection([x]) for x in pair)),
+            ans("AAA", "RTD", *(make_connection([a, x]) for x in pair)),
+        ]
+        rs = evaluate(P, OUT, TUE, answers, CLEAR, None)
+        cuts = [r.fingerprint.split("|")[1] for r in rs if r.leg_index in (1, None)]
+        assert cuts == ["cut_short:0:XA", "cut_short:1:XA"]
+        _, _, (ev,) = run(BaselineHistory(), rs)
+        assert "runs only to XA" in ev.text and "XB" not in ev.text
+    answers = [ans("UT", "RTD", make_connection([xb])), ans("AAA", "RTD", make_connection([a, xb]))]
+    (whole,) = [r for r in evaluate(P, OUT, TUE, answers, CLEAR, None) if r.leg_index is None]
+    assert "cut_short:1:XB" in whole.fingerprint  # a moved cut is a new warning
+
+
+def test_probe_keeps_maintenance_from_any_identical_copy():  # 7.10: never a falsely clean probe
+    a, b = legs(TUE)
+    for statuses in (("NORMAL", "MAINTENANCE"), ("MAINTENANCE", "NORMAL")):
+        answers = [
+            ans("AAA", "UT", make_connection([a])),
+            ans("UT", "RTD", *(make_connection([b], status=s) for s in statuses)),
+            ans("AAA", "RTD", *(make_connection([a, b], status=s) for s in statuses)),
+        ]
+        rs = evaluate(P, OUT, TUE, answers, CLEAR, None)
+        assert [(r.leg_index, r.works, r.clean) for r in rs] == [
+            (0, False, True),
+            (1, True, False),
+            (None, True, False),
+        ]
+
+
+def test_probe_checks_works_against_the_stops_of_every_copy():  # 7.10
+    def with_uic(leg):
+        return replace(leg, stops=tuple(replace(s, uic=s.code) for s in leg.stops))
+
+    a, plain = (with_uic(x) for x in legs(TUE))
+    via = with_uic(legs(TUE, stops2=("BBB",))[1])
+    start = datetime(2026, 10, 27, 0, 0, tzinfo=AMS)
+    works = PlannedWorks(
+        (PlannedWork(start, start + timedelta(days=1), frozenset({"BBB"}), "w"),), "complete"
+    )
+    for pair in ((plain, via), (via, plain)):
+        answers = [
+            ans("AAA", "UT", make_connection([a])),
+            ans("UT", "RTD", *(make_connection([x]) for x in pair)),
+            ans("AAA", "RTD", *(make_connection([a, x]) for x in pair)),
+        ]
+        rs = evaluate(P, OUT, TUE, answers, works, None)
+        assert [(r.leg_index, r.clean) for r in rs] == [(0, True), (1, False), (None, False)]

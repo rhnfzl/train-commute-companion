@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 
 from train_commute_companion.calendar import TZ
-from train_commute_companion.classify import classify_leg, find_leg
+from train_commute_companion.classify import classify_leg, current_run, find_leg
 from train_commute_companion.health import FRESH_FOR, board_health
 from train_commute_companion.lifecycle import (
     Board,
@@ -265,8 +265,16 @@ def all_good(s: OccurrenceState, board: Board, ctx: Ctx) -> AlertEvent | None:
             for g in _copies(board.answers, x.train, x.board_station, None)
         ):
             return None  # 6.3: a train any answer shows as other transport is never "on time"
-        c = replace(classify_leg(found, x.alight_stop), observation=Observation.SEEN)
-        times = (found.board.departure, found.alight.arrival)
+        # the worst of every copy at the newest fetch, in any order: timing and platform (7.12)
+        run = current_run(board.answers, found.train, x.board_station, x.alight_stop)
+        assert run is not None  # find_leg saw the train in `newest`
+        g = run[1].leg
+        end = next((i for i, st in enumerate(g.stops) if i and st.code == x.alight_stop), None)
+        if end is None:
+            return None
+        cut = replace(g, stops=g.stops[: end + 1])
+        c = replace(classify_leg(cut, x.alight_stop), observation=Observation.SEEN)
+        times = (c.leg.board.departure, c.leg.alight.arrival)
         if c.kind is not LegKind.OK or any(
             t is None or t.provenance is not Provenance.REPORTED for t in times
         ):

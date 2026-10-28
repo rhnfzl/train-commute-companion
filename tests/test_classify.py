@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from builders import AMS, _cut, make_connection, make_leg
 
@@ -411,3 +411,21 @@ def test_equal_time_copies_keep_every_message():
     cut = replace(r6666(stops=["XA"], cut_after="XA"), messages=("works B",))
     for order in both(cut, a):
         assert run_of(at_(NEWER, *order))[1].leg.messages == ("works A", "works B")
+
+
+def test_cut_short_copies_take_the_latest_arrival_at_the_cut():  # 7.12: a missed change costs more
+    def cut(late):
+        leg = r6666(stops=["XA", "XB"], cut_after="XA")
+        xa = leg.stops[1]
+        arr = replace(xa.arrival, value=xa.arrival.planned + timedelta(minutes=late))
+        return replace(leg, stops=(leg.stops[0], replace(xa, arrival=arr), *leg.stops[2:]))
+
+    for order in both(cut(0), cut(5)):
+        _, cl = run_of(at_(NEWER, *order))
+        assert cl.kind is LegKind.CUT_SHORT and cl.last_served.code == "XA"
+        assert cl.last_served.arrival == cut(5).stops[1].arrival
+    early = r6666(stops=["XA", "XB"], cut_after="XA")
+    late = r6666(stops=["XA", "XB"], cut_after="XA", delay_dep=5)
+    for order in both(early, late):
+        _, cl = run_of(at_(NEWER, *order))
+        assert cl.dep_delay_min == 0 and cl.last_served.arrival == late.stops[1].arrival

@@ -20,6 +20,7 @@ from train_commute_companion.model import (
     Severity,
     Signature,
     SignatureLeg,
+    TrainId,
     TransferState,
 )
 from train_commute_companion.profile import find_overlaps
@@ -276,7 +277,11 @@ def _leg_reasons(cur: Connection, c: Connection) -> list[str]:
     out = []
     for i, leg in enumerate(cur.legs):
         k = _kind(leg, c.legs[i].alight.code)
-        if k in (LegKind.CANCELLED, LegKind.CUT_SHORT):
+        last = classify_leg(leg, c.legs[i].alight.code).last_served
+        if k is LegKind.CUT_SHORT and last is not None:
+            # the cut of the current copies, so a moved cut is a new warning (7.10, 7.12)
+            out.append(f"{k.value}:{i}:{last.code}")
+        elif k in (LegKind.CANCELLED, LegKind.CUT_SHORT):
             out.append(f"{k.value}:{i}")
         elif leg.messages:
             out.append(f"messages:{i}")
@@ -296,6 +301,10 @@ def _covered(c: Connection, works: PlannedWorks) -> bool:
         and any(w.lists(s) for s in stops)
         for w in works.items
     )
+
+
+def _trains(c: Connection) -> tuple[tuple[TrainId, str, str], ...]:
+    return tuple((g.train, g.board.code, g.alight.code) for g in c.legs)
 
 
 def _fingerprint(head: str, reasons: Sequence[str]) -> str:
@@ -361,9 +370,24 @@ def evaluate(
             )
             legs.append(None if ref is None else _nearest(direct, ref))
 
+    def copies(c: Connection) -> list[Connection]:
+        """`c` and every connection of the same trains at the newest fetch showing them: in any
+        order, a status or a stop one copy shows counts (7.10, 7.12)."""
+        same = [
+            (a.fetched_at.astimezone(UTC), x)
+            for a in answers
+            for x in a.connections
+            if _trains(x) == _trains(c)
+        ]
+        top = max((t for t, _ in same), default=None)
+        return [c, *(x for t, x in same if t == top)]
+
     def cur(c: Connection) -> Connection:
         # every judgment reads the current copy of each train over all probe answers (6.2)
-        return current_connection(answers, c)
+        now = current_connection(answers, c)
+        if any(x.status == "MAINTENANCE" for x in copies(c)):
+            return replace(now, status="MAINTENANCE")
+        return now
 
     chain_issues = {
         i: issue
@@ -397,7 +421,7 @@ def evaluate(
                 _kind(x, r.alight.code) is LegKind.OK
                 for x, r in zip(cur(c).legs, c.legs, strict=True)
             )
-            and not _covered(c, works)
+            and not any(_covered(x, works) for x in copies(c))
         )
         if li is None and c is not None:  # a seed is anchored on the profile's first train
             local = _dep(c.legs[0]).astimezone(TZ)
@@ -475,10 +499,9 @@ def _warn_text(r: ProbeResult, p: Profile, base: Signature | None) -> str:
             parts.append(f"your {what} has no usual train (works)")
         elif tag == "cancelled":
             parts.append(f"your {what} has no trains (works)")
-        elif tag == "cut_short" and r.connection is not None:
-            leg = r.connection.legs[int(rest)]
-            cl = classify_leg(leg, leg.alight.code)
-            stop = cl.last_served.name if cl.last_served is not None else "an earlier stop"
+        elif tag == "cut_short":
+            code = rest.partition(":")[2]
+            stop = _station_name(r, code) if code else "an earlier stop"
             parts.append(f"your {what} runs only to {stop} (works)")
         elif tag == "pattern" and r.connection is not None:
             via = " then ".join(_station_name(r, s) for s in r.connection.transfer_stations)
