@@ -796,7 +796,7 @@ class _Delta:
             self.leds.pop(k, None)
 
     def _runs(self, st: PersistedState, dk: str) -> bool:
-        pid = dk.split("|")[0]
+        pid = dk.rpartition("|")[0]  # a profile id may contain "|"; the direction never does
         then, now = _find(self.cfg, pid), _find(st.config, pid)
         return then is not None and now is not None and _same_route(then, now)
 

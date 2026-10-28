@@ -1,20 +1,25 @@
-"""Telegram commands, pure: parsing a target (7.8), rendering `/status` (7.13) and the `/test`
-webhook results. No I/O."""
+"""Renders the runtime view for Telegram and MCP, pure: parsing a target (7.8), rendering
+`/status` (7.13), the `/test` webhook results and the read-only MCP answers (9 step 5), each
+MCP answer built from a per-profile copy of the view by the functions `/status` uses. No I/O."""
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from train_commute_companion.calendar import TZ
-from train_commute_companion.model import Connection, Direction
+from train_commute_companion.model import Connection, Direction, Provenance, TimeObs
 from train_commute_companion.view import LegView, OccurrenceView, RuntimeView
 from train_commute_companion.webhook import WebhookTestResult
 
 from .telegram import callback_data
 
 LOOKAHEAD_STALE = timedelta(hours=25)  # a daily run missed or failed
+TOOLS = ("get_status", "get_next_connections", "get_works_ahead")
+REFUSAL_HIDDEN = "details are in Telegram /status and the app log"
+# the check probes at most 3 commute days within 10 days (7.10)
+NO_WORKS = "No planned works found in the commute days the last check covered."
 _TIME = re.compile(r"\d{1,2}:\d{2}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -99,11 +104,17 @@ def parse_target(view: RuntimeView, args: Sequence[str]) -> Target | str:
 
 
 def _leg_line(x: LegView, prefix: str = "  ") -> str:
-    line = f"{prefix}{_hm(x.departure or x.planned_departure)} {x.board} to {x.alight}: {x.state}"
+    state = "on time per NS" if x.state == "ok" else x.state  # never read as proven (rule 20)
+    line = f"{prefix}{_hm(x.departure or x.planned_departure)} {x.board} to {x.alight}: {state}"
     if x.departure_delay_min:
         line += f", +{x.departure_delay_min} min"
     if x.departure_platform:
         line += f", platform {x.departure_platform}"
+    if x.state in ("ok", "delayed"):
+        if x.departure is None:
+            line += ", no reported departure time"
+        if x.arrival is None:
+            line += ", no reported arrival time"
     return line
 
 
@@ -136,7 +147,9 @@ def _occurrence(o: OccurrenceView) -> list[str]:
         out.append(f"  earlier train advised: the {_hm(o.advice.advised_train.planned_departure)}")
     h = o.health
     if h.fresh:
-        out.append("  NS data: fresh")
+        out.append(
+            "  NS data: fresh, last poll failed" if h.consecutive_failures else "  NS data: fresh"
+        )
     else:
         out.append(
             f"  NS data: not fresh since {_hm(h.last_ok_at)}"
@@ -146,10 +159,8 @@ def _occurrence(o: OccurrenceView) -> list[str]:
     return out
 
 
-def render_status(view: RuntimeView, confirmed: bool) -> str:
-    pending = [o for o in view.occurrences if not o.resolved]
-    names = {(d.profile_id): d.profile_name for d in view.directions}
-    lines = [x for o in pending for x in _occurrence(o)]
+def _warnings(view: RuntimeView) -> list[str]:
+    lines = []
     if view.refusal:
         lines.append(f"Profile file refused: {view.refusal}")
     if view.key_rejected:
@@ -158,23 +169,173 @@ def render_status(view: RuntimeView, confirmed: bool) -> str:
         lines.append("State cannot be saved; retrying.")
     if view.undelivered:
         lines.append(f"{view.undelivered} alerts not delivered yet.")
-    lines += [m.text for m in view.moved]
+    return lines
+
+
+def warning_lines(view: RuntimeView, confirmed: bool) -> list[str]:
+    return _warnings(view) + ([] if confirmed else ["Delivery not confirmed yet: send /test."])
+
+
+def _stale(view: RuntimeView, ok: datetime) -> bool:
+    return view.at.astimezone(UTC) - ok.astimezone(UTC) > LOOKAHEAD_STALE
+
+
+def works_lines(view: RuntimeView) -> list[str]:
+    names = {d.profile_id: d.profile_name for d in view.directions}
+    lines = []
     for key, days in view.works.items():
-        pid, _, d = key.partition("|")
+        pid, _, d = key.rpartition("|")  # a profile id may contain "|"; the direction never does
         if days:
             dates = ", ".join(_day(w.service_date) for w in days)
             lines.append(f"Works ahead: {_pretty(names.get(pid, pid))} {d}: {dates}")
     for ok in view.lookahead_last_ok.values():
         if ok is None:
             lines.append("Planned-works check: not run yet")
-        elif view.at.astimezone(UTC) - ok.astimezone(UTC) > LOOKAHEAD_STALE:
+        elif _stale(view, ok):
             lines.append(f"Planned-works check: last ok {_day(ok.astimezone(TZ).date())} {_hm(ok)}")
+    return lines
+
+
+def render_status(view: RuntimeView, confirmed: bool) -> str:
+    pending = [o for o in view.occurrences if not o.resolved]
+    lines = [x for o in pending for x in _occurrence(o)]
+    lines += _warnings(view)
+    lines += [m.text for m in view.moved]
+    lines += works_lines(view)
     if not confirmed:
         lines.append("Delivery not confirmed yet: send /test.")
     if not pending:
         lines.append("No journey is being followed now.")
     lines.append("Data: NS")
     return "\n".join(lines)
+
+
+def for_profile(view: RuntimeView, profile_id: str) -> RuntimeView:
+    """The view as one profile alone would see it; the refusal text echoes rejected values and
+    read errors, so it is replaced by a fixed text."""
+    keys = {f"{profile_id}|{d.value}" for d in Direction}  # exact keys, never a prefix match
+    return replace(
+        view,
+        profiles=tuple(p for p in view.profiles if p.id == profile_id),
+        directions=tuple(d for d in view.directions if d.profile_id == profile_id),
+        occurrences=tuple(o for o in view.occurrences if o.key.profile_id == profile_id),
+        moved=tuple(m for m in view.moved if m.profile_id == profile_id),
+        works={k: v for k, v in view.works.items() if k in keys},
+        lookahead_last_ok={k: v for k, v in view.lookahead_last_ok.items() if k in keys},
+        refusal=REFUSAL_HIDDEN if view.refusal else None,
+    )
+
+
+def _name(view: RuntimeView, profile_id: str) -> str:
+    return next(d.profile_name for d in view.directions if d.profile_id == profile_id)
+
+
+def status_tool(view: RuntimeView, confirmed: bool, profile_id: str) -> dict[str, Any]:
+    return {
+        "profile": profile_id,
+        "name": _pretty(_name(view, profile_id)),
+        "text": render_status(for_profile(view, profile_id), confirmed),
+    }
+
+
+def _reported_hm(obs: TimeObs | None) -> str | None:
+    if obs is None or obs.provenance is not Provenance.REPORTED or obs.value is None:
+        return None  # a planned time is never shown as a reported one (rule 20)
+    return _hm(obs.value)
+
+
+def _connection(c: Connection) -> dict[str, Any]:
+    legs = []
+    for leg in c.legs:
+        b, a = leg.board, leg.alight
+        legs.append(
+            {
+                "train_number": leg.train.train_number,
+                "board": b.code,
+                "alight": a.code,
+                "planned_departure": _hm(b.planned_departure or leg.train.planned_departure),
+                "departure": _reported_hm(b.departure),
+                "planned_arrival": None if a.planned_arrival is None else _hm(a.planned_arrival),
+                "arrival": _reported_hm(a.arrival),
+                "platform": b.actual_track or b.planned_track,
+            }
+        )
+    return {"departure": _hm(_next_time(c)), "from": c.legs[0].board.code, "legs": legs}
+
+
+def connections_tool(
+    view: RuntimeView, confirmed: bool, profile_id: str, direction: Direction
+) -> dict[str, Any]:
+    v = for_profile(view, profile_id)
+    occs = sorted(
+        (o for o in v.occurrences if not o.resolved and o.key.direction is direction),
+        key=lambda o: o.key.service_date,
+    )
+    journeys = [
+        {
+            "service_date": o.key.service_date.isoformat(),
+            "state": o.direction_state.value,
+            "next_good": None if o.next_good is None else _connection(o.next_good),
+        }
+        for o in occs
+    ]
+    lines = [x for o in occs for x in _occurrence(o)] or ["No journey is being followed now."]
+    lines += [*warning_lines(v, confirmed), "Data: NS"]
+    return {
+        "profile": profile_id,
+        "direction": direction.value,
+        "journeys": journeys,
+        "text": "\n".join(lines),
+    }
+
+
+def works_tool(view: RuntimeView, confirmed: bool, profile_id: str) -> dict[str, Any]:
+    v = for_profile(view, profile_id)
+    lines = works_lines(v)
+    directions = []
+    for d in v.directions:
+        key = f"{profile_id}|{d.direction.value}"
+        ok = v.lookahead_last_ok.get(key)
+        if key not in v.lookahead_last_ok:  # a removed profile still running: never checked
+            lines.append("Planned-works check: not run yet")
+        directions.append(
+            {
+                "direction": d.direction.value,
+                "days": [
+                    {"date": w.service_date.isoformat(), "leg": w.leg_index}
+                    for w in v.works.get(key, ())
+                ],
+                "last_ok": None if ok is None else ok.astimezone(TZ).isoformat(),
+                "stale": ok is None or _stale(v, ok),
+            }
+        )
+    if not any(x["stale"] or x["days"] for x in directions):
+        lines.append(NO_WORKS)
+    lines += [*warning_lines(v, confirmed), "Data: NS"]
+    return {"profile": profile_id, "directions": directions, "text": "\n".join(lines)}
+
+
+def answer(view: RuntimeView, confirmed: bool, request: object) -> dict[str, Any]:
+    """One MCP request, validated at the trust boundary; every error is a fixed text or
+    `parse_target`'s own, which may repeat only the caller's own profile text."""
+    if not isinstance(request, dict) or not isinstance(profile := request.get("profile"), str):
+        return {"error": "Bad request."}
+    tool = request.get("tool")
+    if not isinstance(tool, str) or tool not in TOOLS:
+        return {"error": "Unknown tool."}
+    direction = next((d for d in Direction if d.value == request.get("direction")), None)
+    if tool == "get_next_connections" and direction is None:
+        return {"error": "Direction must be outbound or return."}
+    target = parse_target(view, [f"p={profile}"] if profile.strip() else [])
+    if isinstance(target, str):
+        return {"error": target}
+    pid = target.profile_id
+    if tool == "get_status":
+        return status_tool(view, confirmed, pid)
+    if tool == "get_works_ahead":
+        return works_tool(view, confirmed, pid)
+    assert direction is not None  # checked above for get_next_connections
+    return connections_tool(view, confirmed, pid, direction)
 
 
 def status_buttons(view: RuntimeView) -> dict[str, Any] | None:

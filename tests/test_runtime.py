@@ -764,6 +764,29 @@ async def test_unwritten_adoption_is_sent_from_memory_and_written_later(tmp_path
     assert [e.kind for e in rig.rt.events_log].count(EventKind.TIMETABLE_ADOPTED) == 1
 
 
+async def test_storage_retry_keeps_writes_of_a_profile_id_with_a_bar(tmp_path):
+    rig = Rig(tmp_path, "05:40")  # a profile id is any unique text, "|" included
+    rig.write(text=PROFILE.replace("NAME", "office_a").replace('id: "p1"', 'id: "p1|child"'))
+    rig.rt = rig.new()
+    rig.provider.world = every_day()
+    await rig.rt.start()
+    await rig.rt.lookahead_once()
+    rig.clock.t = at("05:40", DAY + timedelta(days=1))
+    await rig.rt.lookahead_once()
+    rig.provider.world = every_day("08:20")
+    rig.clock.t = at("05:40", DAY + timedelta(days=2))
+    rig.store.fail = True
+    await rig.rt.lookahead_once()
+    before = rig.store.load()
+    assert len(before.baselines["p1|child|outbound"].versions) == 1
+    rig.store.fail = False
+    await rig.rt.watchdog_once()  # the retry replays the pending baseline and look-ahead writes
+    saved = rig.store.load()
+    assert len(saved.baselines["p1|child|outbound"].versions) == 2
+    for d in ("outbound", "return"):  # the first write is retried, the second replayed onto it
+        assert saved.lookahead[f"p1|child|{d}"] != before.lookahead[f"p1|child|{d}"]
+
+
 async def test_held_alarm_survives_a_recovery_written_through_a_rename(tmp_path):
     rig = await started(tmp_path)  # rule 22: a held alert keeps the revision it is judged on
     rig.store.fail = True
