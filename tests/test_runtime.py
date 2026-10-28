@@ -1757,6 +1757,10 @@ async def test_profile_file_reads_run_off_the_loop(tmp_path):
     rig.path = ThreadSpyPath(rig.path)
     rig.rt = rig.new()
     await rig.rt.start()
+    loop = threading.get_ident()
+    # start: the start-up stat stays on the loop on purpose, the read in reload hops off it
+    assert ThreadSpyPath.threads[0] == loop
+    assert ThreadSpyPath.threads[1:] and loop not in ThreadSpyPath.threads[1:]
     ThreadSpyPath.threads.clear()
     rig.write("office_c")
     bump_mtime(rig.path)
