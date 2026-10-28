@@ -108,6 +108,14 @@ def _on_track(leg: Leg, track: str) -> Leg:
     return replace(leg, stops=(board, *leg.stops[1:]))
 
 
+def planned_at_alight(leg: Leg) -> Leg:
+    """The leg with its last stop's arrival marked planned only (value and planned time kept)."""
+    last = leg.stops[-1]
+    assert last.arrival is not None
+    arrival = replace(last.arrival, provenance=Provenance.PLANNED)
+    return replace(leg, stops=(*leg.stops[:-1], replace(last, arrival=arrival)))
+
+
 # 08:12 AAA-UT, then the 08:46 UT-RTD 5 min late on new track 7; the next connection 08:44
 ONE_TRANSFER: tuple[Connection, ...] = (
     make_connection(

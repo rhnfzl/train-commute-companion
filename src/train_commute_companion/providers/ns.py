@@ -74,6 +74,12 @@ def _stop(raw: dict[str, Any], aliases: dict[str, str], at: datetime) -> Stop:
     if not code:
         raise MalformedAnswer("stop has no station identifier")
     pa, pd = _dt(raw.get("plannedArrivalDateTime")), _dt(raw.get("plannedDepartureDateTime"))
+    # both tracks from one side, so a live arrival track never reads as a moved departure track
+    side = (
+        "Departure"
+        if raw.get("plannedDepartureTrack") or raw.get("actualDepartureTrack")
+        else "Arrival"
+    )
     return Stop(
         code=str(code),
         name=str(raw.get("name", code)),
@@ -83,8 +89,8 @@ def _stop(raw: dict[str, Any], aliases: dict[str, str], at: datetime) -> Stop:
         departure=_obs(pd, _dt(raw.get("actualDepartureDateTime")), at),
         cancelled=bool(raw.get("cancelled", False)),
         passing=bool(raw.get("passing", False)),
-        planned_track=_str(raw.get("plannedDepartureTrack") or raw.get("plannedArrivalTrack")),
-        actual_track=_str(raw.get("actualDepartureTrack") or raw.get("actualArrivalTrack")),
+        planned_track=_str(raw.get(f"planned{side}Track") or None),
+        actual_track=_str(raw.get(f"actual{side}Track") or None),
         uic=uic,
     )
 
