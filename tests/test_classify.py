@@ -429,3 +429,38 @@ def test_cut_short_copies_take_the_latest_arrival_at_the_cut():  # 7.12: a misse
     for order in both(early, late):
         _, cl = run_of(at_(NEWER, *order))
         assert cl.dep_delay_min == 0 and cl.last_served.arrival == late.stops[1].arrival
+
+
+def at_xa(leg, late=0, plan=0, provenance=Provenance.REPORTED):
+    """`leg` with its first stop after boarding planned `plan` min later, reported `late` after."""
+    xa = leg.stops[1]
+    planned = xa.arrival.planned + timedelta(minutes=plan)
+    arr = replace(
+        xa.arrival, planned=planned, value=planned + timedelta(minutes=late), provenance=provenance
+    )
+    xa = replace(xa, planned_arrival=planned, arrival=arr)
+    return replace(leg, stops=(leg.stops[0], xa, *leg.stops[2:]))
+
+
+def test_copies_take_the_worst_arrival_at_every_stop():  # 7.12: a frozen change stop too
+    running, cut = r6666(stops=["XA"]), r6666(stops=["XA", "XB"], cut_after="XB")
+    for leg, kind in ((running, LegKind.OK), (cut, LegKind.CUT_SHORT)):
+        late = at_xa(leg, late=8)
+        for order in both(at_xa(leg), late):
+            _, cl = run_of(at_(NEWER, *order))
+            assert cl.kind is kind and cl.leg.stops[1].arrival == late.stops[1].arrival
+        for order in both(at_xa(leg), at_xa(leg, provenance=Provenance.PLANNED)):
+            assert run_of(at_(NEWER, *order))[1].leg.stops[1].arrival.provenance is (
+                Provenance.PLANNED
+            )
+
+
+def test_copies_keep_the_latest_planned_arrival():  # 7.10: a short planned change is kept
+    planned_late, reported_late = (
+        at_xa(r6666(stops=["XA"]), late=-3, plan=3),
+        at_xa(r6666(stops=["XA"]), late=1),
+    )
+    for order in both(planned_late, reported_late):
+        xa = run_of(at_(NEWER, *order))[1].leg.stops[1]
+        assert xa.planned_arrival == planned_late.stops[1].planned_arrival
+        assert xa.arrival == reported_late.stops[1].arrival

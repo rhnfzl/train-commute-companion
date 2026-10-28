@@ -128,6 +128,29 @@ def _when(o: TimeObs | None, sign: int) -> tuple[int, float]:
     return (0 if o is None else _TRUST[o.provenance]), (sign * t.timestamp() if t else 0.0)
 
 
+def _worst_arrival(o: TimeObs | None) -> tuple[tuple[int, float], float]:
+    # on equal times the earlier planned one, so the larger delay counts
+    p = None if o is None else o.planned
+    return _when(o, -1), p.timestamp() if p else 0.0
+
+
+def merge_arrivals(leg: Leg, copies: Iterable[Leg]) -> Leg:
+    """`leg` with each served stop after boarding at the worst of every copy that serves it, in
+    any order (7.3, 7.10, 7.12): the least trusted then latest arrival, and the latest planned
+    arrival, so a frozen or planned change stop is never judged by the kinder copy."""
+    pool = [s for g in (leg, *copies) for s in g.stops[1:] if served(s)]
+
+    def worst(s: Stop) -> Stop:
+        if not served(s):
+            return s
+        same = [t for t in pool if t.code == s.code]
+        planned = max((t.planned_arrival for t in same if t.planned_arrival), default=None)
+        arrival = min((t.arrival for t in same), key=_worst_arrival)
+        return replace(s, arrival=arrival, planned_arrival=planned or s.planned_arrival)
+
+    return replace(leg, stops=(leg.stops[0], *map(worst, leg.stops[1:])))
+
+
 def _arrival_at(leg: Leg, alight: str) -> TimeObs | None:
     return next((s.arrival for s in leg.stops[1:] if s.code == alight), None)
 
@@ -201,19 +224,10 @@ def current_run(
             log.warning("conflicting copies of train %s at one fetch", train.train_number)
         # in any order: a cancellation, else the earliest cut
         seen, win = min(bad, key=lambda r: _cut_at(r[1]))
-        if (end := win.last_served) is not None:
-            # the user changes at the cut: its latest arrival over every copy that serves it
-            arr = min(
-                (
-                    s.arrival
-                    for r in at_top
-                    for s in r[1].leg.stops[1:]
-                    if s.code == end.code and served(s)
-                ),
-                key=lambda o: _when(o, -1),
-            )
-            stops = tuple(replace(s, arrival=arr) if s is end else s for s in win.leg.stops)
-            win = classify_leg(replace(win.leg, stops=(board_stop, *stops[1:])), alight)
+        if win.last_served is not None:
+            # the user changes at the cut, or at a stop frozen before it: worst of every copy
+            g = merge_arrivals(win.leg, (r[1].leg for r in at_top))
+            win = classify_leg(replace(g, stops=(board_stop, *g.stops[1:])), alight)
     else:
         best = max(map(rank, runs))  # a truncated newer copy never reads as a cut short
         at = next(r[0] for r in runs if rank(r) == best).astimezone(UTC)
@@ -221,9 +235,10 @@ def current_run(
             (r for r in runs if rank(r) == best and r[0].astimezone(UTC) == at),
             key=lambda r: _when(_arrival_at(r[1].leg, alight), -1),
         )
-        # departure time, platform and provenance always from the newest answer
-        stops = (board_stop, *win.leg.stops[1:])
-        win = classify_leg(replace(win.leg, stops=stops), alight)
+        # every stop at the worst of its fetch's copies, truncated ones included; departure
+        # time, platform and provenance always from the newest answer
+        g = merge_arrivals(win.leg, (r[1].leg for r in runs if r[0].astimezone(UTC) == at))
+        win = classify_leg(replace(g, stops=(board_stop, *g.stops[1:])), alight)
     # a changed platform from any newest copy is kept: a missed change costs more (7.12)
     track = min((r[1].leg.board for r in at_top), key=_unchanged_track)
     here = replace(

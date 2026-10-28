@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 
 from train_commute_companion.calendar import TZ, is_commute_day, resolve_local
-from train_commute_companion.classify import classify_leg, current_connection
+from train_commute_companion.classify import classify_leg, current_connection, merge_arrivals
 from train_commute_companion.delivery import Obligation
 from train_commute_companion.lifecycle import FOLLOW_LIMIT
 from train_commute_companion.match import matches_pattern, usual_connection
@@ -388,6 +388,18 @@ def evaluate(
         if any(x.status == "MAINTENANCE" for x in copies(c)):
             return replace(now, status="MAINTENANCE")
         return now
+
+    def snap(c: Connection | None) -> Connection | None:
+        """One snapshot of `c`'s copies for every judgment, fingerprint, baseline and expiry:
+        each stop at its worst, in any order (7.10, 7.12)."""
+        if c is None:
+            return None
+        xs = copies(c)
+        merged = (merge_arrivals(g, (x.legs[i] for x in xs)) for i, g in enumerate(c.legs))
+        return replace(c, legs=tuple(merged))
+
+    legs = [snap(c) for c in legs]
+    whole, pattern = snap(whole), snap(pattern)
 
     chain_issues = {
         i: issue

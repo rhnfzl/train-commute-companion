@@ -29,6 +29,7 @@ from train_commute_companion.lookahead import (
     BaselineVersion,
     LookAheadLedger,
     _overlaps,
+    _probed_end,
     carried_ids,
     evaluate,
     forget_pending,
@@ -722,3 +723,36 @@ def test_probe_checks_works_against_the_stops_of_every_copy():  # 7.10
         ]
         rs = evaluate(P, OUT, TUE, answers, works, None)
         assert [(r.leg_index, r.clean) for r in rs] == [(0, True), (1, False), (None, False)]
+
+
+def test_probe_keeps_a_short_planned_change_of_any_copy():  # 7.10: never a falsely clean probe
+    _, b = legs(TUE)
+    planned_late = make_leg("AAA", "UT", "08:12", "08:43", day=TUE, number="1000", delay_arr=-3)
+    reported_late = make_leg("AAA", "UT", "08:12", "08:40", day=TUE, number="1000", delay_arr=1)
+    for pair in ((planned_late, reported_late), (reported_late, planned_late)):
+        answers = [
+            ans("AAA", "UT", make_connection([planned_late])),
+            ans("UT", "RTD", make_connection([b])),
+            ans("AAA", "RTD", *(make_connection([x, b]) for x in pair)),
+        ]
+        rs = evaluate(P, OUT, TUE, answers, CLEAR, None)
+        assert not any(r.clean or r.transfer_ok for r in rs)
+        (whole,) = [r for r in rs if r.leg_index is None]
+        assert "short:UT:3:4" in whole.fingerprint
+
+
+def test_probe_snapshot_of_copies_is_the_same_in_any_order():  # fingerprint, baseline, expiry
+    a, b = legs(TUE)
+    later = make_leg("UT", "RTD", "08:46", "09:44", day=TUE, number="2000", delay_arr=-20)
+    seen = set()
+    for pair in ((b, later), (later, b)):
+        answers = [
+            ans("AAA", "UT", make_connection([a])),
+            ans("UT", "RTD", *(make_connection([x]) for x in pair)),
+            ans("AAA", "RTD", *(make_connection([a, x]) for x in pair)),
+        ]
+        rs = evaluate(P, OUT, TUE, answers, CLEAR, None)
+        seen.add(tuple((r.fingerprint, _probed_end(r)) for r in rs))
+    assert len(seen) == 1
+    ((*_, (fp, end)),) = seen
+    assert fp.endswith("/58") and end == datetime(2026, 10, 27, 12, 14, tzinfo=AMS)

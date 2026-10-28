@@ -563,3 +563,15 @@ def test_arrival_limit_is_compared_across_midnight():
         leg = make_leg("AAA", "RTD", "23:20", "23:50", number="9", delay_arr=delay)
         e = _delayed(c, progress_of(leg), classify_leg(leg, "RTD"), last=True)
         assert (e.severity is Severity.LOUD) is loud, (delay, e.text)
+
+
+def test_frozen_stop_takes_the_latest_arrival_of_any_copy():  # 7.12: never a missed alarm
+    ut = T_FULL.stops[2]
+    late_ut = replace(ut, arrival=replace(ut.arrival, value=at("08:27")))
+    late = replace(T_FULL, stops=(*T_FULL.stops[:2], late_ut, *T_FULL.stops[3:]))
+    for pair in ((T_FULL, late), (late, T_FULL)):
+        s = cut_at_ut(LegState.RIDING)
+        t = poll(
+            s, ctx(at("08:20"), DIRECT), ans("AAA", *map(conn, pair)), ans("UT", conn(FROM_UT))
+        )
+        assert (EventKind.TRANSFER_BROKEN, Severity.LOUD) in kinds(t)
