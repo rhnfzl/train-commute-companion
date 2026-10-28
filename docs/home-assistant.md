@@ -6,7 +6,7 @@ It needs Home Assistant 2026.10 or newer and the Home Assistant companion app on
 
 ## Install
 
-1. In HACS, open the menu, choose Custom repositories, and add `https://github.com/OWNER/train-commute-companion` as an Integration.
+1. In HACS, open the menu, choose Custom repositories, and add `https://github.com/rhnfzl/train-commute-companion` as an Integration.
 2. Download Train Commute Companion in HACS and restart Home Assistant.
 
 ## Set up
