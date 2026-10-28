@@ -1,5 +1,4 @@
 import asyncio
-import dataclasses
 import logging
 import socket
 import threading
@@ -8,11 +7,19 @@ from pathlib import Path
 
 import pytest
 from builders import ONE_TRANSFER
-from conftest import CHAT, TOKEN, FakeTelegram, StationsProvider, TickClock, gated_saves
+from conftest import (
+    CHAT,
+    CODES,
+    TOKEN,
+    StationsProvider,
+    TickClock,
+    gated_saves,
+    make_app,
+)
 from tcc_app.bot import load_state
-from tcc_app.main import App, Settings, build, main, serve, setup_logging
-from tcc_app.web import health_report
-from test_runtime import PROFILE, Provider, at
+from tcc_app.main import App, Settings, main, serve, setup_logging
+from tcc_app.web import ask_readout, health_report, mcp_socket_path, start_readout
+from test_runtime import Provider, at
 from webhook_receiver import Receiver
 
 from train_commute_companion.lifecycle import Leaving
@@ -20,22 +27,9 @@ from train_commute_companion.model import EventKind
 from train_commute_companion.runtime import WebhookPoster
 from train_commute_companion.store import JsonFileStore
 
-ONE_PROFILE = PROFILE.split('  - id: "p2"')[0].replace("NAME", "office_a")
-CODES = frozenset({"AAA", "UT", "RTD"})
 ENV = {"NS_API_KEY": "k", "TELEGRAM_BOT_TOKEN": TOKEN}
 URL, URL2 = "https://hooks.example.invalid/tcc", "https://hooks2.example.invalid/tcc"
 SECRET, WTOKEN = "test-webhook-secret-0001", "test-webhook-token-0001"
-
-
-def make_app(tmp_path: Path, tg: FakeTelegram, clock: TickClock, provider=None,
-             lookahead_at: time = time(6, 0), **settings) -> App:  # fmt: skip
-    profiles = tmp_path / "profiles.yaml"
-    profiles.write_text(ONE_PROFILE)
-    s = Settings("k", TOKEN, CHAT, None, profiles, tmp_path, lookahead_at)
-    s = dataclasses.replace(s, **settings)
-    if provider is None:
-        provider = StationsProvider(Provider(clock, list(ONE_TRANSFER)), CODES)
-    return build(s, clock=clock, provider=provider, client=tg.client())
 
 
 def free_port() -> int:
@@ -380,3 +374,63 @@ async def test_health_webhooks_failing_is_false_after_an_accepted_try(tmp_path, 
     app = make_app(tmp_path, tg, clock, **HOOKS)  # restarted on the saved state
     await app.rt.start()
     assert failing(app) is False
+
+
+async def test_unbindable_socket_leaves_the_app_running(tmp_path, tg, sock, caplog):  # RF 1
+    sock.write_text("not a socket")
+    with caplog.at_level(logging.WARNING, logger="tcc_app.web"):
+        assert await start_readout(sock, lambda req: {}) is None
+    warned = [r for r in caplog.records if "MCP socket unavailable" in r.getMessage()]
+    assert len(warned) == 1 and warned[0].levelno == logging.WARNING
+    app = make_app(tmp_path, tg, TickClock(at("07:50")), mcp_socket=sock)
+    port = free_port()
+    task = asyncio.create_task(serve(app, port))
+    await until(lambda: app.rt.started)
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
+    await writer.drain()
+    assert (await asyncio.wait_for(reader.read(), 2)).startswith(b"HTTP/1.1 ")
+    writer.close()
+    await asyncio.sleep(0.05)
+    assert not task.done()  # the runtime and the bot keep running
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert sock.read_text() == "not a socket"  # a regular file is never removed
+
+
+def test_settings_mcp_socket_follows_the_state_dir():
+    assert Settings.from_env(ENV).mcp_socket == Path("/data/mcp.sock")
+    assert Settings.from_env({**ENV, "TCC_STATE_DIR": "/srv/tcc"}).mcp_socket == Path(
+        "/srv/tcc/mcp.sock"
+    )
+    assert mcp_socket_path({"TCC_STATE_DIR": "/srv/tcc"}) == Path("/srv/tcc/mcp.sock")
+
+
+async def test_serve_answers_mcp_reads_and_changes_nothing(tmp_path, tg, sock):
+    clock = TickClock(at("07:50"))
+    app = make_app(tmp_path, tg, clock, mcp_socket=sock)
+    task = asyncio.create_task(serve(app, free_port()))
+    await until(lambda: app.rt.started and sock.exists() and not app.bot.writes)
+    never = asyncio.Event()
+
+    async def frozen(seconds: float) -> None:
+        await never.wait()
+
+    clock.sleep = frozen  # the runtime's own loops stop, so any change would be the read-out's
+    await asyncio.sleep(0.1)
+    state, requests = app.rt.state, app.rt.view().requests
+    sent, file = len(tg.sent), (tmp_path / "tcc-state.json").read_bytes()
+    for req in (
+        {"tool": "get_status", "profile": "p1"},
+        {"tool": "get_next_connections", "profile": "p1", "direction": "outbound"},
+        {"tool": "get_works_ahead", "profile": "p1"},
+    ):
+        reply = await ask_readout(sock, req)
+        assert reply["text"].endswith("Data: NS"), reply
+    assert app.rt.state is state and app.rt.view().requests == requests
+    assert len(tg.sent) == sent and (tmp_path / "tcc-state.json").read_bytes() == file
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not sock.exists()

@@ -1,5 +1,10 @@
 import asyncio
+import functools
 import json
+import logging
+import socket
+import stat
+import time
 import urllib.error
 from dataclasses import replace
 from datetime import timedelta
@@ -7,7 +12,17 @@ from pathlib import Path
 
 import pytest
 from conftest import StationsProvider, TickClock
-from tcc_app.web import BODY_LIMIT, health_for, health_report, start_web
+from tcc_app import commands, web
+from tcc_app.web import (
+    BODY_LIMIT,
+    MCP_REPLY_MAX,
+    ask_readout,
+    health_for,
+    health_report,
+    start_readout,
+    start_web,
+)
+from test_commands import occ, view
 from test_main import CODES, make_app
 from test_runtime import Provider, at, every_day
 
@@ -160,3 +175,97 @@ async def test_dockerfile_healthcheck_still_reads_the_status():
     finally:
         server.close()
         await server.wait_closed()
+
+
+async def test_readout_round_trip_on_a_private_socket(sock):
+    server = await start_readout(sock, lambda req: {"echo": req})
+    assert server is not None
+    assert stat.S_IMODE(sock.stat().st_mode) == 0o600
+    assert await ask_readout(sock, {"tool": "x"}) == {"echo": {"tool": "x"}}
+    server.close()
+    await server.wait_closed()
+
+
+async def _exchange(sock, data: bytes, read: bool = True) -> bytes:
+    reader, writer = await asyncio.open_unix_connection(sock)
+    writer.write(data)
+    await writer.drain()
+    try:
+        return await asyncio.wait_for(reader.read(), 0.5) if read else b""
+    finally:
+        writer.close()
+
+
+async def test_bad_requests_get_a_fixed_error_and_never_stall_the_loop(
+    sock, monkeypatch, caplog
+):  # RF 4
+    monkeypatch.setattr(web, "MCP_TIMEOUT_S", 0.05)
+    turns = [0]
+
+    async def count() -> None:
+        while True:
+            turns[0] += 1
+            await asyncio.sleep(0)
+
+    counter = asyncio.create_task(count())
+    real = functools.partial(commands.answer, view(occ()), True)
+    current = [real]
+    server = await start_readout(sock, lambda req: current[0](req))
+    assert server is not None
+
+    assert json.loads(await _exchange(sock, b"not json\n")) == {"error": "Bad request."}
+    assert await _exchange(sock, b"x" * 5000) == b""  # oversized, no newline: closed, unanswered
+
+    t0 = time.monotonic()
+    assert await _exchange(sock, b"") == b""  # sends nothing: closed on the timeout
+    assert time.monotonic() - t0 < 0.5
+
+    def boom(req: object) -> dict:
+        raise RuntimeError("boom-detail")
+
+    current[0] = boom
+    with caplog.at_level(logging.ERROR, logger="tcc_app.web"):
+        reply = await _exchange(sock, b'{"tool": "get_status", "profile": "p1"}\n')
+    assert json.loads(reply) == {"error": "Internal error; see the app log."}
+    assert b"boom-detail" not in reply and "boom-detail" not in caplog.text
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and "RuntimeError" in errors[0].getMessage()
+    assert errors[0].exc_info is None
+
+    current[0] = lambda req: {"x": "a" * MCP_REPLY_MAX}
+    assert json.loads(await _exchange(sock, b"{}\n")) == {"error": "Reply too large."}
+
+    # a client that asks for a 900 KB reply and never reads it is aborted on the timeout
+    current[0] = lambda req: {"x": "a" * 900_000}
+    raw = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    raw.connect(str(sock))
+    raw.sendall(b"{}\n")
+    before = turns[0]
+    await asyncio.sleep(0.3)  # never read in this time; the server's 0.05 s budget ran out
+    assert turns[0] > before  # the loop kept turning throughout
+    raw.settimeout(0.5)
+    got = b""
+    while chunk := raw.recv(65536):  # only what the kernel already held, then EOF
+        got += chunk
+    raw.close()
+    assert len(got) < 900_000  # aborted: the rest of the reply was dropped, not sent
+
+    current[0] = real
+    reply = await ask_readout(sock, {"tool": "get_status", "profile": "p1"})
+    assert reply["text"].endswith("Data: NS")
+    counter.cancel()
+    server.close()
+    await server.wait_closed()
+
+
+async def test_stale_socket_is_replaced_at_start(sock):  # Review Focus 1
+    dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    dead.bind(str(sock))
+    dead.close()  # a killed run: the file stays, nobody listens
+    assert sock.exists()
+    server = await start_readout(sock, lambda req: {"ok": True})
+    assert server is not None
+    assert await ask_readout(sock, {}) == {"ok": True}
+    server.close()
+    await server.wait_closed()

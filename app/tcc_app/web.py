@@ -1,5 +1,6 @@
 """The HTTP side on a tiny asyncio server: `/health` for an uptime check (7.11, 7.12 rule 22) and
-`POST /owntracks` for OwnTracks HTTP mode (8)."""
+`POST /owntracks` for OwnTracks HTTP mode (8), and the read-only MCP read-out on a private Unix
+socket (9, 7.12 rule 15: local only)."""
 
 import asyncio
 import base64
@@ -7,8 +8,10 @@ import binascii
 import hmac
 import json
 import logging
+import os
 from collections.abc import Callable, Mapping
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any
 
 from train_commute_companion.view import RuntimeView
@@ -18,6 +21,9 @@ log = logging.getLogger(__name__)
 HEAD_LIMIT = 16 * 1024
 BODY_LIMIT = 64 * 1024
 READ_TIMEOUT_S = 10.0
+MCP_REQUEST_MAX = 4096
+MCP_REPLY_MAX = 1_048_576
+MCP_TIMEOUT_S = 5.0
 
 
 def health_report(
@@ -176,3 +182,74 @@ async def start_web(
             writer.close()
 
     return await asyncio.start_server(handle, host, port, limit=HEAD_LIMIT)
+
+
+def mcp_socket_path(env: Mapping[str, str]) -> Path:
+    """In the state directory: the example compose file runs the container read-only, and the
+    data volume is the one writable place."""
+    return Path(env.get("TCC_STATE_DIR", "").strip() or "/data") / "mcp.sock"
+
+
+async def start_readout(
+    path: Path, answer: Callable[[object], dict[str, Any]]
+) -> asyncio.Server | None:
+    """One JSON line in, one JSON line out, then closed. `answer` is all the handler holds, so
+    it can read the view but never act. None, after one warning, when the socket cannot be
+    bound: the app keeps polling and alerting without MCP."""
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            async with asyncio.timeout(MCP_TIMEOUT_S):
+                line = await reader.readline()
+                if not line.endswith(b"\n"):
+                    return  # gone client, or an oversized line ended by the limit
+                try:
+                    request = json.loads(line)
+                except ValueError:
+                    request = None
+                try:
+                    # view and format in one step: no await between, so no runtime coroutine runs in between
+                    data = json.dumps(answer(request)).encode()
+                # any failure gets the fixed reply; only the class is logged (text may carry view data)
+                except Exception as e:  # noqa: BLE001
+                    log.error("MCP read-out failed (%s)", type(e).__name__)
+                    data = json.dumps({"error": "Internal error; see the app log."}).encode()
+                if len(data) > MCP_REPLY_MAX - 1:
+                    data = json.dumps({"error": "Reply too large."}).encode()
+                writer.write(data + b"\n")
+                await writer.drain()
+        except TimeoutError:
+            writer.transport.abort()  # drops a reply nobody reads, so it cannot hold the buffer
+        except (ValueError, ConnectionError):
+            pass  # an oversized line, or a client that went away
+        finally:
+            writer.close()
+
+    server = None
+    try:
+        server = await asyncio.start_unix_server(handle, path, limit=MCP_REQUEST_MAX)
+        os.chmod(path, 0o600)
+    except OSError as e:
+        if server is not None:
+            server.close()
+        log.warning("MCP socket unavailable (%s); MCP is off", type(e).__name__)
+        return None
+    return server
+
+
+async def ask_readout(path: Path, request: Mapping[str, Any]) -> dict[str, Any]:
+    """The client side: raises OSError, TimeoutError or ValueError on failure."""
+    async with asyncio.timeout(MCP_TIMEOUT_S):
+        reader, writer = await asyncio.open_unix_connection(path, limit=MCP_REPLY_MAX)
+        try:
+            writer.write(json.dumps(request).encode() + b"\n")
+            await writer.drain()
+            line = await reader.readline()
+        finally:
+            writer.close()
+    if not line.endswith(b"\n"):
+        raise ValueError("no reply")
+    reply = json.loads(line)
+    if isinstance(reply, dict):
+        return reply
+    raise ValueError("reply is not an object")

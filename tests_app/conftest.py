@@ -2,19 +2,23 @@ import asyncio
 import dataclasses
 import json
 import re
+import shutil
+import tempfile
 import threading
-from collections.abc import AsyncIterator, Callable, Mapping
-from datetime import UTC, datetime
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from datetime import UTC, datetime, time
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from builders import ONE_TRANSFER
 from tcc_app import bot as bot_mod
 from tcc_app.bot import ShellState, save_state
 from tcc_app.follow import Fix
 from tcc_app.main import App, Settings, build
-from test_runtime import FakeClock, at
+from test_runtime import PROFILE, FakeClock, at
+from test_runtime import Provider as FakeProvider
 
 from train_commute_companion.model import Severity
 from train_commute_companion.profile import parse_profiles
@@ -24,6 +28,8 @@ from train_commute_companion.replay import Replay, apply_event, load_replay
 CHAT = 1000001
 STRANGER = 2000002
 TOKEN = "123:TEST"
+ONE_PROFILE = PROFILE.split('  - id: "p2"')[0].replace("NAME", "office_a")
+CODES = frozenset({"AAA", "UT", "RTD"})
 
 
 class FakeTelegram:
@@ -141,6 +147,25 @@ class StationsProvider:
 
     async def stations(self) -> frozenset[str]:
         return self.codes
+
+
+def make_app(tmp_path: Path, tg: FakeTelegram, clock: TickClock, provider=None,
+             lookahead_at: time = time(6, 0), **settings) -> App:  # fmt: skip
+    profiles = tmp_path / "profiles.yaml"
+    profiles.write_text(ONE_PROFILE)
+    s = Settings("k", TOKEN, CHAT, None, profiles, tmp_path, lookahead_at)
+    s = dataclasses.replace(s, **settings)
+    if provider is None:
+        provider = StationsProvider(FakeProvider(clock, list(ONE_TRANSFER)), CODES)
+    return build(s, clock=clock, provider=provider, client=tg.client())
+
+
+@pytest.fixture
+def sock() -> Iterator[Path]:
+    """A short socket path: macOS caps AF_UNIX paths near 104 bytes, too short for tmp_path."""
+    d = Path(tempfile.mkdtemp(None, "tcc", "/tmp"))  # suffix, prefix, parent
+    yield d / "mcp.sock"
+    shutil.rmtree(d, ignore_errors=True)
 
 
 def spied(app: Any) -> list[tuple[str | None, str]]:

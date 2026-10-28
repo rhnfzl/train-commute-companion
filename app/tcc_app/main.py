@@ -6,10 +6,11 @@ import functools
 import logging
 import os
 import signal
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, time
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -28,9 +29,10 @@ from train_commute_companion.webhook import check_secret, check_token, parse_url
 
 from . import owntracks
 from .bot import Bot
+from .commands import answer
 from .follow import Follower
 from .telegram import TelegramApi, TelegramNotifier
-from .web import health_report, start_web
+from .web import health_report, mcp_socket_path, start_readout, start_web
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +63,7 @@ class Settings:
     webhook_urls: tuple[str, ...] = ()
     webhook_secret: str = ""  # empty: unset
     webhook_token: str = ""
+    mcp_socket: Path | None = None  # None: MCP off
 
     @staticmethod
     def from_env(env: Mapping[str, str]) -> "Settings":
@@ -119,6 +122,7 @@ class Settings:
             webhook_urls,
             webhook_secret,
             webhook_token,
+            mcp_socket_path(env),
         )
 
 
@@ -158,12 +162,18 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
     return App(s, rt, notifier, bot, follower, webhooks)
 
 
+def mcp_answer(app: App) -> Callable[[object], dict[str, Any]]:
+    """The read-out gets a view and the confirmed flag, never the runtime or the settings."""
+    return lambda req: answer(app.rt.view(), app.bot.confirmed, req)
+
+
 async def serve(app: App, port: int) -> int:
     """Returns 1 when any part ends (Docker restarts the container); cancelled, it cleans up
     the same way and re-raises."""
     before = asyncio.all_tasks()
     runtime = asyncio.create_task(app.rt.run_forever(), name="runtime")
     server: asyncio.Server | None = None
+    readout: asyncio.Server | None = None
     try:
         secret = app.settings.owntracks_secret
         server = await start_web(
@@ -178,6 +188,8 @@ async def serve(app: App, port: int) -> int:
             secret=secret,
             health_token=app.settings.health_token,
         )
+        if app.settings.mcp_socket is not None:
+            readout = await start_readout(app.settings.mcp_socket, mcp_answer(app))
         bot = asyncio.create_task(app.bot.run(), name="telegram")
         done, _ = await asyncio.wait((runtime, bot), return_when=asyncio.FIRST_COMPLETED)
         for t in done:
@@ -187,8 +199,9 @@ async def serve(app: App, port: int) -> int:
                 log.error("%s stopped", t.get_name())
         return 1
     finally:
-        if server is not None:
-            server.close()
+        for srv in (server, readout):
+            if srv is not None:
+                srv.close()
         # run_forever's gather leaves the watchdog running when start raises, and
         # Server.close leaves open connection handlers running: every task begun here goes,
         # except a Telegram save, whose worker thread outlives a cancel (bot.close drains it)
@@ -198,8 +211,12 @@ async def serve(app: App, port: int) -> int:
         await asyncio.gather(*rest, return_exceptions=True)
         await app.bot.close()
         await app.follower.close()
-        if server is not None:
-            await server.wait_closed()
+        for srv in (server, readout):
+            if srv is not None:
+                await srv.wait_closed()
+        sock = app.settings.mcp_socket
+        if readout is not None and sock is not None and sock.is_socket():
+            sock.unlink(missing_ok=True)  # never a regular file someone put there
 
 
 def setup_logging() -> None:
