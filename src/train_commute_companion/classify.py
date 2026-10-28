@@ -1,5 +1,6 @@
 """Per-leg classification and train identity (6.1, 6.2). Pure functions, no clock."""
 
+import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -19,6 +20,8 @@ from train_commute_companion.model import (
 from train_commute_companion.providers.base import ProviderAnswer
 
 DELAYED_AT_MIN = 3
+
+log = logging.getLogger(__name__)
 
 
 def _delay(obs: TimeObs | None) -> int | None:
@@ -82,10 +85,12 @@ def _minute(t: datetime) -> datetime:
 def find_leg(
     answer: ProviderAnswer, train: TrainId, board_station: str
 ) -> tuple[Leg | None, Observation]:
-    """Exact planned departure at `board_station` plus the stored number; never by proximity."""
+    """Exact planned departure at `board_station` plus the stored number; never by proximity.
+    Identity is judged over every answer of the poll (6.1); a leg is returned from
+    `answer.connections` first, so a pool's own candidates keep their copy."""
     want = _minute(train.planned_departure)
     found: dict[tuple[object, str], Leg] = {}
-    for conn in answer.connections:
+    for conn in (*answer.connections, *(c for a in evidence(answer) for c in a.connections)):
         for leg in conn.legs:
             dep = leg.board.planned_departure
             if leg.board.code == board_station and dep is not None and _minute(dep) == want:
@@ -143,14 +148,22 @@ def current_run(
         # never by stop count: two copies that both reach `alight` tie, and max keeps the newest
         return r[1].kind not in (LegKind.CANCELLED, LegKind.CUT_SHORT), _reaches(r[1].leg, alight)
 
+    def stopped(c: ClassifiedLeg) -> bool:
+        return c.kind is LegKind.CANCELLED or (
+            c.kind is LegKind.CUT_SHORT and _explicit_cut(c.leg, alight)
+        )
+
     # by instant: two local 02:30s of the DST fold are an hour apart (7.13)
     top = runs[0][0].astimezone(UTC)
-    newest = max((r for r in runs if r[0].astimezone(UTC) == top), key=rank)
+    at_top = [r for r in runs if r[0].astimezone(UTC) == top]
+    bad = [r for r in at_top if stopped(r[1])]
+    if bad:
+        # rule 7.12: conflicting newest copies never read as running, a missed alarm costs more
+        if len(bad) < len(at_top):
+            log.warning("conflicting copies of train %s at one fetch", train.train_number)
+        return bad[0]
+    newest = max(at_top, key=rank)
     n = newest[1]
-    if n.kind is LegKind.CANCELLED or (
-        n.kind is LegKind.CUT_SHORT and _explicit_cut(n.leg, alight)
-    ):
-        return newest
     seen, win = max(runs, key=rank)  # a truncated newer copy never reads as a cut short
     if seen.astimezone(UTC) < top:
         # departure time, platform and provenance always from the newest answer
@@ -159,13 +172,54 @@ def current_run(
 
 
 def _pair(answers: Sequence[ProviderAnswer], inc: TrainId, out: TrainId) -> tuple[Leg, Leg] | None:
-    """The newest copy of the change from `inc` directly into `out`."""
-    for a in _newest_first(answers):
-        for c in a.connections:
-            for p, q in pairwise(c.legs):
-                if p.train == inc and q.train == out:
-                    return p, q
-    return None
+    """The newest copy of the change from `inc` directly into `out`. Copies that disagree at
+    the newest fetch are merged to the worst of each field (7.12: never a missed alarm)."""
+    found = [
+        (a.fetched_at.astimezone(UTC), p, q)
+        for a in answers
+        for c in a.connections
+        for p, q in pairwise(c.legs)
+        if p.train == inc and q.train == out
+    ]
+    if not found:
+        return None
+    top = max(t for t, _, _ in found)
+    pairs = [(p, q) for t, p, q in found if t == top]
+    p, q = pairs[0]
+    fields = {
+        (
+            x.change_possible,
+            x.transfer_time_to_next,
+            x.reachable,
+            y.transfer_message_min,
+            y.reachable,
+        )
+        for x, y in pairs
+    }
+    if len(fields) == 1:
+        return p, q
+    log.warning("conflicting copies of the change %s to %s", inc.train_number, out.train_number)
+
+    def worst(vals: Iterable[bool | None]) -> bool | None:
+        v = set(vals)
+        return False if False in v else None if None in v else True
+
+    def most(vals: Iterable[int | None]) -> int | None:
+        return max((v for v in vals if v is not None), default=None)
+
+    return (
+        replace(
+            p,
+            change_possible=worst(x.change_possible for x, _ in pairs),
+            transfer_time_to_next=most(x.transfer_time_to_next for x, _ in pairs),
+            reachable=worst(x.reachable for x, _ in pairs),
+        ),
+        replace(
+            q,
+            transfer_message_min=most(y.transfer_message_min for _, y in pairs),
+            reachable=worst(y.reachable for _, y in pairs),
+        ),
+    )
 
 
 def _with_change(inc: Leg, out: Leg, pair: tuple[Leg, Leg] | None) -> tuple[Leg, Leg]:

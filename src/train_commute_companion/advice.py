@@ -20,7 +20,7 @@ from train_commute_companion.lifecycle import (
     _event,
     catch_from_state,
 )
-from train_commute_companion.match import usual_connection
+from train_commute_companion.match import current_arrival, usual_connection
 from train_commute_companion.model import (
     AdviceRecord,
     AlertEvent,
@@ -119,7 +119,7 @@ def _ridden(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Connection 
         and c.legs[-1].alight.code == ctx.profile.destination(ctx.direction)
         and len(c.legs) == len(j.transfers) + 2
     ]
-    return min(cut, key=lambda c: _arrival(c) or _FAR) if cut else None
+    return min(cut, key=lambda c: current_arrival(answer, c)) if cut else None
 
 
 def _gate(s: OccurrenceState, ctx: Ctx) -> bool:

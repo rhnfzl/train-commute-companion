@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from train_commute_companion.calendar import TZ
+from train_commute_companion.classify import current_connection, evidence
 from train_commute_companion.model import Connection, Leg, Signature, TrainId
 from train_commute_companion.providers.base import ProviderAnswer
 
@@ -24,6 +25,13 @@ def _arrival(leg: Leg) -> datetime:
     o = leg.alight.arrival
     t = o.value if o and o.value else leg.alight.planned_arrival
     return _UNKNOWN if t is None else t.astimezone(UTC)
+
+
+def current_arrival(answer: ProviderAnswer, c: Connection) -> datetime:
+    """`c`'s arrival as its current copy shows it (6.2, 6.3 ranking); a current copy that ends
+    before `c`'s destination has no arrival there and ranks last."""
+    cur = current_connection(evidence(answer), c)
+    return _arrival(cur.legs[-1]) if cur.destination == c.destination else _UNKNOWN
 
 
 def _dep(leg: Leg) -> datetime:
@@ -70,7 +78,7 @@ def usual_connection(
     if not found:
         return None
     # later legs' departures are the 6.3 tie-break after the earliest arrival
-    return min(found, key=lambda c: (_arrival(c.legs[-1]), *(_dep(x) for x in c.legs[1:])))
+    return min(found, key=lambda c: (current_arrival(answer, c), *(_dep(x) for x in c.legs[1:])))
 
 
 def remaining_pattern(full_transfers: tuple[str, ...], from_station: str) -> tuple[str, ...]:
@@ -91,4 +99,5 @@ def route_changed(
     starts = [c for c in answer.connections if c.is_train_only and c.legs[0].train == first]
     if not starts or any(c.transfer_stations == expected_transfers for c in starts):
         return None
-    return min(starts, key=lambda c: _arrival(c.legs[-1]))
+    # the raw arrival only breaks a tie between copies of the same trains
+    return min(starts, key=lambda c: (current_arrival(answer, c), _arrival(c.legs[-1])))

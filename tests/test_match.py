@@ -161,3 +161,17 @@ def test_earliest_arrival_across_the_repeated_hour_uses_instants():
     assert (
         usual_connection(answer(second_0210, first_0240), "AAA", first, ("UT",), None) is first_0240
     )
+
+
+def test_usual_journey_ranks_on_the_current_arrival():
+    from train_commute_companion.lifecycle import _pool
+
+    stale, alt = one_transfer("09:24", "2000"), one_transfer("09:33", "2001")
+    late = make_connection([make_leg("UT", "BBB", "08:46", "09:24", number="2000", delay_arr=30)])
+    older = answer(stale, alt)
+    newer = ProviderAnswer(
+        Query("UT", "BBB", dt("2026-10-27 08:13")), (late,), dt("2026-10-27 08:13")
+    )
+    first = dt("2026-10-27 08:12")
+    assert usual_connection(older, "AAA", first, ("UT",), None) is stale
+    assert usual_connection(_pool([older, newer]), "AAA", first, ("UT",), None) is alt

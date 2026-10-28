@@ -85,6 +85,8 @@ def is_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) -> 
     # judge the current copy of every train (6.2) against `c`'s own alight stops
     seen_in = evidence(answer)
     cur = current_connection(seen_in, c)
+    if not cur.is_train_only:  # the copy returned is the one that must be a train (6.3)
+        return bad("not train only")
     cls = [
         replace(
             classify_leg(cur.legs[i], leg.alight.code),

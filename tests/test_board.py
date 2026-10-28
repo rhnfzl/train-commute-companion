@@ -275,3 +275,35 @@ def test_kept_pair_uses_its_own_change():
     pool = polled([make_connection([runs_on]), no_change])
     g = is_good(V6666, pool, **kw(kept_incoming=kept))
     assert not g.ok and "change not possible" in g.reason
+
+
+def test_conflicting_changes_at_one_fetch_are_never_good():
+    yes, no = two_legs(), two_legs()
+    yes = replace(yes, legs=(replace(yes.legs[0], change_possible=True), yes.legs[1]))
+    no = replace(no, legs=(replace(no.legs[0], change_possible=False), no.legs[1]))
+    early = kw(board_station="AAA", catch=Catchability(dt("2026-10-27 08:00")))
+    assert is_good(yes, polled([yes]), **early).ok
+    for order in ([yes, no], [no, yes]):
+        g = is_good(yes, polled(order), **early)
+        assert not g.ok and "change not possible" in g.reason
+
+
+def test_replacement_transport_in_the_newer_copy_is_never_good():
+    bus = replace(V6666, legs=(replace(V6666.legs[0], alternative_transport=True),))
+    pool = polled([V6666], [bus])
+    g = is_good(V6666, pool, **kw())
+    assert not g.ok and g.reason == "not train only"
+    assert choose_replacement(pool, usual_remaining=(), **kw()) == (None, "none")
+
+
+def test_identity_is_judged_over_transfer_answers_too():
+    from train_commute_companion.lifecycle import _Pool
+
+    c = two_legs()
+    early = kw(board_station="AAA", catch=Catchability(dt("2026-10-27 08:00")))
+    origin = at_answer("08:01", c)
+    other = one_leg("UT", "RTD", "08:46", "09:24", number="1234")  # same onward minute at UT
+    pool = _Pool(origin.query, (c,), origin.fetched_at, (origin, at_answer("08:01", other)))
+    assert is_good(c, origin, **early).ok
+    g = is_good(c, pool, **early)
+    assert not g.ok and g.reason == "leg uncertain"

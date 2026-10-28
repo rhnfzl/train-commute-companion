@@ -295,3 +295,36 @@ def test_is_good_judges_a_cut_short_whose_copy_omits_the_alight():
     pool = _pool([at_(OLDER, raw), at_(NEWER, one(short))])
     g = is_good(raw, pool, **kw())
     assert not g.ok and g.reason == "leg cut_short"
+
+
+# conflicting copies at the newest fetch never read as good (7.3, 7.12: no missed alarm)
+def test_current_run_conflicting_copies_at_one_fetch_read_cancelled(caplog):
+    gone, runs = one(r6666(cancelled=True)), one(r6666())
+    for order in ((runs, gone), (gone, runs)):
+        caplog.clear()
+        seen, cl = run_of(at_(OLDER, one(r6666())), at_(NEWER, *order))
+        assert cl.kind is LegKind.CANCELLED and seen == fetched(NEWER)
+        assert "conflicting copies" in caplog.text
+
+
+def test_pair_transfer_conflicting_changes_at_one_fetch_take_the_worst(caplog):
+    inc, out = classify_leg(R1300, "UT"), classify_leg(r6666(), "RTD")
+    yes = make_connection([replace(R1300, change_possible=True, transfer_time_to_next=3), r6666()])
+    no = make_connection([replace(R1300, change_possible=False, transfer_time_to_next=6), r6666()])
+    for order in ((yes, no), (no, yes)):
+        a, _ = pair_transfer([at_(NEWER, *order)], inc, out)
+        assert (a.leg.change_possible, a.leg.transfer_time_to_next) == (False, 6)
+    assert "conflicting copies of the change" in caplog.text
+
+
+def test_find_leg_judges_identity_over_every_answer_of_the_pool():
+    from train_commute_companion.lifecycle import _Pool
+
+    c = make_connection([R1300, r6666()])
+    origin = ProviderAnswer(Query("AAA", "RTD", fetched(NEWER)), (c,), fetched(NEWER))
+    other = make_leg("UT", "RTD", "08:50", "09:24", number="1234")  # same onward minute
+    transfer = at_(NEWER, one(other))
+    # the runtime's origin pool: candidates from the origin, every answer as evidence
+    pool = _Pool(origin.query, (c,), fetched(NEWER), (origin, transfer))
+    assert find_leg(pool, r6666().train, "UT") == (None, Observation.UNCERTAIN)
+    assert find_leg(origin, r6666().train, "UT")[1] is Observation.SEEN
