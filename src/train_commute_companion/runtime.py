@@ -548,7 +548,8 @@ class _View:
 
     def _live_facts(self, o: Obligation) -> tuple[tuple[str, str, bool, bool], ...] | None:
         """Rule 5(b): the stored facts of a look-ahead message that still hold: a per-date fact
-        while it is the latest one the ledger records for its leg; an adoption or its
+        while it is the latest one the ledger records for its leg (a `...|unclear:<fp>` fact
+        holds while `unclear:<fp>` is the latest unclear mark of its key); an adoption or its
         withdrawal always (judged by `baseline_version`). None when no facts were stored for it
         (stored before facts were kept). Reads the stored facts, never o.fact_key: ";" also
         joins the legs inside a whole-journey fingerprint."""
@@ -560,12 +561,17 @@ class _View:
         live = []
         for f in fs:
             parts = f[0].split("|", 2)  # "<date>|<leg>|warn:<fp>[|loud]" or "...|restored"
-            if len(parts) < 3 or not (parts[2].startswith("warn:") or parts[2] == "restored"):
+            if len(parts) < 3 or not (
+                parts[2].startswith(("warn:", "unclear:")) or parts[2] == "restored"
+            ):
                 live.append(f)
                 continue
             date_, leg, rest = parts
             entries = [_mark(x) for x in led.per_date.get(f"{date_}|{leg}", ())]
-            last = next((x for x in reversed(entries) if x.startswith(("warn:", "restored:"))), "")
+            last = next(
+                (x for x in reversed(entries) if x.startswith(("warn:", "unclear:", "restored:"))),
+                "",
+            )
             if (
                 last.startswith("restored:")
                 if rest == "restored"

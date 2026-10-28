@@ -1471,6 +1471,48 @@ async def _back(rig: Rig) -> None:
     await rig.rt.watchdog_once()
 
 
+NEXT = DAY + timedelta(days=1)  # the look-ahead's next commute day, as `_held_warning` uses it
+
+
+def _split_world(day: date, other) -> list:
+    l1 = make_leg("AAA", "UT", "08:12", "08:40", number="1234", day=day)
+    l2 = make_leg("UT", "RTD", "08:50", "09:24", number="5678", day=day)
+    return [
+        *(c for c in every_day() if c.legs[0].train.operating_date != day),
+        make_connection([planned_at_alight(l1), l2]),
+        make_connection([other(l1), l2]),
+        *returns_every_day("17:52"),
+    ]
+
+
+async def test_superseded_lookahead_data_unclear_is_never_delivered(tmp_path):
+    rig = Rig(tmp_path, "05:40")
+    rig.provider.world = _split_world(NEXT, lambda leg: leg)  # A: planned only vs live
+    rig.notifier.fails = lambda e: True
+    await rig.rt.start()
+    await rig.rt.lookahead_once()
+    rig.clock.set("06:10")
+    rig.provider.world = _split_world(NEXT, lambda leg: _on_track(leg, "7"))  # B
+    await rig.rt.lookahead_once()
+    await _back(rig)
+    (e,) = _ahead(rig, EventKind.DATA_UNCLEAR)
+    assert "platform 7" in e.text
+
+
+async def test_lookahead_and_live_data_unclear_are_separate(tmp_path):
+    rig = Rig(tmp_path, "05:40")
+    rig.provider.world = _split_world(NEXT, lambda leg: leg)
+    await rig.rt.start()
+    await rig.rt.lookahead_once()  # told ahead for NEXT by the look-ahead
+    (ahead,) = _ahead(rig, EventKind.DATA_UNCLEAR)
+    assert f"{NEXT:%A}" in ahead.text  # names the day
+    for hhmm in ("07:52", "07:54", "07:56"):  # the first poll creates the lock; live checks after
+        rig.clock.t = at(hhmm, NEXT)
+        await rig.rt.poll_once()
+    sent = [e for e in rig.notifier.attempts if e.kind is EventKind.DATA_UNCLEAR]
+    assert len(sent) == 2 and sent[1].key.startswith("data_unclear:")  # owner decision 7
+
+
 def _set_facts(rig: Rig, kind: EventKind, facts: tuple) -> None:
     """Rewrites the held look-ahead message's stored facts (and its kind). A message with an
     adoption or its withdrawal is written without an expiry, as run_lookahead writes it."""

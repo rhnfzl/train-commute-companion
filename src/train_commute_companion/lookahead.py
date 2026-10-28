@@ -9,6 +9,7 @@ from train_commute_companion.classify import classify_leg, current_connection, m
 from train_commute_companion.delivery import Obligation
 from train_commute_companion.lifecycle import FOLLOW_LIMIT
 from train_commute_companion.match import matches_pattern, usual_connection
+from train_commute_companion.messages import body as message_body
 from train_commute_companion.model import (
     AlertEvent,
     Connection,
@@ -26,6 +27,7 @@ from train_commute_companion.model import (
 from train_commute_companion.profile import find_overlaps
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
 from train_commute_companion.transfer import check_transfer
+from train_commute_companion.unclear import Unclear, disagreement, newest_copies, train_key
 
 PROBE_DAYS = 3
 HORIZON_DAYS = 10
@@ -72,6 +74,8 @@ class ProbeResult:
     transfer_ok: bool
     fingerprint: str
     works_known: bool = True  # False when planned_works() coverage was unknown (look-ahead 36)
+    # (train key, where its copies in one answer disagree on the user's trip): rule 23
+    unclear: tuple[tuple[str, Unclear], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,6 +426,17 @@ def evaluate(
                 whole_issues.append(x)
     transfer_ok = not chain_issues and not whole_issues
 
+    def unclear_of(c: Connection) -> tuple[tuple[str, Unclear], ...]:
+        # rule 23, on top of the merge: the snapped `c` keeps its trains and boarding stops
+        found = (
+            (
+                train_key(g.train),
+                disagreement(newest_copies(answers, g.train, g.board.code), g.alight.code),
+            )
+            for g in c.legs
+        )
+        return tuple((tk, u) for tk, u in found if u is not None)
+
     def result(li: int | None, c: Connection | None, reasons: list[str], head: str) -> ProbeResult:
         is_works = bool(reasons)
         clean = (
@@ -443,9 +458,11 @@ def evaluate(
                 and local.time().replace(second=0, microsecond=0, fold=0)
                 == j.first_train.replace(tzinfo=None)
             )
+        usual = c is not None and head != "missing" and not head.startswith("pattern:")
         return ProbeResult(
-            d, sd, li, c, is_works, clean, transfer_ok, _fingerprint(head, reasons), known
-        )
+            d, sd, li, c, is_works, clean, transfer_ok, _fingerprint(head, reasons), known,
+            unclear_of(c) if usual and c is not None else (),
+        )  # fmt: skip
 
     out: list[ProbeResult] = []
     for i in range(n if n > 1 else 0):
@@ -821,6 +838,14 @@ def run_lookahead(
             if _probed_end(r) is None:
                 unsure.add(sd)
 
+    def journey_end(sd: date) -> datetime | None:
+        # 7.12 rule 5(b): the latest of the baseline's end and every journey probed for `sd`
+        base_end = dated_end(p, d, sd, final.in_force(sd))
+        if base_end is None or sd in unsure:
+            return None
+        ends = [_probed_end(r) for r in results if r.service_date == sd]
+        return max([base_end, *(e for e in ends if e is not None)])
+
     # 6. one message per direction and date, no cap
     events: list[AlertEvent] = []
     for sd, fs, was, kept in [
@@ -855,10 +880,7 @@ def run_lookahead(
         # gets no expiry: it is kept after its date. Carried facts keep their message's bound
         expires = kept
         if was is None and not is_adopt and not any(k.startswith("cancel:") for k, *_ in fs):
-            ends = [_probed_end(r) for r in results if r.service_date == sd]
-            base_end = dated_end(p, d, sd, b)
-            if base_end is not None and sd not in unsure:
-                expires = max([base_end, *(e for e in ends if e is not None)])
+            expires = journey_end(sd)
         ob = Obligation(
             f"{ev.key}|{now.isoformat()}", ev, None, (p.id, d, sd), revision, version, fact_key,
             expires, 0,
@@ -873,6 +895,39 @@ def run_lookahead(
                 k: tuple(f"{_mark(x)}#{ob.id}" if _owner(x) == was else x for x in v)
                 for k, v in per_date.items()
             }
+    # 6b. rule 23: copies of one train in one answer that disagree, once per train, date and
+    # values; its own loud message, gated only by its ledger mark (owner decision 7)
+    told: set[tuple[date, str]] = set()
+    for r in results:
+        sd = r.service_date
+        for tk, u in r.unclear:
+            if (sd, tk) in told:
+                continue
+            told.add((sd, tk))
+            key = f"{sd.isoformat()}|u:{tk}"
+            mark = f"unclear:{u.fingerprint}"
+            marks = [_mark(x) for x in per_date.get(key, ()) if x.startswith("unclear:")]
+            if marks and marks[-1] == mark:
+                continue
+            fact = f"{key}|{mark}"
+            text = f"{_title(p)}, {sd:%A} {sd.day} {sd:%b}: " + message_body(
+                EventKind.DATA_UNCLEAR, label=u.label, station=u.station, copies=u.copies
+            )
+            event = AlertEvent(
+                p.id, p.name, d, sd, None, EventKind.DATA_UNCLEAR, Severity.LOUD, None, text,
+                f"lookahead|{p.id}|{d.value}|{sd.isoformat()}|{fact}", now,
+            )  # fmt: skip
+            b = final.in_force(sd)
+            ob = Obligation(
+                f"{event.key}|{now.isoformat()}", event, None, (p.id, d, sd), revision,
+                b.version if b else None, fact,
+                journey_end(sd) if _probed_end(r) is not None else None, 0,
+            )  # fmt: skip
+            pending.append(ob)
+            events.append(event)
+            bundled[ob.id] = ((fact, text, True, False),)
+            add_entry(key, f"{mark}#{ob.id}")
+
     for reason in refusals:  # a blocked adoption is told while it lasts
         ev = AlertEvent(
             p.id,

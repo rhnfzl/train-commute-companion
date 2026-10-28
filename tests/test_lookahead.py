@@ -1,7 +1,7 @@
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 
-from builders import AMS, make_connection, make_leg
+from builders import AMS, _on_track, make_connection, make_leg, planned_at_alight
 from lookahead_fixtures import (
     CLEAR,
     DAYS,
@@ -28,6 +28,7 @@ from train_commute_companion.lookahead import (
     BaselineHistory,
     BaselineVersion,
     LookAheadLedger,
+    ProbeResult,
     _overlaps,
     _probed_end,
     carried_ids,
@@ -47,8 +48,9 @@ from train_commute_companion.model import (
     SignatureLeg,
 )
 from train_commute_companion.profile import find_overlaps, parse_profiles
-from train_commute_companion.providers.base import PlannedWork, PlannedWorks
+from train_commute_companion.providers.base import PlannedWork, PlannedWorks, ProviderAnswer
 from train_commute_companion.serde import dumps, loads
+from train_commute_companion.view import works_ahead
 
 SHIFTED = {"l1": ("08:15", "08:43"), "l2": ("08:49", "09:27")}
 
@@ -682,8 +684,10 @@ def test_probe_names_the_earliest_cut_of_any_copy():  # 7.10, 7.12: in any order
         rs = evaluate(P, OUT, TUE, answers, CLEAR, None)
         cuts = [r.fingerprint.split("|")[1] for r in rs if r.leg_index in (1, None)]
         assert cuts == ["cut_short:0:XA", "cut_short:1:XA"]
-        _, _, (ev,) = run(BaselineHistory(), rs)
-        assert "runs only to XA" in ev.text and "XB" not in ev.text
+        _, _, events = run(BaselineHistory(), rs)
+        (works,) = [e for e in events if e.kind is not EventKind.DATA_UNCLEAR]
+        assert "runs only to XA" in works.text and "XB" not in works.text
+        assert len(unclear_events(events)) == 1
     answers = [ans("UT", "RTD", make_connection([xb])), ans("AAA", "RTD", make_connection([a, xb]))]
     (whole,) = [r for r in evaluate(P, OUT, TUE, answers, CLEAR, None) if r.leg_index is None]
     assert "cut_short:1:XB" in whole.fingerprint  # a moved cut is a new warning
@@ -756,3 +760,76 @@ def test_probe_snapshot_of_copies_is_the_same_in_any_order():  # fingerprint, ba
     assert len(seen) == 1
     ((*_, (fp, end)),) = seen
     assert fp.endswith("/58") and end == datetime(2026, 10, 27, 12, 14, tzinfo=AMS)
+
+
+def split_answers(day: date, **kw) -> list[ProviderAnswer]:
+    a, b = legs(day, **kw)  # one AAA to UT answer lists the 1000 twice, once planned only
+    return [
+        ans("AAA", "UT", make_connection([a]), make_connection([planned_at_alight(a)])),
+        ans("UT", "RTD", make_connection([b])),
+        ans("AAA", "RTD", make_connection([a, b])),
+    ]
+
+
+def split_probe(day: date = TUE, **kw) -> list[ProbeResult]:
+    return evaluate(P, OUT, day, split_answers(day, **kw), CLEAR, None)
+
+
+def unclear_events(events) -> list[AlertEvent]:
+    return [e for e in events if e.kind is EventKind.DATA_UNCLEAR]
+
+
+def test_probe_with_disagreeing_copies_sends_one_loud_data_unclear():
+    rs = split_probe()
+    assert {r.leg_index for r in rs if r.unclear} == {0, None}  # leg probe and whole probe
+    _, led, events = run(BaselineHistory(), rs)
+    (event,) = unclear_events(events)  # one per train and date, not one per probe
+    assert event.severity is Severity.LOUD and event.train is None
+    assert event.text == (
+        "Office A, Tuesday 27 Oct: NS data unclear for IC 1000 at UT. Copy 1: arrives 08:40"
+        " (planned only). Copy 2: arrives 08:40 (live). Check the NS app or the station boards."
+    )
+    assert event.key.startswith("lookahead|p1|outbound|2026-10-27|2026-10-27|u:1000@")
+    (o,) = [o for o in led.pending if o.event.kind is EventKind.DATA_UNCLEAR]
+    assert led.facts[o.id] == ((o.fact_key, event.text, True, False),)
+    (marks,) = [v for k, v in led.per_date.items() if "|u:" in k]
+    assert marks == (f"{o.fact_key.split('|')[-1]}#{o.id}",)
+    assert works_ahead(led, MON) == ()
+
+
+def test_probe_data_unclear_is_once_per_train_per_day():
+    h, led, _ = run(BaselineHistory(), split_probe())  # chain history and ledger (rule 21)
+    for rs in (split_probe(), probe(TUE), split_probe()):  # same, agreeing, same again
+        h, led, events = run(h, rs, led=led)
+        assert unclear_events(events) == []
+        assert EventKind.RESTORED not in [e.kind for e in events]
+
+
+def test_probe_data_unclear_resent_when_values_change():
+    h, led, _ = run(BaselineHistory(), split_probe())
+    a, b = legs(TUE)
+    moved = [ans("AAA", "UT", make_connection([a]), make_connection([_on_track(a, "7")])),
+             ans("UT", "RTD", make_connection([b])), ans("AAA", "RTD", make_connection([a, b]))]  # fmt: skip
+    _, _, events = run(h, evaluate(P, OUT, TUE, moved, CLEAR, None), led=led)
+    (event,) = unclear_events(events)
+    assert "platform 7" in event.text
+
+
+def test_works_message_is_unchanged_next_to_data_unclear():
+    _, _, plain = run(BaselineHistory(), probe(TUE, cancel2=True))
+    _, led, events = run(BaselineHistory(), split_probe(cancel2=True))
+    works = [e for e in events if e.kind is EventKind.WORKS_AHEAD]
+    assert [e.text for e in works] == [e.text for e in plain if e.kind is EventKind.WORKS_AHEAD]
+    assert len(unclear_events(events)) == 1
+    owner = {o.event.kind: o.id for o in led.pending}
+    for k, v in led.per_date.items():
+        want = owner[EventKind.DATA_UNCLEAR] if "|u:" in k else owner[EventKind.WORKS_AHEAD]
+        assert all(x.endswith(f"#{want}") for x in v if "#" in x)
+
+
+def test_forget_pending_takes_back_an_unclear_mark():
+    h, led, _ = run(BaselineHistory(), split_probe())
+    led = forget_pending(led)
+    assert not any(x.startswith("unclear:") for v in led.per_date.values() for x in v)
+    _, _, events = run(h, split_probe(), led=led)
+    assert len(unclear_events(events)) == 1

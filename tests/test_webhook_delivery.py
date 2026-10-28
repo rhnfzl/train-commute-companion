@@ -15,12 +15,13 @@ from typing import Any
 
 import httpx
 import pytest
-from builders import AMS, make_connection, make_leg
+from builders import AMS, _on_track, make_connection, make_leg
 from test_lifecycle_follow import L1, L1X, L2, LATER
 from test_runtime import DAY, PROFILE, MemoryStore, Provider, Rig, at, kinds
 from test_runtime_rules import (
     _cancelled_l2,
     _clean,
+    _split_world,
     cancelled_usual_world,
     live_facts_bundle,
     tracked,
@@ -628,6 +629,22 @@ async def test_look_ahead_copy_keeps_its_facts_after_the_phone_send(tmp_path, wo
     rig.clock.set("06:40")
     await rig.rt.lookahead_once()
     assert c.obligation.id not in rig.rt.state.lookahead["p1|outbound"].facts
+
+
+async def test_superseded_lookahead_data_unclear_copy_is_dropped(tmp_path):
+    rig = WRig(tmp_path, "05:40", text=P1)
+    rig.provider.world = _split_world(THU, lambda leg: leg)
+    rig.end.status = 503
+    await rig.rt.start()
+    await rig.rt.lookahead_once()
+    (a,) = copies(rig, EventKind.DATA_UNCLEAR)
+    rig.clock.set("06:10")
+    rig.provider.world = _split_world(THU, lambda leg: _on_track(leg, "7"))
+    await rig.rt.lookahead_once()
+    rig.end.status = 200
+    await tick(rig)
+    (got,) = rig.end.of(EventKind.DATA_UNCLEAR)
+    assert "platform 7" in got["text"] and a.id not in {c.id for c in copies(rig)}
 
 
 async def test_skip_after_window_close_ends_journey_warning_copies(tmp_path):
