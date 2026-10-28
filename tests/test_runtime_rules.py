@@ -537,6 +537,26 @@ async def test_platform_back_to_the_planned_track_is_told(tmp_path):
     assert "platform 5 (was 1)" in pc[2]
 
 
+async def test_platform_back_to_planned_without_a_live_track_is_told(tmp_path):
+    # NS can drop the live departure track once the train is back on its planned one
+    rig = await started(tmp_path)
+    for hhmm, track in (("07:52", "5"), ("07:54", None), ("07:56", None)):
+        rig.clock.set(hhmm)
+        rig.provider.world = [make_connection([tracked(L1, "1", track), L2])]
+        await rig.rt.poll_once()
+    pc = [e.text for e in rig.rt.events_log if e.kind is EventKind.PLATFORM_CHANGE]
+    assert len(pc) == 2
+    assert "platform 5 (was 1)" in pc[0] and "platform 1 again" in pc[1]
+
+
+async def test_no_live_track_on_an_unchanged_platform_says_nothing(tmp_path):
+    rig = await started(tmp_path)
+    rig.clock.set("07:52")
+    rig.provider.world = [make_connection([tracked(L1, "1", None), L2])]
+    await rig.rt.poll_once()
+    assert EventKind.PLATFORM_CHANGE not in kinds(rig.rt.events_log)
+
+
 async def test_unchanged_platform_says_nothing(tmp_path):
     rig = await started(tmp_path)
     rig.clock.set("07:52")

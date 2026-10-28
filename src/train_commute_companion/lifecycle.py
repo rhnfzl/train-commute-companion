@@ -1070,16 +1070,17 @@ def _platform(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
     """7.9 `platform_change` for a leg not yet left: loud within 15 min of its expected
     departure, else silent (escalated once it enters the zone, rule 4)."""
     b = cl.leg.board
-    if not b.actual_track or not b.planned_track:
+    if not b.planned_track:
         return None
+    track = b.actual_track or b.planned_track  # no live track means the planned one
     soon = _departs(x, cl) - _utc(ctx.now) <= _PLATFORM_LOUD
     sev = Severity.LOUD if soon else Severity.SILENT
-    if b.actual_track == b.planned_track:  # `_stated` keeps it only after an announced change
+    if track == b.planned_track:  # `_stated` keeps it only after an announced change
         text = f"your {_name(x)} train leaves from platform {b.planned_track} again, as planned."
-        facts = f"track {b.actual_track}|planned"
+        facts = f"track {track}|planned"
     else:
-        text = f"your {_name(x)} train now leaves from platform {b.actual_track} (was {b.planned_track})."
-        facts = f"track {b.actual_track}"
+        text = f"your {_name(x)} train now leaves from platform {track} (was {b.planned_track})."
+        facts = f"track {track}"
     return _event(ctx, EventKind.PLATFORM_CHANGE, sev, text, x.train, facts)
 
 
