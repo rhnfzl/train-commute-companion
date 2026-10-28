@@ -501,6 +501,78 @@ async def test_overlapping_state_saves_keep_the_newest(app, monkeypatch):
     assert load_state(app.path) == ShellState(8, None, "123:1000001")
 
 
+def gated_saves(monkeypatch) -> tuple[threading.Event, threading.Event, list[int], list[int]]:
+    """The first save blocks on the gate; written offsets in order, and the peak of overlap."""
+    entered, gate, guard = threading.Event(), threading.Event(), threading.Lock()
+    active, peak, written = [0], [0], []
+
+    def spy(path: Path, s: ShellState) -> None:
+        with guard:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        if not entered.is_set():
+            entered.set()
+            gate.wait(2)
+        save_state(path, s)
+        with guard:
+            active[0] -= 1
+            written.append(s.offset)
+
+    monkeypatch.setattr(bot_mod, "save_state", spy)
+    return entered, gate, written, peak
+
+
+async def test_a_cancelled_save_still_blocks_the_next_one(app, monkeypatch):
+    entered, gate, written, peak = gated_saves(monkeypatch)
+    app.bot.state.offset = 4
+    first = asyncio.create_task(app.bot._save())
+    await until(entered.is_set)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    app.bot.state.offset = 8
+    second = asyncio.create_task(app.bot._save())
+    await asyncio.sleep(0.02)  # the cancelled worker still holds the lock
+    assert written == [] and not second.done()
+    gate.set()
+    assert await second
+    assert written == [4, 8] and peak[0] == 1 and load_state(app.path).offset == 8
+
+
+async def test_close_waits_for_a_running_save(app, monkeypatch):
+    entered, gate, written, _ = gated_saves(monkeypatch)
+    app.bot.state.offset = 4
+    caller = asyncio.create_task(app.bot._save())
+    await until(entered.is_set)
+    caller.cancel()
+    closing = asyncio.create_task(app.bot.close())
+    await asyncio.sleep(0.02)
+    assert not closing.done()
+    gate.set()
+    await closing
+    assert written == [4] and load_state(app.path).offset == 4
+
+
+async def test_taps_and_test_during_a_blocked_confirm_save(app, monkeypatch):
+    await app.bot.handle(app.msg("/test"))
+    [[old]] = app.tg.sent[-1]["reply_markup"]["inline_keyboard"]
+    entered, gate, _, _ = gated_saves(monkeypatch)
+    confirm = asyncio.create_task(app.bot.handle(tap(old["callback_data"], 2)))
+    await until(entered.is_set)
+    await app.bot.handle(tap(old["callback_data"], 3))  # a double tap while the save waits
+    await app.bot.handle(app.msg("/test", uid=4))  # a fresh pair while the save waits
+    [[new]] = app.tg.sent[-1]["reply_markup"]["inline_keyboard"]
+    gate.set()
+    await confirm
+    await app.bot.handle(tap(new["callback_data"], 5))
+    replies = [t for t in app.texts() if t.startswith(("Delivery", "That test"))]
+    assert replies == [
+        "That test is old; send /test again.",
+        "Delivery confirmed. Setup is complete.",
+        "Delivery confirmed. Setup is complete.",
+    ]
+
+
 # --- what is read from an update ---
 
 
