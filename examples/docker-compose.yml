@@ -15,6 +15,18 @@ services:
       - tcc-data:/data
     ports:
       - "8080:8080"
+  # the MCP relay (docs/mcp.md): started per session by the MCP client, never by `up`
+  mcp:
+    image: train-commute-companion:local
+    profiles: [mcp]
+    read_only: true
+    env_file: .env  # only TCC_STATE_DIR is read, to find the socket
+    volumes:
+      - tcc-data:/data
+    # the image's check probes the app's port, where the relay never listens
+    healthcheck:
+      disable: true
+    command: ["python", "-m", "tcc_app.mcp_server"]
 
 volumes:
   tcc-data:
