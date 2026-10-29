@@ -80,8 +80,8 @@ class ProbeResult:
 
 @dataclass(frozen=True, slots=True)
 class LookAheadLedger:
-    # "<service date>|<leg index or j>" -> entries; a warn/loud/restored mark written since
-    # owners exist ends in "#<id of the obligation that carries it>", read with _mark/_owner
+    # "<service date>|<leg index or j>" -> entries; a warn/loud/restored mark ends in
+    # "#<id of the obligation that carries it>", read with _mark/_owner
     per_date: Mapping[str, tuple[str, ...]]
     pending: tuple[Obligation, ...]
     last_run: datetime | None  # last successful run (look-ahead health only)
@@ -589,7 +589,7 @@ def _seed_day(per_date: Mapping[str, tuple[str, ...]], version: int) -> str | No
 
 
 def _owner(entry: str) -> str:
-    return entry.partition("#")[2]  # "" for an entry stored before owners: counts as delivered
+    return entry.partition("#")[2]  # "" for an unowned mark: never a pending fact
 
 
 def render_message(
@@ -1013,32 +1013,7 @@ def forget_pending(ledger: LookAheadLedger) -> LookAheadLedger:
     """Rule 5(c): a route edit drops the pending messages written before it. Their per-date
     marks are taken back so the next run tells those facts again (7.10), instead of matching a
     fact that was never delivered. Only marks owned by a dropped message go; a mark of a
-    delivered one stays. A message stored before owners owns no mark, so its facts take back
-    their own latest unowned mark instead: a missing owner does not prove delivery."""
+    delivered one stays."""
     drop = {o.id for o in ledger.pending}
-    owners = {_owner(x) for v in ledger.per_date.values() for x in v}
     per_date = {k: tuple(x for x in v if _owner(x) not in drop) for k, v in ledger.per_date.items()}
-    # shortcut: equal unowned marks are told apart by position only; delete once no store
-    # written before owners can be loaded
-    for o in ledger.pending:
-        if o.id in owners:
-            continue
-        for fact, *_ in ledger.facts.get(o.id, ()):
-            # "<date>|<leg>|warn:<fp>[|loud]" or "<date>|<leg>|restored"; a fingerprint may hold "|"
-            parts = fact.split("|", 2)
-            if len(parts) < 3 or not parts[2].startswith(("warn:", "restored")):
-                continue  # an adoption or a correction: kept by the baseline, not per date
-            key, what = "|".join(parts[:2]), parts[2]
-            entries = per_date.get(key, ())
-            # only the loud repeat was pending, or the warning; a restored fact has no fingerprint
-            want = f"loud:{what[5:-5]}" if what.endswith("|loud") else what
-            at = [
-                i
-                for i, x in enumerate(entries)
-                if not _owner(x) and (x == want or want == "restored" and x.startswith("restored:"))
-            ]
-            if at:
-                i = at[-1]
-                twin = want.startswith("warn:") and entries[i + 1 : i + 2] == (f"loud:{want[5:]}",)
-                per_date[key] = entries[:i] + entries[i + 2 if twin else i + 1 :]
     return replace(ledger, per_date=per_date)

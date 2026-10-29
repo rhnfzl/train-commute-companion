@@ -568,54 +568,13 @@ def test_route_edit_keeps_a_later_delivered_loud_warning():  # rule 5(c), rule 4
     assert events == []
 
 
-def test_owned_and_unowned_marks_survive_the_store():  # an old ledger loads; unowned = told
+def test_owned_marks_survive_the_store():
     history = BaselineHistory((confirmed(),))
     bad = probe(NEXT_TUE, cancel2=True)
     _, new, _ = run(history, bad)
     assert loads(LookAheadLedger, dumps(new)) == new
     led = replace(forget_pending(loads(LookAheadLedger, dumps(new))), pending=(), facts={})
     assert len(run(history, bad, led=led)[2]) == 1  # owned by the held message: taken back
-    marks = {k: tuple(x.partition("#")[0] for x in v) for k, v in new.per_date.items()}
-    old = loads(LookAheadLedger, dumps(replace(new, per_date=marks)))  # written before owners
-    assert old.per_date == marks
-    told = replace(old, pending=(), facts={})  # its message was delivered
-    assert forget_pending(told).per_date == marks and run(history, bad, led=told)[2] == []
-
-
-def _before_owners(led: LookAheadLedger) -> LookAheadLedger:
-    marks = {k: tuple(x.partition("#")[0] for x in v) for k, v in led.per_date.items()}
-    return loads(LookAheadLedger, dumps(replace(led, per_date=marks)))  # an old store
-
-
-def test_route_edit_takes_back_a_warning_held_before_owners():  # rule 5(c), 7.10
-    history = BaselineHistory((confirmed(),))
-    bad = probe(TUE, cancel2=True)
-    _, led, (held,) = run(history, bad, today=MON, now=_at(0))  # warning and loud, held
-    led = replace(forget_pending(_before_owners(led)), pending=(), facts={})
-    _, _, events = run(history, bad, led=led, today=MON, now=_at(1))
-    assert [e.key for e in events] == [held.key]  # leg and whole journey told again
-
-
-def test_route_edit_takes_back_a_loud_repeat_held_before_owners():  # rule 5(c), rule 4
-    history = BaselineHistory((confirmed(),))
-    bad = probe(TUE, cancel2=True)
-    _, led, _ = run(history, bad, today=MON - timedelta(days=1), now=_at(0))
-    led = _delivered(led, led.pending[-1])  # the silent warning went out
-    _, led, (held,) = run(history, bad, led=led, now=_at(1))  # its loud repeat is held
-    led = replace(forget_pending(_before_owners(led)), pending=(), facts={})
-    _, _, events = run(history, bad, led=led, now=_at(2))
-    assert [e.key for e in events] == [held.key]
-
-
-def test_route_edit_takes_back_a_recovery_held_before_owners():  # rule 5(c), 7.10
-    history = BaselineHistory((confirmed(),))
-    bad, good = probe(NEXT_TUE, cancel2=True), probe(NEXT_TUE)
-    _, led, _ = run(history, bad, now=_at(0))
-    led = _delivered(led, led.pending[-1])
-    _, led, (held,) = run(history, good, led=led, now=_at(1))  # the recovery is held
-    led = replace(forget_pending(_before_owners(led)), pending=(), facts={})
-    _, _, events = run(history, good, led=led, now=_at(2))
-    assert [e.key for e in events] == [held.key]
 
 
 def test_probe_reads_the_current_copy_of_a_train():  # 7.10, 7.12: never a falsely clean probe
