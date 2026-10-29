@@ -9,7 +9,7 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/rhnfzl/train-commute-companion/issues",
   "loggers": ["train_commute_companion"],
-  "requirements": ["train-commute-companion==0.1.0"],
+  "requirements": ["train-commute-companion==0.1.1"],
   "single_config_entry": true,
-  "version": "0.1.0"
+  "version": "0.1.1"
 }
