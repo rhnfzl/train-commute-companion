@@ -40,9 +40,9 @@ CAVEAT = (
 
 
 @pytest.fixture(autouse=True)
-def allow_config_dir(hass):
-    # HA adds its config folder to this list at startup; the test hass leaves it empty
-    hass.config.allowlist_external_dirs = {str(Path(hass.config.config_dir).resolve())}
+def stock_allowlist(hass):
+    # a stock HA allows only <config>/www (and media) here, never the config folder itself
+    hass.config.allowlist_external_dirs = {str(Path(hass.config.config_dir).resolve() / "www")}
 
 
 def read_fixture(name: str) -> str:
@@ -153,6 +153,14 @@ async def test_path_outside_allowed_dirs_errors(hass):
     r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
     with patch(CHECK_KEY, return_value=KNOWN):
         r = await step(hass, r, {"api_key": "k", "profiles_path": "/etc/hosts"})
+    assert r["errors"] == {"profiles_path": "path_not_allowed"}
+
+
+async def test_a_path_that_climbs_out_of_the_config_folder_errors(hass):
+    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    climb = str(Path(hass.config.config_dir) / ".." / ".." / "etc" / "hosts")
+    with patch(CHECK_KEY, return_value=KNOWN):
+        r = await step(hass, r, {"api_key": "k", "profiles_path": climb})
     assert r["errors"] == {"profiles_path": "path_not_allowed"}
 
 

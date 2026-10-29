@@ -2,6 +2,7 @@
 
 import os
 from functools import partial
+from pathlib import Path
 
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
@@ -12,7 +13,9 @@ PERSON_DOMAINS = ("person", "device_tracker")
 
 
 def _check_path(hass: HomeAssistant, path: str) -> str | None:
-    if not hass.config.is_allowed_path(path):
+    # the config folder is always fine (a stock allowlist holds only www and media)
+    inside = Path(path).resolve().is_relative_to(Path(hass.config.config_dir).resolve())
+    if not (inside or hass.config.is_allowed_path(path)):
         return "path_not_allowed"
     if not os.path.isfile(path):
         return "file_missing"
