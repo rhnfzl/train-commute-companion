@@ -271,8 +271,8 @@ class HaNotifier:
             if len(self._fired) > _MEMORY_CAP:
                 self._fired.clear()
             self._fired.add(fact)
-            device = dr.async_get(self.hass).async_get_device(
-                identifiers={(DOMAIN, event.profile_id)}
+            device = dr.async_get(self.hass).async_get_device_by_identifier(
+                (DOMAIN, event.profile_id), self.entry_id
             )
             self.hass.bus.async_fire(
                 EVENT_ALERT, event_data(event, self.entry_id, device.id if device else None)
