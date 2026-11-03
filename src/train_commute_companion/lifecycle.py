@@ -1589,8 +1589,15 @@ def _locate(
 def _left_origin(
     s: OccurrenceState, ctx: Ctx, event: LocationEvent, answer: ProviderAnswer | None
 ) -> Transition:
-    s = replace(s, travelling=True, tap_at=event.at)  # catchability: event time + buffer
     lock = s.lock
+    if (
+        lock is not None
+        and lock.source is LockSource.AUTO
+        and _utc(lock.legs[0].train.planned_departure) <= _utc(event.at)
+    ):
+        # a leave after the usual train left is often a late phone fix; the station decides
+        return Transition(s, ())
+    s = replace(s, travelling=True, tap_at=event.at)  # catchability: event time + buffer
     if answer is None or (lock is not None and lock.source is not LockSource.AUTO):
         return Transition(s, ())  # a chosen, station or later lock is kept
     c = _next_good(s, ctx, answer)

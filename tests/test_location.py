@@ -189,3 +189,14 @@ def test_station_lock_reads_the_watched_answers_too():  # 7.12 rule 1
     watched = (ans("UT", conn(r2x), when="08:01"),)
     t = on_location(s, ctx(at("08:01")), event("AAA", "enter", "08:01"), origin, watched)
     assert t.state.lock is not None and numbers(t.state) != ["1300", "6666"]
+
+
+def test_late_leave_after_the_auto_train_left_keeps_the_lock():
+    # the phone says "left home" only after the usual train left: a late fix, so the lock stays
+    s = occ(journey([L1, L2], RIDE))
+    t = locate(s, "08:14", event("home", "leave", "08:13"), USUAL, LATER)
+    assert t.state == s and t.events == ()
+    # a really late user is still caught at the station: there the next good train takes over
+    t = locate(t.state, "08:16", event("AAA", "enter", "08:16"), LATER)
+    assert t.state.lock is not None and t.state.lock.source is LockSource.STATION
+    assert numbers(t.state) == ["1300", "6666"]
