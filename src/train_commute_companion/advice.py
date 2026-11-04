@@ -4,7 +4,7 @@ import itertools
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, tzinfo
 
-from train_commute_companion.board import choose_replacement, is_good, max_transfers
+from train_commute_companion.board import GoodKwargs, choose_replacement, is_good, max_transfers
 from train_commute_companion.classify import (
     classify_leg,
     current_connection,
@@ -142,18 +142,18 @@ def _gate(s: OccurrenceState, ctx: Ctx) -> bool:
 _FAR = datetime(2100, 1, 1, tzinfo=UTC)
 
 
-def _kw(s: OccurrenceState, ctx: Ctx) -> dict[str, object]:
+def _kw(s: OccurrenceState, ctx: Ctx) -> GoodKwargs:
     prof, d = ctx.profile, ctx.direction
     usual = prof.journey(d)
-    return {
-        "board_station": prof.origin(d),
-        "destination": prof.destination(d),
-        "catch": catch_from_state(s, usual.buffer_min, ctx.now),
-        "kept_incoming": None,
-        "done_transfers": 0,
-        "max_transfers": max_transfers(usual.transfers),
-        "profile_min": prof.transfer_min,
-    }
+    return GoodKwargs(
+        board_station=prof.origin(d),
+        destination=prof.destination(d),
+        catch=catch_from_state(s, usual.buffer_min, ctx.now),
+        kept_incoming=None,
+        done_transfers=0,
+        max_transfers=max_transfers(usual.transfers),
+        profile_min=prof.transfer_min,
+    )
 
 
 def _judge(
@@ -250,7 +250,7 @@ def _candidates(
             answer,
             usual_remaining=usual.transfers,
             candidates=later,
-            **kw,  # type: ignore[arg-type]
+            **kw,
         )
         ride_arr = None if rep is None else _arrival(rep)
     found: list[tuple[timedelta, Connection]] = []
@@ -266,7 +266,7 @@ def _candidates(
             if arr is None or _departure(cur) >= wait_from:
                 continue
             saving = (ride_arr or _FAR) - arr  # no baseline: soonest arrival wins
-            if saving < need or not is_good(c, answer, **kw).ok:  # type: ignore[arg-type]
+            if saving < need or not is_good(c, answer, **kw).ok:
                 continue
             found.append((saving, cur))
     return found

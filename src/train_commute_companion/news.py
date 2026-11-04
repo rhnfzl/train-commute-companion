@@ -139,11 +139,11 @@ def severity(
     is_tomorrow: bool,
 ) -> Severity:
     """Table 7.9. A kind without a rule is loud: unmapped is loud."""
-    soon = minutes_to_departure is None  # unknown timing errs on the loud side
+    # unknown timing errs on the loud side
     if kind is EventKind.TRANSFER_AT_RISK:
-        loud = soon or minutes_to_departure <= AT_RISK_LOUD_MIN  # type: ignore[operator]
+        loud = minutes_to_departure is None or minutes_to_departure <= AT_RISK_LOUD_MIN
     elif kind is EventKind.PLATFORM_CHANGE:
-        loud = soon or minutes_to_departure <= PLATFORM_LOUD_MIN  # type: ignore[operator]
+        loud = minutes_to_departure is None or minutes_to_departure <= PLATFORM_LOUD_MIN
     elif kind is EventKind.DELAYED:
         loud = breaks_transfer or past_latest_arrival
     elif kind is EventKind.WORKS_AHEAD:

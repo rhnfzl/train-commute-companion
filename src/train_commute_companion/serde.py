@@ -120,4 +120,5 @@ def dumps(obj: object) -> str:
 
 
 def loads[T](cls: type[T], text: str) -> T:
-    return decode(cls, json.loads(text))  # type: ignore[no-any-return]
+    obj: T = decode(cls, json.loads(text))
+    return obj

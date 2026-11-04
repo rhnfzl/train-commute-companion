@@ -104,13 +104,13 @@ class JsonFileStore:
             counter = env["write_counter"]
             if isinstance(counter, bool) or not isinstance(counter, int):
                 raise TypeError("bad write counter")
-            state = decode(PersistedState, env["state"])
+            state: PersistedState = decode(PersistedState, env["state"])
         except (ValueError, KeyError, TypeError) as e:  # JSON errors are ValueErrors
             raise self._set_aside(
                 f"{self._path.name} is corrupt or cannot be migrated ({e})"
             ) from e
         self._last = counter
-        return state  # type: ignore[no-any-return]
+        return state
 
     def save(self, s: PersistedState) -> None:
         if _read_counter(self._path) != self._last:
