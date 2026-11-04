@@ -12,6 +12,7 @@ license = "Apache-2.0"
 dependencies = ["PyYAML>=6", "httpx>=0.27", "tzdata"]
 
 [project.optional-dependencies]
+# for the Docker app and the repo's tests: app/tcc_app itself is not in the wheel
 app = ["mcp>=2.3,<3"]
 
 [project.scripts]
