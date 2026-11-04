@@ -68,6 +68,14 @@ async def test_429_without_header_has_no_retry_after():
     assert e.value.retry_after is None
 
 
+async def test_429_with_a_digit_int_rejects_has_no_retry_after():
+    # the raw byte decodes to a superscript two: isdigit says yes, int says no
+    handler = lambda req: httpx.Response(429, headers=[(b"Retry-After", b"\xb2")])
+    with pytest.raises(RateLimited) as e:
+        await provider(handler).trips(Q)
+    assert e.value.retry_after is None
+
+
 async def test_5xx_is_provider_error():
     with pytest.raises(ProviderError):
         await provider(status(503)).trips(Q)
