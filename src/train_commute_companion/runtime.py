@@ -150,7 +150,9 @@ LOOKAHEAD_AT = time(6, 0)
 BACKOFF_MIN = (2, 4, 8)
 # a rejected key: stays at 30 until a success, never stops (the key may be fixed on NS's side)
 BACKOFF_AUTH_MIN = (2, 5, 15, 30)
-_SENT = "sent:"  # delivery-ledger entries in `alert_keys`: fact key -> severity it was sent at
+_SENT_PREFIX = (
+    "sent:"  # delivery-ledger entries in `alert_keys`: fact key -> severity it was sent at
+)
 # ongoing facts a poll restates while they last: a held one holds while its key is live (rule 5)
 _ONGOING = frozenset(
     {
@@ -173,7 +175,7 @@ _OBSERVED = frozenset(
 # loud warnings with a "next good connection" clause, written against the lock of their time
 _NAMES_LOCK = JOURNEY_WARNINGS | {EventKind.MISSED_FIRST_TRAIN, EventKind.MISSED_TRANSFER}
 _BREAKS = ("cancelled:", "cut_short:", "missing:")
-_GONE = (LegState.DONE, LegState.CANCELLED, LegState.RELOCKED)
+_FINISHED_LEG_STATES = (LegState.DONE, LegState.CANCELLED, LegState.RELOCKED)
 _APP = "app"  # profile name on application warnings, which belong to no profile
 # webhooks: one try is cut at TRY_DEADLINE_S in all (httpx.Timeout bounds each read only); a URL
 # that failed rests REST_S; a copy is given up GIVE_UP after its first try (owner decision Q1);
@@ -487,7 +489,7 @@ def _broken(s: OccurrenceState, t: TrainId | None) -> bool:
     )
 
 
-class _View:
+class _RuntimeLedger:
     """The delivery ledger view over the runtime's current state (7.12 rule 5)."""
 
     def __init__(self, rt: "Runtime", held: bool = False) -> None:
@@ -496,38 +498,42 @@ class _View:
         self._rt, self._held = rt, held
 
     @property
-    def _s(self) -> PersistedState:
+    def _state(self) -> PersistedState:
         """Read at every call: a skip, reload or poll written while a send awaited counts for
         the next message (7.8, rule 5)."""
         rt = self._rt
         return rt._shadow if self._held and rt._shadow is not None else rt._st
 
-    def _occ(self, key: OccurrenceKey) -> OccurrenceState | None:
-        return self._s.occurrences.get(_okey(key))
+    def _occurrence(self, key: OccurrenceKey) -> OccurrenceState | None:
+        return self._state.occurrences.get(_okey(key))
 
     def skipped(self, key: OccurrenceKey) -> bool:
-        s = self._occ(key)
+        s = self._occurrence(key)
         return s is not None and s.not_travelling
 
     def fact_holds(self, o: Obligation) -> bool:
         rt = self._rt
         if o.look_ahead is not None:
             pid, d, day = o.look_ahead
-            then = _find(self._s.config_snapshots.get(o.route_revision), pid)
-            now = _find(self._s.config, pid)
+            then = _find(self._state.config_snapshots.get(o.route_revision), pid)
+            now = _find(self._state.config, pid)
             if now is None or (then is not None and not _same_route(then, now)):
                 return False
-            if then is None and self._s.config and o.route_revision != self._s.config.revision:
+            if (
+                then is None
+                and self._state.config
+                and o.route_revision != self._state.config.revision
+            ):
                 return False
-            hist = self._s.baselines.get(_dkey(pid, d), BaselineHistory())
+            hist = self._state.baselines.get(_dkey(pid, d), BaselineHistory())
             versions = {v.version for v in hist.versions}
             if o.baseline_version is not None and o.baseline_version not in versions:
                 return False
             return self._look_ahead_holds(o, day)
         if o.occurrence is None:
             return True
-        s = self._occ(o.occurrence)
-        if s is None or s.not_travelling or not self._still(o, s):
+        s = self._occurrence(o.occurrence)
+        if s is None or s.not_travelling or not self._fact_still_true(o, s):
             return False
         p = rt._profile_for(s)
         if o.event.severity is Severity.SILENT and p is not None:
@@ -539,7 +545,7 @@ class _View:
 
     def _stored_facts(self, o: Obligation) -> tuple[tuple[str, str, bool, bool], ...]:
         assert o.look_ahead is not None
-        led = self._s.lookahead.get(_dkey(o.look_ahead[0], o.look_ahead[1]))
+        led = self._state.lookahead.get(_dkey(o.look_ahead[0], o.look_ahead[1]))
         return () if led is None else tuple(led.facts.get(o.id, ()))
 
     def _live_facts(self, o: Obligation) -> tuple[tuple[str, str, bool, bool], ...] | None:
@@ -550,7 +556,7 @@ class _View:
         (stored before facts were kept). Reads the stored facts, never o.fact_key: ";" also
         joins the legs inside a whole-journey fingerprint."""
         assert o.look_ahead is not None
-        led = self._s.lookahead.get(_dkey(o.look_ahead[0], o.look_ahead[1]))
+        led = self._state.lookahead.get(_dkey(o.look_ahead[0], o.look_ahead[1]))
         if led is None or not (fs := led.facts.get(o.id)):
             return None
         live = []
@@ -588,20 +594,20 @@ class _View:
             return False
         return bool(live)
 
-    def _still(self, o: Obligation, s: OccurrenceState) -> bool:
+    def _fact_still_true(self, o: Obligation, s: OccurrenceState) -> bool:
         """Rule 5(b): the message's fact, regenerated from the current state and the latest
         healthy answers."""
         rt, e, k = self._rt, o.event, _okey(s.key)
         legs = [x for j in (*((s.lock,) if s.lock else ()), *s.retained) for x in j.legs]
-        unfinished = any(x.train == e.train and x.state not in _GONE for x in legs)
+        unfinished = any(x.train == e.train and x.state not in _FINISHED_LEG_STATES for x in legs)
         if e.kind in _DELAY_NEWS:  # the delay memory still says what the message stated
             if not _states_current(o.fact_key, e.kind, s.alert_keys):
                 return False
             if e.kind is EventKind.DELAYED:
-                return _SENT + o.fact_key in s.alert_keys
+                return _SENT_PREFIX + o.fact_key in s.alert_keys
             return unfinished and not _broken(s, e.train)  # no all-clear for a broken train
         if e.kind in _ONGOING:  # a healthy poll that stopped reporting it ended it
-            return _SENT + o.fact_key in s.alert_keys
+            return _SENT_PREFIX + o.fact_key in s.alert_keys
         if e.kind is EventKind.CANNOT_SEE_TRAIN:
             return k in rt._blind
         if e.kind is EventKind.CAN_SEE_TRAIN_AGAIN:
@@ -647,15 +653,15 @@ class _View:
         return e.kind is EventKind.CHOOSE_REFUSED
 
     def newer_covers(self, o: Obligation) -> bool:
-        return any(_covers(x, o) for x in self._s.obligations)
+        return any(_covers(x, o) for x in self._state.obligations)
 
     def revision_live(self, key: OccurrenceKey, rev: int) -> bool:
-        s = self._occ(key)
+        s = self._occurrence(key)
         if s is None:
             return False
         if s.route_revision == rev:
             return True
-        snaps = self._s.config_snapshots
+        snaps = self._state.config_snapshots
         a, b = (
             _find(snaps.get(rev), key.profile_id),
             _find(snaps.get(s.route_revision), key.profile_id),
@@ -663,18 +669,18 @@ class _View:
         return a is not None and b is not None and _same_route(a, b)
 
     def in_quiet_hours(self, profile_id: str, now: datetime) -> bool:
-        p = _find(self._s.config, profile_id)
+        p = _find(self._state.config, profile_id)
         return p is not None and _in_quiet(p.alerts.quiet_hours, now)
 
     def current(self, o: Obligation) -> AlertEvent:
         if o.look_ahead is not None:
             # rule 5(b): a bundle names only its facts that still hold, from the current profile
-            live, p = self._live_facts(o), _find(self._s.config, o.look_ahead[0])
+            live, p = self._live_facts(o), _find(self._state.config, o.look_ahead[0])
             if live and p is not None and len(live) < len(self._stored_facts(o)):
                 kind, text = render_message(p, o.look_ahead[2], live)
                 return replace(o.event, kind=kind, text=text, profile_name=p.name)
         e = self._regenerated(o, self._relocked(o, o.event))
-        p = _find(self._s.config, e.profile_id)
+        p = _find(self._state.config, e.profile_id)
         if p is None or p.name == e.profile_name:
             return e
         old, new = display_name(e.profile_name), display_name(p.name)
@@ -684,7 +690,7 @@ class _View:
     def _regenerated(self, o: Obligation, e: AlertEvent) -> AlertEvent:
         """Rule 5(b): an instruction states its connection as the latest answers show it."""
         rt = self._rt
-        s = None if o.occurrence is None else self._s.occurrences.get(_okey(o.occurrence))
+        s = None if o.occurrence is None else self._state.occurrences.get(_okey(o.occurrence))
         if s is None or e.train is None:
             return e
         k = _okey(s.key)
@@ -724,7 +730,7 @@ class _View:
         clause is replaced: the lock's first train as the next good connection while nothing
         of it has left, else the train now followed and every onward leg still ahead."""
         rt = self._rt
-        s = None if o.occurrence is None else self._s.occurrences.get(_okey(o.occurrence))
+        s = None if o.occurrence is None else self._state.occurrences.get(_okey(o.occurrence))
         if e.kind not in _NAMES_LOCK or e.train is None or s is None or s.lock is None:
             return e
         live = [x for x in s.lock.legs if x.state not in (LegState.CANCELLED, LegState.RELOCKED)]
@@ -757,7 +763,9 @@ def _held_id(o: Obligation) -> tuple[str | None, str, Severity]:
     return None if o.occurrence is None else _okey(o.occurrence), o.event.key, o.event.severity
 
 
-def _settled(d: Mapping[str, Obligation], i: str, r: Obligation | None) -> dict[str, Obligation]:
+def _with_obligation(
+    d: Mapping[str, Obligation], i: str, r: Obligation | None
+) -> dict[str, Obligation]:
     return {k: v for k, v in d.items() if k != i} if r is None else {**d, i: r}
 
 
@@ -1090,9 +1098,9 @@ class Runtime:
         shows the written state (rule 22); an unsent alert counts whether written or not."""
         live = [o for o in self._st.obligations if o.id not in self._gone]
         mem = (*self._held.values(), *self._notes.values())
-        return self._view(sum(o.attempts > 0 for o in (*live, *mem)))
+        return self._build_view(sum(o.attempts > 0 for o in (*live, *mem)))
 
-    def _view(self, undelivered: int) -> RuntimeView:
+    def _build_view(self, undelivered: int) -> RuntimeView:
         now = self._clock.now()
         st, cfg = self._st, self._st.config
         occurrences = []
@@ -1191,9 +1199,13 @@ class Runtime:
             for k in [k for k in keys if k.startswith(LIVE_PREFIX)]:
                 if k[len(LIVE_PREFIX) :] not in emitted:
                     keys.pop(k)
-                    keys.pop(_SENT + k[len(LIVE_PREFIX) :], None)
+                    keys.pop(_SENT_PREFIX + k[len(LIVE_PREFIX) :], None)
             keys.update({LIVE_PREFIX + k: "1" for k in emitted})
-        sent = {k[len(_SENT) :]: Severity(v) for k, v in keys.items() if k.startswith(_SENT)}
+        sent = {
+            k[len(_SENT_PREFIX) :]: Severity(v)
+            for k, v in keys.items()
+            if k.startswith(_SENT_PREFIX)
+        }
         out = list(unsent(sent, events))
         facts = [
             Fact(e.key, e.kind, e.train.planned_departure if e.train else None)
@@ -1217,7 +1229,7 @@ class Runtime:
         ]  # fmt: skip
         obligations = []
         for e in out:
-            keys[_SENT + e.key] = e.severity.value
+            keys[_SENT_PREFIX + e.key] = e.severity.value
             if twins:  # 7.13: alerts name the service date while two occurrences exist
                 e = replace(e, text=f"{e.text} (service date {s.key.service_date.isoformat()})")
             obligations.append(self._obligation(e, s, now))
@@ -1394,7 +1406,7 @@ class Runtime:
             for t in self._told
             if t[0] is None
             or (s := self._st.occurrences.get(t[0])) is not None
-            and _SENT + t[1] in s.alert_keys
+            and _SENT_PREFIX + t[1] in s.alert_keys
         }
         self._shadow = self._compose(self._base)
 
@@ -1457,18 +1469,18 @@ class Runtime:
             self._post_again = False
             before = dict(self._copies)
             try:
-                await self._post_copies(port, _View(self), _View(self, held=True))
+                await self._post_copies(port, _RuntimeLedger(self), _RuntimeLedger(self, held=True))
             except Exception:  # a broken pass must not stop the next one
                 log.exception("webhook pass failed")
             finally:  # a copy that ended or was tried is recorded, also when shutdown cancels
                 if self._copies != before:
-                    self._delivered(set(), {}, (), True)
+                    self._record_delivery(set(), {}, (), True)
             again = self._post_again
 
     def _save_rest(self) -> None:
         """Writes the webhook rests now, synchronously, before a try's request leaves (rule 22:
         a failed write takes the same path as any other)."""
-        self._delivered(set(), {}, (), True)
+        self._record_delivery(set(), {}, (), True)
 
     async def webhooks_idle(self) -> None:
         """Waits until no webhook pass runs (a clean shutdown, tests)."""
@@ -1492,7 +1504,7 @@ class Runtime:
         self._copies.pop(cid, None)
         self._held_copies.discard(cid)
 
-    def _copy(self, o: Obligation) -> bool:
+    def _stage_webhook_copy(self, o: Obligation) -> bool:
         """The webhook copy of an obligation handed to the phone; True when one was made."""
         self._copied.add(o.id)
         cid = event_id(o.id)
@@ -1542,8 +1554,10 @@ class Runtime:
             self._copies[c.id] = merged
 
     async def _deliver_pass(self) -> None:
-        view = _View(self)  # reads the state as it is when each message is judged (rule 5)
-        held_view = _View(self, held=True)
+        ledger = _RuntimeLedger(
+            self
+        )  # reads the state as it is when each message is judged (rule 5)
+        held_ledger = _RuntimeLedger(self, held=True)
         finished: set[str] = set()
         kept: dict[str, Obligation] = {}
         told: list[tuple[Obligation, bool]] = []  # finished LEAVE_NOW, sent (else dropped)
@@ -1559,9 +1573,9 @@ class Runtime:
                 if self._waits(o):
                     continue
                 if port is not None and not o.webhook_copied and o.id not in self._copied:
-                    copies |= self._copy(o)
+                    copies |= self._stage_webhook_copy(o)
                 # a fresh clock per message: a slow send must not leave the next one judged early
-                v = held_view if o.id in self._held else view
+                v = held_ledger if o.id in self._held else ledger
                 r, sent = await deliver(o, v, self._notifier, self._clock.now())
                 if r is not None and port is not None and not r.webhook_copied:
                     r = replace(r, webhook_copied=True)
@@ -1569,9 +1583,9 @@ class Runtime:
                     told.append((o, sent))
                 # where it is now: a write landing during the send may have written a held one
                 if o.id in self._notes:
-                    self._notes = _settled(self._notes, o.id, r)
+                    self._notes = _with_obligation(self._notes, o.id, r)
                 elif o.id in self._held:
-                    self._held = _settled(self._held, o.id, r)
+                    self._held = _with_obligation(self._held, o.id, r)
                     if r is None:
                         self._gone.add(o.id)
                         if sent:
@@ -1581,9 +1595,11 @@ class Runtime:
                 elif r != o:
                     kept[o.id] = r
         finally:  # each acknowledged send is recorded, also when shutdown cancels the pass
-            self._delivered(finished, kept, told, copies)
+            self._record_delivery(finished, kept, told, copies)
 
-    async def _post_copies(self, port: WebhookPort, view: _View, held_view: _View) -> None:
+    async def _post_copies(
+        self, port: WebhookPort, ledger: _RuntimeLedger, held_ledger: _RuntimeLedger
+    ) -> None:
         """After the phone sends: each owed copy once. Never tried first, oldest first, then
         least recently tried first, so a failing URL's one try per rest goes to every copy in
         turn. The give-up check comes before every wait (owner decision Q1)."""
@@ -1604,18 +1620,18 @@ class Runtime:
                 continue
             if self._waits(c.obligation):
                 continue
-            v = held_view if c.id in self._held_copies else view
+            v = held_ledger if c.id in self._held_copies else ledger
             cur = c
 
             def started(x: WebhookCopy) -> None:  # the first try is written before it goes out
                 nonlocal cur
                 cur = self._copies[x.id] = x
-                self._delivered(set(), {}, (), True)
+                self._record_delivery(set(), {}, (), True)
 
             r = await post_copy(c, v, port, now, started)
             self._merge_copy(port, cur, r)
 
-    def _delivered(
+    def _record_delivery(
         self,
         finished: set[str],
         kept: Mapping[str, Obligation],
@@ -1648,7 +1664,7 @@ class Runtime:
 
     # --- provider access under the shared budget ---
 
-    def _settle(
+    def _update_budget(
         self, before: RequestBudget, error: BaseException | None, window_end: datetime | None
     ) -> None:
         """The shared budget after one request (rule 14). A success clears only the state it
@@ -1697,7 +1713,7 @@ class Runtime:
         if error is None and to_utc(now) > to_utc(deadline):
             error = "timeout"  # a late answer never overwrites a newer one (7.1)
         if exc is not None or error is None:  # a timeout neither backs off nor resets it
-            self._settle(before, exc, window_end)
+            self._update_budget(before, exc, window_end)
         if error is not None or answer is None:
             return error or "provider"
         return answer
@@ -1762,10 +1778,10 @@ class Runtime:
     async def poll_once(self) -> None:
         self._create_occurrences(self._clock.now())
         for k in sorted(self._st.occurrences):
-            await self._poll(k)
+            await self._poll_occurrence(k)
         await self._deliver()
 
-    async def _poll(self, k: str) -> None:
+    async def _poll_occurrence(self, k: str) -> None:
         s = self._st.occurrences.get(k)
         now = self._clock.now()
         ctx = None if s is None else self._ctx(s, now)
@@ -2381,7 +2397,7 @@ class Runtime:
         cfg = self._st.config
         if cfg is None:
             return
-        works = await self._works()
+        works = await self._fetch_works()
         if works is None:  # refused by the shared cooldown: retried by `daily`
             return
         for pid, d in [(p.id, d) for p in cfg.profiles for d in Direction]:
@@ -2389,7 +2405,7 @@ class Runtime:
             # could be stamped with a newer revision than its own (rule 21)
             p = _find(self._st.config, pid)
             if p is not None:
-                await self._lookahead(p, d, works)
+                await self._lookahead_direction(p, d, works)
         await self._deliver()
 
     def _lookahead_done(self, since: datetime) -> bool:
@@ -2405,7 +2421,7 @@ class Runtime:
             for x in leds
         )
 
-    async def _works(self) -> PlannedWorks | None:
+    async def _fetch_works(self) -> PlannedWorks | None:
         """None only when the shared budget refuses; a failed lookup is coverage `unknown`, so
         the probes still run and none is clean (7.10)."""
         now = self._clock.now()
@@ -2418,11 +2434,11 @@ class Runtime:
                 self._provider.planned_works(), POLL_DEADLINE.total_seconds()
             )
         except (ProviderError, TimeoutError) as e:
-            self._settle(before, e, None)
+            self._update_budget(before, e, None)
             if isinstance(e, AuthError):
                 self._auth("auth", "lookahead", now)
             return PlannedWorks((), "unknown")
-        self._settle(before, None, None)
+        self._update_budget(before, None, None)
         self._auth(None, "lookahead", now)  # an accepted key ends the outage (7.11)
         return works
 
@@ -2437,15 +2453,15 @@ class Runtime:
         try:
             got = await asyncio.wait_for(self._provider.stations(), POLL_DEADLINE.total_seconds())
         except (ProviderError, TimeoutError) as e:
-            self._settle(before, e, None)
+            self._update_budget(before, e, None)
             if isinstance(e, AuthError):
                 self._auth("auth", "stations", now)
             return None
-        self._settle(before, None, None)
+        self._update_budget(before, None, None)
         self._auth(None, "stations", now)  # an accepted key ends the outage (7.11)
         return got
 
-    async def _lookahead(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
+    async def _lookahead_direction(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
         dk = _dkey(p.id, d)
         start = self._clock.now()
         today = start.astimezone(TZ).date()
@@ -2569,21 +2585,21 @@ class Runtime:
         now = self._clock.now()
         self._since = now  # stored messages wait for the reconcile poll (rules 5, 11)
         try:
-            await self._start(now)
+            await self._load_and_reconcile(now)
         finally:
             self._since = None
         self._apply({})
         await self._deliver()
         self._started = True
 
-    async def _start(self, now: datetime) -> None:
+    async def _load_and_reconcile(self, now: datetime) -> None:
         lost = None
         try:
             loaded = self._store.load()
         except StorageError as e:
             loaded, lost = None, str(e)
         if loaded is not None:
-            self._st = self._migrated(loaded)
+            self._st = self._migrate_state(loaded)
             if (port := self._webhooks) is not None:
                 self._copies = {c.id: c for c in loaded.webhook_copies}
                 # a restart keeps each URL's rest and outage: no extra try, no second warning
@@ -2603,9 +2619,9 @@ class Runtime:
         self._create_occurrences(now)
         # deterministic reconcile: one fresh poll per unarchived occurrence (rule 11)
         for k in sorted(self._st.occurrences):
-            await self._poll(k)
+            await self._poll_occurrence(k)
 
-    def _migrated(self, st: PersistedState) -> PersistedState:
+    def _migrate_state(self, st: PersistedState) -> PersistedState:
         """A stored state brought into the current model (rule 11): every delivered fact of an
         older store counts as last reported, so the reconcile poll ends the ones that ended (a
         recurrence is news again), and every occurrence gets its own fixed schedule."""
@@ -2614,8 +2630,8 @@ class Runtime:
         for k, s in st.occurrences.items():
             keys = dict(s.alert_keys)
             for x in s.alert_keys:
-                if x.startswith(_SENT):
-                    keys.setdefault(LIVE_PREFIX + x[len(_SENT) :], "1")
+                if x.startswith(_SENT_PREFIX):
+                    keys.setdefault(LIVE_PREFIX + x[len(_SENT_PREFIX) :], "1")
             a = s.advice
             # a record saved before `delivered` loads as told; its LEAVE_NOW still owed was not
             if (

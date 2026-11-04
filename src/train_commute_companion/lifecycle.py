@@ -492,7 +492,10 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
         first = usual.legs[0]
         # the newest copy says whether it left: an older one may have won on arrival (6.2)
         cur = current_connection(evidence(answer), usual)
-        if _departure(cur) < now and classify_leg(cur.legs[0], first.alight.code).kind in _RUNS:
+        if (
+            _departure(cur) < now
+            and classify_leg(cur.legs[0], first.alight.code).kind in _RUNNING_LEG_KINDS
+        ):
             # the user may be on it; show where to go if not (7.12 rule 7)
             nxt = find_next_good(s, ctx, answer, after=first.train)
             text = f"your usual {hhmm(ctx.schedule.first_departure)} has left. " + (
@@ -684,7 +687,7 @@ def apply_action(s: OccurrenceState, ctx: Ctx, action: UserAction) -> Transition
 
 # --- follow, relock, restore (7.4, 7.12 rules 2, 3, 8, 21) ---
 
-_RUNS = (LegKind.OK, LegKind.DELAYED)
+_RUNNING_LEG_KINDS = (LegKind.OK, LegKind.DELAYED)
 _AT_RISK_LOUD = timedelta(minutes=30)
 _PLATFORM_LOUD = timedelta(minutes=15)
 _KEEP_POLLS = 20  # shortcut: health reads only the latest records; keep more if it ever needs a day
@@ -1170,7 +1173,7 @@ def _follow(
             if (r := act(t, ridden=x.state is LegState.RIDING)) is not None:
                 return r
             continue
-        usable = cl.kind in _RUNS or cl.kind is LegKind.CUT_SHORT
+        usable = cl.kind in _RUNNING_LEG_KINDS or cl.kind is LegKind.CUT_SHORT
         if usable and x.state in _MAY_HAVE_LEFT and (pc := _platform(ctx, x, cl)):
             events.append(pc)
         cut = cl.kind is LegKind.CUT_SHORT or x.alight_stop != x.intended_alight
@@ -1181,7 +1184,7 @@ def _follow(
                 last.code
                 if last is not None
                 else x.intended_alight
-                if cl.kind in _RUNS
+                if cl.kind in _RUNNING_LEG_KINDS
                 else x.served_endpoint
             )
             # frozen once a recovery leg is boarded, by its departure evidence (7.4)
@@ -1238,7 +1241,7 @@ def _follow(
                     return r
                 continue
         # every running leg: `_stated` keeps only news, including the fall back to on time
-        late = cl.kind in _RUNS and x.state is not LegState.DONE
+        late = cl.kind in _RUNNING_LEG_KINDS and x.state is not LegState.DONE
         if nxt is None or ncl is None or ncl.kind is LegKind.CANCELLED:
             if late and ncl is None:  # a cancelled next leg is the news, not this delay
                 events.append(_delayed(ctx, x, cl, last=nxt is None))

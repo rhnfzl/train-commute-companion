@@ -32,7 +32,7 @@ from train_commute_companion.unclear import Unclear, disagreement, newest_copies
 
 PROBE_DAYS = 3
 HORIZON_DAYS = 10
-SEARCH = timedelta(minutes=15)
+SEARCH_WINDOW = timedelta(minutes=15)
 # change tolerances of look-ahead 23; a unanimous run adopts any difference (7.12 rule 18)
 DEP_TOL_MIN = 5
 DUR_TOL_MIN = 10
@@ -194,7 +194,7 @@ def _probed_end(r: ProbeResult) -> datetime | None:
 
 
 def _minus_search(t: datetime) -> datetime:
-    return (t.astimezone(UTC) - SEARCH).astimezone(TZ)
+    return (t.astimezone(UTC) - SEARCH_WINDOW).astimezone(TZ)
 
 
 def probe_queries(p: Profile, d: Direction, day: date, base: BaselineVersion | None) -> list[Query]:
@@ -240,7 +240,7 @@ def probe_dates(
 def _nearest(conns: Sequence[Connection], ref: datetime) -> Connection | None:
     """Departing within 15 min of `ref`, nearest first, the earlier on a tie."""
     at = ref.astimezone(UTC)
-    near = [c for c in conns if abs(planned_departure(c.legs[0]) - at) <= SEARCH]
+    near = [c for c in conns if abs(planned_departure(c.legs[0]) - at) <= SEARCH_WINDOW]
     return min(
         near,
         key=lambda c: (abs(planned_departure(c.legs[0]) - at), planned_departure(c.legs[0])),

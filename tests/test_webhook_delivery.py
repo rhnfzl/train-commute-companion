@@ -752,7 +752,7 @@ async def withdraw(rig: WRig, times=CONTINUE) -> None:
     """The next look-ahead run, without its delivery pass: it withdraws the adoption."""
     rig.clock.jump(5)
     rig.provider.times = times
-    await rig.rt._lookahead(rig.rt.config.profiles[0], OUT, PlannedWorks((), "complete"))
+    await rig.rt._lookahead_direction(rig.rt.config.profiles[0], OUT, PlannedWorks((), "complete"))
 
 
 def wed_posts(ep: Endpoint) -> list[tuple[str, str]]:
@@ -1194,7 +1194,7 @@ async def test_failed_look_ahead_write_keeps_the_changed_copy(tmp_path, branch):
 async def test_carried_bundle_keeps_an_acceptance_the_store_missed(tmp_path):  # rule 22
     rig = await mixed_rig(tmp_path)
     rig.notifier.fails = lambda e: True  # the bundle stays phone-pending
-    await rig.rt._lookahead(rig.rt.config.profiles[0], OUT, PlannedWorks((), "complete"))
+    await rig.rt._lookahead_direction(rig.rt.config.profiles[0], OUT, PlannedWorks((), "complete"))
     rig.store.fail = True
     await rig.rt._deliver()  # the receiver takes the bundle; the delivery write fails
     o = bundle_of(rig)
