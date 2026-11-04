@@ -53,7 +53,7 @@ def resolve(hass: HomeAssistant, profile: str) -> tuple[TccData, str, str]:
     return data, hit.profile_id, hit.profile_name
 
 
-async def _run[T](data: TccData, fn: Callable[[Runtime], Awaitable[T]]) -> T:
+async def _call_runtime[T](data: TccData, fn: Callable[[Runtime], Awaitable[T]]) -> T:
     try:
         async with asyncio.timeout(RUN_TIMEOUT_S):
             return await data.host.run(fn)
@@ -71,7 +71,7 @@ async def do_choose(
     service_date: date | None,
     direction: Direction | None,
 ) -> None:
-    reason = await _run(
+    reason = await _call_runtime(
         data,
         lambda rt: rt.choose_at(
             profile_id,
@@ -86,7 +86,7 @@ async def do_choose(
         raise ServiceValidationError(reason)
 
 
-async def _act(data: TccData, ok: bool, name: str) -> None:
+async def _refresh_or_refuse(data: TccData, ok: bool, name: str) -> None:
     await data.coordinator.async_request_refresh()
     if not ok:
         raise ServiceValidationError(f"no journey of {name} is being followed now")
@@ -100,8 +100,10 @@ async def do_leaving(
     direction: Direction | None,
 ) -> None:
     # the tap time is read on the runtime thread, from the runtime's clock
-    ok = await _run(data, lambda rt: rt.act(profile_id, Leaving(service_date, rt.now()), direction))
-    await _act(data, ok, name)
+    ok = await _call_runtime(
+        data, lambda rt: rt.act(profile_id, Leaving(service_date, rt.now()), direction)
+    )
+    await _refresh_or_refuse(data, ok, name)
 
 
 async def do_not_travelling(
@@ -112,13 +114,13 @@ async def do_not_travelling(
     direction: Direction | None,
     whole_day: bool,
 ) -> None:
-    ok = await _run(
+    ok = await _call_runtime(
         data, lambda rt: rt.act(profile_id, NotTravelling(service_date, whole_day), direction)
     )
-    await _act(data, ok, name)
+    await _refresh_or_refuse(data, ok, name)
 
 
-async def _choose(call: ServiceCall) -> None:
+async def _handle_choose(call: ServiceCall) -> None:
     d = call.data
     data, pid, _ = resolve(call.hass, d["profile"])
     await do_choose(
@@ -126,13 +128,13 @@ async def _choose(call: ServiceCall) -> None:
     )
 
 
-async def _leaving(call: ServiceCall) -> None:
+async def _handle_leaving(call: ServiceCall) -> None:
     d = call.data
     data, pid, name = resolve(call.hass, d["profile"])
     await do_leaving(data, pid, name, d.get("service_date"), d.get("direction"))
 
 
-async def _not_travelling(call: ServiceCall) -> None:
+async def _handle_not_travelling(call: ServiceCall) -> None:
     d = call.data
     data, pid, name = resolve(call.hass, d["profile"])
     await do_not_travelling(
@@ -141,6 +143,8 @@ async def _not_travelling(call: ServiceCall) -> None:
 
 
 def async_setup_services(hass: HomeAssistant) -> None:
-    hass.services.async_register(DOMAIN, "choose", _choose, CHOOSE_SCHEMA)
-    hass.services.async_register(DOMAIN, "leaving", _leaving, LEAVING_SCHEMA)
-    hass.services.async_register(DOMAIN, "not_travelling", _not_travelling, NOT_TRAVELLING_SCHEMA)
+    hass.services.async_register(DOMAIN, "choose", _handle_choose, CHOOSE_SCHEMA)
+    hass.services.async_register(DOMAIN, "leaving", _handle_leaving, LEAVING_SCHEMA)
+    hass.services.async_register(
+        DOMAIN, "not_travelling", _handle_not_travelling, NOT_TRAVELLING_SCHEMA
+    )

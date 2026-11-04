@@ -14,7 +14,7 @@ from train_commute_companion.view import RuntimeView
 
 from .coordinator import TccCoordinator
 from .data import TccConfigEntry, TccData
-from .entity import TccEntity, pick, sync_entities, unique_id
+from .entity import TccEntity, shown_and_others, sync_entities, unique_id
 from .services import do_choose, do_leaving, do_not_travelling
 
 PER_DIRECTION = ("leaving", "not_travelling", "choose_next")
@@ -48,7 +48,7 @@ class TccButton(TccEntity, ButtonEntity):
 
     async def _choose_next(self) -> None:
         assert self.direction is not None
-        shown, others = pick(self.coordinator.data, self.profile_id, self.direction)
+        shown, others = shown_and_others(self.coordinator.data, self.profile_id, self.direction)
         occ = next(
             (
                 o

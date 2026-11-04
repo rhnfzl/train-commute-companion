@@ -55,7 +55,7 @@ class TccEntity(CoordinatorEntity[TccCoordinator]):
         )
 
 
-def pick(
+def shown_and_others(
     view: RuntimeView, profile_id: str, direction: Direction
 ) -> tuple[OccurrenceView | None, tuple[OccurrenceView, ...]]:
     """The oldest occurrence not resolved, else the newest, and the rest (7.13)."""

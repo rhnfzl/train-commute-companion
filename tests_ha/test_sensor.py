@@ -20,7 +20,7 @@ from test_lifecycle_follow import journey, occ
 from test_runtime import at
 
 from custom_components.train_commute_companion.const import DOMAIN
-from custom_components.train_commute_companion.entity import health_state, pick
+from custom_components.train_commute_companion.entity import health_state, shown_and_others
 from train_commute_companion.health import BoardHealth
 from train_commute_companion.lifecycle import DirectionState, LegState, NotTravelling
 from train_commute_companion.model import Direction, OccurrenceKey
@@ -290,16 +290,16 @@ def rv(*occs: OccurrenceView, **kw) -> RuntimeView:
 
 def test_pick_oldest_unresolved_then_newest():
     a, b, c = ov(25, resolved=True), ov(26), ov(27)
-    assert pick(rv(c, b, a), "p1", Direction.OUTBOUND) == (b, (a, c))
-    assert pick(rv(ov(25, resolved=True), ov(26, resolved=True)), "p1", Direction.OUTBOUND)[
-        0
-    ].key.service_date == date(2026, 10, 26)
+    assert shown_and_others(rv(c, b, a), "p1", Direction.OUTBOUND) == (b, (a, c))
+    assert shown_and_others(
+        rv(ov(25, resolved=True), ov(26, resolved=True)), "p1", Direction.OUTBOUND
+    )[0].key.service_date == date(2026, 10, 26)
     # a DONE occurrence that still runs a retained remainder is not resolved: picked first
     kept = ov(25, retained=((),))
-    assert pick(rv(ov(27), kept), "p1", Direction.OUTBOUND)[0] is kept
-    assert pick(rv(), "p1", Direction.OUTBOUND) == (None, ())
-    assert pick(rv(ov(27, pid="p2")), "p1", Direction.OUTBOUND) == (None, ())
-    assert pick(rv(ov(27)), "p1", Direction.RETURN) == (None, ())
+    assert shown_and_others(rv(ov(27), kept), "p1", Direction.OUTBOUND)[0] is kept
+    assert shown_and_others(rv(), "p1", Direction.OUTBOUND) == (None, ())
+    assert shown_and_others(rv(ov(27, pid="p2")), "p1", Direction.OUTBOUND) == (None, ())
+    assert shown_and_others(rv(ov(27)), "p1", Direction.RETURN) == (None, ())
 
 
 def test_health_state_order():

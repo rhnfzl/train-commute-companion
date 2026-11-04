@@ -22,35 +22,37 @@ from train_commute_companion.view import (
 
 from .coordinator import TccCoordinator
 from .data import TccConfigEntry
-from .entity import TccEntity, health_state, pick, sync_entities, unique_id
+from .entity import TccEntity, health_state, shown_and_others, sync_entities, unique_id
 
 type Fn = Callable[[RuntimeView, str, Direction | None, int | None], Any]
 type AttrsFn = Callable[[RuntimeView, str, Direction | None, int | None], dict[str, Any]]
 
 
-def _prim(v: Any) -> Any:
+def _to_primitive(v: Any) -> Any:
     """Attribute values are primitives: ISO strings for dates, values for enums (never a dataclass)."""
     if isinstance(v, datetime | date):
         return v.isoformat()
     if isinstance(v, Enum):
         return v.value
     if is_dataclass(v) and not isinstance(v, type):
-        return {f.name: _prim(getattr(v, f.name)) for f in fields(v)}
+        return {f.name: _to_primitive(getattr(v, f.name)) for f in fields(v)}
     return v
 
 
-def train(leg: LegView) -> str:
+def _train_label(leg: LegView) -> str:
     return f"{leg.planned_departure:%H:%M} {leg.board}-{leg.alight} {leg.train_number}"
 
 
 def _occ(view: RuntimeView, pid: str, d: Direction | None) -> OccurrenceView | None:
     assert d is not None
-    return pick(view, pid, d)[0]
+    return shown_and_others(view, pid, d)[0]
 
 
-def _status(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> dict[str, Any]:
+def _status_attrs(
+    view: RuntimeView, pid: str, d: Direction | None, n: int | None
+) -> dict[str, Any]:
     assert d is not None
-    occ, others = pick(view, pid, d)
+    occ, others = shown_and_others(view, pid, d)
     if occ is None:
         return {
             "service_date": None,
@@ -67,12 +69,12 @@ def _status(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> 
             {
                 "service_date": o.key.service_date.isoformat(),
                 "state": o.direction_state.value,
-                "trains": [train(x) for x in o.legs],
+                "trains": [_train_label(x) for x in o.legs],
             }
             for o in others
         ],
-        "extra_legs": [train(x) for x in occ.legs[info.max_transfers + 2 :]],
-        "retained": [[train(x) for x in j] for j in occ.retained],
+        "extra_legs": [_train_label(x) for x in occ.legs[info.max_transfers + 2 :]],
+        "retained": [[_train_label(x) for x in j] for j in occ.retained],
     }
 
 
@@ -80,12 +82,14 @@ def _leg_time(stop: Stop, obs: TimeObs | None, planned: datetime | None) -> date
     return obs.value if obs and obs.provenance is Provenance.REPORTED and obs.value else planned
 
 
-def _next(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> Connection | None:
+def _next_good_train(
+    view: RuntimeView, pid: str, d: Direction | None, n: int | None
+) -> Connection | None:
     occ = _occ(view, pid, d)
     return occ.next_good if occ else None
 
 
-def _first(leg: Leg) -> datetime | None:
+def _first_departure(leg: Leg) -> datetime | None:
     b = leg.board
     return _leg_time(b, b.departure, b.planned_departure)
 
@@ -106,11 +110,11 @@ def _health_attrs(
 ) -> dict[str, Any]:
     out: dict[str, Any] = {"store_ok": view.store_ok, "requests": view.requests}
     out["lookahead_last_ok"] = {
-        d.value: _prim(view.lookahead_last_ok.get(f"{pid}|{d.value}")) for d in Direction
+        d.value: _to_primitive(view.lookahead_last_ok.get(f"{pid}|{d.value}")) for d in Direction
     }
     for direction in Direction:
-        occ = pick(view, pid, direction)[0]
-        out[f"{direction.value}_last_ok_at"] = _prim(occ.health.last_ok_at) if occ else None
+        occ = shown_and_others(view, pid, direction)[0]
+        out[f"{direction.value}_last_ok_at"] = _to_primitive(occ.health.last_ok_at) if occ else None
         out[f"{direction.value}_consecutive_failures"] = (
             occ.health.consecutive_failures if occ else 0
         )
@@ -126,7 +130,7 @@ def _leg_state(view: RuntimeView, pid: str, d: Direction | None, n: int | None) 
 def _leg_attrs(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> dict[str, Any]:
     occ = _occ(view, pid, d)
     assert n is not None
-    return _prim(occ.legs[n - 1]) if occ and n <= len(occ.legs) else {}
+    return _to_primitive(occ.legs[n - 1]) if occ and n <= len(occ.legs) else {}
 
 
 def _transfer(
@@ -138,13 +142,13 @@ def _transfer(
 
 
 def _next_attrs(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> dict[str, Any]:
-    conn = _next(view, pid, d, n)
+    conn = _next_good_train(view, pid, d, n)
     if conn is None:
         return {}
     last = conn.legs[-1].alight
     return {
         "platform": conn.legs[0].board.actual_track or conn.legs[0].board.planned_track,
-        "arrival": _prim(_leg_time(last, last.arrival, last.planned_arrival)),
+        "arrival": _to_primitive(_leg_time(last, last.arrival, last.planned_arrival)),
         "transfers": len(conn.legs) - 1,
     }
 
@@ -153,13 +157,13 @@ def _next_attrs(view: RuntimeView, pid: str, d: Direction | None, n: int | None)
 SPECS: dict[str, tuple[Fn, AttrsFn, SensorDeviceClass | None]] = {
     "status": (
         lambda v, p, d, n: o.direction_state.value if (o := _occ(v, p, d)) else "none",
-        _status,
+        _status_attrs,
         None,
     ),
     "lock": (
         lambda v, p, d, n: o.commitment.value if (o := _occ(v, p, d)) and o.commitment else "none",
         lambda v, p, d, n: (
-            {"source": _prim(o.lock_source), "trains": [train(x) for x in o.legs]}
+            {"source": _to_primitive(o.lock_source), "trains": [_train_label(x) for x in o.legs]}
             if (o := _occ(v, p, d))
             else {}
         ),
@@ -176,14 +180,16 @@ SPECS: dict[str, tuple[Fn, AttrsFn, SensorDeviceClass | None]] = {
         None,
     ),
     "next_connection": (
-        lambda v, p, d, n: _first(c.legs[0]) if (c := _next(v, p, d, n)) else None,
+        lambda v, p, d, n: (
+            _first_departure(c.legs[0]) if (c := _next_good_train(v, p, d, n)) else None
+        ),
         _next_attrs,
         SensorDeviceClass.TIMESTAMP,
     ),
     "advice": (
         _advised,
         lambda v, p, d, n: (
-            {"sent_at": _prim(o.advice.sent_at) if o.advice else None}
+            {"sent_at": _to_primitive(o.advice.sent_at) if o.advice else None}
             if (o := _occ(v, p, d))
             else {}
         ),
