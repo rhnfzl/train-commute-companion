@@ -218,16 +218,22 @@ class Bot:
                 chat,
             )
             return
+        if not cb and "location" in (msg or edited):
+            self._location(msg or edited)  # no command: a failure is logged, never answered
+            return
         try:
             if cb:
                 await self._button(cb)
-            elif "location" in (msg or edited):
-                self._location(msg or edited)
             elif msg and isinstance(msg.get("text"), str):
                 await self._message(msg)
             # an edited message is read only for its location (live location moves edit it)
         except _TimedOut:
             await self._reply("NS did not answer in time; try again.")
+        except Exception:
+            # the exception text stays out of the chat; without a reply the user cannot tell
+            # whether a skip or a lock took effect
+            log.exception("Telegram command failed")
+            await self._reply("That failed; see the app log.")
 
     def _location(self, msg: dict[str, Any]) -> None:
         loc = _obj(msg.get("location"))

@@ -605,3 +605,13 @@ async def test_choose_timeout_replies_and_the_core_call_finishes(app, monkeypatc
     release.set()
     await until(lambda: only_occurrence(app.rt).lock.legs[0].train.planned_departure == at("08:44"))
     assert len(app.tg.sent) == 1
+
+
+async def test_a_failed_command_is_answered_without_its_text(app, monkeypatch, caplog):
+    async def broken(*args):
+        raise ValueError("inner detail")
+
+    monkeypatch.setattr(app.rt, "choose_at", broken)
+    await app.bot.handle(app.msg("/choose 08:44"))
+    assert app.texts() == ["That failed; see the app log."]
+    assert "Telegram command failed" in caplog.text
