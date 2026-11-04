@@ -277,11 +277,13 @@ class HaNotifier:
             self.hass.bus.async_fire(
                 EVENT_ALERT, event_data(event, self.entry_id, device.id if device else None)
             )
-        now = time.monotonic()
-        if self._timed_out_at is not None and now - self._timed_out_at < NOTIFY_BACKOFF_S:
+        if (
+            self._timed_out_at is not None
+            and time.monotonic() - self._timed_out_at < NOTIFY_BACKOFF_S
+        ):
             return False
         payload = notify_payload(event.severity, event.text, self.loud_style)
         ok, timed_out = await _push(self.hass, self.service, payload, self.retired, self._tasks)
         if timed_out:
-            self._timed_out_at = now
+            self._timed_out_at = time.monotonic()  # the wait itself must not eat the back-off
         return ok

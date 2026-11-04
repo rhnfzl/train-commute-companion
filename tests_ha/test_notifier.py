@@ -2,6 +2,7 @@ import asyncio
 import logging
 from dataclasses import replace
 from datetime import date, datetime
+from types import SimpleNamespace
 
 import pytest
 from aiohttp import ClientError
@@ -520,3 +521,22 @@ async def test_runtime_side_timeout_when_hass_never_answers(hass, monkeypatch):
 
     monkeypatch.setattr(n, "_send", never)
     assert not await send_from_thread(hass, loud_event(), n)
+
+
+async def test_the_back_off_counts_from_the_timeout_not_from_the_push(hass, monkeypatch):
+    monkeypatch.setattr(notifier_mod, "NOTIFY_TIMEOUT_S", 0.05)
+    clock = SimpleNamespace(now=1000.0)
+    monkeypatch.setattr(notifier_mod, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    calls = []
+
+    async def svc(call):
+        calls.append(call)
+        clock.now += NOTIFY_BACKOFF_S - 1  # the push itself waits nearly as long as the back-off
+        await asyncio.sleep(30)
+
+    fake_phone(hass, monkeypatch, handler=svc)
+    n = build(hass)
+    assert not await send_from_thread(hass, make_event(key="a"), n)
+    clock.now += 2  # past the back-off from the push's start, well inside it from the timeout
+    assert not await send_from_thread(hass, make_event(key="b"), n)
+    assert len(calls) == 1
