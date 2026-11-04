@@ -11,3 +11,4 @@ __pycache__/
 .venv-ha/
 .env
 examples/config/
+.desloppify/
