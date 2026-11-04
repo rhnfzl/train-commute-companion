@@ -5,15 +5,26 @@ import asyncio
 import logging
 from collections.abc import Coroutine, Iterable, Mapping
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.helpers.event import async_track_state_change_event
 
-from train_commute_companion.location import LocationEvent, Zone, number, resolve_zone
+from train_commute_companion.location import (
+    PLACE_ROLES,
+    LocationEvent,
+    Zone,
+    ZoneTrack,
+    next_zone,
+    number,
+    resolve_zone,
+    seed_zone,
+    station_zones,
+)
 from train_commute_companion.model import Profile
 from train_commute_companion.runtime import Runtime
+from train_commute_companion.view import running_stations
 
 from .host import RuntimeNotRunning
 
@@ -21,9 +32,6 @@ if TYPE_CHECKING:  # data.py imports this module
     from .data import TccConfigEntry  # noqa: TC004 (annotation only, lazy on 3.14)
 
 _LOGGER = logging.getLogger(__name__)
-
-REPORT_EVERY = timedelta(minutes=2)  # HA-46: each event costs a live request per occurrence
-PLACE_ROLES = ("home", "work")
 
 
 def _fix(state: State) -> tuple[float, float] | None:
@@ -47,16 +55,7 @@ def zones_for(
     loc = profile.location
     if loc is None:
         return []
-    codes = {
-        profile.home_station,
-        profile.work_station,
-        *profile.outbound.transfers,
-        *profile.return_.transfers,
-        *running,
-    }
-    zones = [
-        Zone(c, *positions[c], float(loc.station_radius_m)) for c in sorted(codes) if c in positions
-    ]
+    zones = station_zones(profile, loc.station_radius_m, positions, running)
     for role in PLACE_ROLES:
         entity = loc.zones.get(role) or ("zone.home" if role == "home" else None)
         state = None if entity is None else hass.states.get(entity)
@@ -82,8 +81,7 @@ class LocationTracker:
         self._unsub_data: Any = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._locks: dict[str, asyncio.Lock] = {}  # a lock queues FIFO: arrival order per profile
-        self._prev: dict[str, str | None] = {}  # profile id -> last zone
-        self._reported: dict[tuple[str, str], datetime] = {}
+        self._tracks: dict[str, ZoneTrack] = {}
 
     def start(self) -> None:
         self._unsub_data = self._entry.runtime_data.coordinator.async_add_listener(self._sync)
@@ -96,8 +94,7 @@ class LocationTracker:
         self._unsub_state = self._unsub_data = None
         self._tracked = {}
         self._gen.clear()
-        self._prev.clear()
-        self._reported.clear()
+        self._tracks.clear()
         tasks = list(self._tasks)
         for t in tasks:
             t.cancel()
@@ -127,8 +124,7 @@ class LocationTracker:
             if old.get(pid) == tracked:
                 continue
             # a new source starts with no history: an old zone or pending event is not its evidence
-            self._prev.pop(pid, None)
-            self._reported = {k: v for k, v in self._reported.items() if k[0] != pid}
+            self._tracks.pop(pid, None)
             if tracked is None:
                 self._gen.pop(pid, None)
                 continue
@@ -156,17 +152,6 @@ class LocationTracker:
         task = self._entry.async_create_task(self._hass, coro, f"tcc location {pid}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-
-    def _running(self, pid: str) -> set[str]:
-        """Stations of every lock and retained leg: an old route or reroute keeps its zones."""
-        data = self._entry.runtime_data.coordinator.data
-        legs = [
-            leg
-            for o in data.occurrences
-            if o.key.profile_id == pid
-            for leg in (*o.legs, *(x for r in o.retained for x in r))
-        ]
-        return {s for leg in legs for s in (leg.board, leg.alight)}
 
     async def _handle(
         self,
@@ -202,25 +187,20 @@ class LocationTracker:
                 positions = await host.positions()
                 if not live():
                     return
-                zones = zones_for(self._hass, profile, positions, self._running(pid))
-                zone = resolve_zone(*pos, zones)
-                prev, self._prev[pid] = self._prev.get(pid), zone
+                # read again after the await: the view may have moved on
+                running = running_stations(
+                    self._entry.runtime_data.coordinator.data.occurrences, pid
+                )
+                zone = resolve_zone(*pos, zones_for(self._hass, profile, positions, running))
                 if seed:
+                    self._tracks[pid] = seed_zone(zone, at)
                     return
-                events: list[LocationEvent] = []
-                if zone != prev:
-                    if prev is not None:
-                        events.append(LocationEvent(prev, "leave", at, at))
-                    if zone is not None:
-                        events.append(LocationEvent(zone, "enter", at, at))
-                elif zone is not None:
-                    last = self._reported.get((pid, zone))
-                    if last is None or at - last >= REPORT_EVERY:
-                        self._reported[(pid, zone)] = at
-                        events.append(LocationEvent(zone, "report", at, at))
-                for event in events:
+                track = self._tracks.get(pid, ZoneTrack())  # never seeded: no zone to leave
+                self._tracks[pid], changes = next_zone(track, zone, at)
+                for name, kind in changes:
                     if not live():  # checked with no await before the dispatch
                         return
+                    event = LocationEvent(name, kind, at, at)
 
                     def send(rt: Runtime, msg: LocationEvent = event) -> Coroutine[Any, Any, None]:
                         # the core rechecks the source after its own request, before any write

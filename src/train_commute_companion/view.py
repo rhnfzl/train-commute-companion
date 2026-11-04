@@ -1,7 +1,7 @@
 """The read model for shells (5.4, 6.2, 7.3, 7.11, 7.13): frozen snapshots of what the core
 follows, built by pure functions, so a shell never reaches into runtime state."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from itertools import pairwise
@@ -127,6 +127,17 @@ class RuntimeView:
     # "<profile_id>|<direction>" for every direction of the current config: the last successful
     # look-ahead run (a failed works lookup leaves it), None with no ledger or no good run (7.10)
     lookahead_last_ok: Mapping[str, datetime | None] = field(default_factory=dict)
+
+
+def running_stations(occurrences: Iterable[OccurrenceView], profile_id: str) -> set[str]:
+    """Stations of the profile's running and retained legs: an old route keeps its zones."""
+    return {
+        s
+        for o in occurrences
+        if o.key.profile_id == profile_id
+        for leg in (*o.legs, *(x for r in o.retained for x in r))
+        for s in (leg.board, leg.alight)
+    }
 
 
 def _reported(obs: TimeObs | None) -> datetime | None:

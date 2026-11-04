@@ -165,10 +165,29 @@ async def test_updates_inside_one_zone_send_one_report_per_2_min(hass):
     for i in range(1, 11):
         harness.FREEZER.tick(5)
         set_person(hass, 52.1 + i * 1e-5, 5.1)
-    assert await spied(h) == [("UT", "report")]
+    assert await spied(h) == []  # the seed started the report timer
     harness.FREEZER.tick(120)
     set_person(hass, 52.1 + 11e-5, 5.1)
+    assert await spied(h) == [("UT", "report")]
+    harness.FREEZER.tick(60)
+    set_person(hass, 52.1 + 12e-5, 5.1)
+    assert await spied(h) == [("UT", "report")]
+    harness.FREEZER.tick(60)
+    set_person(hass, 52.1 + 13e-5, 5.1)
     assert await spied(h) == [("UT", "report")] * 2
+
+
+async def test_an_enter_starts_the_report_timer(hass):
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    set_person(hass, 52.1, 5.1)
+    harness.FREEZER.tick(5)
+    set_person(hass, 52.10001, 5.1)
+    assert await spied(h) == [("UT", "enter")]
+    harness.FREEZER.tick(120)
+    set_person(hass, 52.10002, 5.1)
+    assert await spied(h) == [("UT", "enter"), ("UT", "report")]
 
 
 async def test_attribute_change_with_old_coordinates_sends_nothing(hass):

@@ -32,7 +32,15 @@ from train_commute_companion.lifecycle import (
     on_poll,
     on_tick,
 )
-from train_commute_companion.location import LocationEvent, Zone, number, resolve_zone
+from train_commute_companion.location import (
+    LocationEvent,
+    Zone,
+    ZoneTrack,
+    next_zone,
+    number,
+    resolve_zone,
+    seed_zone,
+)
 from train_commute_companion.model import EventKind, Severity
 
 USUAL = conn(L1, L2)
@@ -56,6 +64,33 @@ def test_number_is_a_finite_json_number():
     assert number(10**400) is None  # too large for a float
     for bad in (True, "52", None, float("nan"), float("inf")):
         assert number(bad) is None
+
+
+def test_next_zone_gives_leave_enter_and_a_throttled_report():
+    track, events = next_zone(ZoneTrack(), "UT", at("08:30"))  # no seed: nothing to leave
+    assert events == [("UT", "enter")]
+    track, events = next_zone(track, "UT", at("08:31"))
+    assert events == []  # the enter started the timer
+    track, events = next_zone(track, "UT", at("08:32"))
+    assert events == [("UT", "report")]
+    track, events = next_zone(track, "UT", at("08:33"))
+    assert events == []
+    track, events = next_zone(track, "AAA", at("08:33"))
+    assert events == [("UT", "leave"), ("AAA", "enter")]
+    track, events = next_zone(track, None, at("08:34"))
+    assert events == [("AAA", "leave")]
+    assert next_zone(track, None, at("08:35"))[1] == []
+    # a return within 2 min of the last report enters and restarts that zone's timer
+    track, events = next_zone(track, "AAA", at("08:35"))
+    assert events == [("AAA", "enter")]
+    assert next_zone(track, "AAA", at("08:36"))[1] == []
+
+
+def test_seed_sends_nothing_and_starts_the_report_timer():
+    track = seed_zone("UT", at("08:30"))
+    assert next_zone(track, "UT", at("08:31"))[1] == []
+    assert next_zone(track, "UT", at("08:32"))[1] == [("UT", "report")]
+    assert next_zone(seed_zone(None, at("08:30")), "UT", at("08:31"))[1] == [("UT", "enter")]
 
 
 def test_resolve_zone_inside_and_outside():

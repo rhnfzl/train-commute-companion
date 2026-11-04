@@ -1,12 +1,16 @@
 """Location zones and events (7.2, 8). Location only adds: it never silences an alert. Pure."""
 
 import math
-from collections.abc import Sequence
-from dataclasses import dataclass
-from datetime import datetime
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Literal, get_args
 
+from train_commute_companion.model import Profile
+
 _EARTH_M = 6_371_000.0
+REPORT_EVERY = timedelta(minutes=2)  # each event costs a live request per occurrence
+PLACE_ROLES = ("home", "work")
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,3 +55,54 @@ def resolve_zone(lat: float, lon: float, zones: Sequence[Zone]) -> str | None:
     """The smallest zone containing the point (a station inside a city zone wins), else None."""
     inside = [z for z in zones if _distance_m(lat, lon, z.lat, z.lon) <= z.radius_m]
     return min(inside, key=lambda z: z.radius_m).name if inside else None
+
+
+def station_zones(
+    profile: Profile,
+    radius_m: float,
+    positions: Mapping[str, tuple[float, float]],
+    running: Iterable[str] = (),
+) -> list[Zone]:
+    """A zone per station of the route and of `running` that has a known position."""
+    codes = {
+        profile.home_station,
+        profile.work_station,
+        *profile.outbound.transfers,
+        *profile.return_.transfers,
+        *running,
+    }
+    return [Zone(c, *positions[c], float(radius_m)) for c in sorted(codes) if c in positions]
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneTrack:
+    """The zone a source last placed the user in, and when each zone last started the timer."""
+
+    zone: str | None = None
+    reported: Mapping[str, datetime] = field(default_factory=dict)
+
+
+def seed_zone(zone: str | None, at: datetime) -> ZoneTrack:
+    """A source's first fix sends nothing (7.2); inside a zone it starts the report timer."""
+    return ZoneTrack(zone, {zone: at} if zone else {})
+
+
+def next_zone(
+    track: ZoneTrack, zone: str | None, at: datetime
+) -> tuple[ZoneTrack, list[tuple[str, LocationKind]]]:
+    """The track after a fix in `zone`, and its events: leave then enter on a change, else a
+    report once per `REPORT_EVERY`. An enter already says the user is there, so it starts the
+    timer: a report seconds later would spend a live request to tell the core nothing new."""
+    events: list[tuple[str, LocationKind]] = []
+    if zone != track.zone:
+        if track.zone is not None:
+            events.append((track.zone, "leave"))
+        if zone is not None:
+            events.append((zone, "enter"))
+    elif zone is not None:
+        last = track.reported.get(zone)
+        if last is None or at - last >= REPORT_EVERY:
+            events.append((zone, "report"))
+    # the last event, if any, is this zone's enter or report; a plain leave starts no timer
+    started = {zone: at} if zone is not None and events else {}
+    return ZoneTrack(zone, {**track.reported, **started}), events
