@@ -1887,3 +1887,21 @@ def may_archive(s: OccurrenceState, now: datetime, pending_journey_warnings: int
     w = s.lock.legs[-1].watch_until
     limit = to_utc(s.lock.planned_final_arrival) + FOLLOW_LIMIT
     return w is None or to_utc(now) >= min(to_utc(w), limit)
+
+
+def origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> Pool | None:
+    """Every connection asked from the origin, newest answer first, so an earlier train searched
+    for advice and the usual or locked train are judged together (7.6). Every answer of the poll
+    is its evidence: each train is read as its current copy, so an older healthy copy never
+    hides a newer cancellation, also one asked from a transfer station (6.2)."""
+    origin = ctx.profile.origin(ctx.direction)
+    mine = sorted(
+        (a for a in answers if a.query.origin == origin),
+        key=lambda a: to_utc(a.fetched_at),
+        reverse=True,
+    )
+    if not mine:
+        return None
+    asked = next(a for a in answers if a.query.origin == origin).query  # the poll's own query
+    conns = tuple(c for a in mine for c in a.connections)
+    return Pool(asked, conns, mine[0].fetched_at, tuple(answers))

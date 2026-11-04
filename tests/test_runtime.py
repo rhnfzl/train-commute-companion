@@ -11,7 +11,7 @@ import pytest
 from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from test_lifecycle_follow import L1, L1X, L2, L2X, LATER, conn, journey, occ
 
-from train_commute_companion.lifecycle import Choose, LockSource
+from train_commute_companion.lifecycle import Choose, LockSource, origin_answer
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import BaselineHistory
 from train_commute_companion.model import (
@@ -36,7 +36,7 @@ from train_commute_companion.providers.base import (
     RateLimited,
     ServerError,
 )
-from train_commute_companion.runtime import RequestBudget, Runtime, _fresh_state
+from train_commute_companion.runtime import RequestBudget, Runtime, _fresh_state, leg_now
 from train_commute_companion.serde import dumps, loads
 from train_commute_companion.store import PersistedState, StorageError
 
@@ -487,7 +487,7 @@ async def test_leg_now_names_the_newest_platform(tmp_path):
         Query("UT", "RTD", at("08:50")), (make_connection([_on_track(L2, "7")]),), at("07:59")
     )
     rig.rt._boards["p1|outbound|2026-10-27"] = (older, newer)
-    assert rig.rt._leg_now("p1|outbound|2026-10-27", x) == ("08:50", " (platform 7)")
+    assert leg_now(rig.rt._boards["p1|outbound|2026-10-27"], x) == ("08:50", " (platform 7)")
 
 
 async def test_cut_short_leg_at_its_last_served_stop_is_seen(tmp_path):
@@ -559,7 +559,6 @@ async def test_watchdog_before_a_lock_checks_every_leg_of_a_two_transfer_usual(t
 
 
 async def test_watchdog_before_a_lock_reads_the_newest_usual_copy(tmp_path):
-    from train_commute_companion.runtime import _origin_answer
 
     rig = await before_lock_at_0755(tmp_path, ZERO_BUFFER, [make_connection([EARLY_L1, ONWARD])])
     assert blind(rig) == []
@@ -569,7 +568,7 @@ async def test_watchdog_before_a_lock_reads_the_newest_usual_copy(tmp_path):
     newer = ProviderAnswer(q, (make_connection([planned, ONWARD]),), rig.clock.now())
     k = "p1|outbound|2026-10-27"
     ctx = rig.rt._ctx(rig.occ(), rig.clock.now())
-    rig.rt._remember_usual(k, ctx, _origin_answer((older, newer), ctx))
+    rig.rt._remember_usual(k, ctx, origin_answer((older, newer), ctx))
     await rig.rt.watchdog_once()
     got = blind(rig)
     assert len(got) == 1 and "no reported departure time" in got[0].text

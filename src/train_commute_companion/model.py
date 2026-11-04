@@ -99,6 +99,9 @@ class TimeObs:
 # poll no longer reports has ended, so its delivery entry goes too and the same fact coming back
 # later is news (7.5)
 LIVE_PREFIX = "live:"
+SENT_PREFIX = (
+    "sent:"  # delivery-ledger entries in `alert_keys`: fact key -> severity it was sent at
+)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -297,6 +300,10 @@ class OccurrenceKey:
     profile_id: str
     direction: Direction
     service_date: date
+
+
+def okey(k: OccurrenceKey) -> str:
+    return f"{k.profile_id}|{k.direction.value}|{k.service_date.isoformat()}"
 
 
 @dataclass(frozen=True, slots=True)

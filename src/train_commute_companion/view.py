@@ -1,11 +1,13 @@
 """The read model for shells (5.4, 6.2, 7.3, 7.11, 7.13): frozen snapshots of what the core
 follows, built by pure functions, so a shell never reaches into runtime state."""
 
-from collections.abc import Iterable, Mapping, Sequence
+import copy
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from itertools import pairwise
 
+from train_commute_companion.calendar import TZ
 from train_commute_companion.classify import pair_transfer
 from train_commute_companion.health import BoardHealth, board_health
 from train_commute_companion.lifecycle import (
@@ -46,6 +48,8 @@ from train_commute_companion.model import (
     direction_key,
 )
 from train_commute_companion.providers.base import ProviderAnswer
+from train_commute_companion.revisions import find_profile, profile_for
+from train_commute_companion.store import PersistedState
 from train_commute_companion.transfer import check_transfer, transfer_minimum
 
 _LIVE_ROUTE_CHANGED = f"{LIVE_PREFIX}{EventKind.ROUTE_CHANGED.value}:"
@@ -273,3 +277,70 @@ def moved(
                 )
                 out.append(Moved(p.id, d, text))
     return tuple(out)
+
+
+def runtime_view(
+    st: PersistedState,
+    boards: Mapping[str, Sequence[ProviderAnswer]],
+    now: datetime,
+    ctx_of: Callable[[OccurrenceState], Ctx | None],
+    *,
+    started: bool,
+    refusal: str | None,
+    store_ok: bool,
+    key_rejected: bool,
+    undelivered: int,
+    requests: int,
+    location_epochs: Mapping[str, int],
+) -> RuntimeView:
+    """The frozen snapshot of `st` and what the runtime remembers beside it (5.4)."""
+    cfg = st.config
+    occurrences = []
+    for k, s in sorted(st.occurrences.items()):
+        ctx = ctx_of(s)
+        if ctx is not None:
+            occurrences.append(occurrence_view(s, ctx, boards.get(k, ())))
+    # rule 10: a removed profile still runs on its occurrences, so its entities stay
+    # deep copies: a profile's mappings (`transfer_min`, zones) stay the runtime's own
+    profiles = list(cfg.profiles if cfg else ())
+    running = [s for s in st.occurrences.values() if find_profile(cfg, s.key.profile_id) is None]
+    for pid in sorted({s.key.profile_id for s in running}):
+        newest = max(
+            (s for s in running if s.key.profile_id == pid), key=lambda s: s.key.service_date
+        )
+        p = profile_for(st, newest)
+        if p is not None:
+            profiles.append(p)
+    directions = []
+    for p in profiles:
+        for d in Direction:
+            routes = [
+                find_profile(st.config_snapshots.get(s.route_revision), p.id)
+                for s in st.occurrences.values()
+                if s.key.profile_id == p.id and s.key.direction is d
+            ]
+            n = max(len(r.journey(d).transfers) for r in (p, *routes) if r is not None)
+            directions.append(DirectionInfo(p.id, p.name, d, n))
+    today = now.astimezone(TZ).date()
+    return RuntimeView(
+        now,
+        started,
+        copy.deepcopy(tuple(profiles)),
+        tuple(directions),
+        tuple(occurrences),
+        {k: works_ahead(v, today) for k, v in st.lookahead.items()},
+        moved(cfg.profiles if cfg else (), st.baselines),
+        refusal,
+        store_ok,
+        key_rejected,
+        undelivered,
+        requests,
+        dict(location_epochs),
+        {
+            k: led.last_run if led else None
+            for p in (cfg.profiles if cfg else ())
+            for d in Direction
+            for k in (direction_key(p.id, d),)
+            for led in (st.lookahead.get(k),)
+        },
+    )

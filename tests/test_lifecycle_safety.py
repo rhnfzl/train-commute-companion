@@ -43,6 +43,7 @@ from train_commute_companion.lifecycle import (
     on_location,
     on_poll,
     on_tick,
+    origin_answer,
     queries_needed,
     target_occurrence,
     write_lock,
@@ -610,13 +611,12 @@ def test_restore_once_the_newer_answer_shows_the_original_running():
 
 
 def test_auto_lock_sees_a_cancellation_in_another_answer_of_the_poll():  # 6.2, 7.2
-    from train_commute_companion.runtime import _origin_answer
 
     s = occ(None, direction_state=DirectionState.IDLE)
     c = ctx(at("07:55"))
     origin = ans("AAA", conn(L1, L2), LATER, when="07:50")
     transfer = ans("UT", conn(L2X), conn(R2), when="07:51")  # newer: the onward 08:50 is gone
-    t = on_tick(s, c, _origin_answer((origin, transfer), c))
+    t = on_tick(s, c, origin_answer((origin, transfer), c))
     assert (EventKind.CANCELLED, Severity.LOUD) in kinds(t)
     assert t.state.lock is not None and "5678" not in numbers(t.state)
 

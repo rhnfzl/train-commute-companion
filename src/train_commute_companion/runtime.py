@@ -4,7 +4,6 @@ budget, look-ahead, transactional reload and the restart reconcile (7.1, 7.11, 7
 providers/ns.py, cli.py and replay.py."""
 
 import asyncio
-import copy
 import logging
 from collections import Counter
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
@@ -18,6 +17,7 @@ from train_commute_companion.advice import (
     advise,
     leave_now_text,
     still_advised,
+    usual_arrival,
     waiting_is_bad,
 )
 from train_commute_companion.calendar import TZ, floor_to_minute, hhmm, resolve_local, to_utc
@@ -57,6 +57,7 @@ from train_commute_companion.lifecycle import (
     on_location,
     on_poll,
     on_tick,
+    origin_answer,
     queries_needed,
     target_occurrence,
     whole_day_keys,
@@ -86,6 +87,7 @@ from train_commute_companion.match import usual_connection
 from train_commute_companion.messages import CHECK_APP, no_journey_text
 from train_commute_companion.model import (
     LIVE_PREFIX,
+    SENT_PREFIX,
     AlertEvent,
     AlertFacts,
     Config,
@@ -103,12 +105,11 @@ from train_commute_companion.model import (
     Profile,
     Provenance,
     Severity,
-    Signature,
     TrainId,
-    UsualJourney,
     WebhookCopy,
     direction_key,
     display_name,
+    okey,
     split_direction_key,
     train_ident,
 )
@@ -126,16 +127,19 @@ from train_commute_companion.providers.base import (
     RateLimited,
     ServerError,
 )
-from train_commute_companion.schedule import dated_schedule, schedules_active
+from train_commute_companion.revisions import (
+    effective_profile,
+    find_profile,
+    frozen,
+    occurrence_ctx,
+    profile_for,
+    same_route,
+    signature_for,
+)
+from train_commute_companion.schedule import schedules_active
 from train_commute_companion.store import PersistedState, StorageError, Store
 from train_commute_companion.unclear import train_key
-from train_commute_companion.view import (
-    DirectionInfo,
-    RuntimeView,
-    moved,
-    occurrence_view,
-    works_ahead,
-)
+from train_commute_companion.view import RuntimeView, runtime_view
 from train_commute_companion.webhook import event_id, url_id
 
 log = logging.getLogger(__name__)
@@ -148,9 +152,6 @@ LOOKAHEAD_AT = time(6, 0)
 BACKOFF_MIN = (2, 4, 8)
 # a rejected key: stays at 30 until a success, never stops (the key may be fixed on NS's side)
 BACKOFF_AUTH_MIN = (2, 5, 15, 30)
-_SENT_PREFIX = (
-    "sent:"  # delivery-ledger entries in `alert_keys`: fact key -> severity it was sent at
-)
 # ongoing facts a poll restates while they last: a held one holds while its key is live (rule 5)
 _ONGOING = frozenset(
     {
@@ -228,52 +229,8 @@ class RequestBudget:
         return RequestBudget(until, step, reason)
 
 
-def _okey(k: OccurrenceKey) -> str:
-    return f"{k.profile_id}|{k.direction.value}|{k.service_date.isoformat()}"
-
-
 def _reasons(errors: Sequence[ProfileProblem]) -> str:
     return "; ".join(f"{e.path}: {e.message}" for e in errors)
-
-
-def _with_settings(route: Profile, settings: Profile) -> Profile:
-    """`route`'s trains with `settings`' settings (7.12 rule 10)."""
-
-    def j(d: Direction) -> UsualJourney:
-        return replace(
-            route.journey(d),
-            buffer_min=settings.journey(d).buffer_min,
-            earlier_train_advice=settings.journey(d).earlier_train_advice,
-        )
-
-    return replace(
-        route,
-        name=settings.name,
-        alerts=settings.alerts,
-        location=settings.location,
-        transfer_min=settings.transfer_min,
-        outbound=j(Direction.OUTBOUND),
-        return_=j(Direction.RETURN),
-    )
-
-
-def _same_route(a: Profile, b: Profile) -> bool:
-    return _with_settings(a, b) == b
-
-
-def _find(cfg: Config | None, pid: str) -> Profile | None:
-    return next((p for p in (cfg.profiles if cfg else ()) if p.id == pid), None)
-
-
-def _effective(
-    snaps: Mapping[int, Config], cfg: Config | None, s: OccurrenceState
-) -> Profile | None:
-    """The occurrence's route revision with the newest settings (7.12 rule 10)."""
-    route = _find(snaps.get(s.route_revision), s.key.profile_id)
-    cur = _find(cfg, s.key.profile_id)
-    if route is None or cur is None:
-        return route or cur
-    return _with_settings(route, cur)
 
 
 def _in_quiet(window: tuple[time, time] | None, now: datetime) -> bool:
@@ -323,6 +280,20 @@ def _covers(x: Obligation, o: Obligation) -> bool:
     )
 
 
+def leg_now(answers: Sequence[ProviderAnswer], x: LegProgress) -> tuple[str, str]:
+    """A locked leg as the latest answers show it: departure (expected, else planned) and
+    its platform, for a message naming it."""
+    leg = find_leg(merged_pool(answers), x.train, x.board_station)[0] if answers else None
+    run = None
+    if leg is not None:
+        run = current_run(answers, leg.train, x.board_station, x.intended_alight)
+    g = None if run is None else run[1].leg.board
+    dep = None if g is None else g.departure
+    t = dep.value if dep is not None and dep.value is not None else x.train.planned_departure
+    track = None if g is None else g.actual_track or g.planned_track
+    return hhmm(t), f" (platform {track})" if track else ""
+
+
 def _broken(s: OccurrenceState, t: TrainId | None) -> bool:
     """A live break (cancelled, cut short, missing) is held for train `t`."""
     ident = "" if t is None else f":{train_ident(t)}:"
@@ -347,7 +318,7 @@ class _RuntimeLedger:
         return rt._shadow if self._held and rt._shadow is not None else rt._st
 
     def _occurrence(self, key: OccurrenceKey) -> OccurrenceState | None:
-        return self._state.occurrences.get(_okey(key))
+        return self._state.occurrences.get(okey(key))
 
     def skipped(self, key: OccurrenceKey) -> bool:
         s = self._occurrence(key)
@@ -357,9 +328,9 @@ class _RuntimeLedger:
         rt = self._rt
         if o.look_ahead is not None:
             pid, d, day = o.look_ahead
-            then = _find(self._state.config_snapshots.get(o.route_revision), pid)
-            now = _find(self._state.config, pid)
-            if now is None or (then is not None and not _same_route(then, now)):
+            then = find_profile(self._state.config_snapshots.get(o.route_revision), pid)
+            now = find_profile(self._state.config, pid)
+            if now is None or (then is not None and not same_route(then, now)):
                 return False
             if (
                 then is None
@@ -437,17 +408,17 @@ class _RuntimeLedger:
     def _fact_still_true(self, o: Obligation, s: OccurrenceState) -> bool:
         """Rule 5(b): the message's fact, regenerated from the current state and the latest
         healthy answers."""
-        rt, e, k = self._rt, o.event, _okey(s.key)
+        rt, e, k = self._rt, o.event, okey(s.key)
         legs = [x for j in (*((s.lock,) if s.lock else ()), *s.retained) for x in j.legs]
         unfinished = any(x.train == e.train and x.state not in _FINISHED_LEG_STATES for x in legs)
         if e.kind in DELAY_NEWS:  # the delay memory still says what the message stated
             if not _states_current(e, s.alert_keys):
                 return False
             if e.kind is EventKind.DELAYED:
-                return _SENT_PREFIX + o.fact_key in s.alert_keys
+                return SENT_PREFIX + o.fact_key in s.alert_keys
             return unfinished and not _broken(s, e.train)  # no all-clear for a broken train
         if e.kind in _ONGOING:  # a healthy poll that stopped reporting it ended it
-            return _SENT_PREFIX + o.fact_key in s.alert_keys
+            return SENT_PREFIX + o.fact_key in s.alert_keys
         if e.kind is EventKind.CANNOT_SEE_TRAIN:
             return k in rt._blind
         if e.kind is EventKind.CAN_SEE_TRAIN_AGAIN:
@@ -474,20 +445,18 @@ class _RuntimeLedger:
             board = Board(answers, (), s.generation)
             return all_good(replace(s, all_good_evaluated=False), board, ctx) is not None
         if e.kind in (EventKind.LEAVE_NOW, EventKind.EARLIER_TRAIN_WITHDRAWN):
-            a, origin = s.advice, None if ctx is None else _origin_answer(answers, ctx)
+            a, origin = s.advice, None if ctx is None else origin_answer(answers, ctx)
             if a is None or ctx is None or origin is None:
                 return False
             if e.kind is EventKind.LEAVE_NOW:
-                ref = rt._usual_arrival(s, ctx, origin)
+                ref = usual_arrival(s, ctx, origin)
                 return (
                     e.train is not None
                     and a.advised_train == e.train
                     and not a.withdrawn
                     and still_advised(s, ctx, origin, e.train, ref) is not None
                 )
-            return a.withdrawn and not waiting_is_bad(
-                s, ctx, origin, rt._usual_arrival(s, ctx, origin)
-            )
+            return a.withdrawn and not waiting_is_bad(s, ctx, origin, usual_arrival(s, ctx, origin))
         if e.kind is EventKind.DATA_UNCLEAR:  # while its values are the latest told for its train
             told = None if e.train is None else s.alert_keys.get(f"unclear#{train_key(e.train)}")
             return told == _facts(e).unclear
@@ -505,24 +474,24 @@ class _RuntimeLedger:
             return True
         snaps = self._state.config_snapshots
         a, b = (
-            _find(snaps.get(rev), key.profile_id),
-            _find(snaps.get(s.route_revision), key.profile_id),
+            find_profile(snaps.get(rev), key.profile_id),
+            find_profile(snaps.get(s.route_revision), key.profile_id),
         )
-        return a is not None and b is not None and _same_route(a, b)
+        return a is not None and b is not None and same_route(a, b)
 
     def in_quiet_hours(self, profile_id: str, now: datetime) -> bool:
-        p = _find(self._state.config, profile_id)
+        p = find_profile(self._state.config, profile_id)
         return p is not None and _in_quiet(p.alerts.quiet_hours, now)
 
     def current(self, o: Obligation) -> AlertEvent:
         if o.look_ahead is not None:
             # rule 5(b): a bundle names only its facts that still hold, from the current profile
-            live, p = self._live_facts(o), _find(self._state.config, o.look_ahead[0])
+            live, p = self._live_facts(o), find_profile(self._state.config, o.look_ahead[0])
             if live and p is not None and len(live) < len(self._stored_facts(o)):
                 kind, text = render_message(p, o.look_ahead[2], live)
                 return replace(o.event, kind=kind, text=text, profile_name=p.name)
         e = self._regenerated(o, self._relocked(o, o.event))
-        p = _find(self._state.config, e.profile_id)
+        p = find_profile(self._state.config, e.profile_id)
         if p is None or p.name == e.profile_name:
             return e
         old, new = display_name(e.profile_name), display_name(p.name)
@@ -532,20 +501,20 @@ class _RuntimeLedger:
     def _regenerated(self, o: Obligation, e: AlertEvent) -> AlertEvent:
         """Rule 5(b): an instruction states its connection as the latest answers show it."""
         rt = self._rt
-        s = None if o.occurrence is None else self._state.occurrences.get(_okey(o.occurrence))
+        s = None if o.occurrence is None else self._state.occurrences.get(okey(o.occurrence))
         if s is None or e.train is None:
             return e
-        k = _okey(s.key)
+        k = okey(s.key)
         ctx, answers = rt._ctx(s, rt._clock.now()), rt._boards.get(k, ())
         if ctx is None or not answers:
             return e
         body = None
         if e.kind is EventKind.LEAVE_NOW:
-            origin = _origin_answer(answers, ctx)
+            origin = origin_answer(answers, ctx)
             c = (
                 None
                 if origin is None
-                else still_advised(s, ctx, origin, e.train, rt._usual_arrival(s, ctx, origin))
+                else still_advised(s, ctx, origin, e.train, usual_arrival(s, ctx, origin))
             )
             body = None if c is None else leave_now_text(c, ctx.now.tzinfo)
         elif e.kind is EventKind.NEXT_CONNECTION:
@@ -571,7 +540,7 @@ class _RuntimeLedger:
         clause is replaced: the lock's first train as the next good connection while nothing
         of it has left, else the train now followed and every onward leg still ahead."""
         rt = self._rt
-        s = None if o.occurrence is None else self._state.occurrences.get(_okey(o.occurrence))
+        s = None if o.occurrence is None else self._state.occurrences.get(okey(o.occurrence))
         if e.kind not in _NAMES_LOCK or e.train is None or s is None or s.lock is None:
             return e
         f = _facts(e)
@@ -581,17 +550,17 @@ class _RuntimeLedger:
         if f.named and tuple(train_ident(x.train) for x in live)[-len(f.named) :] == f.named:
             return e
         head = e.text.removesuffix(f.twin_note).removesuffix(f.next_clause)
-        k = _okey(s.key)
+        answers = rt._boards.get(okey(s.key), ())
         ahead = [x for x in live if x.state in (LegState.PENDING, LegState.BOARDING)]
         left = [x for x in live if x not in ahead]
         if not left:
-            nxt = "Next good connection: {}{}.".format(*rt._leg_now(k, ahead[0]))
+            nxt = "Next good connection: {}{}.".format(*leg_now(answers, ahead[0]))
         else:
             now = hhmm(left[-1].train.planned_departure)
             onward = "".join(
                 f", then the {t} from {x.board_station}{pl}"
                 for x in ahead
-                for t, pl in (rt._leg_now(k, x),)
+                for t, pl in (leg_now(answers, x),)
             )
             nxt = f"Now following your {now} train{onward}."
         return replace(e, text=f"{head.rstrip()} {nxt}{f.twin_note}")
@@ -599,7 +568,7 @@ class _RuntimeLedger:
 
 def _held_id(o: Obligation) -> tuple[str | None, str, Severity]:
     """An alert's identity across recomputations of the same change (rule 22)."""
-    return None if o.occurrence is None else _okey(o.occurrence), o.event.key, o.event.severity
+    return None if o.occurrence is None else okey(o.occurrence), o.event.key, o.event.severity
 
 
 def _with_obligation(
@@ -649,8 +618,8 @@ class _Delta:
 
     def _runs(self, st: PersistedState, dk: str) -> bool:
         pid = split_direction_key(dk)[0]
-        then, now = _find(self.cfg, pid), _find(st.config, pid)
-        return then is not None and now is not None and _same_route(then, now)
+        then, now = find_profile(self.cfg, pid), find_profile(st.config, pid)
+        return then is not None and now is not None and same_route(then, now)
 
     def __call__(self, st: PersistedState) -> PersistedState:
         out = dict(st.occurrences)
@@ -696,7 +665,7 @@ def _advice_told(st: PersistedState, told: Sequence[tuple[Obligation, bool]]) ->
     ended silently once dropped unsent, so the same train can be advised again."""
     occs = dict(st.occurrences)
     for o, sent in told:
-        k = None if o.occurrence is None else _okey(o.occurrence)
+        k = None if o.occurrence is None else okey(o.occurrence)
         s = None if k is None else occs.get(k)
         a = None if s is None else s.advice
         if k is None or s is None or a is None or a.sent_at is None:
@@ -715,24 +684,6 @@ def _facts(e: AlertEvent) -> AlertFacts:
 def _states_current(e: AlertEvent, keys: Mapping[str, str]) -> bool:
     """A delay message whose stated values are still the ones remembered (`_stated`)."""
     return all(keys.get(t.slot) == t.said for t in _facts(e).told)
-
-
-def _origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> Pool | None:
-    """Every connection asked from the origin, newest answer first, so an earlier train searched
-    for advice and the usual or locked train are judged together (7.6). Every answer of the poll
-    is its evidence: each train is read as its current copy, so an older healthy copy never
-    hides a newer cancellation, also one asked from a transfer station (6.2)."""
-    origin = ctx.profile.origin(ctx.direction)
-    mine = sorted(
-        (a for a in answers if a.query.origin == origin),
-        key=lambda a: to_utc(a.fetched_at),
-        reverse=True,
-    )
-    if not mine:
-        return None
-    asked = next(a for a in answers if a.query.origin == origin).query  # the poll's own query
-    conns = tuple(c for a in mine for c in a.connections)
-    return Pool(asked, conns, mine[0].fetched_at, tuple(answers))
 
 
 async def every(clock: Clock, seconds: float, step: Callable[[], Awaitable[None]]) -> None:
@@ -883,118 +834,29 @@ class Runtime:
         return self._clock.now()
 
     def _profile_for(self, s: OccurrenceState) -> Profile | None:
-        return _effective(self._st.config_snapshots, self._st.config, s)
+        return profile_for(self._st, s)
 
     def _ctx(self, s: OccurrenceState, now: datetime) -> Ctx | None:
-        p = self._profile_for(s)
-        if p is None:
-            return None
-        d = s.key.direction
-        commute_day = s.key.service_date - timedelta(days=p.journey(d).day_offset)
-        own = s.baseline_signature
-        if own is not None and len(own.legs) == len(p.journey(d).transfers) + 1:
-            sig: Signature | None = own
-        elif s.baseline_frozen:
-            sig = None  # it started with no baseline: a later one never moves it (rule 19)
-        else:
-            sig = self._signature(p, d, s.key.service_date, s.baseline_version)
-        first = sig.legs[0].departure if sig else None
-        return Ctx(p, d, dated_schedule(p, d, commute_day, first), sig, now)
-
-    def _frozen(self, s: OccurrenceState) -> OccurrenceState:
-        """The occurrence with its own schedule fixed from the history it runs on now, before
-        anything replaces that history (rules 10, 19). Unchanged when already fixed or when its
-        profile is unknown."""
-        if s.baseline_frozen:
-            return s
-        if s.baseline_signature is not None:
-            return replace(s, baseline_frozen=True)
-        p = self._profile_for(s)
-        if p is None:
-            return s
-        sig = self._signature(p, s.key.direction, s.key.service_date, s.baseline_version)
-        return replace(s, baseline_signature=sig, baseline_frozen=True)
-
-    def _leg_now(self, k: str, x: LegProgress) -> tuple[str, str]:
-        """A locked leg as the latest answers show it: departure (expected, else planned) and
-        its platform, for a message naming it."""
-        answers = self._boards.get(k, ())
-        leg = find_leg(merged_pool(answers), x.train, x.board_station)[0] if answers else None
-        run = None
-        if leg is not None:
-            run = current_run(answers, leg.train, x.board_station, x.intended_alight)
-        g = None if run is None else run[1].leg.board
-        dep = None if g is None else g.departure
-        t = dep.value if dep is not None and dep.value is not None else x.train.planned_departure
-        track = None if g is None else g.actual_track or g.planned_track
-        return hhmm(t), f" (platform {track})" if track else ""
-
-    def _signature(
-        self, p: Profile, d: Direction, sd: date, version: int | None = None
-    ) -> Signature | None:
-        hist = self._st.baselines.get(direction_key(p.id, d), BaselineHistory())
-        v = next((x for x in hist.versions if x.version == version), None) or hist.in_force(sd)
-        n = len(p.journey(d).transfers) + 1
-        return v.signature if v is not None and len(v.signature.legs) == n else None
+        return occurrence_ctx(self._st, s, now)
 
     def view(self) -> RuntimeView:
         """A frozen snapshot for shells (5.4): nothing in it changes as the runtime goes on. It
         shows the written state (rule 22); an unsent alert counts whether written or not."""
         live = [o for o in self._st.obligations if o.id not in self._gone]
         mem = (*self._held.values(), *self._notes.values())
-        return self._build_view(sum(o.attempts > 0 for o in (*live, *mem)))
-
-    def _build_view(self, undelivered: int) -> RuntimeView:
         now = self._clock.now()
-        st, cfg = self._st, self._st.config
-        occurrences = []
-        for k, s in sorted(st.occurrences.items()):
-            ctx = self._ctx(s, now)
-            if ctx is not None:
-                occurrences.append(occurrence_view(s, ctx, self._boards.get(k, ())))
-        # rule 10: a removed profile still runs on its occurrences, so its entities stay
-        # deep copies: a profile's mappings (`transfer_min`, zones) stay the runtime's own
-        profiles = list(cfg.profiles if cfg else ())
-        running = [s for s in st.occurrences.values() if _find(cfg, s.key.profile_id) is None]
-        for pid in sorted({s.key.profile_id for s in running}):
-            newest = max(
-                (s for s in running if s.key.profile_id == pid), key=lambda s: s.key.service_date
-            )
-            p = self._profile_for(newest)
-            if p is not None:
-                profiles.append(p)
-        directions = []
-        for p in profiles:
-            for d in Direction:
-                routes = [
-                    _find(st.config_snapshots.get(s.route_revision), p.id)
-                    for s in st.occurrences.values()
-                    if s.key.profile_id == p.id and s.key.direction is d
-                ]
-                n = max(len(r.journey(d).transfers) for r in (p, *routes) if r is not None)
-                directions.append(DirectionInfo(p.id, p.name, d, n))
-        today = now.astimezone(TZ).date()
-        return RuntimeView(
+        return runtime_view(
+            self._st,
+            self._boards,
             now,
-            self._started,
-            copy.deepcopy(tuple(profiles)),
-            tuple(directions),
-            tuple(occurrences),
-            {k: works_ahead(v, today) for k, v in st.lookahead.items()},
-            moved(cfg.profiles if cfg else (), st.baselines),
-            self._refusal,
-            self._store_ok,
-            self._auth_outage,
-            undelivered,
-            self.requests,
-            dict(self._loc_epoch),
-            {
-                k: led.last_run if led else None
-                for p in (cfg.profiles if cfg else ())
-                for d in Direction
-                for k in (direction_key(p.id, d),)
-                for led in (st.lookahead.get(k),)
-            },
+            lambda s: self._ctx(s, now),
+            started=self._started,
+            refusal=self._refusal,
+            store_ok=self._store_ok,
+            key_rejected=self._auth_outage,
+            undelivered=sum(o.attempts > 0 for o in (*live, *mem)),
+            requests=self.requests,
+            location_epochs=self._loc_epoch,
         )
 
     # --- the serialised writer: state, ledger and obligations in one save (rule 5, 22) ---
@@ -1052,12 +914,10 @@ class Runtime:
             for k in [k for k in keys if k.startswith(LIVE_PREFIX)]:
                 if k[len(LIVE_PREFIX) :] not in emitted:
                     keys.pop(k)
-                    keys.pop(_SENT_PREFIX + k[len(LIVE_PREFIX) :], None)
+                    keys.pop(SENT_PREFIX + k[len(LIVE_PREFIX) :], None)
             keys.update({LIVE_PREFIX + k: "1" for k in emitted})
         sent = {
-            k[len(_SENT_PREFIX) :]: Severity(v)
-            for k, v in keys.items()
-            if k.startswith(_SENT_PREFIX)
+            k[len(SENT_PREFIX) :]: Severity(v) for k, v in keys.items() if k.startswith(SENT_PREFIX)
         }
         out = list(unsent(sent, events))
         facts = [
@@ -1082,7 +942,7 @@ class Runtime:
         ]  # fmt: skip
         obligations = []
         for e in out:
-            keys[_SENT_PREFIX + e.key] = e.severity.value
+            keys[SENT_PREFIX + e.key] = e.severity.value
             if twins:  # 7.13: alerts name the service date while two occurrences exist
                 note = f" (service date {s.key.service_date.isoformat()})"
                 e = replace(e, text=e.text + note, facts=replace(_facts(e), twin_note=note))
@@ -1262,7 +1122,7 @@ class Runtime:
             for t in self._told
             if t[0] is None
             or (s := self._st.occurrences.get(t[0])) is not None
-            and _SENT_PREFIX + t[1] in s.alert_keys
+            and SENT_PREFIX + t[1] in s.alert_keys
         }
         self._shadow = self._compose(self._base)
 
@@ -1353,7 +1213,7 @@ class Runtime:
         or judged on observations while its occurrence has no healthy answer (rule 5b)."""
         if self._since is not None and to_utc(o.event.created_at) < to_utc(self._since):
             return True
-        k = None if o.occurrence is None else _okey(o.occurrence)
+        k = None if o.occurrence is None else okey(o.occurrence)
         return o.event.kind in _OBSERVED and k in self._st.occurrences and k not in self._boards
 
     def _drop_copy(self, cid: str) -> None:
@@ -1612,12 +1472,12 @@ class Runtime:
 
         def first(p: Profile, d: Direction, commute_day: date) -> time | None:
             # each occurrence's window from the baseline in force on its own service date
-            sig = self._signature(p, d, service_date(p, d, commute_day))
+            sig = signature_for(self._st, p, d, service_date(p, d, commute_day))
             return sig.legs[0].departure if sig is not None else None
 
         occs = dict(self._st.occurrences)
         for sch in schedules_active(cfg, {}, now, first):
-            k = _okey(sch.key)
+            k = okey(sch.key)
             if k not in occs:
                 hist = self._st.baselines.get(direction_key(sch.key.profile_id, sch.key.direction))
                 v = hist.in_force(sch.key.service_date) if hist else None
@@ -1652,10 +1512,10 @@ class Runtime:
         deadline = to_utc(now) + POLL_DEADLINE  # one hard deadline for every request (7.1)
         got = await self._fetch_all(queries_needed(s, ctx), True, end, deadline)
         extra: ProviderAnswer | PollFailure | None = None
-        if not isinstance(got, str) and (usual := _origin_answer(got, ctx)) is not None:
+        if not isinstance(got, str) and (usual := origin_answer(got, ctx)) is not None:
             # 7.6: an earlier catchable train is before the time the poll asked from; a failed
             # search leaves advice to the poll's own answers and never fails the poll
-            q = advice_query(s, ctx, usual, self._usual_arrival(s, ctx, usual))
+            q = advice_query(s, ctx, usual, usual_arrival(s, ctx, usual))
             extra = None if q is None else await self._fetch(q, True, end, deadline)
             got = got if extra is None or isinstance(extra, str) else (*got, extra)
         now = self._clock.now()
@@ -1678,7 +1538,7 @@ class Runtime:
         current = s.generation == gen
         if current:  # a choice since the poll started makes the answer stale
             # the whole poll's evidence for the watchdog, the auto lock and advice (6.2)
-            merged = _origin_answer(answers, ctx)
+            merged = origin_answer(answers, ctx)
             if merged is not None and s.lock is None:
                 self._remember_usual(k, ctx, merged)
             tick = on_tick(st, ctx, merged)
@@ -1689,7 +1549,7 @@ class Runtime:
                 events += [good] if good else []
             if merged is not None:
                 # no reference: an absent or broken usual still makes waiting bad (7.6)
-                arrival = self._usual_arrival(st, ctx, merged)
+                arrival = usual_arrival(st, ctx, merged)
                 record, more = advise(st, ctx, merged, arrival)
                 if ctx.signature is None and arrival is not None:  # never a relock's arrival
                     record = replace(record, usual_arrival=arrival)
@@ -1698,29 +1558,6 @@ class Runtime:
                 self._remember(k, st, answers)
                 self._boards[k] = answers
         self._apply({k: (st, events)}, polled=current and bool(answers))
-
-    def _usual_arrival(
-        self, s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None
-    ) -> datetime | None:
-        """The usual journey's planned arrival (7.6): from the baseline; else as first read
-        from a healthy answer (kept in the advice record); else the usual in this answer;
-        else the lock while it still starts on the usual first train."""
-        sig = ctx.signature
-        if sig is not None:
-            last = sig.legs[-1]
-            day = ctx.schedule.key.service_date + timedelta(days=last.day_offset)
-            dep = resolve_local(day, last.departure, edge="start")
-            return to_utc(dep) + timedelta(minutes=last.duration_min)
-        if s.advice is not None and s.advice.usual_arrival is not None:
-            return s.advice.usual_arrival
-        p, d, first = ctx.profile, ctx.direction, ctx.schedule.first_departure
-        if answer is not None:
-            c = usual_connection(answer, p.origin(d), first, p.journey(d).transfers, None)
-            if c is not None and c.legs[-1].alight.planned_arrival is not None:
-                return c.legs[-1].alight.planned_arrival
-        if s.lock is not None and to_utc(s.lock.legs[0].train.planned_departure) == to_utc(first):
-            return s.lock.planned_final_arrival
-        return None
 
     def _remember_usual(self, k: str, ctx: Ctx, merged: Pool) -> None:
         """Before a lock: what the poll shows of every usual leg (rules 13, 20), each as its
@@ -1922,8 +1759,8 @@ class Runtime:
         revision = cfg.revision if cfg else target.route_revision
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
         for key in keys:
-            k = _okey(key)
-            s = self._st.occurrences.get(k) or self._frozen(_fresh_state(key, revision, None))
+            k = okey(key)
+            s = self._st.occurrences.get(k) or frozen(self._st, _fresh_state(key, revision, None))
             ctx = self._ctx(s, now)
             if ctx is not None:
                 t = apply_action(s, ctx, action)
@@ -1940,7 +1777,7 @@ class Runtime:
 
     def _shown_name(self, profile_id: str) -> str:
         """The name `view` shows for the profile: a removed one keeps its newest occurrence's."""
-        p = _find(self._st.config, profile_id)
+        p = find_profile(self._st.config, profile_id)
         if p is None:
             mine = [s for s in self._st.occurrences.values() if s.key.profile_id == profile_id]
             newest = max(mine, key=lambda s: s.key.service_date, default=None)
@@ -1969,7 +1806,7 @@ class Runtime:
             ),
             key=lambda s: s.key.service_date,
         )  # fmt: skip
-        named = _find(self._st.config, profile_id) or next(
+        named = find_profile(self._st.config, profile_id) or next(
             (p for s in cands if (p := self._profile_for(s)) is not None), None
         )
         gone = no_journey_text(display_name(named.name if named else profile_id))
@@ -2033,7 +1870,7 @@ class Runtime:
             when = inside[0]
         if occ is None or ctx is None:
             return gone
-        k, end = _okey(occ.key), ctx.schedule.window_end
+        k, end = okey(occ.key), ctx.schedule.window_end
         # rule 21: what the choice is judged on must still hold when it is written
         mark = (occ.generation, occ.route_revision, occ.baseline_version)
         # one deadline for every request of the choice: the shell waits 120 s in all
@@ -2216,22 +2053,22 @@ class Runtime:
         snaps = {**self._st.config_snapshots, new.revision: new}
         occs = {}
         for k, s in self._st.occurrences.items():
-            s = self._frozen(s)  # its schedule, read before the history is re-seeded below
-            route = _find(snaps.get(s.route_revision) or old, s.key.profile_id)
-            p = _find(new, s.key.profile_id)
-            if route is not None and p is not None and _same_route(route, p):
+            s = frozen(self._st, s)  # its schedule, read before the history is re-seeded below
+            route = find_profile(snaps.get(s.route_revision) or old, s.key.profile_id)
+            p = find_profile(new, s.key.profile_id)
+            if route is not None and p is not None and same_route(route, p):
                 rev = new.revision
             elif s.lock is not None or s.retained or is_resolved(s):
                 rev = s.route_revision  # locked or riding: runs on its route revision (rule 10)
             else:
                 continue  # not locked yet: created again from the new route when its window opens
             moved = replace(s, route_revision=rev, settings_revision=new.revision)
-            if _effective(snaps, new, moved) != self._profile_for(s):
+            if effective_profile(snaps, new, moved) != self._profile_for(s):
                 moved = replace(moved, generation=s.generation + 1)  # in-flight results are stale
             occs[k] = moved
         baselines, ledgers = dict(self._st.baselines), dict(self._st.lookahead)
         for p in new.profiles:
-            q = _find(old, p.id)
+            q = find_profile(old, p.id)
             # removed and added again: its old history goes, so it starts from the file like a
             # new profile (a first configuration has no earlier profiles to forget)
             for d in Direction if q is None and old is not None else ():
@@ -2245,7 +2082,7 @@ class Runtime:
                     continue
                 if dk in ledgers:
                     ledgers[dk] = reset_on_edit(q, p, d, hist, ledgers[dk], today)
-                    if not _same_route(q, p):  # rule 5(c) drops its pending messages
+                    if not same_route(q, p):  # rule 5(c) drops its pending messages
                         ledgers[dk] = forget_pending(ledgers[dk])
                 baselines[dk] = rebase_on_edit(q, p, d, hist, today)
         self._st = replace(
@@ -2280,7 +2117,7 @@ class Runtime:
         for pid, d in [(p.id, d) for p in cfg.profiles for d in Direction]:
             # the profile as configured now: one held across an earlier direction's requests
             # could be stamped with a newer revision than its own (rule 21)
-            p = _find(self._st.config, pid)
+            p = find_profile(self._st.config, pid)
             if p is not None:
                 await self._lookahead_direction(p, d, works)
         await self._deliver()
@@ -2516,8 +2353,8 @@ class Runtime:
         for k, s in st.occurrences.items():
             keys = dict(s.alert_keys)
             for x in s.alert_keys:
-                if x.startswith(_SENT_PREFIX):
-                    keys.setdefault(LIVE_PREFIX + x[len(_SENT_PREFIX) :], "1")
+                if x.startswith(SENT_PREFIX):
+                    keys.setdefault(LIVE_PREFIX + x[len(SENT_PREFIX) :], "1")
             a = s.advice
             # a record saved before `delivered` loads as told; its LEAVE_NOW still owed was not
             if (
@@ -2527,14 +2364,14 @@ class Runtime:
                 and any(
                     o.event.kind is EventKind.LEAVE_NOW
                     and o.occurrence is not None
-                    and _okey(o.occurrence) == k
+                    and okey(o.occurrence) == k
                     and o.event.train == a.advised_train
                     and to_utc(o.event.created_at) == to_utc(a.sent_at)
                     for o in st.obligations
                 )
             ):
                 s = replace(s, advice=replace(a, delivered=False))
-            occs[k] = self._frozen(replace(s, alert_keys=keys))
+            occs[k] = frozen(self._st, replace(s, alert_keys=keys))
         obligations = tuple(  # stored with the planned departure frozen as expiry
             replace(o, expires_at=None) if o.event.kind is EventKind.LEAVE_NOW else o
             for o in st.obligations

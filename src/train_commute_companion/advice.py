@@ -4,6 +4,7 @@ import itertools
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, tzinfo
 
+from train_commute_companion.calendar import resolve_local, to_utc
 from train_commute_companion.classify import (
     classify_leg,
     current_connection,
@@ -338,3 +339,25 @@ def advise(
         "" if record.sent_at is None else record.sent_at.isoformat(),  # the episode it ends
     )
     return replace(record, withdrawn=True), [event]
+
+
+def usual_arrival(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> datetime | None:
+    """The usual journey's planned arrival (7.6): from the baseline; else as first read
+    from a healthy answer (kept in the advice record); else the usual in this answer;
+    else the lock while it still starts on the usual first train."""
+    sig = ctx.signature
+    if sig is not None:
+        last = sig.legs[-1]
+        day = ctx.schedule.key.service_date + timedelta(days=last.day_offset)
+        dep = resolve_local(day, last.departure, edge="start")
+        return to_utc(dep) + timedelta(minutes=last.duration_min)
+    if s.advice is not None and s.advice.usual_arrival is not None:
+        return s.advice.usual_arrival
+    p, d, first = ctx.profile, ctx.direction, ctx.schedule.first_departure
+    if answer is not None:
+        c = usual_connection(answer, p.origin(d), first, p.journey(d).transfers, None)
+        if c is not None and c.legs[-1].alight.planned_arrival is not None:
+            return c.legs[-1].alight.planned_arrival
+    if s.lock is not None and to_utc(s.lock.legs[0].train.planned_departure) == to_utc(first):
+        return s.lock.planned_final_arrival
+    return None
