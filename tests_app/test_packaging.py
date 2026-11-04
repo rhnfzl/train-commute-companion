@@ -22,6 +22,12 @@ def test_compose_example_and_dockerfile_carry_no_secret_or_personal_value():
     assert ".env" in (ROOT / ".dockerignore").read_text().split()
 
 
+def test_mcp_relay_gets_the_state_directory_and_no_secret():
+    services = yaml.safe_load((ROOT / "examples/docker-compose.yml").read_text())["services"]
+    assert "env_file" not in services["mcp"]
+    assert set(services["mcp"]["environment"]) == {"TCC_STATE_DIR"}
+
+
 def test_documented_setup_builds_from_examples_and_recreates_on_env_changes():
     compose = (ROOT / "examples/docker-compose.yml").read_text()
     build = re.search(r"^\s+build:\s*(\S+)", compose, re.MULTILINE)

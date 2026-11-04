@@ -16,7 +16,7 @@ Every answer carries a `text` field with the same wording as Telegram, ending wi
 
 ## How it runs
 
-The app listens on a private socket, `mcp.sock`, in its data volume (`/data`), readable only by the app's own user. The MCP client starts a small stdio server in its own short-lived container, the compose service `mcp`, sharing the data volume; that server relays each tool call to the socket and holds nothing itself. It does not depend on the app container, so it keeps answering when the app is stopped or crashes. The app must be running for real answers: when it is not, every tool answers "The commute app is not running, or its MCP socket is missing." and never old data.
+The app listens on a private socket, `mcp.sock`, in its data volume (`/data`), readable only by the app's own user. The MCP client starts a small stdio server in its own short-lived container, the compose service `mcp`, sharing the data volume; that server relays each tool call to the socket and holds nothing itself. It gets `TCC_STATE_DIR` and none of the secrets in `.env`. It does not depend on the app container, so it keeps answering when the app is stopped or crashes. The app must be running for real answers: when it is not, every tool answers "The commute app is not running, or its MCP socket is missing." and never old data.
 
 ## Claude Code
 

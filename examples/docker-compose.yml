@@ -20,7 +20,9 @@ services:
     image: train-commute-companion:local
     profiles: [mcp]
     read_only: true
-    env_file: .env  # only TCC_STATE_DIR is read, to find the socket
+    # not env_file: .env holds the secrets, and the relay reads only this, to find the socket
+    environment:
+      TCC_STATE_DIR: "${TCC_STATE_DIR:-/data}"
     volumes:
       - tcc-data:/data
     # the image's check probes the app's port, where the relay never listens
