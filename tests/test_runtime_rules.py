@@ -23,7 +23,12 @@ from test_runtime import (
 )
 
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.lookahead import BaselineHistory, BaselineVersion, render_message
+from train_commute_companion.lookahead import (
+    BaselineHistory,
+    BaselineVersion,
+    LookAheadFact,
+    render_message,
+)
 from train_commute_companion.model import (
     AlertEvent,
     Direction,
@@ -1788,7 +1793,7 @@ async def test_bundled_adoption_and_warning_after_its_date_is_still_sent(tmp_pat
     rig = await _held_warning(tmp_path, DAY + timedelta(days=1))
     led = rig.rt._st.lookahead["p1|outbound"]
     ((oid, fs),) = led.facts.items()
-    adopt = ("adopt:2", "your usual train is now 08:22", False, False)
+    adopt = LookAheadFact("adopt:2", "your usual train is now 08:22", False, False)
     _set_facts(rig, EventKind.WORKS_AHEAD, (adopt, *fs))
     assert any(k.startswith("adopt:") for k, *_ in rig.rt._st.lookahead["p1|outbound"].facts[oid])
     assert any("|warn:" in k for k, *_ in fs)
@@ -1799,7 +1804,9 @@ async def test_bundled_adoption_and_warning_after_its_date_is_still_sent(tmp_pat
 
 async def test_withdrawn_adoption_correction_after_its_date_is_still_sent(tmp_path):
     rig = await _held_warning(tmp_path, DAY + timedelta(days=1))
-    _set_facts(rig, EventKind.RESTORED, (("cancel:2", "ignore the new time", False, False),))
+    _set_facts(
+        rig, EventKind.RESTORED, (LookAheadFact("cancel:2", "ignore the new time", False, False),)
+    )
     rig.clock.t += timedelta(days=2)
     await _back(rig)
     assert _ahead(rig, EventKind.RESTORED)

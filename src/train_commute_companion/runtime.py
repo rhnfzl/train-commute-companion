@@ -62,6 +62,7 @@ from train_commute_companion.lifecycle import (
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import (
     BaselineHistory,
+    LookAheadFact,
     LookAheadLedger,
     ProbeResult,
     carried_ids,
@@ -383,12 +384,12 @@ class _RuntimeLedger:
             return not zone_report_stops_silent(s, {p.destination(d), zone})
         return True
 
-    def _stored_facts(self, o: Obligation) -> tuple[tuple[str, str, bool, bool], ...]:
+    def _stored_facts(self, o: Obligation) -> tuple[LookAheadFact, ...]:
         assert o.look_ahead is not None
         led = self._state.lookahead.get(_dkey(o.look_ahead[0], o.look_ahead[1]))
         return () if led is None else tuple(led.facts.get(o.id, ()))
 
-    def _live_facts(self, o: Obligation) -> tuple[tuple[str, str, bool, bool], ...] | None:
+    def _live_facts(self, o: Obligation) -> tuple[LookAheadFact, ...] | None:
         """Rule 5(b): the stored facts of a look-ahead message that still hold: a per-date fact
         while it is the latest one the ledger records for its leg (a `...|unclear:<fp>` fact
         holds while `unclear:<fp>` is the latest unclear mark of its key); an adoption or its
@@ -401,7 +402,7 @@ class _RuntimeLedger:
             return None
         live = []
         for f in fs:
-            parts = f[0].split("|", 2)  # "<date>|<leg>|warn:<fp>[|loud]" or "...|restored"
+            parts = f.key.split("|", 2)  # "<date>|<leg>|warn:<fp>[|loud]" or "...|restored"
             if len(parts) < 3 or not (
                 parts[2].startswith(("warn:", "unclear:")) or parts[2] == "restored"
             ):
@@ -425,7 +426,7 @@ class _RuntimeLedger:
         """Rule 5(b): a held look-ahead message is dropped once its journey ended or none of its
         facts still holds. An adoption or its withdrawal keeps the whole message."""
         live = self._live_facts(o)
-        if live is None or any(k.startswith(("adopt:", "cancel:")) for k, *_ in live):
+        if live is None or any(f.adopts or f.cancels for f in live):
             return True  # stored before facts were kept, or an adoption: judged as before
         # o.expires_at (the dated journey end) drops it in revalidate; without one (stored before
         # it was kept, or no baseline) the end is unknown: kept until two days after its date
@@ -2430,7 +2431,7 @@ class Runtime:
                 pending[new] = n
             elif was[old].webhook_copied or old in self._copied:  # it ended: no second one
                 pending[new] = n
-        rewritten: dict[str, tuple[tuple[str, str, bool, bool], ...]] = {}
+        rewritten: dict[str, tuple[LookAheadFact, ...]] = {}
         gone = {v.version for v in current.versions} - {v.version for v in new_hist.versions}
         for c in list(self._copies.values()):
             o = c.obligation
@@ -2439,7 +2440,7 @@ class Runtime:
             if o.baseline_version not in gone:
                 continue
             fs = stored.facts.get(o.id, ())
-            rest = tuple(f for f in fs if f[0] != f"adopt:{o.baseline_version}")
+            rest = tuple(f for f in fs if f.key != f"adopt:{o.baseline_version}")
             if not rest or len(rest) == len(fs):
                 continue  # only the adoption (dropped at its next try), or none bundled
             day = o.look_ahead[2]
@@ -2448,7 +2449,7 @@ class Runtime:
             o = replace(
                 o,
                 baseline_version=b.version if b else None,
-                fact_key=";".join(k for k, *_ in rest),
+                fact_key=";".join(f.key for f in rest),
                 event=replace(o.event, kind=kind, text=text),
             )
             self._copies[c.id] = replace(c, obligation=o)

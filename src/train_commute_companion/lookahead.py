@@ -3,6 +3,7 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
+from typing import NamedTuple
 
 from train_commute_companion.calendar import TZ, is_commute_day, minute_of_day, resolve_local
 from train_commute_companion.classify import classify_leg, current_connection, merge_arrivals
@@ -79,6 +80,27 @@ class ProbeResult:
     unclear: tuple[tuple[str, Unclear], ...] = ()
 
 
+class LookAheadFact(NamedTuple):
+    """One statement of a look-ahead message, stored as the list [key, text, loud, warning]."""
+
+    key: str
+    text: str
+    loud: bool
+    warning: bool  # the message then closes with the replacement hint
+
+    @property
+    def warns(self) -> bool:
+        return "|warn:" in self.key
+
+    @property
+    def adopts(self) -> bool:
+        return self.key.startswith("adopt:")
+
+    @property
+    def cancels(self) -> bool:
+        return self.key.startswith("cancel:")
+
+
 @dataclass(frozen=True, slots=True)
 class LookAheadLedger:
     # "<service date>|<leg index or j>" -> entries; a warn/loud/restored mark ends in
@@ -89,9 +111,9 @@ class LookAheadLedger:
     started_revision: int
     started_baseline: int | None
     last_applied: datetime | None = None  # start time of the last run whose writes were applied
-    # pending obligation id -> its facts (key, text, loud, is warning), so one fact can be
-    # withdrawn from a message that bundles several (7.12 rule 18)
-    facts: Mapping[str, tuple[tuple[str, str, bool, bool], ...]] = field(default_factory=dict)
+    # pending obligation id -> its facts, so one fact can be withdrawn from a message that
+    # bundles several (7.12 rule 18)
+    facts: Mapping[str, tuple[LookAheadFact, ...]] = field(default_factory=dict)
 
 
 # ---- signatures
@@ -588,26 +610,22 @@ def _owner(entry: str) -> str:
     return entry.partition("#")[2]  # "" for an unowned mark: never a pending fact
 
 
-def render_message(
-    p: Profile, sd: date, fs: Sequence[tuple[str, str, bool, bool]]
-) -> tuple[EventKind, str]:
+def render_message(p: Profile, sd: date, fs: Sequence[LookAheadFact]) -> tuple[EventKind, str]:
     """One look-ahead message for direction and date `sd` from its facts (step 6 of
     `run_lookahead`): its kind and text."""
-    warns = any("|warn:" in k for k, *_ in fs)
-    is_adopt = any(k.startswith("adopt:") for k, *_ in fs)
     kind = (
         EventKind.WORKS_AHEAD
-        if warns
+        if any(f.warns for f in fs)
         else EventKind.TIMETABLE_ADOPTED
-        if is_adopt
+        if any(f.adopts for f in fs)
         else EventKind.RESTORED
     )
     text = (
         f"{display_name(p.name)}, {sd:%A} {sd.day} {sd:%b}: "
-        + ". ".join(dict.fromkeys(t for _, t, _, _ in fs))
+        + ". ".join(dict.fromkeys(f.text for f in fs))
         + "."
     )
-    if any(w for *_, w in fs):
+    if any(f.warning for f in fs):
         text += " " + REPLACEMENT_HINT
     return kind, text
 
@@ -662,10 +680,10 @@ def run_lookahead(
     pending = list(ledger.pending)
     bundled = dict(ledger.facts)
     # what a retire left, with the withdrawn obligation that owned its marks and its expiry
-    carried: list[tuple[date, list[tuple[str, str, bool, bool]], str | None, datetime | None]] = []
+    carried: list[tuple[date, list[LookAheadFact], str | None, datetime | None]] = []
     versions = list(history.versions)
     floor = history.floor  # raised by every removal so a number is never handed out twice
-    facts: dict[date, list[tuple[str, str, bool, bool]]] = {}  # key, text, loud, is warning
+    facts: dict[date, list[LookAheadFact]] = {}
     refusals: list[str] = []
     adopted: BaselineVersion | None = None
     owned: dict[date, list[tuple[str, int]]] = {}  # this run's marks, owned by its message
@@ -691,12 +709,12 @@ def run_lookahead(
         untold = [o for o in pending if tag in o.fact_key.split(";")]
         for o in untold:  # never delivered
             pending.remove(o)
-            rest = [f for f in bundled.pop(o.id, ()) if f[0] != tag]
+            rest = [f for f in bundled.pop(o.id, ()) if f.key != tag]
             if rest and o.look_ahead is not None:
                 carried.append((o.look_ahead[2], rest, o.id, o.expires_at))
         if not untold:
             facts.setdefault(w.effective_from, []).append(
-                (f"cancel:{w.version}", text, False, False)
+                LookAheadFact(f"cancel:{w.version}", text, loud=False, warning=False)
             )
 
     # 1. cold start: seed, shorter provisional, confirmation (7.10)
@@ -772,14 +790,12 @@ def run_lookahead(
                 add_entry(f"{expected[0].isoformat()}|j", f"adopt:{adopted.version}")
                 when = f"{expected[0]:%A} {expected[0].day} {expected[0]:%b}"
                 facts.setdefault(expected[0], []).append(
-                    (
+                    LookAheadFact(
                         f"adopt:{adopted.version}",
-                        (
-                            f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} from {when};"
-                            " I follow the new time. Update your profile?"
-                        ),
-                        False,
-                        False,
+                        f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} from {when};"
+                        " I follow the new time. Update your profile?",
+                        loud=False,
+                        warning=False,
                     )
                 )
 
@@ -820,7 +836,9 @@ def run_lookahead(
                 own(sd, key, f"warn:{r.fingerprint}")
             if loud:
                 own(sd, key, f"loud:{r.fingerprint}")
-            facts.setdefault(sd, []).append((fact, _warn_text(r, p, exp), loud, r.works))
+            facts.setdefault(sd, []).append(
+                LookAheadFact(fact, _warn_text(r, p, exp), loud, r.works)
+            )
             if _probed_end(r) is None:
                 unsure.add(sd)
         elif last is not None and last.startswith("warn:"):
@@ -829,7 +847,9 @@ def run_lookahead(
                 continue  # the warned change is what this run adopted: told by the adoption
             what = _leg_name(r, p)
             facts.setdefault(sd, []).append(
-                (f"{key}|restored", f"your {what} is back to normal", False, False)
+                LookAheadFact(
+                    f"{key}|restored", f"your {what} is back to normal", loud=False, warning=False
+                )
             )
             if _probed_end(r) is None:
                 unsure.add(sd)
@@ -848,9 +868,9 @@ def run_lookahead(
         *((sd, fs, None, None) for sd, fs in sorted(facts.items())),
         *carried,
     ]:
-        is_adopt = any(k.startswith("adopt:") for k, *_ in fs)
+        is_adopt = any(f.adopts for f in fs)
         kind, text = render_message(p, sd, fs)
-        fact_key = ";".join(k for k, *_ in fs)
+        fact_key = ";".join(f.key for f in fs)
         ev = AlertEvent(
             p.id,
             p.name,
@@ -858,7 +878,7 @@ def run_lookahead(
             sd,
             None,
             kind,
-            Severity.LOUD if any(loud for _, _, loud, _ in fs) else Severity.SILENT,
+            Severity.LOUD if any(f.loud for f in fs) else Severity.SILENT,
             None,
             text,
             f"lookahead|{p.id}|{d.value}|{sd.isoformat()}|{fact_key}",
@@ -875,7 +895,7 @@ def run_lookahead(
         # works can move the last arrival later. An unknown end, an adoption or its withdrawal
         # gets no expiry: it is kept after its date. Carried facts keep their message's bound
         expires = kept
-        if was is None and not is_adopt and not any(k.startswith("cancel:") for k, *_ in fs):
+        if was is None and not is_adopt and not any(f.cancels for f in fs):
             expires = journey_end(sd)
         ob = Obligation(
             f"{ev.key}|{now.isoformat()}", ev, None, (p.id, d, sd), revision, version, fact_key,
@@ -921,7 +941,7 @@ def run_lookahead(
             )  # fmt: skip
             pending.append(ob)
             events.append(event)
-            bundled[ob.id] = ((fact, text, True, False),)
+            bundled[ob.id] = (LookAheadFact(fact, text, loud=True, warning=False),)
             add_entry(key, f"{mark}#{ob.id}")
 
     for reason in refusals:  # a blocked adoption is told while it lasts

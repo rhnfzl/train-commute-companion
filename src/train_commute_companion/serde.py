@@ -84,6 +84,11 @@ def decode(tp: Any, v: Any) -> Any:
             return time.fromisoformat(v)
         if is_dataclass(tp):
             return _decode_dc(tp, v)
+        if issubclass(tp, tuple) and hasattr(tp, "_fields"):  # a NamedTuple is stored as a list
+            if not isinstance(v, list) or len(v) != len(tp._fields):
+                raise _bad(tp, v)
+            hints = get_type_hints(tp)
+            return tp(*(decode(hints[n], x) for n, x in zip(tp._fields, v, strict=True)))
         if tp is int:
             if isinstance(v, bool) or not isinstance(v, int):
                 raise _bad(tp, v)

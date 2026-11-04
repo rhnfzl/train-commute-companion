@@ -8,7 +8,7 @@ from test_lifecycle_follow import L1, L2, RIDE, at, journey, occ
 
 from train_commute_companion.health import PollRecord
 from train_commute_companion.lifecycle import OccurrenceState
-from train_commute_companion.lookahead import BaselineHistory
+from train_commute_companion.lookahead import BaselineHistory, LookAheadFact, LookAheadLedger
 from train_commute_companion.model import (
     AdviceRecord,
     AlertEvent,
@@ -80,6 +80,21 @@ def test_round_trip_every_persisted_type():
     assert occ_back.zone_reports == {"UT": at("08:51")}
     assert occ_back.retained[0].legs[0].onward_from == at("08:44")
     assert back.config_snapshots[2].profiles[0].alerts.quiet_hours == (time(22), time(7))
+
+
+def test_ledger_facts_stay_plain_lists_on_disk():
+    stored = '{"facts": {"o": [["adopt:2", "moved", false, true]]}, "last_applied": null, '
+    stored += '"last_run": null, "pending": [], "per_date": {}, "started_baseline": null, '
+    stored += '"started_revision": 0}'
+    led = loads(LookAheadLedger, stored)
+    assert led.facts["o"] == (LookAheadFact("adopt:2", "moved", False, True),)
+    assert led.facts["o"][0].warning and dumps(led) == stored
+
+
+@pytest.mark.parametrize("bad", [["k", "t", False], ["k", "t", "no", False], "k"])
+def test_a_bad_fact_raises_value_error(bad):
+    with pytest.raises(ValueError):
+        decode(LookAheadFact, bad)
 
 
 def test_dst_fold_survives():
