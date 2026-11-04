@@ -8,8 +8,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from train_commute_companion.calendar import TZ
-from train_commute_companion.lifecycle import DirectionState
-from train_commute_companion.model import Direction
+from train_commute_companion.model import Direction, DirectionState
 from train_commute_companion.view import RuntimeView
 
 from .coordinator import TccCoordinator

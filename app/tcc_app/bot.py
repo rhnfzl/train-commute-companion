@@ -13,9 +13,8 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
 
-from train_commute_companion.lifecycle import Leaving, NotTravelling
 from train_commute_companion.location import number
-from train_commute_companion.model import Direction, display_name
+from train_commute_companion.model import Direction, Leaving, NotTravelling, display_name
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.webhook import WebhookTestResult
 

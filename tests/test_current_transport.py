@@ -98,8 +98,7 @@ def test_a_locked_train_now_a_bus_alerts_loud_and_relocks():
 def test_a_ridden_train_now_a_bus_is_kept_and_warned():
     from test_lifecycle_follow import kinds
 
-    from train_commute_companion.lifecycle import LegState
-    from train_commute_companion.model import EventKind, Severity
+    from train_commute_companion.model import EventKind, LegState, Severity
 
     s = occ(journey([L1, B2], (LegState.DONE, LegState.RIDING)))
     t = poll(s, ctx(at("09:00")), answer("AAA", "09:00", conn(L1, B2_BUS)))

@@ -7,19 +7,13 @@ from datetime import date, datetime, timedelta
 from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.classify import classify_leg, current_run, find_leg
 from train_commute_companion.health import FRESH_FOR, board_health
-from train_commute_companion.lifecycle import (
-    Board,
-    Ctx,
-    Journey,
-    OccurrenceState,
-    announced,
-    make_event,
-)
+from train_commute_companion.lifecycle import Board, Journey, OccurrenceState, announced, make_event
 from train_commute_companion.messages import all_good_text
 from train_commute_companion.model import (
     AlertEvent,
     ClassifiedLeg,
     Connection,
+    Ctx,
     EventKind,
     Leg,
     LegKind,

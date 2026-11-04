@@ -4,10 +4,11 @@ from datetime import date, time, timedelta
 from builders import ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from test_runtime import PROFILE, FakeClock, MemoryStore, Notifier, Provider, at
 
-from train_commute_companion.lifecycle import DirectionState, LegState
 from train_commute_companion.lookahead import BaselineHistory, BaselineVersion, LookAheadLedger
 from train_commute_companion.model import (
     Direction,
+    DirectionState,
+    LegState,
     Provenance,
     Signature,
     SignatureLeg,

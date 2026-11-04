@@ -22,8 +22,13 @@ from test_runtime import at
 from custom_components.train_commute_companion.const import DOMAIN
 from custom_components.train_commute_companion.entity import health_state, shown_and_others
 from train_commute_companion.health import BoardHealth
-from train_commute_companion.lifecycle import DirectionState, LegState, NotTravelling
-from train_commute_companion.model import Direction, OccurrenceKey
+from train_commute_companion.model import (
+    Direction,
+    DirectionState,
+    LegState,
+    NotTravelling,
+    OccurrenceKey,
+)
 from train_commute_companion.view import DirectionInfo, OccurrenceView, RuntimeView
 
 pytestmark = pytest.mark.usefixtures("tcc_freezer")

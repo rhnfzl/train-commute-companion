@@ -4,15 +4,16 @@ from datetime import date, datetime
 from builders import AMS, make_connection, make_leg
 
 from train_commute_companion.advice import advise, still_advised
-from train_commute_companion.lifecycle import (
-    Commitment,
+from train_commute_companion.lifecycle import Commitment, LockSource, OccurrenceState, journey_of
+from train_commute_companion.model import (
+    AdviceRecord,
+    Connection,
     Ctx,
+    Direction,
     DirectionState,
-    LockSource,
-    OccurrenceState,
-    journey_of,
+    EventKind,
+    Severity,
 )
-from train_commute_companion.model import AdviceRecord, Connection, Direction, EventKind, Severity
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import ProviderAnswer, Query
 from train_commute_companion.schedule import dated_schedule
@@ -243,7 +244,7 @@ def test_renewed_disruption_after_withdrawal_advises_again_with_a_new_identity()
 
 
 def test_boarding_locked_leg_does_not_stop_advice_before_travel():  # rule 17
-    from train_commute_companion.lifecycle import LegState
+    from train_commute_companion.model import LegState
 
     c = ctx(at("17:48"))  # SLOW 17:52 is within the 5 min buffer: BOARDING
     j = journey_of(SLOW, LockSource.AUTO, Commitment.INTENDED)

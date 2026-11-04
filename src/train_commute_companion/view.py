@@ -10,10 +10,7 @@ from train_commute_companion.classify import pair_transfer
 from train_commute_companion.health import BoardHealth, board_health
 from train_commute_companion.lifecycle import (
     Commitment,
-    Ctx,
-    DirectionState,
     LegProgress,
-    LegState,
     LockSource,
     OccurrenceState,
     find_next_good,
@@ -28,9 +25,12 @@ from train_commute_companion.model import (
     AdviceRecord,
     ClassifiedLeg,
     Connection,
+    Ctx,
     Direction,
+    DirectionState,
     EventKind,
     LegKind,
+    LegState,
     Observation,
     OccurrenceKey,
     Profile,

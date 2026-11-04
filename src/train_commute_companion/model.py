@@ -319,3 +319,42 @@ def display_name(name: str) -> str:
 class Config:
     revision: int
     profiles: tuple[Profile, ...]
+
+
+class LegState(StrEnum):
+    PENDING = "pending"
+    BOARDING = "boarding"
+    RIDING = "riding"
+    DONE = "done"
+    MISSED = "missed"
+    CANCELLED = "cancelled"
+    RELOCKED = "relocked"
+
+
+class DirectionState(StrEnum):
+    IDLE = "idle"
+    LOCKED = "locked"
+    RIDING = "riding"
+    DONE = "done"
+    EXPIRED = "expired"
+
+
+@dataclass(frozen=True, slots=True)
+class Ctx:
+    profile: Profile
+    direction: Direction
+    schedule: DatedSchedule
+    signature: Signature | None
+    now: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class Leaving:
+    service_date: date | None
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class NotTravelling:
+    service_date: date | None
+    whole_day: bool

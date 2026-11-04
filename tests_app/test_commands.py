@@ -17,11 +17,12 @@ from tcc_app.commands import (
 from test_runtime import at
 
 from train_commute_companion.health import BoardHealth
-from train_commute_companion.lifecycle import DirectionState, LegState
 from train_commute_companion.model import (
     AdviceRecord,
     Direction,
+    DirectionState,
     LegKind,
+    LegState,
     OccurrenceKey,
     Provenance,
     TrainId,

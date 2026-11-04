@@ -6,13 +6,8 @@ from builders import AMS, make_connection, make_leg
 from train_commute_companion.lifecycle import (
     Choose,
     Commitment,
-    Ctx,
-    DirectionState,
     Journey,
-    Leaving,
-    LegState,
     LockSource,
-    NotTravelling,
     OccurrenceState,
     apply_action,
     auto_lock,
@@ -24,8 +19,13 @@ from train_commute_companion.lifecycle import (
 )
 from train_commute_companion.model import (
     Connection,
+    Ctx,
     Direction,
+    DirectionState,
     EventKind,
+    Leaving,
+    LegState,
+    NotTravelling,
     OccurrenceKey,
     Severity,
 )

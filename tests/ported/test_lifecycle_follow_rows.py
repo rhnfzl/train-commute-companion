@@ -23,8 +23,8 @@ from test_lifecycle_follow import (
     usual_locked,
 )
 
-from train_commute_companion.lifecycle import LegState, LockSource
-from train_commute_companion.model import EventKind, Severity
+from train_commute_companion.lifecycle import LockSource
+from train_commute_companion.model import EventKind, LegState, Severity
 
 
 def test_cancellation_relock_moves_even_a_chosen_journey():

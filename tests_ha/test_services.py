@@ -16,9 +16,8 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from test_runtime import at
 
 from custom_components.train_commute_companion.const import DOMAIN
-from train_commute_companion.lifecycle import DirectionState
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.model import Direction, OccurrenceKey
+from train_commute_companion.model import Direction, DirectionState, OccurrenceKey
 from train_commute_companion.runtime import _fresh_state
 
 pytestmark = pytest.mark.usefixtures("tcc_freezer")

@@ -8,11 +8,8 @@ from train_commute_companion.health import PollRecord
 from train_commute_companion.lifecycle import (
     Board,
     Commitment,
-    Ctx,
-    DirectionState,
     Journey,
     LegProgress,
-    LegState,
     LockSource,
     OccurrenceState,
     Transition,
@@ -25,9 +22,12 @@ from train_commute_companion.lifecycle import (
 from train_commute_companion.model import (
     AlertEvent,
     Connection,
+    Ctx,
     Direction,
+    DirectionState,
     EventKind,
     Leg,
+    LegState,
     Severity,
 )
 from train_commute_companion.profile import parse_profiles

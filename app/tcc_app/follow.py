@@ -9,9 +9,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from train_commute_companion.calendar import TZ
-from train_commute_companion.lifecycle import STALE_LOCATION
 from train_commute_companion.location import (
     PLACE_ROLES,
+    STALE_LOCATION,
     LocationEvent,
     ZoneTrack,
     next_zone,

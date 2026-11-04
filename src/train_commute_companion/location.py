@@ -9,6 +9,7 @@ from typing import Literal, get_args
 from train_commute_companion.model import Profile
 
 _EARTH_M = 6_371_000.0
+STALE_LOCATION = timedelta(minutes=10)
 REPORT_EVERY = timedelta(minutes=2)  # each event costs a live request per occurrence
 PLACE_ROLES = ("home", "work")
 

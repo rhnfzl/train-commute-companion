@@ -9,8 +9,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 
-from train_commute_companion.lifecycle import Leaving, NotTravelling
-from train_commute_companion.model import Direction
+from train_commute_companion.model import Direction, Leaving, NotTravelling
 from train_commute_companion.runtime import Runtime
 
 from .const import DOMAIN

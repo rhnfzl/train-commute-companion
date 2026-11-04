@@ -22,8 +22,7 @@ from tcc_app.web import ask_readout, health_report, mcp_socket_path, start_reado
 from test_runtime import Provider, at
 from webhook_receiver import Receiver
 
-from train_commute_companion.lifecycle import Leaving
-from train_commute_companion.model import EventKind
+from train_commute_companion.model import EventKind, Leaving
 from train_commute_companion.store import JsonFileStore
 from train_commute_companion.webhook_send import WebhookPoster
 

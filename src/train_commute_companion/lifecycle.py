@@ -28,7 +28,7 @@ from train_commute_companion.classify import (
     served,
 )
 from train_commute_companion.health import PollRecord
-from train_commute_companion.location import LocationEvent
+from train_commute_companion.location import STALE_LOCATION, LocationEvent
 from train_commute_companion.match import (
     matches_pattern,
     remaining_pattern,
@@ -41,11 +41,15 @@ from train_commute_companion.model import (
     AlertEvent,
     ClassifiedLeg,
     Connection,
-    DatedSchedule,
+    Ctx,
     Direction,
+    DirectionState,
     EventKind,
+    Leaving,
     Leg,
     LegKind,
+    LegState,
+    NotTravelling,
     Observation,
     OccurrenceKey,
     Profile,
@@ -77,24 +81,6 @@ class Commitment(StrEnum):
     INTENDED = "intended"
     PROVISIONAL = "provisional"
     COMMITTED = "committed"
-
-
-class LegState(StrEnum):
-    PENDING = "pending"
-    BOARDING = "boarding"
-    RIDING = "riding"
-    DONE = "done"
-    MISSED = "missed"
-    CANCELLED = "cancelled"
-    RELOCKED = "relocked"
-
-
-class DirectionState(StrEnum):
-    IDLE = "idle"
-    LOCKED = "locked"
-    RIDING = "riding"
-    DONE = "done"
-    EXPIRED = "expired"
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,33 +150,12 @@ class Transition:
 
 
 @dataclass(frozen=True, slots=True)
-class Ctx:
-    profile: Profile
-    direction: Direction
-    schedule: DatedSchedule
-    signature: Signature | None
-    now: datetime
-
-
-@dataclass(frozen=True, slots=True)
 class Choose:
     service_date: date | None
     connection: Connection
     # the fresh healthy answers the connection was picked from (the latest board): identity
     # (6.1) and the change from a kept leg (rule 1) are judged on them, never on the copy alone
     answers: tuple[ProviderAnswer, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class Leaving:
-    service_date: date | None
-    at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class NotTravelling:
-    service_date: date | None
-    whole_day: bool
 
 
 UserAction = Choose | Leaving | NotTravelling
@@ -1421,7 +1386,6 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
 
 # --- arrival acceptance, location, missed legs, termination (7.2, 7.7, 7.12 rules 6, 7) ---
 
-STALE_LOCATION = timedelta(minutes=10)
 ERRAND_TIMEOUT = timedelta(minutes=45)
 ACCEPT_AFTER = timedelta(minutes=5)
 ACCEPT_APART = timedelta(minutes=4)

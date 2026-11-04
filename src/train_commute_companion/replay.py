@@ -14,9 +14,8 @@ from typing import Any
 import yaml
 
 from train_commute_companion.calendar import TZ, hhmm, resolve_local
-from train_commute_companion.lifecycle import Leaving, NotTravelling
 from train_commute_companion.location import LOCATION_KINDS, LocationEvent
-from train_commute_companion.model import Connection
+from train_commute_companion.model import Connection, Leaving, NotTravelling
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
 from train_commute_companion.providers.ns import map_trips
 from train_commute_companion.runtime import Runtime

@@ -12,10 +12,7 @@ from train_commute_companion.classify import (
     find_leg,
 )
 from train_commute_companion.lifecycle import (
-    Ctx,
-    DirectionState,
     LegProgress,
-    LegState,
     OccurrenceState,
     catch_from_state,
     make_event,
@@ -25,9 +22,12 @@ from train_commute_companion.model import (
     AdviceRecord,
     AlertEvent,
     Connection,
+    Ctx,
+    DirectionState,
     EventKind,
     Leg,
     LegKind,
+    LegState,
     Observation,
     Severity,
     TrainId,

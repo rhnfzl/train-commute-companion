@@ -23,7 +23,6 @@ from test_lifecycle_follow import (
 
 from train_commute_companion.lifecycle import (
     Commitment,
-    LegState,
     LockSource,
     OccurrenceState,
     Transition,
@@ -42,7 +41,7 @@ from train_commute_companion.location import (
     seed_zone,
     undelivered,
 )
-from train_commute_companion.model import EventKind, Severity
+from train_commute_companion.model import EventKind, LegState, Severity
 
 USUAL = conn(L1, L2)
 E1 = make_leg("AAA", "UT", "07:42", "08:10", number="1100")

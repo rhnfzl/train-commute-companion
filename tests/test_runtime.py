@@ -11,21 +11,18 @@ import pytest
 from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from test_lifecycle_follow import L1, L1X, L2, L2X, LATER, conn, journey, occ
 
-from train_commute_companion.lifecycle import (
-    Choose,
-    DirectionState,
-    Leaving,
-    LegState,
-    LockSource,
-    NotTravelling,
-)
+from train_commute_companion.lifecycle import Choose, LockSource
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import BaselineHistory
 from train_commute_companion.model import (
     AlertEvent,
     Connection,
     Direction,
+    DirectionState,
     EventKind,
+    Leaving,
+    LegState,
+    NotTravelling,
     OccurrenceKey,
     Provenance,
     Severity,

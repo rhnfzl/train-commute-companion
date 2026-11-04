@@ -23,13 +23,14 @@ from test_runtime import (
 )
 
 from train_commute_companion.delivery import Obligation
-from train_commute_companion.lifecycle import DirectionState, NotTravelling
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import BaselineHistory, BaselineVersion, render_message
 from train_commute_companion.model import (
     AlertEvent,
     Direction,
+    DirectionState,
     EventKind,
+    NotTravelling,
     Provenance,
     Severity,
     Signature,
@@ -184,7 +185,7 @@ async def test_location_does_not_resurrect_a_skipped_occurrence(tmp_path):
     night = make_leg("AAA", "RTD", "23:50", "03:40", number="9999", day=mon)
     from test_lifecycle_follow import journey, occ
 
-    from train_commute_companion.lifecycle import LegState
+    from train_commute_companion.model import LegState
 
     ride = replace(journey([night], (LegState.RIDING,)), planned_final_arrival=at("08:40"))
     cfg = rig.rt.config

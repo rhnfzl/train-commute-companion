@@ -36,11 +36,7 @@ from test_lifecycle_follow import (
 from train_commute_companion.delivery import zone_report_stops_silent
 from train_commute_companion.lifecycle import (
     Choose,
-    DirectionState,
-    Leaving,
-    LegState,
     LockSource,
-    NotTravelling,
     OccurrenceState,
     apply_action,
     may_archive,
@@ -52,7 +48,14 @@ from train_commute_companion.lifecycle import (
     write_lock,
 )
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.model import EventKind, Severity
+from train_commute_companion.model import (
+    DirectionState,
+    EventKind,
+    Leaving,
+    LegState,
+    NotTravelling,
+    Severity,
+)
 from train_commute_companion.providers.base import ProviderAnswer, Query
 
 DONE = (LegState.DONE,)

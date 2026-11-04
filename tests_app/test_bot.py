@@ -21,8 +21,9 @@ from test_main import SECRET, URL, URL2
 from test_runtime import PROFILE, Rig, at
 from webhook_receiver import Receiver
 
-from train_commute_companion.lifecycle import Commitment, DirectionState, LegState, LockSource
+from train_commute_companion.lifecycle import Commitment, LockSource
 from train_commute_companion.location import LocationEvent
+from train_commute_companion.model import DirectionState, LegState
 from train_commute_companion.webhook import WebhookTestResult
 
 ONE_PROFILE = PROFILE.split('  - id: "p2"')[0].replace("NAME", "office_a")

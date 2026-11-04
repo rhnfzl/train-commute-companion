@@ -10,7 +10,7 @@ import pytest
 
 from custom_components.train_commute_companion.host import Parts, RuntimeHost
 from train_commute_companion.calendar import TZ
-from train_commute_companion.lifecycle import NotTravelling
+from train_commute_companion.model import NotTravelling
 from train_commute_companion.replay import MemoryStore, PrintNotifier, ReplayProvider
 from train_commute_companion.runtime import Runtime
 

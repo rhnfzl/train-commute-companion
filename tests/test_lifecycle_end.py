@@ -18,10 +18,7 @@ from test_lifecycle_follow import (
 )
 
 from train_commute_companion.lifecycle import (
-    DirectionState,
     Journey,
-    LegState,
-    NotTravelling,
     OccurrenceState,
     apply_action,
     may_archive,
@@ -29,7 +26,13 @@ from train_commute_companion.lifecycle import (
     on_tick,
 )
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.model import EventKind, Severity
+from train_commute_companion.model import (
+    DirectionState,
+    EventKind,
+    LegState,
+    NotTravelling,
+    Severity,
+)
 
 USUAL = conn(L1, L2)
 DONE_RIDE = (LegState.DONE, LegState.RIDING)
