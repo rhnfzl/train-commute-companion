@@ -65,13 +65,16 @@ def test_disrupted_day_cannot_move_the_first_train():
 def test_baseline_change_since_start_discards_the_run():
     h = BaselineHistory((confirmed(),))
     led = ledger(BaselineHistory())  # started before any baseline existed
-    assert run_lookahead(P, OUT, h, led, probe(TUE, h.in_force(TUE)), 1, MON, NOW) is None
+    assert (
+        run_lookahead(P, OUT, h, led, probe(TUE, h.in_force(TUE)), revision=1, today=MON, now=NOW)
+        is None
+    )
 
 
 def test_older_overlapping_run_is_rejected():
     h = BaselineHistory()
     led = ledger(h, last_run=NOW + timedelta(minutes=5))
-    assert run_lookahead(P, OUT, h, led, probe(TUE), 1, MON, NOW) is None
+    assert run_lookahead(P, OUT, h, led, probe(TUE), revision=1, today=MON, now=NOW) is None
 
 
 def test_first_train_set_to_baseline_keeps_it_other_route_edits_reseed():

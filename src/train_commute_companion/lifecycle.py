@@ -398,18 +398,18 @@ def make_event(
     what later steps read of this alert; its live delays join the key in `_stated`."""
     name = display_name(ctx.profile.name)
     return AlertEvent(
-        ctx.profile.id,
-        ctx.profile.name,
-        ctx.direction,
-        ctx.schedule.key.service_date,
-        None,
-        kind,
-        severity,
-        train,
-        f"{name}: {text}",
-        _event_key(ctx, kind, train, text if facts is None else facts),
-        ctx.now,
-        stated or AlertFacts(),
+        profile_id=ctx.profile.id,
+        profile_name=ctx.profile.name,
+        direction=ctx.direction,
+        service_date=ctx.schedule.key.service_date,
+        leg_index=None,
+        kind=kind,
+        severity=severity,
+        train=train,
+        text=f"{name}: {text}",
+        key=_event_key(ctx, kind, train, text if facts is None else facts),
+        created_at=ctx.now,
+        facts=stated or AlertFacts(),
     )
 
 

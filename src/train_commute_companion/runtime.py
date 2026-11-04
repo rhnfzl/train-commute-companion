@@ -1034,22 +1034,31 @@ class Runtime:
         # one poll shares `now` and the key names neither profile nor direction (7.12 rule 6)
         d = e.direction.value if e.direction else ""
         return Obligation(
-            f"{e.profile_id}|{d}|{e.key}|{e.severity.value}|{now.isoformat()}",
-            e,
-            None if s is None else s.key,
-            None,
-            revision,
-            None if s is None else s.baseline_version,
-            e.key,
-            None,
-            0,
+            id=f"{e.profile_id}|{d}|{e.key}|{e.severity.value}|{now.isoformat()}",
+            event=e,
+            occurrence=None if s is None else s.key,
+            look_ahead=None,
+            route_revision=revision,
+            baseline_version=None if s is None else s.baseline_version,
+            fact_key=e.key,
+            expires_at=None,
+            attempts=0,
         )
 
     def _app_obligation(self, kind: EventKind, body: str, now: datetime, tag: str) -> Obligation:
         e = AlertEvent(
-            "", _APP, None, None, None, kind, Severity.LOUD, None,
-            f"{display_name(_APP)}: {body}", f"{kind.value}:{tag}:{now.isoformat()}", now,
-        )  # fmt: skip
+            profile_id="",
+            profile_name=_APP,
+            direction=None,
+            service_date=None,
+            leg_index=None,
+            kind=kind,
+            severity=Severity.LOUD,
+            train=None,
+            text=f"{display_name(_APP)}: {body}",
+            key=f"{kind.value}:{tag}:{now.isoformat()}",
+            created_at=now,
+        )
         return self._obligation(e, None, now)
 
     def _app_warning(self, kind: EventKind, body: str, now: datetime, tag: str = "") -> None:
@@ -1849,9 +1858,18 @@ class Runtime:
                 is_tomorrow=False,
             )
             return AlertEvent(
-                ctx.profile.id, ctx.profile.name, ctx.direction, s.key.service_date, None, kind,
-                sev, None, f"{name}: {body}", f"{kind.value}:{k}:{tag}", now,
-            )  # fmt: skip
+                profile_id=ctx.profile.id,
+                profile_name=ctx.profile.name,
+                direction=ctx.direction,
+                service_date=s.key.service_date,
+                leg_index=None,
+                kind=kind,
+                severity=sev,
+                train=None,
+                text=f"{name}: {body}",
+                key=f"{kind.value}:{k}:{tag}",
+                created_at=now,
+            )
 
         if blind and k not in self._blind:
             self._blind[k] = now
@@ -2384,7 +2402,16 @@ class Runtime:
             if (x.id, y) != (p.id, d)
         }
         out = run_lookahead(
-            p, d, current, ledger, results, cfg.revision, today, start, others, all_bases
+            p,
+            d,
+            current,
+            ledger,
+            results,
+            revision=cfg.revision,
+            today=today,
+            now=start,
+            others=others,
+            bases=all_bases,
         )
         if out is None:
             log.info("look-ahead for %s discarded: configuration or baseline changed", dk)

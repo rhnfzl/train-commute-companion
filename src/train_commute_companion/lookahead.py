@@ -1,6 +1,6 @@
 """Planned-works look-ahead and timetable baselines (7.10, 7.12 rules 18, 19, 21, Q2). Pure."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from itertools import pairwise
@@ -147,6 +147,54 @@ class LookAheadLedger:
     # pending obligation id -> its facts, so one fact can be withdrawn from a message that
     # bundles several (7.12 rule 18)
     facts: Mapping[str, tuple[LookAheadFact, ...]] = field(default_factory=dict)
+
+
+# ---- the stored key grammars, each built and read here
+
+
+WHOLE_JOURNEY = "j"  # a day key's leg part for the journey probe
+
+
+def day_key(sd: date, leg_index: int | None) -> str:
+    """The ledger key of one probe on one date."""
+    return f"{sd.isoformat()}|{WHOLE_JOURNEY if leg_index is None else leg_index}"
+
+
+def unclear_day_key(sd: date, train: str) -> str:
+    """The ledger key of one train's disagreeing copies on one date."""
+    return f"{sd.isoformat()}|u:{train}"
+
+
+def split_day_key(key: str) -> tuple[date, str]:
+    """A ledger key's date and its leg part, as `day_key` or `unclear_day_key` wrote them."""
+    day, _, leg = key.partition("|")
+    return date.fromisoformat(day), leg
+
+
+def adopt_key(version: int) -> str:
+    return f"adopt:{version}"
+
+
+def cancel_key(version: int) -> str:
+    return f"cancel:{version}"
+
+
+def split_fact_key(key: str) -> tuple[str, str] | None:
+    """A per-date fact key's ledger key and mark ("warn:<fp>[|loud]", "unclear:<fp>" or
+    "restored"). None for any other fact: an adoption or its withdrawal."""
+    parts = key.split("|", 2)
+    if len(parts) < 3 or not (parts[2].startswith(("warn:", "unclear:")) or parts[2] == "restored"):
+        return None
+    return f"{parts[0]}|{parts[1]}", parts[2]
+
+
+def bundle_key(facts: Iterable[LookAheadFact]) -> str:
+    """An obligation's fact key: the keys of the facts its message bundles."""
+    return ";".join(f.key for f in facts)
+
+
+def bundle_names(fact_key: str, key: str) -> bool:
+    return key in fact_key.split(";")
 
 
 # ---- signatures
@@ -697,9 +745,9 @@ def entry_mark(entry: str) -> str:
     return entry.partition("#")[0]  # no fingerprint holds "#"
 
 
-def _seed_day(per_date: Mapping[str, tuple[str, ...]], version: int) -> str | None:
+def _seed_day(per_date: Mapping[str, tuple[str, ...]], version: int) -> date | None:
     tag = f"seed:{version}"
-    return next((k.split("|")[0] for k, v in per_date.items() if tag in v), None)
+    return next((split_day_key(k)[0] for k, v in per_date.items() if tag in v), None)
 
 
 def _owner(entry: str) -> str:
@@ -707,8 +755,7 @@ def _owner(entry: str) -> str:
 
 
 def render_message(p: Profile, sd: date, fs: Sequence[LookAheadFact]) -> tuple[EventKind, str]:
-    """One look-ahead message for direction and date `sd` from its facts (step 6 of
-    `run_lookahead`): its kind and text."""
+    """One look-ahead message for direction and date `sd` from its facts (`_fact_messages`): its kind and text."""
     kind = (
         EventKind.WORKS_AHEAD
         if any(f.warns for f in fs)
@@ -727,8 +774,8 @@ def render_message(p: Profile, sd: date, fs: Sequence[LookAheadFact]) -> tuple[E
 
 
 def carried_ids(old: LookAheadLedger, new: LookAheadLedger) -> dict[str, str]:
-    """The message ids whose marks a run moved to another message (step 6 moves the marks of
-    a message `retire` withdrew to the message that carries its other facts): old -> new."""
+    """The message ids whose marks a run moved to another message (`_fact_messages` moves the
+    marks of a message `retire` withdrew to the message that carries its other facts): old -> new."""
     out = {}
     for k, v in old.per_date.items():
         for a, b in zip(v, new.per_date.get(k, ()), strict=False):
@@ -737,170 +784,202 @@ def carried_ids(old: LookAheadLedger, new: LookAheadLedger) -> dict[str, str]:
     return out
 
 
-def run_lookahead(
-    p: Profile,
-    d: Direction,
-    history: BaselineHistory,
-    ledger: LookAheadLedger,
-    results: Sequence[ProbeResult],
-    revision: int,
-    today: date,
-    now: datetime,
-    others: Sequence[Profile] = (),
-    bases: Mapping[tuple[str, Direction], BaselineHistory] | None = None,
-) -> tuple[BaselineHistory, LookAheadLedger, list[AlertEvent]] | None:
-    """The direction's serialised look-ahead writer. Every fact is written to the ledger and
-    stored as a pending message before any delivery. `others` are the other profiles and
-    `bases` the current baseline histories of every other (profile id, direction), this
-    profile's other direction included, for the dated overlap check of an adoption (7.12
-    rule 19).
+@dataclass(frozen=True, slots=True)
+class _Bundle:
+    """The facts of one message about to be written."""
 
-    Caller contract (rule 21): `ledger` is the ledger as stored at write time with
-    `started_revision` / `started_baseline` set to the revision and `history.latest` seen when
-    this run started; `history` and `revision` are the current ones; `now` is the run's start
-    time. A newer run that finished first stamped a later `last_run`, so this one is dropped.
-    `ledger.pending` holds only undelivered obligations: delivery removes each one it finishes."""
-    if ledger.started_revision != revision or ledger.started_baseline != history.latest:
-        return None  # the route or baseline changed since the run started (rule 21)
-    stamps = [t.astimezone(UTC) for t in (ledger.last_applied, ledger.last_run) if t is not None]
-    if stamps and max(stamps) > now.astimezone(UTC):
-        return None  # an older run overlapping a newer one, also a newer failed-health one
-    j = p.journey(d)
-    n = len(j.transfers) + 1
-    results = sorted(
-        (r for r in results if r.direction is d),
-        key=lambda r: (r.service_date, r.leg_index is None, r.leg_index or 0),
-    )
-    wholes = {r.service_date: r for r in results if r.leg_index is None}
-    per_date = dict(ledger.per_date)
-    pending = list(ledger.pending)
-    bundled = dict(ledger.facts)
-    # what a retire left, with the withdrawn obligation that owned its marks and its expiry
-    carried: list[tuple[date, list[LookAheadFact], str | None, datetime | None]] = []
-    versions = list(history.versions)
-    floor = history.floor  # raised by every removal so a number is never handed out twice
-    facts: dict[date, list[LookAheadFact]] = {}
-    refusals: list[str] = []
-    adopted: BaselineVersion | None = None
-    owned: dict[date, list[tuple[str, int]]] = {}  # this run's marks, owned by its message
+    service_date: date
+    facts: Sequence[LookAheadFact]
+    was: str | None = None  # what a retire left: the withdrawn obligation that owned its marks
+    expires: datetime | None = None  # and its expiry
 
-    def own(sd: date, key: str, entry: str) -> None:
-        add_entry(key, entry)
-        owned.setdefault(sd, []).append((key, len(per_date[key]) - 1))
 
-    def hist() -> BaselineHistory:
-        return BaselineHistory(tuple(versions), floor)
+@dataclass(slots=True)
+class _Draft:
+    """What a run has written so far: the phases of `run_lookahead` add to it in turn."""
 
-    def add_entry(key: str, entry: str) -> None:
-        per_date[key] = (*per_date.get(key, ()), entry)
+    versions: list[BaselineVersion]
+    floor: int  # raised by every removal so a number is never handed out twice
+    per_date: dict[str, tuple[str, ...]]
+    pending: list[Obligation]
+    bundled: dict[str, tuple[LookAheadFact, ...]]
+    carried: list[_Bundle] = field(default_factory=list)
+    facts: dict[date, list[LookAheadFact]] = field(default_factory=dict)
+    owned: dict[date, list[tuple[str, int]]] = field(default_factory=dict)  # marks of its message
 
-    def retire(w: BaselineVersion, text: str) -> None:
+    def history(self) -> BaselineHistory:
+        return BaselineHistory(tuple(self.versions), self.floor)
+
+    def add_entry(self, key: str, entry: str) -> None:
+        self.per_date[key] = (*self.per_date.get(key, ()), entry)
+
+    def own(self, sd: date, key: str, entry: str) -> None:
+        self.add_entry(key, entry)
+        self.owned.setdefault(sd, []).append((key, len(self.per_date[key]) - 1))
+
+    def tell(self, sd: date, fact: LookAheadFact) -> None:
+        self.facts.setdefault(sd, []).append(fact)
+
+    def retire(self, w: BaselineVersion, text: str) -> None:
         """Removes a waiting version: an untold adoption of it is just dropped, a told one gets
         a silent correction on its date (7.12 rule 18). The adoption fact is found by key, also
         inside a message it shares with warnings; those other facts are sent again without it."""
-        nonlocal floor, pending
-        versions.remove(w)
-        floor = max(floor, w.version)
-        tag = f"adopt:{w.version}"
-        untold = [o for o in pending if tag in o.fact_key.split(";")]
+        self.versions.remove(w)
+        self.floor = max(self.floor, w.version)
+        tag = adopt_key(w.version)
+        untold = [o for o in self.pending if bundle_names(o.fact_key, tag)]
         for o in untold:  # never delivered
-            pending.remove(o)
-            rest = [f for f in bundled.pop(o.id, ()) if f.key != tag]
+            self.pending.remove(o)
+            rest = [f for f in self.bundled.pop(o.id, ()) if f.key != tag]
             if rest and o.look_ahead is not None:
-                carried.append((o.look_ahead[2], rest, o.id, o.expires_at))
+                self.carried.append(_Bundle(o.look_ahead[2], rest, o.id, o.expires_at))
         if not untold:
-            facts.setdefault(w.effective_from, []).append(
-                LookAheadFact(f"cancel:{w.version}", text, loud=False, warning=False)
+            self.tell(
+                w.effective_from,
+                LookAheadFact(cancel_key(w.version), text, loud=False, warning=False),
             )
 
-    # 1. cold start: seed, shorter provisional, confirmation (7.10)
-    if not any(v.confirmed for v in versions):
-        for sd, r in sorted(wholes.items()):
-            # works seen by any leg probe of that date also keep it out (7.10)
-            same_day = [x for x in results if x.service_date == sd]
-            if not r.clean or r.connection is None or not all(x.clean for x in same_day):
-                continue
-            sig = signature_of(r.connection, sd)
-            prov = max(versions, key=lambda v: v.version, default=None)
-            if prov is None or (
-                sig != prov.signature and _duration(sig) < _duration(prov.signature)
-            ):
-                v = BaselineVersion(hist()._next(), sig, today, False)
-                versions.append(v)
-                add_entry(f"{sd.isoformat()}|j", f"seed:{v.version}")
-            elif sig == prov.signature and _seed_day(per_date, prov.version) != sd.isoformat():
-                versions[versions.index(prov)] = replace(prov, confirmed=True)
-                break
+    def stamp_owned(self, sd: date, owner: str) -> None:
+        for k, i in self.owned.get(sd, ()):
+            v = self.per_date[k]
+            self.per_date[k] = (*v[:i], f"{v[i]}#{owner}", *v[i + 1 :])
 
-    # 2. unanimity over every requested date (look-ahead 19, 20)
-    in_force_today = hist().in_force(today)
-    expected = [service_date(p, d, day) for day in probe_dates(p, today, {d: in_force_today})]
+    def move_marks(self, was: str, owner: str) -> None:
+        self.per_date = {
+            k: tuple(f"{entry_mark(x)}#{owner}" if _owner(x) == was else x for x in v)
+            for k, v in self.per_date.items()
+        }
+
+
+def _seed_or_confirm(
+    draft: _Draft, results: Sequence[ProbeResult], wholes: Mapping[date, ProbeResult], today: date
+) -> None:
+    """Cold start: seed, shorter provisional, confirmation (7.10)."""
+    if any(v.confirmed for v in draft.versions):
+        return
+    for sd, r in sorted(wholes.items()):
+        # works seen by any leg probe of that date also keep it out (7.10)
+        same_day = [x for x in results if x.service_date == sd]
+        if not r.clean or r.connection is None or not all(x.clean for x in same_day):
+            continue
+        sig = signature_of(r.connection, sd)
+        prov = max(draft.versions, key=lambda v: v.version, default=None)
+        if prov is None or (sig != prov.signature and _duration(sig) < _duration(prov.signature)):
+            v = BaselineVersion(draft.history()._next(), sig, today, False)
+            draft.versions.append(v)
+            draft.add_entry(day_key(sd, None), f"seed:{v.version}")
+        elif sig == prov.signature and _seed_day(draft.per_date, prov.version) != sd:
+            draft.versions[draft.versions.index(prov)] = replace(prov, confirmed=True)
+            break
+
+
+def _agreed_signature(
+    results: Sequence[ProbeResult],
+    wholes: Mapping[date, ProbeResult],
+    expected: Sequence[date],
+    probes_per_day: int,
+) -> tuple[Signature | None, str | None]:
+    """Unanimity over every requested date (look-ahead 19, 20): the signature they agree on, and
+    the refusal when they agree only on another transfer pattern."""
     per_day = {sd: [r for r in results if r.service_date == sd] for sd in expected}
     complete = bool(expected) and all(
-        sd in wholes and len(per_day[sd]) == (n + 1 if n > 1 else 1) for sd in expected
+        sd in wholes and len(per_day[sd]) == probes_per_day for sd in expected
     )
-    agreed: Signature | None = None
-    if complete:
-        rs = [r for sd in expected for r in per_day[sd]]
-        sigs = {
-            signature_of(c, wholes[sd].service_date)
-            for sd in expected
-            if (c := wholes[sd].connection) is not None
-        }
-        if all(not r.works and r.transfer_ok for r in rs) and len(sigs) == 1:
-            (agreed,) = sigs
-        heads = {wholes[sd].head for sd in expected}
-        if len(heads) == 1 and wholes[expected[0]].other_pattern:
-            refusals.append(
-                "NS now offers your usual journey only with other changes; update your profile"
-            )
+    if not complete:
+        return None, None
+    rs = [r for sd in expected for r in per_day[sd]]
+    sigs = {
+        signature_of(c, wholes[sd].service_date)
+        for sd in expected
+        if (c := wholes[sd].connection) is not None
+    }
+    agreed = None
+    if all(not r.works and r.transfer_ok for r in rs) and len(sigs) == 1:
+        (agreed,) = sigs
+    if len({wholes[sd].head for sd in expected}) == 1 and wholes[expected[0]].other_pattern:
+        return (
+            agreed,
+            "NS now offers your usual journey only with other changes; update your profile",
+        )
+    return agreed, None
 
-    # 3. a waiting version is cancelled when the run agrees with the version in force
-    if agreed is not None and in_force_today is not None and agreed == in_force_today.signature:
-        for w in [v for v in versions if v.effective_from > today]:
-            retire(w, "your usual timetable stays as it was; ignore the earlier change")
 
-    # 4. unanimous adoption of the whole signature, after confirmation only (Q2)
-    if agreed is not None and any(v.confirmed for v in versions):
-        current = hist()
-        if any((b := current.in_force(sd)) is None or b.signature != agreed for sd in expected):
-            old = current.in_force(expected[0]) or current.in_force(today)
-            old_first = old.signature.legs[0].departure if old is not None else j.first_train
-            new_first = agreed.legs[0].departure
-            if agreed.legs[0].day_offset != 0:
-                refusals.append(
-                    f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} on another day;"
-                    " update your profile"
-                )
-            elif _overlaps(p, d, agreed, expected[0], current, others, bases or {}):
-                refusals.append(
-                    f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)}, which overlaps"
-                    " another window; update your profile"
-                )
-            else:
-                adopted = BaselineVersion(current._next(), agreed, expected[0], True)
-                for w in [v for v in versions if v.effective_from > today]:
-                    if w.effective_from >= adopted.effective_from:  # it would override this one
-                        retire(w, "ignore the earlier change; I follow the newer NS time")
-                versions.append(adopted)
-                add_entry(f"{expected[0].isoformat()}|j", f"adopt:{adopted.version}")
-                when = f"{expected[0]:%A} {expected[0].day} {expected[0]:%b}"
-                facts.setdefault(expected[0], []).append(
-                    LookAheadFact(
-                        f"adopt:{adopted.version}",
-                        f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} from {when};"
-                        " I follow the new time. Update your profile?",
-                        loud=False,
-                        warning=False,
-                    )
-                )
+def _cancel_waiting(
+    draft: _Draft, agreed: Signature | None, in_force_today: BaselineVersion | None, today: date
+) -> None:
+    """A waiting version is cancelled when the run agrees with the version in force."""
+    if agreed is None or in_force_today is None or agreed != in_force_today.signature:
+        return
+    for w in [v for v in draft.versions if v.effective_from > today]:
+        draft.retire(w, "your usual timetable stays as it was; ignore the earlier change")
 
-    # 5. per probe: warnings, already told, restored (look-ahead 23-27)
-    final = hist()
-    unsure: set[date] = set()  # a date with a fact whose affected journey has no known end
+
+def _adopt(
+    draft: _Draft,
+    p: Profile,
+    d: Direction,
+    agreed: Signature | None,
+    expected: Sequence[date],
+    today: date,
+    others: Sequence[Profile],
+    bases: Mapping[tuple[str, Direction], BaselineHistory],
+) -> tuple[BaselineVersion | None, str | None]:
+    """Unanimous adoption of the whole signature, after confirmation only (Q2): the version
+    adopted, or the refusal that blocked it."""
+    if agreed is None or not any(v.confirmed for v in draft.versions):
+        return None, None
+    current = draft.history()
+    if all((b := current.in_force(sd)) is not None and b.signature == agreed for sd in expected):
+        return None, None
+    old = current.in_force(expected[0]) or current.in_force(today)
+    old_first = old.signature.legs[0].departure if old is not None else p.journey(d).first_train
+    new_first = agreed.legs[0].departure
+    if agreed.legs[0].day_offset != 0:
+        return None, (
+            f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} on another day;"
+            " update your profile"
+        )
+    if _overlaps(p, d, agreed, expected[0], current, others, bases):
+        return None, (
+            f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)}, which overlaps"
+            " another window; update your profile"
+        )
+    adopted = BaselineVersion(current._next(), agreed, expected[0], True)
+    for w in [v for v in draft.versions if v.effective_from > today]:
+        if w.effective_from >= adopted.effective_from:  # it would override this one
+            draft.retire(w, "ignore the earlier change; I follow the newer NS time")
+    draft.versions.append(adopted)
+    tag = adopt_key(adopted.version)
+    draft.add_entry(day_key(expected[0], None), tag)
+    when = f"{expected[0]:%A} {expected[0].day} {expected[0]:%b}"
+    draft.tell(
+        expected[0],
+        LookAheadFact(
+            tag,
+            f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} from {when};"
+            " I follow the new time. Update your profile?",
+            loud=False,
+            warning=False,
+        ),
+    )
+    return adopted, None
+
+
+def _probe_facts(
+    draft: _Draft,
+    p: Profile,
+    d: Direction,
+    results: Sequence[ProbeResult],
+    final: BaselineHistory,
+    adopted: BaselineVersion | None,
+    today: date,
+) -> set[date]:
+    """Per probe: warnings, already told, restored (look-ahead 23-27). Returns the dates with a
+    fact whose affected journey has no known end."""
+    unsure: set[date] = set()
     for r in results:
         sd = r.service_date
-        key = f"{sd.isoformat()}|{'j' if r.leg_index is None else r.leg_index}"
+        key = day_key(sd, r.leg_index)
         base = final.in_force(sd)
         conf = base if base is not None and base.confirmed and _usable(p, d, base) else None
         exp = _expected(conf, r.leg_index) if conf is not None else None
@@ -910,7 +989,7 @@ def run_lookahead(
             and not r.other_pattern
             and _differs(signature_of(r.connection, sd), exp, DEP_TOL_MIN, DUR_TOL_MIN)
         )
-        entries = tuple(entry_mark(x) for x in per_date.get(key, ()))
+        entries = tuple(entry_mark(x) for x in draft.per_date.get(key, ()))
         at = next(
             (
                 i
@@ -929,155 +1008,236 @@ def run_lookahead(
                     continue  # already told at this severity
                 fact += "|loud"  # rule 4: told silent, now tomorrow: once more, loud
             else:
-                own(sd, key, f"warn:{r.fingerprint}")
+                draft.own(sd, key, f"warn:{r.fingerprint}")
             if loud:
-                own(sd, key, f"loud:{r.fingerprint}")
-            facts.setdefault(sd, []).append(
-                LookAheadFact(fact, _warn_text(r, p, exp), loud, r.works)
-            )
+                draft.own(sd, key, f"loud:{r.fingerprint}")
+            draft.tell(sd, LookAheadFact(fact, _warn_text(r, p, exp), loud, r.works))
             if _probed_end(r) is None:
                 unsure.add(sd)
         elif last is not None and last.startswith("warn:"):
-            own(sd, key, f"restored:{r.fingerprint}")
+            draft.own(sd, key, f"restored:{r.fingerprint}")
             if adopted is not None and last == f"warn:{r.fingerprint}":
                 continue  # the warned change is what this run adopted: told by the adoption
             what = _leg_name(r, p)
-            facts.setdefault(sd, []).append(
+            draft.tell(
+                sd,
                 LookAheadFact(
                     f"{key}|restored", f"your {what} is back to normal", loud=False, warning=False
-                )
+                ),
             )
             if _probed_end(r) is None:
                 unsure.add(sd)
+    return unsure
 
-    def journey_end(sd: date) -> datetime | None:
+
+@dataclass(frozen=True, slots=True)
+class _Writer:
+    """Builds the stored messages of one finished judgment."""
+
+    p: Profile
+    d: Direction
+    revision: int
+    now: datetime
+    final: BaselineHistory
+    results: Sequence[ProbeResult]
+    unsure: set[date]
+
+    def event(
+        self, sd: date | None, kind: EventKind, severity: Severity, text: str, tail: str
+    ) -> AlertEvent:
+        return AlertEvent(
+            profile_id=self.p.id,
+            profile_name=self.p.name,
+            direction=self.d,
+            service_date=sd,
+            leg_index=None,
+            kind=kind,
+            severity=severity,
+            train=None,
+            text=text,
+            key=f"lookahead|{self.p.id}|{self.d.value}|{tail}",
+            created_at=self.now,
+        )
+
+    def dated_event(
+        self, sd: date, kind: EventKind, severity: Severity, text: str, fact_key: str
+    ) -> AlertEvent:
+        return self.event(sd, kind, severity, text, f"{sd.isoformat()}|{fact_key}")
+
+    def obligation(
+        self,
+        event: AlertEvent,
+        day: date,
+        version: int | None,
+        fact_key: str,
+        expires: datetime | None,
+    ) -> Obligation:
+        return Obligation(
+            id=f"{event.key}|{self.now.isoformat()}",
+            event=event,
+            occurrence=None,
+            look_ahead=(self.p.id, self.d, day),
+            route_revision=self.revision,
+            baseline_version=version,
+            fact_key=fact_key,
+            expires_at=expires,
+            attempts=0,
+        )
+
+    def in_force_version(self, sd: date) -> int | None:
+        b = self.final.in_force(sd)
+        return b.version if b else None
+
+    def journey_end(self, sd: date) -> datetime | None:
         # 7.12 rule 5(b): the latest of the baseline's end and every journey probed for `sd`
-        base_end = dated_end(p, d, sd, final.in_force(sd))
-        if base_end is None or sd in unsure:
+        base_end = dated_end(self.p, self.d, sd, self.final.in_force(sd))
+        if base_end is None or sd in self.unsure:
             return None
-        ends = [_probed_end(r) for r in results if r.service_date == sd]
+        ends = [_probed_end(r) for r in self.results if r.service_date == sd]
         return max([base_end, *(e for e in ends if e is not None)])
 
-    # 6. one message per direction and date, no cap
+
+def _fact_messages(draft: _Draft, w: _Writer, adopted: BaselineVersion | None) -> list[AlertEvent]:
+    """One message per direction and date, no cap, with what a retire left after them."""
     events: list[AlertEvent] = []
-    for sd, fs, was, kept in [
-        *((sd, fs, None, None) for sd, fs in sorted(facts.items())),
-        *carried,
-    ]:
-        is_adopt = any(f.adopts for f in fs)
-        kind, text = render_message(p, sd, fs)
-        fact_key = ";".join(f.key for f in fs)
-        ev = AlertEvent(
-            p.id,
-            p.name,
-            d,
-            sd,
-            None,
-            kind,
-            Severity.LOUD if any(f.loud for f in fs) else Severity.SILENT,
-            None,
-            text,
-            f"lookahead|{p.id}|{d.value}|{sd.isoformat()}|{fact_key}",
-            now,
-        )
-        b = final.in_force(sd)
-        version = (
-            adopted.version if is_adopt and adopted is not None else (b.version if b else None)
-        )
-        events.append(ev)
+    for b in [*(_Bundle(sd, fs) for sd, fs in sorted(draft.facts.items())), *draft.carried]:
+        sd = b.service_date
+        is_adopt = any(f.adopts for f in b.facts)
+        kind, text = render_message(w.p, sd, b.facts)
+        fact_key = bundle_key(b.facts)
+        severity = Severity.LOUD if any(f.loud for f in b.facts) else Severity.SILENT
+        event = w.dated_event(sd, kind, severity, text, fact_key)
+        version = adopted.version if is_adopt and adopted is not None else w.in_force_version(sd)
         # 7.12 rule 5(b): expires when the journey on that date ended, which can be after
         # midnight (a 23:40 journey with a 00:05 transfer), never at the end of its date: the
         # latest of the baseline's end and every affected journey probed for that date, as
         # works can move the last arrival later. An unknown end, an adoption or its withdrawal
         # gets no expiry: it is kept after its date. Carried facts keep their message's bound
-        expires = kept
-        if was is None and not is_adopt and not any(f.cancels for f in fs):
-            expires = journey_end(sd)
-        ob = Obligation(
-            f"{ev.key}|{now.isoformat()}", ev, None, (p.id, d, sd), revision, version, fact_key,
-            expires, 0,
-        )  # fmt: skip
-        pending.append(ob)
-        bundled[ob.id] = tuple(fs)
-        if was is None:
-            for k, i in owned.get(sd, ()):
-                per_date[k] = (*per_date[k][:i], f"{per_date[k][i]}#{ob.id}", *per_date[k][i + 1 :])
+        expires = b.expires
+        if b.was is None and not is_adopt and not any(f.cancels for f in b.facts):
+            expires = w.journey_end(sd)
+        ob = w.obligation(event, sd, version, fact_key, expires)
+        events.append(event)
+        draft.pending.append(ob)
+        draft.bundled[ob.id] = tuple(b.facts)
+        if b.was is None:
+            draft.stamp_owned(sd, ob.id)
         else:  # the carried facts' marks move to the message that now carries them
-            per_date = {
-                k: tuple(f"{entry_mark(x)}#{ob.id}" if _owner(x) == was else x for x in v)
-                for k, v in per_date.items()
-            }
-    # 6b. rule 23: copies of one train in one answer that disagree, once per train, date and
-    # values; its own loud message, gated only by its ledger mark (owner decision 7)
+            draft.move_marks(b.was, ob.id)
+    return events
+
+
+def _unclear_messages(draft: _Draft, w: _Writer) -> list[AlertEvent]:
+    """Rule 23: copies of one train in one answer that disagree, once per train, date and
+    values; its own loud message, gated only by its ledger mark (owner decision 7)."""
+    events: list[AlertEvent] = []
     told: set[tuple[date, str]] = set()
-    for r in results:
+    for r in w.results:
         sd = r.service_date
         for tk, u in r.unclear:
             if (sd, tk) in told:
                 continue
             told.add((sd, tk))
-            key = f"{sd.isoformat()}|u:{tk}"
+            key = unclear_day_key(sd, tk)
             mark = f"unclear:{u.fingerprint}"
-            marks = [entry_mark(x) for x in per_date.get(key, ()) if x.startswith("unclear:")]
+            marks = [entry_mark(x) for x in draft.per_date.get(key, ()) if x.startswith("unclear:")]
             if marks and marks[-1] == mark:
                 continue
             fact = f"{key}|{mark}"
-            text = f"{display_name(p.name)}, {sd:%A} {sd.day} {sd:%b}: " + data_unclear_text(
+            text = f"{display_name(w.p.name)}, {sd:%A} {sd.day} {sd:%b}: " + data_unclear_text(
                 u.label, u.station, u.copies
             )
-            event = AlertEvent(
-                p.id, p.name, d, sd, None, EventKind.DATA_UNCLEAR, Severity.LOUD, None, text,
-                f"lookahead|{p.id}|{d.value}|{sd.isoformat()}|{fact}", now,
-            )  # fmt: skip
-            b = final.in_force(sd)
-            ob = Obligation(
-                f"{event.key}|{now.isoformat()}", event, None, (p.id, d, sd), revision,
-                b.version if b else None, fact,
-                journey_end(sd) if _probed_end(r) is not None else None, 0,
-            )  # fmt: skip
-            pending.append(ob)
+            event = w.dated_event(sd, EventKind.DATA_UNCLEAR, Severity.LOUD, text, fact)
+            expires = w.journey_end(sd) if _probed_end(r) is not None else None
+            ob = w.obligation(event, sd, w.in_force_version(sd), fact, expires)
+            draft.pending.append(ob)
             events.append(event)
-            bundled[ob.id] = (LookAheadFact(fact, text, loud=True, warning=False),)
-            add_entry(key, f"{mark}#{ob.id}")
+            draft.bundled[ob.id] = (LookAheadFact(fact, text, loud=True, warning=False),)
+            draft.add_entry(key, f"{mark}#{ob.id}")
+    return events
 
-    for reason in refusals:  # a blocked adoption is told while it lasts
-        ev = AlertEvent(
-            p.id,
-            p.name,
-            d,
-            None,
-            None,
-            EventKind.PROFILE_REFUSED,
-            Severity.LOUD,
-            None,
-            f"{display_name(p.name)}: profile change refused: {reason}.",
-            f"lookahead|{p.id}|{d.value}|refused|{reason}",
-            now,
-        )
-        events.append(ev)
-        pending.append(
-            Obligation(
-                f"{ev.key}|{now.isoformat()}",
-                ev,
-                None,
-                (p.id, d, today),
-                revision,
-                final.latest,
-                ev.key,
-                None,
-                0,
-            )
-        )
 
+def _refusal_messages(
+    draft: _Draft, w: _Writer, refusals: Sequence[str], today: date
+) -> list[AlertEvent]:
+    """A blocked adoption is told while it lasts."""
+    events: list[AlertEvent] = []
+    for reason in refusals:
+        text = f"{display_name(w.p.name)}: profile change refused: {reason}."
+        event = w.event(None, EventKind.PROFILE_REFUSED, Severity.LOUD, text, f"refused|{reason}")
+        events.append(event)
+        draft.pending.append(w.obligation(event, today, w.final.latest, event.key, None))
+    return events
+
+
+def run_lookahead(
+    p: Profile,
+    d: Direction,
+    history: BaselineHistory,
+    ledger: LookAheadLedger,
+    results: Sequence[ProbeResult],
+    *,
+    revision: int,
+    today: date,
+    now: datetime,
+    others: Sequence[Profile] = (),
+    bases: Mapping[tuple[str, Direction], BaselineHistory] | None = None,
+) -> tuple[BaselineHistory, LookAheadLedger, list[AlertEvent]] | None:
+    """The direction's serialised look-ahead writer. Every fact is written to the ledger and
+    stored as a pending message before any delivery. `others` are the other profiles and
+    `bases` the current baseline histories of every other (profile id, direction), this
+    profile's other direction included, for the dated overlap check of an adoption (7.12
+    rule 19); `others` is only compared through `bases`, so it needs them.
+
+    Caller contract (rule 21): `ledger` is the ledger as stored at write time with
+    `started_revision` / `started_baseline` set to the revision and `history.latest` seen when
+    this run started; `history` and `revision` are the current ones; `now` is the run's start
+    time. A newer run that finished first stamped a later `last_run`, so this one is dropped.
+    `ledger.pending` holds only undelivered obligations: delivery removes each one it finishes."""
+    assert bases is not None or not others
+    if ledger.started_revision != revision or ledger.started_baseline != history.latest:
+        return None  # the route or baseline changed since the run started (rule 21)
+    stamps = [t.astimezone(UTC) for t in (ledger.last_applied, ledger.last_run) if t is not None]
+    if stamps and max(stamps) > now.astimezone(UTC):
+        return None  # an older run overlapping a newer one, also a newer failed-health one
+    results = sorted(
+        (r for r in results if r.direction is d),
+        key=lambda r: (r.service_date, r.leg_index is None, r.leg_index or 0),
+    )
+    wholes = {r.service_date: r for r in results if r.leg_index is None}
+    draft = _Draft(
+        list(history.versions),
+        history.floor,
+        dict(ledger.per_date),
+        list(ledger.pending),
+        dict(ledger.facts),
+    )
+
+    _seed_or_confirm(draft, results, wholes, today)
+    in_force_today = draft.history().in_force(today)
+    expected = [service_date(p, d, day) for day in probe_dates(p, today, {d: in_force_today})]
+    n = len(p.journey(d).transfers) + 1
+    agreed, pattern_refusal = _agreed_signature(results, wholes, expected, n + 1 if n > 1 else 1)
+    _cancel_waiting(draft, agreed, in_force_today, today)
+    adopted, adopt_refusal = _adopt(draft, p, d, agreed, expected, today, others, bases or {})
+    final = draft.history()
+    unsure = _probe_facts(draft, p, d, results, final, adopted, today)
+
+    w = _Writer(p, d, revision, now, final, results, unsure)
+    events = [
+        *_fact_messages(draft, w, adopted),
+        *_unclear_messages(draft, w),
+        *_refusal_messages(draft, w, [x for x in (pattern_refusal, adopt_refusal) if x], today),
+    ]
     success = bool(results) and all(r.works_known for r in results)
     new_ledger = LookAheadLedger(
-        per_date,
-        tuple(pending),
-        now if success else ledger.last_run,
-        revision,
-        final.latest,
-        now,
-        {o.id: bundled[o.id] for o in pending if o.id in bundled},
+        per_date=draft.per_date,
+        pending=tuple(draft.pending),
+        last_run=now if success else ledger.last_run,
+        started_revision=revision,
+        started_baseline=final.latest,
+        last_applied=now,
+        facts={o.id: draft.bundled[o.id] for o in draft.pending if o.id in draft.bundled},
     )
     return final, new_ledger, events
 

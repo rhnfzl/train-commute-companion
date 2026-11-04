@@ -196,7 +196,9 @@ def test_waiting_version_already_told_gets_a_silent_restored():
 def test_run_after_route_edit_writes_nothing():
     history = BaselineHistory((confirmed(),))
     led = ledger(history, revision=1)  # the run started on revision 1
-    assert run_lookahead(P, OUT, history, led, probes(history), 2, MON, NOW) is None
+    assert (
+        run_lookahead(P, OUT, history, led, probes(history), revision=2, today=MON, now=NOW) is None
+    )
 
 
 def test_two_leg_warnings_tomorrow_one_message_both_facts():
@@ -245,7 +247,10 @@ def test_cancelled_version_number_is_never_reused():
     # cancelled v2 cannot pass the baseline check against it
     h2, _, _ = run(h, probes(h, **SHIFTED), led=ledger(h))
     assert h2.latest == 3
-    assert run_lookahead(P, OUT, h2, ledger(history), probes(h2), 1, MON, NOW) is None
+    assert (
+        run_lookahead(P, OUT, h2, ledger(history), probes(h2), revision=1, today=MON, now=NOW)
+        is None
+    )
 
 
 def test_stored_ledger_with_start_stamp_survives_a_route_edit():
@@ -253,10 +258,16 @@ def test_stored_ledger_with_start_stamp_survives_a_route_edit():
     _, stored, _ = run(history, probes(history), now=NOW - timedelta(days=1))
     # the profile moved to revision 2 since; this run started on it
     started = replace(stored, started_revision=2, started_baseline=history.latest)
-    assert run_lookahead(P, OUT, history, started, probes(history), 2, MON, NOW) is not None
+    assert (
+        run_lookahead(P, OUT, history, started, probes(history), revision=2, today=MON, now=NOW)
+        is not None
+    )
     # a newer run that finished first wins
     newer = replace(started, last_run=NOW + timedelta(minutes=5))
-    assert run_lookahead(P, OUT, history, newer, probes(history), 2, MON, NOW) is None
+    assert (
+        run_lookahead(P, OUT, history, newer, probes(history), revision=2, today=MON, now=NOW)
+        is None
+    )
 
 
 # ---- review fixes
@@ -311,7 +322,7 @@ def test_failed_health_run_still_blocks_an_older_overlapping_run():  # rule 21
     later = NOW + timedelta(minutes=5)
     _, led, events = run(h, probe(TUE, works=UNKNOWN, cancel2=True), now=later)
     assert events and led.last_run is None  # failed health, but its writes were applied
-    assert run_lookahead(P, OUT, h, led, probe(TUE), 1, MON, NOW) is None
+    assert run_lookahead(P, OUT, h, led, probe(TUE), revision=1, today=MON, now=NOW) is None
 
 
 def test_whole_journey_duration_increase_is_a_change():
@@ -334,9 +345,11 @@ def test_adoption_checks_overlap_with_sibling_direction_adoption():  # rule 19, 
     rs = [r for day in DAYS for r in probe(day, history.in_force(day), p=p, **ten)]
     back = confirmed(l1=("10:42", "11:10"), l2=("11:16", "11:54"))  # return moved -10
     bases = {("p1", Direction.RETURN): BaselineHistory((back,))}
-    alone = run_lookahead(p, OUT, history, ledger(history), rs, 1, MON, NOW)
+    alone = run_lookahead(p, OUT, history, ledger(history), rs, revision=1, today=MON, now=NOW)
     assert alone is not None and alone[0].latest == 2  # +10 alone fits
-    out = run_lookahead(p, OUT, history, ledger(history), rs, 1, MON, NOW, bases=bases)
+    out = run_lookahead(
+        p, OUT, history, ledger(history), rs, revision=1, today=MON, now=NOW, bases=bases
+    )
     assert out is not None
     h, _, events = out
     assert h == history
@@ -453,7 +466,7 @@ def test_superseded_adoption_bundled_with_a_warning_is_withdrawn():  # rules 18,
     led = loads(LookAheadLedger, dumps(led))  # through the store
     later = NOW + timedelta(minutes=5)
     for again in (probes(h), probes(h, l1=("08:19", "08:47"), l2=("08:53", "09:31"))):
-        out = run_lookahead(P, OUT, h, led, again, 1, MON, later)
+        out = run_lookahead(P, OUT, h, led, again, revision=1, today=MON, now=later)
         assert out is not None
         h2, led2, events2 = out
         assert 2 not in [v.version for v in h2.versions]
@@ -477,14 +490,16 @@ def test_carried_ids_follow_the_moved_marks():
     ]  # fmt: skip
     h, led, _ = run(history, rs)
     tue = next(o for o in led.pending if o.look_ahead == ("p1", OUT, TUE))
-    out = run_lookahead(P, OUT, h, led, probes(h), 1, MON, NOW + timedelta(minutes=5))
+    out = run_lookahead(
+        P, OUT, h, led, probes(h), revision=1, today=MON, now=NOW + timedelta(minutes=5)
+    )
     assert out is not None
     _, led2, _ = out
     (carried,) = [
         o for o in led2.pending if o.look_ahead == ("p1", OUT, TUE) and "|warn:" in o.fact_key
     ]
     assert carried_ids(led, led2) == {tue.id: carried.id}
-    again = run_lookahead(P, OUT, h, led, rs, 1, MON, NOW + timedelta(minutes=5))
+    again = run_lookahead(P, OUT, h, led, rs, revision=1, today=MON, now=NOW + timedelta(minutes=5))
     assert again is not None and carried_ids(led, again[1]) == {}  # nothing retired
 
 
