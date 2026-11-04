@@ -3,6 +3,7 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
+from itertools import pairwise
 from typing import NamedTuple
 
 from train_commute_companion.calendar import TZ, is_commute_day, minute_of_day, resolve_local
@@ -38,6 +39,8 @@ SEARCH_WINDOW = timedelta(minutes=15)
 DEP_TOL_MIN = 5
 DUR_TOL_MIN = 10
 REPLACEMENT_HINT = "Check replacement transport nearer the day."
+_MISSING = "missing"
+_PATTERN = "pattern:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,18 +69,48 @@ class BaselineHistory:
 
 
 @dataclass(frozen=True, slots=True)
+class ProbeReason:
+    """Why a probe counts as works. `token` is how it reads in a stored fingerprint."""
+
+    tag: str  # missing, pattern, cancelled, cut_short, messages, maintenance or short
+    leg: int | None = None
+    stop: str | None = None  # where a leg is cut short, or the station of a short change
+    margin: str | None = None  # a short change's minutes, "?" when unknown
+    minimum: int | None = None  # the minutes that change needs
+
+    @property
+    def token(self) -> str:
+        parts = (self.tag, self.leg, self.stop, self.margin, self.minimum)
+        return ":".join(str(x) for x in parts if x is not None)
+
+
+@dataclass(frozen=True, slots=True)
 class ProbeResult:
     direction: Direction
     service_date: date
     leg_index: int | None  # None: the whole journey
     connection: Connection | None
-    works: bool
     clean: bool
     transfer_ok: bool
-    fingerprint: str
+    head: str  # the signature text, "pattern:" and it for another pattern, or "missing"
+    reasons: tuple[ProbeReason, ...] = ()
     works_known: bool = True  # False when planned_works() coverage was unknown (look-ahead 36)
     # (train key, where its copies in one answer disagree on the user's trip): rule 23
     unclear: tuple[tuple[str, Unclear], ...] = ()
+
+    @property
+    def works(self) -> bool:
+        return bool(self.reasons)
+
+    @property
+    def fingerprint(self) -> str:
+        """What the ledger marks compare, so its text must not change."""
+        tail = ",".join(x.token for x in self.reasons)
+        return self.head + ("|" + tail if tail else "")
+
+    @property
+    def other_pattern(self) -> bool:
+        return self.head.startswith(_PATTERN)
 
 
 class LookAheadFact(NamedTuple):
@@ -271,7 +304,7 @@ def _kind(leg: Leg, alight: str) -> LegKind:
     return LegKind.CANCELLED if leg.alternative_transport else classify_leg(leg, alight).kind
 
 
-def _transfer_issue(inc: Leg, out: Leg, alight: str, p: Profile) -> str | None:
+def _transfer_issue(inc: Leg, out: Leg, alight: str, p: Profile) -> ProbeReason | None:
     """A planned transfer below the 7.12 rule 9 minimum or refused by provider flags. `inc`
     and `out` are current copies (6.2), `alight` the raw outgoing leg's alighting stop."""
     station = out.board.code
@@ -289,13 +322,14 @@ def _transfer_issue(inc: Leg, out: Leg, alight: str, p: Profile) -> str | None:
         else int((dep.astimezone(UTC) - arr.astimezone(UTC)).total_seconds() // 60)
     )
     if planned is not None and planned < t.minimum:
-        return f"short:{station}:{planned}:{t.minimum}"
+        return ProbeReason("short", stop=station, margin=str(planned), minimum=t.minimum)
     if t.state is not TransferState.BROKEN:
         return None
-    return f"short:{station}:{t.margin_min if t.margin_min is not None else '?'}:{t.minimum}"
+    margin = "?" if t.margin_min is None else str(t.margin_min)
+    return ProbeReason("short", stop=station, margin=margin, minimum=t.minimum)
 
 
-def _leg_reasons(cur: Connection, c: Connection) -> list[str]:
+def _leg_reasons(cur: Connection, c: Connection) -> list[ProbeReason]:
     """`cur` is `c` as the current copies show it, judged against `c`'s own alighting stops."""
     out = []
     for i, leg in enumerate(cur.legs):
@@ -303,13 +337,13 @@ def _leg_reasons(cur: Connection, c: Connection) -> list[str]:
         last = classify_leg(leg, c.legs[i].alight.code).last_served
         if k is LegKind.CUT_SHORT and last is not None:
             # the cut of the current copies, so a moved cut is a new warning (7.10, 7.12)
-            out.append(f"{k.value}:{i}:{last.code}")
+            out.append(ProbeReason(k.value, leg=i, stop=last.code))
         elif k in (LegKind.CANCELLED, LegKind.CUT_SHORT):
-            out.append(f"{k.value}:{i}")
+            out.append(ProbeReason(k.value, leg=i))
         elif leg.messages:
-            out.append(f"messages:{i}")
+            out.append(ProbeReason("messages", leg=i))
     if cur.status == "MAINTENANCE":
-        out.append("maintenance")
+        out.append(ProbeReason("maintenance"))
     return out
 
 
@@ -330,8 +364,188 @@ def _trains(c: Connection) -> tuple[tuple[TrainId, str, str], ...]:
     return tuple((g.train, g.board.code, g.alight.code) for g in c.legs)
 
 
-def _fingerprint(head: str, reasons: Sequence[str]) -> str:
-    return head + ("|" + ",".join(reasons) if reasons else "")
+def _copies(answers: Sequence[ProviderAnswer], c: Connection) -> list[Connection]:
+    """`c` and every connection of the same trains at the newest fetch showing them: in any
+    order, a status or a stop one copy shows counts (7.10, 7.12)."""
+    same = [
+        (a.fetched_at.astimezone(UTC), x)
+        for a in answers
+        for x in a.connections
+        if _trains(x) == _trains(c)
+    ]
+    top = max((t for t, _ in same), default=None)
+    return [c, *(x for t, x in same if t == top)]
+
+
+def _current(answers: Sequence[ProviderAnswer], c: Connection) -> Connection:
+    # every judgment reads the current copy of each train over all probe answers (6.2)
+    now = current_connection(answers, c)
+    if any(x.status == "MAINTENANCE" for x in _copies(answers, c)):
+        return replace(now, status="MAINTENANCE")
+    return now
+
+
+def _snapshot(answers: Sequence[ProviderAnswer], c: Connection | None) -> Connection | None:
+    """One snapshot of `c`'s copies for every judgment, fingerprint, baseline and expiry:
+    each stop at its worst, in any order (7.10, 7.12)."""
+    if c is None:
+        return None
+    xs = _copies(answers, c)
+    merged = (merge_arrivals(g, (x.legs[i] for x in xs)) for i, g in enumerate(c.legs))
+    return replace(c, legs=tuple(merged))
+
+
+def _unclear_of(
+    answers: Sequence[ProviderAnswer], c: Connection
+) -> tuple[tuple[str, Unclear], ...]:
+    # rule 23, on top of the merge: the snapped `c` keeps its trains and boarding stops
+    found = (
+        (
+            train_key(g.train),
+            disagreement(newest_copies(answers, g.train, g.board.code), g.alight.code),
+        )
+        for g in c.legs
+    )
+    return tuple((tk, u) for tk, u in found if u is not None)
+
+
+def _select_whole(
+    answer: ProviderAnswer,
+    origin: str,
+    destination: str,
+    transfers: tuple[str, ...],
+    first: datetime,
+    sig: Signature | None,
+) -> tuple[Connection | None, Connection | None]:
+    """The usual whole journey and, without one, the nearest on another transfer pattern:
+    nearest matching-pattern leg 1, then the 6.3 tie-break among those."""
+    ends = [
+        c
+        for c in answer.connections
+        if c.is_train_only and c.origin == origin and c.destination == destination
+    ]
+    near = _nearest([c for c in ends if matches_pattern(c, transfers)], first)
+    if near is None:
+        return None, _nearest([c for c in ends if not matches_pattern(c, transfers)], first)
+    only = replace(answer, connections=tuple(ends))  # the tie-break sees `ends` only
+    usual = usual_connection(only, origin, planned_departure(near.legs[0]), transfers, sig)
+    return usual or near, None
+
+
+def _select_leg(answer: ProviderAnswer | None, a: str, b: str, ref: datetime) -> Connection | None:
+    """The direct train nearest the leg's baseline departure."""
+    direct = (
+        []
+        if answer is None
+        else [
+            c
+            for c in answer.connections
+            if len(c.legs) == 1 and c.is_train_only and (c.origin, c.destination) == (a, b)
+        ]
+    )
+    return _nearest(direct, ref)
+
+
+def _chain_issues(
+    answers: Sequence[ProviderAnswer], legs: Sequence[Connection | None], p: Profile
+) -> dict[int, ProbeReason]:
+    """The planned transfer from each probed leg to the next one."""
+    return {
+        i: issue
+        for i, (left, right) in enumerate(pairwise(legs))
+        if left is not None
+        and right is not None
+        and (
+            issue := _transfer_issue(
+                _current(answers, left).legs[0],
+                _current(answers, right).legs[0],
+                right.legs[0].alight.code,
+                p,
+            )
+        )
+        is not None
+    }
+
+
+def _whole_issues(
+    answers: Sequence[ProviderAnswer], whole: Connection | None, p: Profile
+) -> list[ProbeReason]:
+    if whole is None:
+        return []
+    now = _current(answers, whole)
+    found = (
+        _transfer_issue(now.legs[i], now.legs[i + 1], whole.legs[i + 1].alight.code, p)
+        for i in range(len(whole.legs) - 1)
+    )
+    return [x for x in found if x is not None]
+
+
+@dataclass(frozen=True, slots=True)
+class _Judging:
+    """What every probe result of one commute day and direction is judged on."""
+
+    direction: Direction
+    service_date: date
+    first_train: time
+    answers: Sequence[ProviderAnswer]
+    works: PlannedWorks
+    transfer_ok: bool
+
+    def _clean(self, c: Connection, reasons: Sequence[ProbeReason]) -> bool:
+        return (
+            not reasons
+            and self.transfer_ok
+            and self.works.coverage == "complete"
+            and all(
+                _kind(x, r.alight.code) is LegKind.OK
+                for x, r in zip(_current(self.answers, c).legs, c.legs, strict=True)
+            )
+            and not any(_covered(x, self.works) for x in _copies(self.answers, c))
+        )
+
+    def _on_first_train(self, c: Connection) -> bool:
+        """A seed is anchored on the profile's first train."""
+        local = planned_departure(c.legs[0]).astimezone(TZ)
+        return local.date() == self.service_date and local.time().replace(
+            second=0, microsecond=0, fold=0
+        ) == self.first_train.replace(tzinfo=None)
+
+    def missing(self, leg_index: int | None) -> ProbeResult:
+        return self._result(leg_index, None, _MISSING, [ProbeReason(_MISSING)], False)
+
+    def other_pattern(self, c: Connection) -> ProbeResult:
+        head = _PATTERN + signature_text(signature_of(c, self.service_date))
+        return self._result(None, c, head, [ProbeReason("pattern")], False)
+
+    def usual(
+        self, leg_index: int | None, c: Connection, extra: Sequence[ProbeReason]
+    ) -> ProbeResult:
+        reasons = [*_leg_reasons(_current(self.answers, c), c), *extra]
+        clean = self._clean(c, reasons) and (leg_index is not None or self._on_first_train(c))
+        head = signature_text(signature_of(c, self.service_date))
+        return self._result(leg_index, c, head, reasons, clean, _unclear_of(self.answers, c))
+
+    def _result(
+        self,
+        leg_index: int | None,
+        c: Connection | None,
+        head: str,
+        reasons: Sequence[ProbeReason],
+        clean: bool,
+        unclear: tuple[tuple[str, Unclear], ...] = (),
+    ) -> ProbeResult:
+        return ProbeResult(
+            direction=self.direction,
+            service_date=self.service_date,
+            leg_index=leg_index,
+            connection=c,
+            clean=clean,
+            transfer_ok=self.transfer_ok,
+            head=head,
+            reasons=tuple(reasons),
+            works_known=self.works.coverage == "complete",
+            unclear=unclear,
+        )
 
 
 def evaluate(
@@ -349,164 +563,49 @@ def evaluate(
     st = _stations(p, d)
     n = len(st) - 1
     deps = _base_departures(p, d, day, base)
-    sig = _usable(p, d, base)
-    known = works.coverage == "complete"
     by_route = {(a.query.origin, a.query.destination): a for a in answers}
-
-    # whole journey: nearest matching-pattern leg 1, then the 6.3 tie-break among those
-    whole: Connection | None = None
-    pattern: Connection | None = None
-    whole_ans = by_route.get((st[0], st[-1]))
     first = deps[0]
     assert first is not None
-    if whole_ans is not None:
-        ends = [
-            c
-            for c in whole_ans.connections
-            if c.is_train_only and c.origin == st[0] and c.destination == st[-1]
-        ]
-        near = _nearest([c for c in ends if matches_pattern(c, j.transfers)], first)
-        if near is not None:
-            only = replace(whole_ans, connections=tuple(ends))  # the tie-break sees `ends` only
-            whole = (
-                usual_connection(only, st[0], planned_departure(near.legs[0]), j.transfers, sig)
-                or near
-            )
-        else:
-            pattern = _nearest([c for c in ends if not matches_pattern(c, j.transfers)], first)
 
-    # legs: the direct train nearest the leg's baseline departure
-    legs: list[Connection | None] = []
-    answered: list[bool] = []
-    if n > 1:
-        for i in range(n):
-            a = by_route.get((st[i], st[i + 1]))
-            ref = deps[i] or (planned_departure(whole.legs[i]) if whole is not None else None)
-            answered.append(a is not None and ref is not None)
-            direct = (
-                []
-                if a is None
-                else [
-                    c
-                    for c in a.connections
-                    if len(c.legs) == 1
-                    and c.is_train_only
-                    and (c.origin, c.destination) == (st[i], st[i + 1])
-                ]
-            )
-            legs.append(None if ref is None else _nearest(direct, ref))
-
-    def copies(c: Connection) -> list[Connection]:
-        """`c` and every connection of the same trains at the newest fetch showing them: in any
-        order, a status or a stop one copy shows counts (7.10, 7.12)."""
-        same = [
-            (a.fetched_at.astimezone(UTC), x)
-            for a in answers
-            for x in a.connections
-            if _trains(x) == _trains(c)
-        ]
-        top = max((t for t, _ in same), default=None)
-        return [c, *(x for t, x in same if t == top)]
-
-    def cur(c: Connection) -> Connection:
-        # every judgment reads the current copy of each train over all probe answers (6.2)
-        now = current_connection(answers, c)
-        if any(x.status == "MAINTENANCE" for x in copies(c)):
-            return replace(now, status="MAINTENANCE")
-        return now
-
-    def snap(c: Connection | None) -> Connection | None:
-        """One snapshot of `c`'s copies for every judgment, fingerprint, baseline and expiry:
-        each stop at its worst, in any order (7.10, 7.12)."""
-        if c is None:
-            return None
-        xs = copies(c)
-        merged = (merge_arrivals(g, (x.legs[i] for x in xs)) for i, g in enumerate(c.legs))
-        return replace(c, legs=tuple(merged))
-
-    legs = [snap(c) for c in legs]
-    whole, pattern = snap(whole), snap(pattern)
-
-    chain_issues = {
-        i: issue
-        for i in range(n - 1)
-        if (left := legs[i]) is not None
-        and (right := legs[i + 1]) is not None
-        and (
-            issue := _transfer_issue(
-                cur(left).legs[0], cur(right).legs[0], right.legs[0].alight.code, p
-            )
+    whole_ans = by_route.get((st[0], st[-1]))
+    whole, pattern = (
+        (None, None)
+        if whole_ans is None
+        else _select_whole(whole_ans, st[0], st[-1], j.transfers, first, _usable(p, d, base))
+    )
+    # a leg's departure: the baseline's, else the one the whole journey shows
+    refs = [
+        deps[i] or (planned_departure(whole.legs[i]) if whole is not None else None)
+        for i in range(n if n > 1 else 0)
+    ]
+    answered = [(st[i], st[i + 1]) in by_route and ref is not None for i, ref in enumerate(refs)]
+    legs = [
+        None
+        if ref is None
+        else _snapshot(
+            answers, _select_leg(by_route.get((st[i], st[i + 1])), st[i], st[i + 1], ref)
         )
-        is not None
-    }
-    whole_issues: list[str] = []
-    if whole is not None:
-        now = cur(whole)
-        for i in range(len(whole.legs) - 1):
-            x = _transfer_issue(now.legs[i], now.legs[i + 1], whole.legs[i + 1].alight.code, p)
-            if x is not None:
-                whole_issues.append(x)
-    transfer_ok = not chain_issues and not whole_issues
+        for i, ref in enumerate(refs)
+    ]
+    whole, pattern = _snapshot(answers, whole), _snapshot(answers, pattern)
 
-    def unclear_of(c: Connection) -> tuple[tuple[str, Unclear], ...]:
-        # rule 23, on top of the merge: the snapped `c` keeps its trains and boarding stops
-        found = (
-            (
-                train_key(g.train),
-                disagreement(newest_copies(answers, g.train, g.board.code), g.alight.code),
-            )
-            for g in c.legs
-        )
-        return tuple((tk, u) for tk, u in found if u is not None)
-
-    def result(li: int | None, c: Connection | None, reasons: list[str], head: str) -> ProbeResult:
-        is_works = bool(reasons)
-        clean = (
-            c is not None
-            and not is_works
-            and transfer_ok
-            and known
-            and all(
-                _kind(x, r.alight.code) is LegKind.OK
-                for x, r in zip(cur(c).legs, c.legs, strict=True)
-            )
-            and not any(_covered(x, works) for x in copies(c))
-        )
-        if li is None and c is not None:  # a seed is anchored on the profile's first train
-            local = planned_departure(c.legs[0]).astimezone(TZ)
-            clean = (
-                clean
-                and local.date() == sd
-                and local.time().replace(second=0, microsecond=0, fold=0)
-                == j.first_train.replace(tzinfo=None)
-            )
-        usual = c is not None and head != "missing" and not head.startswith("pattern:")
-        return ProbeResult(
-            d, sd, li, c, is_works, clean, transfer_ok, _fingerprint(head, reasons), known,
-            unclear_of(c) if usual and c is not None else (),
-        )  # fmt: skip
+    chain_issues = _chain_issues(answers, legs, p)
+    whole_issues = _whole_issues(answers, whole, p)
+    judging = _Judging(d, sd, j.first_train, answers, works, not chain_issues and not whole_issues)
 
     out: list[ProbeResult] = []
-    for i in range(n if n > 1 else 0):
-        if not answered[i]:
-            continue
-        c = legs[i]
-        if c is None:
-            out.append(result(i, None, ["missing"], "missing"))
-            continue
-        reasons = _leg_reasons(cur(c), c)
-        if i in chain_issues:
-            reasons.append(chain_issues[i])
-        out.append(result(i, c, reasons, signature_text(signature_of(c, sd))))
+    for i, c in enumerate(legs):
+        if answered[i]:
+            issue = chain_issues.get(i)
+            extra = () if issue is None else (issue,)
+            out.append(judging.missing(i) if c is None else judging.usual(i, c, extra))
     if whole_ans is not None:
         if whole is not None:
-            reasons = _leg_reasons(cur(whole), whole) + whole_issues
-            out.append(result(None, whole, reasons, signature_text(signature_of(whole, sd))))
+            out.append(judging.usual(None, whole, whole_issues))
         elif pattern is not None:
-            head = "pattern:" + signature_text(signature_of(pattern, sd))
-            out.append(result(None, pattern, ["pattern"], head))
+            out.append(judging.other_pattern(pattern))
         else:
-            out.append(result(None, None, ["missing"], "missing"))
+            out.append(judging.missing(None))
     return out
 
 
@@ -538,26 +637,23 @@ def _station_name(r: ProbeResult, code: str) -> str:
 
 def _warn_text(r: ProbeResult, p: Profile, base: Signature | None) -> str:
     what = _leg_name(r, p)
-    reasons = r.fingerprint.split("|", 1)[1].split(",") if "|" in r.fingerprint else []
     parts: list[str] = []
-    for x in reasons:
-        tag, _, rest = x.partition(":")
-        if tag == "missing":
+    for x in r.reasons:
+        tag = x.tag
+        if tag == _MISSING:
             parts.append(f"your {what} has no usual train (works)")
         elif tag == "cancelled":
             parts.append(f"your {what} has no trains (works)")
         elif tag == "cut_short":
-            code = rest.partition(":")[2]
-            stop = _station_name(r, code) if code else "an earlier stop"
+            stop = _station_name(r, x.stop) if x.stop else "an earlier stop"
             parts.append(f"your {what} runs only to {stop} (works)")
         elif tag == "pattern" and r.connection is not None:
             via = " then ".join(_station_name(r, s) for s in r.connection.transfer_stations)
             parts.append(f"your journey goes {'via ' + via if via else 'direct'} (works)")
         elif tag == "short":
-            station, margin, minimum = rest.split(":")
             parts.append(
-                f"your change at {_station_name(r, station)} is too short"
-                f" ({margin} min, you need {minimum})"
+                f"your change at {_station_name(r, x.stop or '')} is too short"
+                f" ({x.margin} min, you need {x.minimum})"
             )
         elif tag in ("messages", "maintenance"):
             parts.append(f"your {what} is affected by planned works")
@@ -753,8 +849,8 @@ def run_lookahead(
         }
         if all(not r.works and r.transfer_ok for r in rs) and len(sigs) == 1:
             (agreed,) = sigs
-        pats = {wholes[sd].fingerprint.split("|")[0] for sd in expected}
-        if len(pats) == 1 and next(iter(pats)).startswith("pattern:"):
+        heads = {wholes[sd].head for sd in expected}
+        if len(heads) == 1 and wholes[expected[0]].other_pattern:
             refusals.append(
                 "NS now offers your usual journey only with other changes; update your profile"
             )
@@ -811,7 +907,7 @@ def run_lookahead(
         changed = (
             exp is not None
             and r.connection is not None
-            and not r.fingerprint.startswith("pattern:")
+            and not r.other_pattern
             and _differs(signature_of(r.connection, sd), exp, DEP_TOL_MIN, DUR_TOL_MIN)
         )
         entries = tuple(entry_mark(x) for x in per_date.get(key, ()))

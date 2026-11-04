@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 
+import pytest
 from builders import AMS, _on_track, make_connection, make_leg, planned_at_alight
 from lookahead_fixtures import (
     CLEAR,
@@ -27,6 +28,7 @@ from train_commute_companion.lookahead import (
     BaselineHistory,
     BaselineVersion,
     LookAheadLedger,
+    ProbeReason,
     ProbeResult,
     _overlaps,
     _probed_end,
@@ -792,3 +794,21 @@ def test_forget_pending_takes_back_an_unclear_mark():
     assert not any(x.startswith("unclear:") for v in led.per_date.values() for x in v)
     _, _, events = run(h, split_probe(), led=led)
     assert len(unclear_events(events)) == 1
+
+
+@pytest.mark.parametrize(
+    ("reason", "token"),
+    [
+        (ProbeReason("missing"), "missing"),
+        (ProbeReason("pattern"), "pattern"),
+        (ProbeReason("maintenance"), "maintenance"),
+        (ProbeReason("messages", leg=0), "messages:0"),
+        (ProbeReason("cancelled", leg=1), "cancelled:1"),
+        (ProbeReason("cut_short", leg=1), "cut_short:1"),
+        (ProbeReason("cut_short", leg=0, stop="UT"), "cut_short:0:UT"),
+        (ProbeReason("short", stop="UT", margin="0", minimum=4), "short:UT:0:4"),
+        (ProbeReason("short", stop="UT", margin="?", minimum=4), "short:UT:?:4"),
+    ],
+)
+def test_a_reason_reads_in_stored_marks_as_it_always_did(reason, token):
+    assert reason.token == token
