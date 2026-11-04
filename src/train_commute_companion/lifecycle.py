@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
+from typing import NamedTuple
 
 from train_commute_companion.calendar import TZ, hhmm, resolve_local, to_utc
 from train_commute_companion.classify import (
@@ -889,33 +890,44 @@ def _restore(s: OccurrenceState, ctx: Ctx, pool: Pool) -> Transition | None:
     return None
 
 
-Cause = tuple[EventKind, Severity, str, TrainId]
+class Cause(NamedTuple):
+    """What a relock reports, whether or not it moves anything."""
+
+    kind: EventKind
+    severity: Severity
+    text: str
+    train: TrainId
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Relock:
+    """Replace `legs[j:]` by the next good connection from `station` (7.4). `over_cap` is the
+    actual route of the boarded train legs[j - 1], followed when nothing good fits (6.3).
+    `since`: only an answer asked from `station` at or after it proves there is no connection.
+    `history`: the train being replaced, remembered so it can be restored (rule 8)."""
+
+    legs: Sequence[LegProgress]
+    j: int
+    station: str
+    kept: ClassifiedLeg | None
+    cause: Cause
+    history: LegProgress | None = None
+    over_cap: Connection | None = None
+    since: datetime | None = None
+    source: LockSource = LockSource.RELOCK
 
 
 def _relock(
-    s: OccurrenceState,
-    ctx: Ctx,
-    pool: Pool,
-    asked: tuple[Query, ...],
-    legs: Sequence[LegProgress],
-    j: int,
-    station: str,
-    kept: ClassifiedLeg | None,
-    cause: Cause,
-    history: LegProgress | None = None,
-    over_cap: Connection | None = None,
-    since: datetime | None = None,
-    source: LockSource = LockSource.RELOCK,
+    s: OccurrenceState, ctx: Ctx, pool: Pool, asked: tuple[Query, ...], cut: Relock
 ) -> Transition:
-    """Replace legs[j:] by the next good connection from `station` (7.4). `over_cap` is the
-    actual route of the boarded train legs[j - 1], followed when nothing good fits (6.3).
-    `since`: only an answer asked from `station` at or after it proves there is no connection.
-    A kept leg legs[j - 1] that is not in the answers cannot have its change checked (rule 1):
+    """A kept leg legs[j - 1] that is not in the answers cannot have its change checked (rule 1):
     the cause is still reported, and nothing is relocked on it."""
+    legs, j, station, kept = cut.legs, cut.j, cut.station, cut.kept
+    history, over_cap = cut.history, cut.over_cap
     lock = s.lock
     assert lock is not None
     p, d = ctx.profile, ctx.direction
-    kind, sev, text, train = cause
+    kind, sev, text, train = cut.cause
     if j and kept is None:
         note = f"{text}; the change from your current train is not in NS data, check the NS app."
         return Transition(_progress(s, legs), (make_event(ctx, kind, sev, note, train),))
@@ -941,7 +953,8 @@ def _relock(
     if c is None:
         events = [make_event(ctx, kind, sev, f"{text}.", train)]
         if any(
-            q.origin == station and (since is None or to_utc(q.at) >= to_utc(since)) for q in asked
+            q.origin == station and (cut.since is None or to_utc(q.at) >= to_utc(cut.since))
+            for q in asked
         ):
             nothing = "no connection found, check the NS app."
             events.append(make_event(ctx, EventKind.NO_CONNECTION, Severity.LOUD, nothing))
@@ -954,7 +967,7 @@ def _relock(
     text += f". Next good connection: {hhmm(_departure(c))}" + (
         f", new route via {via}." if how == "new_route" else "."
     )
-    written = _write(s, _journey(lock, legs[:j], c.legs, source))
+    written = _write(s, _journey(lock, legs[:j], c.legs, cut.source))
     if history is not None and history.train not in {y.train for y in s.cancellation_history}:
         written = replace(written, cancellation_history=(*s.cancellation_history, history))
     return Transition(written, (make_event(ctx, kind, sev, text, train, facts),))
@@ -1043,6 +1056,206 @@ def _platform(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
     return make_event(ctx, EventKind.PLATFORM_CHANGE, sev, text, x.train, facts)
 
 
+@dataclass(frozen=True, slots=True)
+class _Watch:
+    """What every check of one `_follow` reads. The legs are passed apart: `_follow` updates them."""
+
+    s: OccurrenceState
+    ctx: Ctx
+    pool: Pool
+    asked: tuple[Query, ...]
+    lock: Journey
+    obs: Sequence[ClassifiedLeg | None]
+    rc: Connection | None  # the route NS now gives the first open leg
+
+
+class _Proposal(NamedTuple):
+    """A move a check asks for. `_follow` alone decides whether it is taken (7.4)."""
+
+    transition: Transition
+    ridden: bool = False  # the broken train may carry the user: warn, never move
+
+
+def _over(w: _Watch, legs: Sequence[LegProgress], j: int) -> Connection | None:
+    """The actual route of the boarded kept leg legs[j - 1], if NS reroutes it."""
+    boarded = j > 0 and _may_be_on(legs[j - 1], w.ctx.now)
+    on_it = w.rc is not None and boarded and w.rc.legs[0].train == legs[j - 1].train
+    return w.rc if on_it else None
+
+
+def _since_change(w: _Watch, legs: Sequence[LegProgress], j: int) -> datetime | None:
+    return _since(
+        _late_onward(legs[j - 1], legs[j]), _late_onward(w.lock.legs[j - 1], w.lock.legs[j])
+    )
+
+
+def _check_cancelled(
+    w: _Watch, legs: Sequence[LegProgress], i: int, cl: ClassifiedLeg
+) -> _Proposal | None:
+    x = legs[i]
+    if cl.kind is not LegKind.CANCELLED or x.state is LegState.DONE:
+        return None
+    text = f"your {_name(x)} train is cancelled"
+    t = _relock(
+        w.s,
+        w.ctx,
+        w.pool,
+        w.asked,
+        Relock(
+            legs=legs,
+            j=i,
+            station=x.board_station,
+            kept=w.obs[i - 1] if i else None,
+            cause=Cause(EventKind.CANCELLED, Severity.LOUD, text, x.train),
+            history=x,
+            since=_since_change(w, legs, i) if i else None,
+        ),
+    )
+    return _Proposal(t, ridden=x.state is LegState.RIDING)
+
+
+def _is_cut(x: LegProgress, cl: ClassifiedLeg) -> bool:
+    return cl.kind is LegKind.CUT_SHORT or x.alight_stop != x.intended_alight
+
+
+def _served_end(x: LegProgress, cl: ClassifiedLeg) -> str:
+    if cl.last_served is not None:
+        return cl.last_served.code
+    return x.intended_alight if cl.kind in _RUNNING_LEG_KINDS else x.served_endpoint
+
+
+def _observed_ends(
+    p: Profile,
+    x: LegProgress,
+    nxt: LegProgress | None,
+    cl: ClassifiedLeg,
+    ncl: ClassifiedLeg | None,
+) -> LegProgress:
+    """The leg with what this answer shows of its endpoint and its earliest onward departure."""
+    if _is_cut(x, cl):
+        end = _served_end(x, cl)
+        # frozen once a recovery leg is boarded, by its departure evidence (7.4)
+        frozen = x.alight_frozen or (nxt is not None and nxt.state in _DEPARTED)
+        x = replace(_move_stop(x, end, x.alight_stop if frozen else end), alight_frozen=frozen)
+    onward = _onward(p, x, cl, ncl)
+    return x if onward is None else replace(x, onward_from=onward)
+
+
+def _check_cut_short(
+    w: _Watch, legs: Sequence[LegProgress], i: int, before: LegProgress, cl: ClassifiedLeg
+) -> _Proposal | None:
+    """`before` is the leg as it was before this answer's endpoint was applied to `legs[i]`."""
+    x = legs[i]
+    if not _is_cut(before, cl) or x.alight_frozen:
+        return None
+    nxt = legs[i + 1] if i + 1 < len(legs) else None
+    end = x.served_endpoint
+    dest = w.ctx.profile.destination(w.ctx.direction)
+    if cl.kind is LegKind.CUT_SHORT:
+        text = f"your {_name(x)} train runs only to {end}, change there"
+        cause = Cause(EventKind.CUT_SHORT, Severity.LOUD, text, x.train)
+    else:
+        text = f"back to normal: your {_name(x)} train reaches {end} again"
+        cause = Cause(EventKind.RESTORED, Severity.SILENT, text, x.train)
+    if nxt is not None and end == dest:  # extended to the destination again
+        new = _journey(w.lock, legs[: i + 1], (), LockSource.RESTORE)
+        note = make_event(w.ctx, cause.kind, cause.severity, f"{cause.text}.", cause.train)
+        return _Proposal(Transition(_write(w.s, new), (note,)))
+    if (nxt is None and end == dest) or (nxt is not None and nxt.board_station == end):
+        return None
+    original = nxt if nxt is not None and nxt.board_station == x.intended_alight else None
+    asked_from = before.onward_from if before.alight_stop == end else None
+    t = _relock(
+        w.s,
+        w.ctx,
+        w.pool,
+        w.asked,
+        Relock(
+            legs=legs,
+            j=i + 1,
+            station=end,
+            kept=cl,
+            cause=cause,
+            history=original,
+            over_cap=_over(w, legs, i + 1),
+            since=_since(x.onward_from, asked_from),
+        ),
+    )
+    return _Proposal(t)
+
+
+def _check_transfer(
+    w: _Watch,
+    legs: Sequence[LegProgress],
+    i: int,
+    cl: ClassifiedLeg,
+    ncl: ClassifiedLeg | None,
+) -> tuple[list[AlertEvent], _Proposal | None]:
+    """The leg's delay and its change into the next leg. Every running leg reports: `_stated`
+    keeps only news, including the fall back to on time."""
+    x, ctx = legs[i], w.ctx
+    nxt = legs[i + 1] if i + 1 < len(legs) else None
+    late = cl.kind in _RUNNING_LEG_KINDS and x.state is not LegState.DONE
+    if nxt is None or ncl is None or ncl.kind is LegKind.CANCELLED:
+        # a cancelled next leg is the news, not this delay, and has its own turn as a cancellation
+        return ([_delayed(ctx, x, cl, last=nxt is None)] if late and ncl is None else []), None
+    tc = check_transfer(cl, ncl, x.alight_stop, ctx.profile.transfer_min)
+    if tc.state is TransferState.BROKEN:
+        text = f"your change at {x.alight_stop} is broken: {tc.reason}"
+        t = _relock(
+            w.s,
+            ctx,
+            w.pool,
+            w.asked,
+            Relock(
+                legs=legs,
+                j=i + 1,
+                station=x.alight_stop,
+                kept=cl,
+                cause=Cause(EventKind.TRANSFER_BROKEN, Severity.LOUD, text, nxt.train),
+                over_cap=_over(w, legs, i + 1),
+                since=_since_change(w, legs, i + 1),
+            ),
+        )
+        return [], _Proposal(t, ridden=nxt.state in _DEPARTED)
+    # after the break check: a broken change is its own loud event
+    found = [_delayed(ctx, x, cl, last=False)] if late else []
+    # at risk warns before a change; once the onward train left, only broken is news
+    if tc.state is TransferState.AT_RISK and nxt.state not in _DEPARTED:
+        found.append(_at_risk(ctx, x, nxt, tc.reason))
+    return found, None
+
+
+def _check_route_change(
+    w: _Watch, legs: Sequence[LegProgress], k: int, rc: Connection, *, boarded: bool
+) -> _Proposal:
+    x, ctx = legs[k], w.ctx
+    via = ", ".join(rc.transfer_stations) or "a direct train"
+    text = f"NS now routes your {_name(x)} train via {via}"
+    cause = Cause(EventKind.ROUTE_CHANGED, Severity.LOUD, text, x.train)
+    if boarded:  # `_follow` moved its stop to where NS changes: relock what follows from there
+        cut = Relock(
+            legs=legs, j=k + 1, station=x.alight_stop, kept=w.obs[k], cause=cause, over_cap=rc
+        )
+        return _Proposal(_relock(w.s, ctx, w.pool, w.asked, cut))
+    kept = w.obs[k - 1] if k else None
+    # 6.3: follow the new route only within the cap and if good, else relock
+    checkable = not k or kept is not None
+    if checkable and check_good(rc, w.pool, **_good_kw(w.s, ctx, x.board_station, kept, k)).ok:
+        new = _journey(w.lock, legs[:k], rc.legs, LockSource.RELOCK)
+        note = make_event(ctx, cause.kind, cause.severity, f"{text}, following it.", x.train)
+        return _Proposal(Transition(_write(w.s, new), (note,)))
+    cut = Relock(legs=legs, j=k, station=x.board_station, kept=kept, cause=cause)
+    return _Proposal(_relock(w.s, ctx, w.pool, w.asked, cut))
+
+
+def _moved(t: Transition, events: Sequence[AlertEvent]) -> Transition:
+    """A taken move. A platform of a train relocked away is no longer the user's platform."""
+    kept = {y.train for y in t.state.lock.legs} if t.state.lock else set()
+    mine = [e for e in events if e.kind is not EventKind.PLATFORM_CHANGE or e.train in kept]
+    return Transition(t.state, (*mine, *t.events))
+
+
 def _follow(
     s: OccurrenceState,
     ctx: Ctx,
@@ -1054,11 +1267,14 @@ def _follow(
     """The locked-journey checks (7.3, 7.4). A warning never depends on permission to move a
     train: a break at a train the user may be on, or anywhere in a retained remainder
     (`relock` False, rule 7), is reported with the next good connection and moves nothing;
-    only observed progress (endpoints, onward search time) is kept."""
+    only observed progress (endpoints, onward search time) is kept.
+
+    This loop alone owns `legs`, `events` and `relock`: each check proposes, and a move not
+    taken keeps its warnings, while every later leg is still checked and reported but never
+    relocked on top of the kept break (7.4)."""
     lock = s.lock
     assert lock is not None
-    p, d = ctx.profile, ctx.direction
-    dest, now = p.destination(d), ctx.now
+    now = ctx.now
     legs = list(lock.legs)
     k = first_open(lock)
     seen = [observe(pool, x) for x in legs]
@@ -1067,195 +1283,53 @@ def _follow(
     plain = all(x.alight_stop == x.intended_alight for x in legs[k:])
     expected = tuple(x.alight_stop for x in legs[k:-1])
     rc = route_changed([x.train for x in legs[k:]], pool, expected) if plain else None
+    w = _Watch(s, ctx, pool, asked, lock, obs, rc)
     events: list[AlertEvent] = []
-
-    def act(t: Transition, ridden: bool = False) -> Transition | None:
-        """The relock `t` when allowed; else None, keeping its warnings, and every later leg
-        is still checked and reported but never relocked on top of the kept break (7.4)."""
-        nonlocal relock
-        if relock and not ridden:
-            # a platform of a train relocked away is no longer the user's platform
-            kept = {y.train for y in t.state.lock.legs} if t.state.lock else set()
-            mine = [e for e in events if e.kind is not EventKind.PLATFORM_CHANGE or e.train in kept]
-            return Transition(t.state, (*mine, *t.events))
-        relock = False
-        events.extend(t.events)
-        return None
-
-    def over(j: int) -> Connection | None:
-        """The actual route of the boarded kept leg legs[j - 1], if NS reroutes it."""
-        boarded = j > 0 and _may_be_on(legs[j - 1], now)
-        return rc if rc is not None and boarded and rc.legs[0].train == legs[j - 1].train else None
-
-    def since(j: int) -> datetime | None:
-        return _since(
-            _late_onward(legs[j - 1], legs[j]), _late_onward(lock.legs[j - 1], lock.legs[j])
-        )
-
     # from the incoming leg of the next transfer: a done leg stays watched, so its endpoint and
     # its change into the next leg are still checked (rule 6, lifecycle 26)
     for i in range(max(k - 1, 0), len(legs)):
-        x, cl = legs[i], obs[i]
-        if not _observed(x, now):
+        before, cl = legs[i], obs[i]
+        if not _observed(before, now):
             continue
         nxt = legs[i + 1] if i + 1 < len(legs) else None
         ncl = obs[i + 1] if nxt is not None else None
-        # at risk warns before a change; once the onward train left, only broken is news
-        ahead = nxt is not None and nxt.state not in _DEPARTED
         # 6.1, 7.3: an uncertain leg makes its change at risk, never fine, whatever progress says
         if (
             nxt is not None
             and nxt.state is not LegState.DONE
             and Observation.UNCERTAIN in (seen[i][1], seen[i + 1][1])
         ):
-            events.append(_at_risk(ctx, x, nxt, "a train is not reliably identified"))
+            events.append(_at_risk(ctx, before, nxt, "a train is not reliably identified"))
         if cl is None:  # missing or uncertain: reported, never relocked on
             continue
         if ncl is not None:  # this change's own transfer fields, not another connection's
             cl, ncl = pair_transfer(pool.answers, cl, ncl)
-        if cl.kind is LegKind.CANCELLED and x.state is not LegState.DONE:
-            text = f"your {_name(x)} train is cancelled"
-            kept = obs[i - 1] if i else None
-            cause = (EventKind.CANCELLED, Severity.LOUD, text, x.train)
-            t = _relock(
-                s,
-                ctx,
-                pool,
-                asked,
-                legs,
-                i,
-                x.board_station,
-                kept,
-                cause,
-                x,
-                None,
-                since(i) if i else None,
-            )
-            if (r := act(t, ridden=x.state is LegState.RIDING)) is not None:
-                return r
+        proposal = _check_cancelled(w, legs, i, cl)
+        if proposal is None:
+            usable = cl.kind in _RUNNING_LEG_KINDS or cl.kind is LegKind.CUT_SHORT
+            if usable and before.state in _MAY_HAVE_LEFT and (pc := _platform(ctx, before, cl)):
+                events.append(pc)
+            legs[i] = _observed_ends(ctx.profile, before, nxt, cl, ncl)
+            proposal = _check_cut_short(w, legs, i, before, cl)
+        if proposal is None:
+            found, proposal = _check_transfer(w, legs, i, cl, ncl)
+            events += found
+        if proposal is None:
             continue
-        usable = cl.kind in _RUNNING_LEG_KINDS or cl.kind is LegKind.CUT_SHORT
-        if usable and x.state in _MAY_HAVE_LEFT and (pc := _platform(ctx, x, cl)):
-            events.append(pc)
-        cut = cl.kind is LegKind.CUT_SHORT or x.alight_stop != x.intended_alight
-        before = x
-        if cut:
-            last = cl.last_served
-            end = (
-                last.code
-                if last is not None
-                else x.intended_alight
-                if cl.kind in _RUNNING_LEG_KINDS
-                else x.served_endpoint
-            )
-            # frozen once a recovery leg is boarded, by its departure evidence (7.4)
-            frozen = x.alight_frozen or (nxt is not None and nxt.state in _DEPARTED)
-            x = _move_stop(x, end, x.alight_stop if frozen else end)
-            x = legs[i] = replace(x, alight_frozen=frozen)
-        onward = _onward(p, x, cl, ncl)
-        if onward is not None:
-            x = legs[i] = replace(x, onward_from=onward)
-        if cut and not x.alight_frozen:
-            end = x.served_endpoint
-            cause = (
-                (
-                    EventKind.CUT_SHORT,
-                    Severity.LOUD,
-                    f"your {_name(x)} train runs only to {end}, change there",
-                    x.train,
-                )
-                if cl.kind is LegKind.CUT_SHORT
-                else (
-                    EventKind.RESTORED,
-                    Severity.SILENT,
-                    f"back to normal: your {_name(x)} train reaches {end} again",
-                    x.train,
-                )
-            )
-            if nxt is not None and end == dest:  # extended to the destination again
-                new = _journey(lock, legs[: i + 1], (), LockSource.RESTORE)
-                kind, sev, text, train = cause
-                note = make_event(ctx, kind, sev, f"{text}.", train)
-                if (r := act(Transition(_write(s, new), (note,)))) is not None:
-                    return r
-                continue
-            if (nxt is None and end != dest) or (nxt is not None and nxt.board_station != end):
-                original = (
-                    nxt if nxt is not None and nxt.board_station == x.intended_alight else None
-                )
-                asked_from = before.onward_from if before.alight_stop == end else None
-                t = _relock(
-                    s,
-                    ctx,
-                    pool,
-                    asked,
-                    legs,
-                    i + 1,
-                    end,
-                    cl,
-                    cause,
-                    original,
-                    over(i + 1),
-                    _since(x.onward_from, asked_from),
-                )
-                if (r := act(t)) is not None:
-                    return r
-                continue
-        # every running leg: `_stated` keeps only news, including the fall back to on time
-        late = cl.kind in _RUNNING_LEG_KINDS and x.state is not LegState.DONE
-        if nxt is None or ncl is None or ncl.kind is LegKind.CANCELLED:
-            if late and ncl is None:  # a cancelled next leg is the news, not this delay
-                events.append(_delayed(ctx, x, cl, last=nxt is None))
-            continue  # a cancelled next leg is handled as a cancellation on its own turn
-        tc = check_transfer(cl, ncl, x.alight_stop, p.transfer_min)
-        if tc.state is TransferState.BROKEN:
-            text = f"your change at {x.alight_stop} is broken: {tc.reason}"
-            cause = (EventKind.TRANSFER_BROKEN, Severity.LOUD, text, nxt.train)
-            t = _relock(
-                s,
-                ctx,
-                pool,
-                asked,
-                legs,
-                i + 1,
-                x.alight_stop,
-                cl,
-                cause,
-                None,
-                over(i + 1),
-                since(i + 1),
-            )
-            if (r := act(t, ridden=nxt.state in _DEPARTED)) is not None:
-                return r
-            continue
-        if late:  # after the break check: a broken change is its own loud event
-            events.append(_delayed(ctx, x, cl, last=False))
-        if tc.state is TransferState.AT_RISK and ahead:
-            events.append(_at_risk(ctx, x, nxt, tc.reason))
+        if relock and not proposal.ridden:
+            return _moved(proposal.transition, events)
+        relock = False
+        events += proposal.transition.events
     if rc is not None and obs[k] is not None:
-        x = legs[k]
-        via = ", ".join(rc.transfer_stations) or "a direct train"
-        text = f"NS now routes your {_name(x)} train via {via}"
-        cause = (EventKind.ROUTE_CHANGED, Severity.LOUD, text, x.train)
-        kept = obs[k - 1] if k else None
-        if not _may_be_on(x, now):
-            # 6.3: follow the new route only within the cap and if good, else relock
-            checkable = not k or kept is not None
-            if checkable and check_good(rc, pool, **_good_kw(s, ctx, x.board_station, kept, k)).ok:
-                new = _journey(lock, legs[:k], rc.legs, LockSource.RELOCK)
-                note = make_event(
-                    ctx, EventKind.ROUTE_CHANGED, Severity.LOUD, f"{text}, following it.", x.train
-                )
-                r = act(Transition(_write(s, new), (note,)))
-            else:
-                r = act(_relock(s, ctx, pool, asked, legs, k, x.board_station, kept, cause))
-        else:
-            # a boarded train is never dropped: relock what follows from where NS changes
+        # a boarded train is never dropped: its stop moves to where NS changes, taken or not
+        boarded = _may_be_on(legs[k], now)
+        if boarded:
             end = rc.legs[0].alight.code
-            legs[k] = _move_stop(x, end, end)
-            r = act(_relock(s, ctx, pool, asked, legs, k + 1, end, obs[k], cause, None, rc))
-        if r is not None:
-            return r
+            legs[k] = _move_stop(legs[k], end, end)
+        proposal = _check_route_change(w, legs, k, rc, boarded=boarded)
+        if relock:
+            return _moved(proposal.transition, events)
+        events += proposal.transition.events
     return Transition(_progress(s, legs), tuple(events))
 
 
@@ -1615,21 +1689,18 @@ def _missed(s: OccurrenceState, ctx: Ctx, event: LocationEvent, pool: Pool) -> T
         errand_deadline=None,
     )
     if first:
-        cause = (
-            EventKind.MISSED_FIRST_TRAIN,
-            Severity.LOUD,
-            f"you missed your {_name(x)} train",
-            x.train,
-        )
+        text = f"you missed your {_name(x)} train"
+        cause = Cause(EventKind.MISSED_FIRST_TRAIN, Severity.LOUD, text, x.train)
         kept = None
     else:
         text = f"you missed your change at {x.board_station} to the {_name(x)} train"
-        cause = (EventKind.MISSED_TRANSFER, Severity.LOUD, text, x.train)
+        cause = Cause(EventKind.MISSED_TRANSFER, Severity.LOUD, text, x.train)
         kept = observe(pool, legs[i - 1])[0]
     asked = tuple(a.query for a in pool.answers)
-    return _relock(
-        s, ctx, pool, asked, legs, i, x.board_station, kept, cause, source=LockSource.MISSED
+    cut = Relock(
+        legs=legs, j=i, station=x.board_station, kept=kept, cause=cause, source=LockSource.MISSED
     )
+    return _relock(s, ctx, pool, asked, cut)
 
 
 def on_tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None = None) -> Transition:
