@@ -38,8 +38,16 @@ class PersistedState:
 
 
 class Store(Protocol):
-    def load(self) -> PersistedState | None: ...
-    def save(self, s: PersistedState) -> None: ...
+    def load(self) -> PersistedState | None:
+        """The saved state; None when there is no file yet. Raises StorageError when the state is
+        lost or unusable; a file that cannot be read or is corrupt may first be set aside, and is
+        never overwritten."""
+        ...
+
+    def save(self, s: PersistedState) -> None:
+        """Raises StorageError when the state was not written, the only failure the runtime
+        handles: an OSError must be wrapped."""
+        ...
 
 
 def _read_counter(path: Path) -> int | None:

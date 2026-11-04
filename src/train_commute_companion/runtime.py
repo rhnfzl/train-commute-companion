@@ -1,7 +1,7 @@
 """The runtime around the pure core: polling, the independent watchdog, the shared request
 budget, look-ahead, transactional reload and the restart reconcile (7.1, 7.11, 7.12 rules 5,
-10, 11, 12, 14, 21, 22, 5.2, 7.13). The only module with a clock, I/O, the notifier and the
-webhook sender."""
+10, 11, 12, 14, 21, 22, 5.2, 7.13). The pure modules take time and data as arguments; I/O lives here, in store.py,
+providers/ns.py, cli.py and replay.py."""
 
 import asyncio
 import copy
@@ -1571,8 +1571,7 @@ class Runtime:
                     copies |= self._copy(o)
                 # a fresh clock per message: a slow send must not leave the next one judged early
                 v = held_view if o.id in self._held else view
-                r = await deliver(o, v, self._notifier, self._clock.now())
-                sent = len(self.events_log) > n
+                r, sent = await deliver(o, v, self._notifier, self._clock.now())
                 if r is not None and port is not None and not r.webhook_copied:
                     r = replace(r, webhook_copied=True)
                 if r is None and o.event.kind is EventKind.LEAVE_NOW:
@@ -2437,7 +2436,8 @@ class Runtime:
         return works
 
     async def stations(self) -> frozenset[str] | None:
-        """The NS station list through the shared budget (rule 14); None when refused."""
+        """The NS station list through the shared budget (rule 14); None when the shared budget refuses or the
+        request fails."""
         now = self._clock.now()
         if not self._budget.allow(now, live=False):
             return None

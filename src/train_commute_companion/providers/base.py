@@ -67,11 +67,17 @@ class PlannedWorks:
 
 
 class Provider(Protocol):
-    async def trips(self, q: Query) -> ProviderAnswer: ...
+    async def trips(self, q: Query) -> ProviderAnswer:
+        """Raises ProviderError or a subclass on a failed request or an unreadable answer, a
+        transport error included: the runtime handles nothing else from a provider but its own
+        deadline's TimeoutError."""
+        ...
 
     async def planned_works(self) -> PlannedWorks:
         """Raises ProviderError on a failed request, so 429/5xx feed shared backoff;
         an unreadable answer is coverage `unknown`."""
         ...
 
-    async def stations(self) -> frozenset[str]: ...
+    async def stations(self) -> frozenset[str]:
+        """Raises as `trips` does."""
+        ...

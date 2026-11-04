@@ -10,7 +10,7 @@ Set `OWNTRACKS_SECRET` in `.env` and apply it with `docker compose up -d --force
 
 The phone must reach this endpoint from mobile data during the commute, for example through a VPN to your home network, or through a reverse proxy with TLS. An endpoint that is only reachable on your home network gets the queued positions after the commute, when they are too old to use, so it is for testing only. A plain HTTP endpoint sends the secret in clear: use TLS or a VPN outside your home network.
 
-Expose only `/owntracks`. Forward or proxy that one path, never `/health`, whose body lists your journeys.
+Expose only `/owntracks`. Forward or proxy that one path. `/health` shows details only with `TCC_HEALTH_TOKEN`, but it has no reason to be public.
 
 ## The phone
 

@@ -1685,8 +1685,8 @@ def on_tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None = None) 
     """Time-driven steps: the errand timeout (45 min) clears a provisional lock, keeping a
     departed train retained; the auto lock when due (`answer` is the usual's query answer); a
     window closed with no lock; each journey's end by its last watch or its 150-min limit
-    (rules 6, 7). Arrival acceptance itself runs on each poll. The runtime passes the usual's
-    answer on every tick from `auto_lock_at` on; without it no auto lock is written."""
+    (rules 6, 7). Arrival acceptance itself runs on each poll. Only a poll passes the usual's
+    answer; any other tick has none and writes no auto lock."""
     if s.not_travelling:
         return Transition(s, ())
     t = _tick(s, ctx, answer)
