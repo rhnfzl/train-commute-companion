@@ -11,8 +11,14 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from train_commute_companion.model import Direction, Leg, Provenance, Stop, TimeObs
-from train_commute_companion.view import LegView, RuntimeView
+from train_commute_companion.model import Connection, Direction, Leg, Provenance, Stop, TimeObs
+from train_commute_companion.view import (
+    LegView,
+    OccurrenceView,
+    RuntimeView,
+    TransferView,
+    WorksDay,
+)
 
 from .coordinator import TccCoordinator
 from .data import TccConfigEntry
@@ -37,7 +43,7 @@ def train(leg: LegView) -> str:
     return f"{leg.planned_departure:%H:%M} {leg.board}-{leg.alight} {leg.train_number}"
 
 
-def _occ(view: RuntimeView, pid: str, d: Direction | None) -> Any:
+def _occ(view: RuntimeView, pid: str, d: Direction | None) -> OccurrenceView | None:
     assert d is not None
     return pick(view, pid, d)[0]
 
@@ -74,7 +80,7 @@ def _leg_time(stop: Stop, obs: TimeObs | None, planned: datetime | None) -> date
     return obs.value if obs and obs.provenance is Provenance.REPORTED and obs.value else planned
 
 
-def _next(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> Any:
+def _next(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> Connection | None:
     occ = _occ(view, pid, d)
     return occ.next_good if occ else None
 
@@ -90,7 +96,7 @@ def _advised(view: RuntimeView, pid: str, d: Direction | None, n: int | None) ->
     return a.advised_train.planned_departure if a and a.advised_train and not a.withdrawn else None
 
 
-def _works(view: RuntimeView, pid: str, d: Direction | None) -> Any:
+def _works(view: RuntimeView, pid: str, d: Direction | None) -> tuple[WorksDay, ...]:
     assert d is not None
     return view.works.get(f"{pid}|{d.value}", ())
 
@@ -114,7 +120,7 @@ def _health_attrs(
 def _leg_state(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> str:
     occ = _occ(view, pid, d)
     assert n is not None
-    return occ.legs[n - 1].state if occ and n <= len(occ.legs) else "none"
+    return occ.legs[n - 1].state.value if occ and n <= len(occ.legs) else "none"
 
 
 def _leg_attrs(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> dict[str, Any]:
@@ -123,7 +129,9 @@ def _leg_attrs(view: RuntimeView, pid: str, d: Direction | None, n: int | None) 
     return _prim(occ.legs[n - 1]) if occ and n <= len(occ.legs) else {}
 
 
-def _transfer(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> Any:
+def _transfer(
+    view: RuntimeView, pid: str, d: Direction | None, n: int | None
+) -> TransferView | None:
     occ = _occ(view, pid, d)
     assert n is not None
     return occ.transfers[n - 1] if occ and n <= len(occ.transfers) else None

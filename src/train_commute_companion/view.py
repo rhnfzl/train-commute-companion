@@ -29,6 +29,7 @@ from train_commute_companion.model import (
     Connection,
     Direction,
     EventKind,
+    LegKind,
     Observation,
     OccurrenceKey,
     Profile,
@@ -56,7 +57,7 @@ class LegView:
     arrival_platform: str | None
     departure_delay_min: int | None
     arrival_delay_min: int | None
-    state: str  # the observation when not seen, else the kind (6.2)
+    state: LegKind | Observation  # the observation when not seen, else the kind (6.2)
     progress: LegState
 
 
@@ -138,7 +139,7 @@ def _alight_track(s: Stop) -> str | None:
 
 
 def _leg_view(x: LegProgress, cl: ClassifiedLeg | None, ob: Observation) -> LegView:
-    state = ob.value if ob is not Observation.SEEN or cl is None else cl.kind.value
+    state = ob if ob is not Observation.SEEN or cl is None else cl.kind
     if cl is None:
         return LegView(
             x.train.train_number, x.board_station, x.alight_stop, x.train.planned_departure,

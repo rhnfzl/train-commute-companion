@@ -10,7 +10,7 @@ from typing import Any
 
 from train_commute_companion.calendar import TZ
 from train_commute_companion.health import BoardHealth
-from train_commute_companion.model import Connection, Direction, Provenance, TimeObs
+from train_commute_companion.model import Connection, Direction, LegKind, Provenance, TimeObs
 from train_commute_companion.view import LegView, OccurrenceView, RuntimeView
 from train_commute_companion.webhook import WebhookTestResult
 
@@ -105,13 +105,13 @@ def parse_target(view: RuntimeView, args: Sequence[str]) -> Target | str:
 
 
 def _leg_line(x: LegView, prefix: str = "  ") -> str:
-    state = "on time per NS" if x.state == "ok" else x.state  # never read as proven (rule 20)
+    state = "on time per NS" if x.state is LegKind.OK else x.state  # never read as proven (rule 20)
     line = f"{prefix}{_hm(x.departure or x.planned_departure)} {x.board} to {x.alight}: {state}"
     if x.departure_delay_min:
         line += f", +{x.departure_delay_min} min"
     if x.departure_platform:
         line += f", platform {x.departure_platform}"
-    if x.state in ("ok", "delayed"):
+    if x.state in (LegKind.OK, LegKind.DELAYED):
         if x.departure is None:
             line += ", no reported departure time"
         if x.arrival is None:

@@ -21,6 +21,7 @@ from train_commute_companion.lifecycle import DirectionState, LegState
 from train_commute_companion.model import (
     AdviceRecord,
     Direction,
+    LegKind,
     OccurrenceKey,
     Provenance,
     TrainId,
@@ -45,7 +46,7 @@ def directions(*names: str) -> tuple[DirectionInfo, ...]:
 
 
 def leg_view(
-    dep="08:12", delay=None, platform=None, state="ok", board="AAA", alight="UT",
+    dep="08:12", delay=None, platform=None, state=LegKind.OK, board="AAA", alight="UT",
     reported=True, arr=None, planned_arr=None, progress=LegState.PENDING,
 ):  # fmt: skip
     t = at(dep)
@@ -433,8 +434,8 @@ def test_leg_lines_never_read_as_proven():  # rule 20, checklist M12
             leg_view(arr="08:40"),
             leg_view("08:30", board="UT", alight="RTD", reported=False, arr="09:00"),
             leg_view("08:50", board="UT", alight="RTD", planned_arr="09:10", progress=riding),
-            leg_view("09:00", state="delayed", delay=4, reported=False),
-            leg_view("09:10", state="cancelled", reported=False),
+            leg_view("09:00", state=LegKind.DELAYED, delay=4, reported=False),
+            leg_view("09:10", state=LegKind.CANCELLED, reported=False),
         ),
         retained=((leg_view("08:40", progress=riding),),),
         transfers=(),
