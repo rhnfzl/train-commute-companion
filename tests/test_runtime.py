@@ -36,7 +36,8 @@ from train_commute_companion.providers.base import (
     RateLimited,
     ServerError,
 )
-from train_commute_companion.runtime import RequestBudget, Runtime, _fresh_state, leg_now
+from train_commute_companion.revalidation import leg_now
+from train_commute_companion.runtime import RequestBudget, Runtime, _fresh_state
 from train_commute_companion.serde import dumps, loads
 from train_commute_companion.store import PersistedState, StorageError
 
@@ -486,8 +487,8 @@ async def test_leg_now_names_the_newest_platform(tmp_path):
     newer = ProviderAnswer(
         Query("UT", "RTD", at("08:50")), (make_connection([_on_track(L2, "7")]),), at("07:59")
     )
-    rig.rt._boards["p1|outbound|2026-10-27"] = (older, newer)
-    assert leg_now(rig.rt._boards["p1|outbound|2026-10-27"], x) == ("08:50", " (platform 7)")
+    rig.rt._memory.boards["p1|outbound|2026-10-27"] = (older, newer)
+    assert leg_now(rig.rt._memory.boards["p1|outbound|2026-10-27"], x) == ("08:50", " (platform 7)")
 
 
 async def test_cut_short_leg_at_its_last_served_stop_is_seen(tmp_path):
@@ -1637,7 +1638,7 @@ async def test_choose_at_onward_train_after_done_first_leg_keeps_prefix(tmp_path
 async def test_choose_at_onward_train_fetches_board_when_none_yet(tmp_path):
     rig = await one_transfer(tmp_path)
     await rig.run_until("08:56")
-    rig.rt._boards.clear()  # as after a restart: no poll answer holds the incoming leg yet
+    rig.rt._memory.boards.clear()  # as after a restart: no poll answer holds the incoming leg yet
     n = len(rig.provider.calls)
     assert await rig.rt.choose_at("p1", time(9, 16)) is None
     assert len(rig.provider.calls) > n + 1 and rig.provider.calls[-1].origin == "UT"

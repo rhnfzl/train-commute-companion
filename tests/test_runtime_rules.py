@@ -50,7 +50,7 @@ from train_commute_companion.providers.base import (
     RateLimited,
     ServerError,
 )
-from train_commute_companion.runtime import Runtime, _RuntimeLedger
+from train_commute_companion.runtime import Runtime
 from train_commute_companion.serde import dumps, loads
 from train_commute_companion.store import PersistedState
 
@@ -2181,7 +2181,7 @@ async def test_occurrence_data_unclear_holds_only_while_its_values_are_the_lates
 
     await poll("07:52", [USUAL])
     (first,) = await poll("07:54", split)
-    view = _RuntimeLedger(rig.rt)
+    view = rig.rt._ledger
     assert view.fact_holds(first)
     (second,) = await poll("07:56", moved)
     assert second.id != first.id and view.fact_holds(second)

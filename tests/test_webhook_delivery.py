@@ -397,7 +397,7 @@ async def test_give_up_holds_through_observation_waits(tmp_path, kind, wait, cap
     if wait == "observation":
         rig.clock.t = t0 + GIVE_UP - timedelta(minutes=1)
         await rig.restart()
-        assert event_id(o.id) in rig.rt._copies and rig.rt._boards == {}  # waits to observe
+        assert event_id(o.id) in rig.rt._copies and rig.rt._memory.boards == {}  # waits to observe
         rig.clock.t = t0 + GIVE_UP + timedelta(seconds=30)
         await rig.rt.watchdog_once()
     else:

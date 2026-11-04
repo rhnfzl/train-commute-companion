@@ -26,7 +26,7 @@ from test_lifecycle_follow import (
 
 from train_commute_companion.lifecycle import legacy_facts
 from train_commute_companion.model import AlertEvent, EventKind, Leg, Severity, train_ident
-from train_commute_companion.runtime import _states_current
+from train_commute_companion.revalidation import _states_current
 from train_commute_companion.serde import dumps, loads
 
 DAY = "2026-10-27"
