@@ -774,7 +774,11 @@ class Runtime:
         provider: Provider,
         notifier: Notifier,
         clock: Clock,
-        known_stations: frozenset[str] | None,
+        # True: with no station list, codes are never accepted unchecked (5.2, 5.3): the stored
+        # configuration runs and an edit waits. False: replays and tests, which have no list
+        require_stations: bool,
+        known_stations: frozenset[str] | None = None,
+        on_stations: Callable[[frozenset[str]], object] | None = None,
         lookahead_at: time = LOOKAHEAD_AT,
         webhooks: WebhookPort | None = None,
     ) -> None:
@@ -797,7 +801,7 @@ class Runtime:
         self.events_log: list[AlertEvent] = []
         self._notifier = _LoggingNotifier(notifier, self.events_log)
         self._clock = clock
-        self.known_stations = known_stations  # None: codes unchecked (replays, tests)
+        self.known_stations = known_stations
         self._st = PersistedState(None, {}, {}, {}, {}, (), False)
         self._budget = RequestBudget()
         self._store_ok = True
@@ -838,10 +842,9 @@ class Runtime:
         self._since: datetime | None = None
         # per occurrence: the latest healthy answers, what rule 5(b) regenerates messages from
         self._boards: dict[str, tuple[ProviderAnswer, ...]] = {}
-        # 5.2, 5.3: with no station list at all, the stored configuration runs and an edit
-        # waits until the list can be fetched again (retried, under the shared budget)
-        self.require_stations = False
-        self.on_stations: Callable[[frozenset[str]], object] | None = None
+        # an edit waiting for the station list retries it under the shared budget
+        self._require_stations = require_stations
+        self._on_stations = on_stations
         self._unchecked = False
         self._stations_tried: datetime | None = None
         # profile id -> location source epoch, bumped on every accepted location change (8):
@@ -2126,10 +2129,10 @@ class Runtime:
             self._refuse(f"cannot read {self._path.name} ({e})", now)
         else:
             old, today = self._st.config, now.astimezone(TZ).date()
-            if self.require_stations and self.known_stations is None:
+            if self._require_stations and self.known_stations is None:
                 await self._fetch_stations()
             cfg, errors = load_config(text, self.known_stations, old, today)
-            unchecked = self.require_stations and self.known_stations is None
+            unchecked = self._require_stations and self.known_stations is None
             if unchecked and cfg is not None and cfg is not old:
                 # 5.3: an edit (or a first configuration, even one with a refused profile) whose
                 # codes cannot be checked waits; the last valid configuration keeps running (5.2)
@@ -2168,8 +2171,8 @@ class Runtime:
         got = await self.stations()
         if got:  # an empty list checks nothing
             self.known_stations = got
-            if self.on_stations is not None:
-                self.on_stations(got)
+            if self._on_stations is not None:
+                self._on_stations(got)
 
     def _apply_config(self, new: Config, now: datetime) -> None:
         old, today = self._st.config, now.astimezone(TZ).date()
@@ -2227,7 +2230,7 @@ class Runtime:
         if mtime != self._mtime or (self._unchecked and self._stations_due()):  # tried again
             self._mtime = mtime
             await self.reload()
-        elif self.require_stations and self.known_stations is None and self._stations_due():
+        elif self._require_stations and self.known_stations is None and self._stations_due():
             # nothing waits, but station zones need the list (8): a failed fetch is retried (7.11)
             await self._fetch_stations()
             self._apply({})

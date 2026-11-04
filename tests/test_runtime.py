@@ -187,14 +187,15 @@ class Rig:
     def write(self, name: str = "office_a", text: str | None = None) -> None:
         self.path.write_text(text if text is not None else PROFILE.replace("NAME", name))
 
-    def new(self) -> Runtime:
+    def new(self, *, require_stations: bool = False, on_stations=None) -> Runtime:
         return Runtime(
             profile_path=self.path,
             store=self.store,
             provider=self.provider,
             notifier=self.notifier,
             clock=self.clock,
-            known_stations=None,
+            require_stations=require_stations,
+            on_stations=on_stations,
         )
 
     async def restart(self) -> Runtime:
@@ -1242,8 +1243,7 @@ async def test_refusal_names_the_station_list_wait(tmp_path):
     from train_commute_companion.providers.base import ProviderError
 
     rig = await started(tmp_path)
-    rt = rig.new()
-    rt.require_stations = True
+    rt = rig.new(require_stations=True)
 
     async def down() -> frozenset[str]:
         raise ProviderError("station endpoint down")
@@ -1259,11 +1259,9 @@ async def test_station_list_down_at_restart_is_retried_while_the_file_is_unchang
     from train_commute_companion.providers.base import ProviderError
 
     rig = await started(tmp_path)  # a stored config: it runs, so nothing is waiting (5.2)
-    rt = rig.new()
-    rt.require_stations = True
     calls: list[bool] = []
     got: list[frozenset[str]] = []
-    rt.on_stations = got.append
+    rt = rig.new(require_stations=True, on_stations=got.append)
 
     async def stations() -> frozenset[str]:
         calls.append(True)
@@ -1288,8 +1286,7 @@ async def test_first_start_with_one_bad_profile_and_no_station_list_applies_noth
     rig = Rig(tmp_path)
     head, tail = PROFILE.replace("NAME", "office_a").rsplit("buffer_min: 5}", 1)
     rig.write(text=head + "buffer_min: -5}" + tail)  # p2 is invalid, p1 is valid
-    rt = rig.rt
-    rt.require_stations = True
+    rt = rig.rt = rig.new(require_stations=True)
     up = False
 
     async def stations() -> frozenset[str]:
@@ -1380,7 +1377,7 @@ async def test_key_rejected_flag_follows_auth_outage(tmp_path):
 
 async def test_station_list_auth_error_sets_key_rejected(tmp_path):
     rig = Rig(tmp_path, "07:20")
-    rig.rt.require_stations = True
+    rig.rt = rig.new(require_stations=True)
 
     async def rejected() -> frozenset[str]:
         raise AuthError()

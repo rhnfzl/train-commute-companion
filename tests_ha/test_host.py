@@ -48,7 +48,7 @@ def builder(tmp_path: Path, *, crash: bool = False, closed: list[bool] | None = 
             provider=provider,
             notifier=PrintNotifier(),
             clock=clock,
-            known_stations=None,
+            require_stations=False,
         )
         if crash:
 

@@ -113,19 +113,18 @@ class _StdoutNotifier:
 async def _run(args: argparse.Namespace, key: str) -> int:
     async with httpx.AsyncClient() as client:
         provider = NsProvider(key, client, lambda: datetime.now(TZ))
+        cache = Path(args.store).with_suffix(".stations.json")
         rt = Runtime(
             profile_path=Path(args.path),
             store=JsonFileStore(Path(args.store)),
             provider=provider,
             notifier=_StdoutNotifier(),
             clock=SystemClock(),
-            known_stations=None,
+            require_stations=True,  # never accept codes unchecked (5.3)
+            on_stations=lambda codes: _station_list(cache, codes),  # saves the fresh list
         )
-        # through the runtime's request budget (rule 14); never accept codes unchecked (5.3)
-        cache = Path(args.store).with_suffix(".stations.json")
+        # through the runtime's request budget (rule 14), so only once the runtime exists
         known = _station_list(cache, await rt.stations())
-        rt.require_stations = True
-        rt.on_stations = lambda codes: _station_list(cache, codes)  # saves the fresh list
         if known is None:  # 5.2: the saved configuration still runs; edits wait for the list
             print(
                 f"warning: the NS station list is unavailable and {cache} holds no saved copy; "

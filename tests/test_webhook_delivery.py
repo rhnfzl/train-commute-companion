@@ -174,14 +174,14 @@ class WRig(Rig):
         self.store = RecStore()
         self.rt = self.new()
 
-    def new(self) -> Runtime:
+    def new(self, **settings: Any) -> Runtime:
         return (SyncRuntime if self.sync else Runtime)(
             profile_path=self.path,
             store=self.store,
             provider=self.provider,
             notifier=self.notifier,
             clock=self.clock,
-            known_stations=None,
+            require_stations=settings.get("require_stations", False),
             webhooks=self.poster,
         )
 

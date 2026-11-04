@@ -1177,10 +1177,8 @@ async def test_no_station_list_runs_the_saved_configuration_and_waits_on_edits(t
     from train_commute_companion.providers.base import ProviderError
 
     rig = await started(tmp_path)  # a validated configuration in the store
-    rt = rig.new()
-    rt.require_stations = True
     saved: list[frozenset[str]] = []
-    rt.on_stations = saved.append
+    rt = rig.new(require_stations=True, on_stations=saved.append)
 
     async def down() -> frozenset[str]:
         raise ProviderError("station endpoint down")
@@ -1222,7 +1220,7 @@ def test_run_starts_without_a_station_list(tmp_path, monkeypatch):
     monkeypatch.setenv("NS_API_KEY", "k")
     store = tmp_path / "state.json"
     assert cli.main(["run", str(tmp_path / "profiles.yaml"), "--store", str(store)]) == 0
-    assert len(ran) == 1 and ran[0].require_stations and ran[0].known_stations is None
+    assert len(ran) == 1 and ran[0]._require_stations and ran[0].known_stations is None
 
 
 async def test_held_back_to_normal_dropped_once_the_delay_returns(tmp_path):
@@ -1373,7 +1371,7 @@ async def test_lookahead_at_moves_the_daily_run(tmp_path):
         provider=rig.provider,
         notifier=rig.notifier,
         clock=rig.clock,
-        known_stations=None,
+        require_stations=False,
         lookahead_at=time(7, 12),
     )
     first_works: list[datetime] = []

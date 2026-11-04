@@ -235,7 +235,7 @@ async def replay_lines(path: Path) -> list[str]:
         provider=r.provider,
         notifier=PrintNotifier(),
         clock=clock,
-        known_stations=None,
+        require_stations=False,
     )
     await rt.start()
     pending = list(r.timeline)

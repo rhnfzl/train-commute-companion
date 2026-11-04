@@ -153,12 +153,10 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         provider=provider,
         notifier=notifier,
         clock=clock,
-        known_stations=None,
+        require_stations=True,  # the list is fetched inside run_forever's start, watchdog running
         lookahead_at=s.lookahead_at,
         webhooks=webhooks,
     )
-    # the station list is fetched inside run_forever's start, with the watchdog running
-    rt.require_stations = True
     # NsProvider fills `positions` with the station list; a test provider may have none
     follower = Follower(rt, lambda: getattr(provider, "positions", {}))
     bot = Bot(api, rt, s.chat_id, s.state_dir / "telegram.json", follower, webhook_test)

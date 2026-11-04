@@ -36,7 +36,7 @@ class World:
             provider=self.provider,
             notifier=self.notifier,
             clock=self.clock,
-            known_stations=None,
+            require_stations=False,
         )
 
     def write(self, text: str) -> None:

@@ -97,10 +97,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
             provider=provider,
             notifier=notifier,
             clock=clock,
-            known_stations=None,
+            require_stations=True,
             webhooks=webhooks,
         )
-        rt.require_stations = True
         return host_mod.Parts(rt, clock, provider, close)
 
     host = host_mod.RuntimeHost(build, autorun=host_mod.AUTORUN)
