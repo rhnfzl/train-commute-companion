@@ -3,7 +3,6 @@ consequences live in the core; here only which zone a fix is in and what changed
 
 import asyncio
 import logging
-import math
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -23,17 +22,6 @@ FUTURE_LIMIT = timedelta(minutes=2)  # a phone clock ahead: a future fix would b
 PLACE_ROLES = ("home", "work")
 
 Source = Literal["telegram", "owntracks"]
-
-
-def number(v: object) -> float | None:
-    """A finite JSON number (not a bool), else None."""
-    if not isinstance(v, int | float) or isinstance(v, bool):
-        return None
-    try:
-        f = float(v)
-    except OverflowError:  # an integer too large for a float
-        return None
-    return f if math.isfinite(f) else None
 
 
 def stamp(v: object) -> datetime | None:

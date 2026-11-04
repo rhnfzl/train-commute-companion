@@ -29,6 +29,17 @@ class LocationEvent:
     received_at: datetime
 
 
+def number(v: object) -> float | None:
+    """A finite JSON number (not a bool), else None."""
+    if not isinstance(v, int | float) or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except OverflowError:  # an integer too large for a float
+        return None
+    return f if math.isfinite(f) else None
+
+
 def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp, dl = p2 - p1, math.radians(lon2 - lon1)

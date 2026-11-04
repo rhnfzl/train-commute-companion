@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from train_commute_companion.lifecycle import Leaving, NotTravelling
+from train_commute_companion.location import number
 from train_commute_companion.model import Direction
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.webhook import WebhookTestResult
@@ -26,7 +27,7 @@ from .commands import (
     render_webhook_tests,
     status_buttons,
 )
-from .follow import Fix, Follower, number, stamp
+from .follow import Fix, Follower, stamp
 from .telegram import TelegramApi, TelegramError, split_text
 
 log = logging.getLogger(__name__)

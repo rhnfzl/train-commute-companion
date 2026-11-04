@@ -3,7 +3,6 @@ only adds alerts; the zone logic and every consequence of an event live in the c
 
 import asyncio
 import logging
-import math
 from collections.abc import Coroutine, Iterable, Mapping
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -12,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.helpers.event import async_track_state_change_event
 
-from train_commute_companion.location import LocationEvent, Zone, resolve_zone
+from train_commute_companion.location import LocationEvent, Zone, number, resolve_zone
 from train_commute_companion.model import Profile
 from train_commute_companion.runtime import Runtime
 
@@ -27,26 +26,16 @@ REPORT_EVERY = timedelta(minutes=2)  # HA-46: each event costs a live request pe
 PLACE_ROLES = ("home", "work")
 
 
-def _num(v: object) -> float | None:
-    if not isinstance(v, int | float) or isinstance(v, bool):
-        return None
-    try:
-        f = float(v)
-    except OverflowError:  # an integer too large for a float
-        return None
-    return f if math.isfinite(f) else None
-
-
 def _fix(state: State) -> tuple[float, float] | None:
     """The coordinates of a state; None for unavailable, unknown or a tracker with no GPS."""
     if state.state in ("unavailable", "unknown"):
         return None
-    lat, lon = _num(state.attributes.get("latitude")), _num(state.attributes.get("longitude"))
+    lat, lon = number(state.attributes.get("latitude")), number(state.attributes.get("longitude"))
     return None if lat is None or lon is None else (lat, lon)
 
 
 def _acc(state: State) -> float | None:
-    return _num(state.attributes.get("gps_accuracy"))
+    return number(state.attributes.get("gps_accuracy"))
 
 
 def zones_for(
@@ -74,7 +63,7 @@ def zones_for(
         if state is None:
             continue
         lat, lon = _fix(state) or (None, None)
-        radius = _num(state.attributes.get("radius"))
+        radius = number(state.attributes.get("radius"))
         if lat is not None and lon is not None and radius is not None:
             zones.append(Zone(loc.zones.get(role, role), lat, lon, radius))
     return zones

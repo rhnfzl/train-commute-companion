@@ -18,7 +18,7 @@ from harness import (
 from test_setup import tick
 
 from custom_components.train_commute_companion.const import REFRESH_S
-from custom_components.train_commute_companion.location import _num, zones_for
+from custom_components.train_commute_companion.location import zones_for
 from train_commute_companion.providers.base import ProviderError
 from train_commute_companion.runtime import Runtime
 
@@ -407,10 +407,6 @@ async def test_zone_radius_edit_reseeds(hass):
     set_person(hass, 52.1019, 5.1)  # inside the new circle, no move across it
     calls = await spied(h)
     assert not [c for c in calls if c[1] in ("enter", "leave")], calls
-
-
-def test_a_huge_integer_is_no_coordinate():
-    assert _num(10**400) is None
 
 
 async def test_a_runtime_error_from_the_core_is_logged_not_taken_for_a_stopped_runtime(

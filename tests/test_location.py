@@ -32,7 +32,7 @@ from train_commute_companion.lifecycle import (
     on_poll,
     on_tick,
 )
-from train_commute_companion.location import LocationEvent, Zone, resolve_zone
+from train_commute_companion.location import LocationEvent, Zone, number, resolve_zone
 from train_commute_companion.model import EventKind, Severity
 
 USUAL = conn(L1, L2)
@@ -48,6 +48,14 @@ def event(zone: str, kind: str, when: str) -> LocationEvent:
 def locate(s: OccurrenceState, now: str, e: LocationEvent, *conns: object) -> Transition:
     a = ans("AAA", *conns, when=now) if conns else None  # type: ignore[arg-type]
     return on_location(s, ctx(at(now)), e, a)
+
+
+def test_number_is_a_finite_json_number():
+    assert number(52) == 52.0
+    assert number(5.5) == 5.5
+    assert number(10**400) is None  # too large for a float
+    for bad in (True, "52", None, float("nan"), float("inf")):
+        assert number(bad) is None
 
 
 def test_resolve_zone_inside_and_outside():

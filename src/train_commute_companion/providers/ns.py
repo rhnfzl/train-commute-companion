@@ -1,7 +1,6 @@
 """NS Reisinformatie mapping. The only place that knows NS field names."""
 
 import asyncio
-import math
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -10,6 +9,7 @@ from typing import Any
 import httpx
 
 from train_commute_companion.calendar import TZ
+from train_commute_companion.location import number
 from train_commute_companion.model import (
     Connection,
     Leg,
@@ -306,15 +306,6 @@ def map_stations(payload: object) -> frozenset[str]:
     return frozenset(codes)
 
 
-def _num(v: object) -> bool:
-    if not isinstance(v, int | float) or isinstance(v, bool):
-        return False
-    try:
-        return math.isfinite(v)
-    except OverflowError:  # an integer too large for a float
-        return False
-
-
 def map_station_positions(payload: object) -> dict[str, tuple[float, float]]:
     """Code to (lat, lng) for stations with numeric coordinates; never raises."""
     return {
@@ -322,8 +313,8 @@ def map_station_positions(payload: object) -> dict[str, tuple[float, float]]:
         for s in _items(payload) or ()
         if isinstance(s, dict)
         and (s.get("code") or s.get("stationCode"))
-        and _num(s.get("lat"))
-        and _num(s.get("lng"))
+        and number(s.get("lat")) is not None
+        and number(s.get("lng")) is not None
     }
 
 
