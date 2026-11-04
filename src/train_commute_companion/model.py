@@ -213,6 +213,37 @@ class Signature:
 
 
 @dataclass(frozen=True, slots=True)
+class LiveDelay:
+    """A delay an alert would state, before `lifecycle._stated` judges it as news (7.5)."""
+
+    tag: str  # the delay's own memory slot: "d" departure, "a" arrival, "" the only one
+    minutes: int | None  # None: NS reported none, which keeps the last stated one
+
+
+@dataclass(frozen=True, slots=True)
+class ToldDelay:
+    """A delay an alert states, with the memory entry that says it is still the latest."""
+
+    slot: str
+    said: str
+
+
+@dataclass(frozen=True, slots=True)
+class AlertFacts:
+    """What an alert states, as data, so nothing reads its key or text back. The key stays a
+    plain string for the news ledger, in the form state files already hold."""
+
+    delays: tuple[LiveDelay, ...] = ()
+    told: tuple[ToldDelay, ...] = ()
+    track: str | None = None  # the platform a platform message names
+    back_on_plan: bool = False  # that platform is the planned one again
+    subject: str = ""  # "your <leg>", which a delay's recovery message opens with
+    on: str = ""  # a retained warning's "if you are on the ..." prefix; "" for any other alert
+    named: tuple[str, ...] = ()  # the replacement a warning names, by `train_ident`
+    next_clause: str = ""  # the text that names it, right after the warning itself
+
+
+@dataclass(frozen=True, slots=True)
 class AlertEvent:
     profile_id: str
     profile_name: str
@@ -225,6 +256,12 @@ class AlertEvent:
     text: str
     key: str
     created_at: datetime
+    facts: AlertFacts | None = None  # None: stored before facts were kept, or not a journey alert
+
+    @property
+    def body(self) -> str:
+        """The text after the profile name that opens it."""
+        return self.text.removeprefix(f"{display_name(self.profile_name)}: ")
 
 
 @dataclass(frozen=True, slots=True)

@@ -2,7 +2,6 @@
 and termination (7.2, 7.4, 7.7, 7.8, 7.12 rules 1, 2, 3, 6, 7, 8, 10, 11, 21, 7.13). Pure: `now`
 always comes from the caller."""
 
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -32,6 +31,7 @@ from train_commute_companion.model import (
     FOLLOW_LIMIT,
     AdviceRecord,
     AlertEvent,
+    AlertFacts,
     ClassifiedLeg,
     Connection,
     Ctx,
@@ -42,6 +42,7 @@ from train_commute_companion.model import (
     Leg,
     LegKind,
     LegState,
+    LiveDelay,
     NotTravelling,
     Observation,
     OccurrenceKey,
@@ -49,6 +50,7 @@ from train_commute_companion.model import (
     Provenance,
     Severity,
     Signature,
+    ToldDelay,
     TrainId,
     TransferState,
     display_name,
@@ -311,14 +313,9 @@ def announced(last: int | None, now: int | None) -> int | None:
     return now if abs(now - said) >= DELAY_STEP_MIN else last
 
 
-# a live delay in a key, before `_stated` announces it: `|~N`, or tagged `|d~N` / `|a~N`
-# (departure, arrival); `?` is a delay NS did not report, which keeps the last stated one
-_STATED = re.compile(r"\|(\w?)~(-?\d+|\?)")
-# a platform in a key: `track N`, with `|planned` when N is the planned platform again
-_TRACK = re.compile(r"track [^|:]+(\|planned)?")
-
-
-def _recovery(e: AlertEvent, before: Sequence[int], said: Sequence[int]) -> AlertEvent | None:
+def _recovery(
+    e: AlertEvent, facts: AlertFacts, before: Sequence[int], said: Sequence[int]
+) -> AlertEvent | None:
     """A stated delay falling to on time is "back to normal" (1 min or less), one falling
     under the 3-min step is "nearly on time" (7.5); an on-time train never stated late says
     nothing. A loud delay (past the arrival limit) stays a loud delay: the limit still binds."""
@@ -332,9 +329,9 @@ def _recovery(e: AlertEvent, before: Sequence[int], said: Sequence[int]) -> Aler
         kind, tail = EventKind.NEARLY_ON_TIME, "is nearly on time."
     else:
         return e
-    head = e.text.partition(" train ")[0]
+    text = f"{display_name(e.profile_name)}: {facts.on}{facts.subject} train {tail}"
     key = kind.value + e.key[len(e.kind.value) :]
-    return replace(e, kind=kind, severity=Severity.SILENT, text=f"{head} train {tail}", key=key)
+    return replace(e, kind=kind, severity=Severity.SILENT, text=text, key=key)
 
 
 def _stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
@@ -344,35 +341,41 @@ def _stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
     keys = dict(s.alert_keys)
     out = []
     for e in events:
-        if e.kind is EventKind.PLATFORM_CHANGE:
+        f = e.facts or AlertFacts()
+        if f.track is not None:
             # per boarding segment: a train back on its planned platform is news only once a
             # change was announced for it (1 -> 5 -> 1 says so, an unchanged 1 says nothing)
-            slot = "moved#" + _TRACK.sub("track", e.key)
-            if (m := _TRACK.search(e.key)) is not None and m[1]:
-                if slot not in keys:
-                    continue
-            else:
+            slot = "moved#" + e.key.replace(_track_facts(f.track, f.back_on_plan), "track", 1)
+            if not f.back_on_plan:
                 keys[slot] = "1"
+            elif slot not in keys:
+                continue
             out.append(e)
             continue
-        ms = list(_STATED.finditer(e.key))
-        if not ms:
+        if not f.delays:
             out.append(e)
             continue
-        base = _STATED.sub("", e.key)
-        slots = [base + (f"#{m[1]}" if m[1] else "") for m in ms]
+        slots = [e.key + (f"#{d.tag}" if d.tag else "") for d in f.delays]
         was = [None if keys.get(x) is None else int(keys[x]) for x in slots]
-        live = [None if m[2] == "?" else int(m[2]) for m in ms]
+        live = [d.minutes for d in f.delays]
         told = [announced(w, n) for w, n in zip(was, live, strict=True)]
         if told != was:  # news: the message states every live value, so each is remembered
             told = [t if n is None else n for t, n in zip(told, live, strict=True)]
         said = [t or 0 for t in told]
         before = [w or 0 for w in was]
         keys.update({x: str(t) for x, t in zip(slots, said, strict=True)})
-        e = replace(e, key=f"{base}|stated+{','.join(map(str, said))}")
-        ev = _recovery(e, before, said) if e.kind is EventKind.DELAYED else e
-        if ev is not None:
-            out.append(ev)
+        e = replace(
+            e,
+            key=f"{e.key}|stated+{','.join(map(str, said))}",
+            facts=replace(
+                f,
+                delays=(),
+                told=tuple(ToldDelay(x, str(t)) for x, t in zip(slots, said, strict=True)),
+            ),
+        )
+        news = _recovery(e, f, before, said) if e.kind is EventKind.DELAYED else e
+        if news is not None:
+            out.append(news)
     return Transition(replace(s, alert_keys=keys) if keys != s.alert_keys else s, tuple(out))
 
 
@@ -383,10 +386,12 @@ def make_event(
     text: str,
     train: TrainId | None = None,
     facts: str | None = None,
+    stated: AlertFacts | None = None,
 ) -> AlertEvent:
     """The key carries the facts the message states (7.5): `facts` when given, else the text,
     so a changed endpoint, replacement or revised arrival is news while a repeat is not.
-    Pass `facts` when the text holds a live time that drifts without being news."""
+    Pass `facts` when the text holds a live time that drifts without being news. `stated` holds
+    what later steps read of this alert; its live delays join the key in `_stated`."""
     key = ctx.schedule.key
     name = display_name(ctx.profile.name)
     ident = "" if train is None else f":{train_ident(train)}"
@@ -402,6 +407,7 @@ def make_event(
         f"{name}: {text}",
         f"{kind.value}:{key.service_date.isoformat()}{ident}:{text if facts is None else facts}",
         ctx.now,
+        stated or AlertFacts(),
     )
 
 
@@ -963,14 +969,18 @@ def _relock(
     # the replacement by identity, not by its live time: a drifting estimate is not news (7.5)
     # and its stated time by its delay, which `_stated` turns into 3-min news steps
     late = (_departure(c) - to_utc(c.legs[0].train.planned_departure)) // timedelta(minutes=1)
-    facts = f"{text}|" + ",".join(train_ident(x.train) for x in c.legs) + f"|~{late}"
-    text += f". Next good connection: {hhmm(_departure(c))}" + (
+    named = tuple(train_ident(x.train) for x in c.legs)
+    facts = f"{text}|" + ",".join(named)
+    clause = f" Next good connection: {hhmm(_departure(c))}" + (
         f", new route via {via}." if how == "new_route" else "."
     )
     written = _write(s, _journey(lock, legs[:j], c.legs, cut.source))
     if history is not None and history.train not in {y.train for y in s.cancellation_history}:
         written = replace(written, cancellation_history=(*s.cancellation_history, history))
-    return Transition(written, (make_event(ctx, kind, sev, text, train, facts),))
+    stated = AlertFacts(delays=(LiveDelay("", late),), named=named, next_clause=clause)
+    return Transition(
+        written, (make_event(ctx, kind, sev, f"{text}.{clause}", train, facts, stated),)
+    )
 
 
 def _onward(
@@ -1030,12 +1040,14 @@ def _delayed(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg, *, last: bool) -> Aler
     if arr is not None:
         text += f", arriving {hhmm(arr)}"
     sev = Severity.LOUD if past else Severity.SILENT
+    stated = AlertFacts(
+        delays=(LiveDelay("d", dep), LiveDelay("a", arr_late)), subject=f"your {_name(x)}"
+    )
+    return make_event(ctx, EventKind.DELAYED, sev, f"{text}.", x.train, _name(x), stated)
 
-    def n(v: int | None) -> str:
-        return "?" if v is None else str(v)
 
-    facts = f"{_name(x)}|d~{n(dep)}|a~{n(arr_late)}"
-    return make_event(ctx, EventKind.DELAYED, sev, f"{text}.", x.train, facts)
+def _track_facts(track: str, planned: bool) -> str:
+    return f"track {track}" + ("|planned" if planned else "")
 
 
 def _platform(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
@@ -1047,13 +1059,14 @@ def _platform(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
     track = b.actual_track or b.planned_track  # no live track means the planned one
     soon = _departs(x, cl) - to_utc(ctx.now) <= _PLATFORM_LOUD
     sev = Severity.LOUD if soon else Severity.SILENT
-    if track == b.planned_track:  # `_stated` keeps it only after an announced change
+    planned = track == b.planned_track
+    if planned:  # `_stated` keeps it only after an announced change
         text = f"your {_name(x)} train leaves from platform {b.planned_track} again, as planned."
-        facts = f"track {track}|planned"
     else:
         text = f"your {_name(x)} train now leaves from platform {track} (was {b.planned_track})."
-        facts = f"track {track}"
-    return make_event(ctx, EventKind.PLATFORM_CHANGE, sev, text, x.train, facts)
+    facts = _track_facts(track, planned)
+    stated = AlertFacts(track=track, back_on_plan=planned)
+    return make_event(ctx, EventKind.PLATFORM_CHANGE, sev, text, x.train, facts, stated)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1451,9 +1464,10 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
         assert t.state.lock is not None
         retained.append(t.state.lock)
         for e in t.events:
-            head, _, body = e.text.partition(": ")
+            text = f"{display_name(e.profile_name)}: {on}{e.body}"
             key = f"{e.key}:retained:{train_ident(first)}"
-            events.append(replace(e, text=f"{head}: {on}{body}", key=key))
+            facts = replace(e.facts or AlertFacts(), on=on)
+            events.append(replace(e, text=text, key=key, facts=facts))
     s = replace(s, retained=tuple(retained))
     t = (_restore(s, ctx, pool) or _follow(s, ctx, pool, asked)) if live else Transition(s, ())
     return _stated(_bumped(start, t.state), (*events, *t.events))

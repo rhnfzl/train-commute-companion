@@ -439,7 +439,7 @@ class _RuntimeLedger:
         legs = [x for j in (*((s.lock,) if s.lock else ()), *s.retained) for x in j.legs]
         unfinished = any(x.train == e.train and x.state not in _FINISHED_LEG_STATES for x in legs)
         if e.kind in _DELAY_NEWS:  # the delay memory still says what the message stated
-            if not _states_current(o.fact_key, e.kind, s.alert_keys):
+            if not _states_current(e, s.alert_keys):
                 return False
             if e.kind is EventKind.DELAYED:
                 return _SENT_PREFIX + o.fact_key in s.alert_keys
@@ -488,7 +488,8 @@ class _RuntimeLedger:
             )
         if e.kind is EventKind.DATA_UNCLEAR:  # while its values are the latest told for its train
             slot = None if e.train is None else f"unclear#{train_key(e.train)}"
-            return slot is not None and e.key.rpartition(":")[2] == s.alert_keys.get(slot)
+            told = None if slot is None else s.alert_keys.get(slot)
+            return told is not None and e.key.endswith(f":{told}")
         # the answer to a command the user gave is true as said; a new kind must say what holds it
         return e.kind is EventKind.CHOOSE_REFUSED
 
@@ -551,17 +552,17 @@ class _RuntimeLedger:
             for j in (*((s.lock,) if s.lock else ()), *s.retained):
                 i = next((i for i, x in enumerate(j.legs) if x.train == e.train), None)
                 if i is not None:
-                    body = left_note(s, ctx, pool, j, i).text.partition(": ")[2]
+                    body = left_note(s, ctx, pool, j, i).body
                     break
         elif e.kind is EventKind.ALL_GOOD:  # with the platform the latest answers give (7.9)
             g = all_good(
                 replace(s, all_good_evaluated=False), Board(answers, (), s.generation), ctx
             )
-            body = None if g is None else _twin(g.text)[0].partition(": ")[2]
+            body = None if g is None else g.body
         if body is None:
             return e
-        head, tail = _twin(e.text)
-        return replace(e, text=f"{head.partition(': ')[0]}: {body}{tail}")
+        tail = _twin(e.text, s.key.service_date)[1]
+        return replace(e, text=f"{display_name(e.profile_name)}: {body}{tail}")
 
     def _relocked(self, o: Obligation, e: AlertEvent) -> AlertEvent:
         """Rule 5(a): a journey warning names the current lock, not the replacement frozen at
@@ -571,17 +572,18 @@ class _RuntimeLedger:
         of it has left, else the train now followed and every onward leg still ahead."""
         rt = self._rt
         s = None if o.occurrence is None else self._state.occurrences.get(_okey(o.occurrence))
+        f = e.facts
         if e.kind not in _NAMES_LOCK or e.train is None or s is None or s.lock is None:
             return e
-        live = [x for x in s.lock.legs if x.state not in (LegState.CANCELLED, LegState.RELOCKED)]
-        if not live or e.train in {x.train for x in live} or ":retained:" in e.key:
-            return e  # a retained warning already names its own next connection (rule 7)
-        named = _named(e.key)
-        if named and [train_ident(x.train) for x in live][-len(named) :] == named:
+        if f is None:  # stored before facts were kept: goes out as written
             return e
-        head, tail = _twin(e.text)
-        if (i := head.find(" Next good connection:")) >= 0:
-            head = head[:i]
+        live = [x for x in s.lock.legs if x.state not in (LegState.CANCELLED, LegState.RELOCKED)]
+        if not live or e.train in {x.train for x in live} or f.on:
+            return e  # a retained warning already names its own next connection (rule 7)
+        if f.named and tuple(train_ident(x.train) for x in live)[-len(f.named) :] == f.named:
+            return e
+        head, tail = _twin(e.text, s.key.service_date)
+        head = head.removesuffix(f.next_clause)
         k = _okey(s.key)
         ahead = [x for x in live if x.state in (LegState.PENDING, LegState.BOARDING)]
         left = [x for x in live if x not in ahead]
@@ -709,27 +711,19 @@ def _advice_told(st: PersistedState, told: Sequence[tuple[Obligation, bool]]) ->
     return replace(st, occurrences=occs)
 
 
-def _named(key: str) -> list[str]:
-    """The replacement a journey warning names, by identity, from its key (`_relock`)."""
-    part = next((x for x in key.split("|")[1:] if "@" in x and not x.startswith("stated")), "")
-    return [x for x in part.split(":retained:")[0].split(",") if x]
+def _twin_note(day: date) -> str:
+    return f" (service date {day.isoformat()})"
 
 
-def _twin(text: str) -> tuple[str, str]:
-    """The text and its 7.13 twin suffix, which stays last."""
-    i = text.find(" (service date ")
-    return (text, "") if i < 0 else (text[:i], text[i:])
+def _twin(text: str, day: date) -> tuple[str, str]:
+    """The text and its 7.13 twin note, which stays last."""
+    note = _twin_note(day)
+    return (text[: -len(note)], note) if text.endswith(note) else (text, "")
 
 
-def _states_current(key: str, kind: EventKind, keys: Mapping[str, str]) -> bool:
+def _states_current(e: AlertEvent, keys: Mapping[str, str]) -> bool:
     """A delay message whose stated values are still the ones remembered (`_stated`)."""
-    base, sep, vals = key.rpartition("|stated+")
-    if not sep:
-        return True
-    base = EventKind.DELAYED.value + base[len(kind.value) :]
-    said = vals.split(",")
-    slots = [base + t for t in ("#d", "#a")] if len(said) == 2 else [base]
-    return [keys.get(x) for x in slots] == said
+    return e.facts is None or all(keys.get(t.slot) == t.said for t in e.facts.told)
 
 
 def _origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> Pool | None:
@@ -1090,7 +1084,7 @@ class Runtime:
         for e in out:
             keys[_SENT_PREFIX + e.key] = e.severity.value
             if twins:  # 7.13: alerts name the service date while two occurrences exist
-                e = replace(e, text=f"{e.text} (service date {s.key.service_date.isoformat()})")
+                e = replace(e, text=e.text + _twin_note(s.key.service_date))
             obligations.append(self._obligation(e, s, now))
         return replace(s, alert_keys=keys), obligations
 
