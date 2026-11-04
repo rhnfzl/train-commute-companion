@@ -50,7 +50,7 @@ def _optional(env: Mapping[str, str], name: str) -> str | None:
     return env.get(name, "").strip() or None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Settings:
     ns_key: str
     bot_token: str

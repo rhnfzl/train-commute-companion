@@ -1,7 +1,5 @@
 """Commute days, Dutch public holidays and DST-safe clock resolution."""
 
-from __future__ import annotations
-
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo

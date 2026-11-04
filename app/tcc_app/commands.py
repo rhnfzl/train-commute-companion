@@ -25,7 +25,7 @@ _TIME = re.compile(r"\d{1,2}:\d{2}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Target:
     profile_id: str
     profile_name: str

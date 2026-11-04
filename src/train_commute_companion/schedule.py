@@ -1,7 +1,5 @@
 """Effective first train and dated windows (design 7.12 rule 19, 7.13)."""
 
-from __future__ import annotations
-
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, time, timedelta
 

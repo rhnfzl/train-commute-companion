@@ -1,7 +1,5 @@
 """Load, validate and overlap-check profiles.yaml. Reports every error, never stops at the first."""
 
-from __future__ import annotations
-
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass

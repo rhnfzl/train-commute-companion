@@ -46,7 +46,7 @@ def stamp(v: object) -> datetime | None:
         return None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Fix:
     lat: float
     lon: float
