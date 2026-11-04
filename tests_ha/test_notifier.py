@@ -117,6 +117,18 @@ async def test_non_phone_target_is_not_called_and_not_delivered(hass):
     assert calls == []
 
 
+@pytest.mark.parametrize("err", [AttributeError("gone"), KeyError("gone")])
+async def test_changed_mobile_app_internals_are_a_failed_push(hass, monkeypatch, caplog, err):
+    async def boom(*_):
+        raise err
+
+    monkeypatch.setattr(notifier_mod, "mobile_target", lambda *_: "hook")
+    monkeypatch.setattr(notifier_mod, "_push_mobile", boom)
+    payload = notify_payload(Severity.LOUD, "x")
+    assert await notifier_mod._push(hass, "mobile_app_fake", payload) == (False, False)
+    assert "push via notify.mobile_app_fake failed" in caplog.text
+
+
 async def test_missing_service_returns_false(hass):
     assert not await send_from_thread(hass, loud_event())
 

@@ -102,7 +102,8 @@ async def _push(
         return False, False
     try:
         return await _push_mobile(hass, webhook_id, payload, retired, tasks), False
-    except (HomeAssistantError, TimeoutError) as err:
+    # AttributeError, KeyError: the mobile_app internals _push_mobile reads changed in an HA bump
+    except (HomeAssistantError, TimeoutError, AttributeError, KeyError) as err:
         _LOGGER.warning("push via notify.%s failed: %s", service, repr(err))
         return False, _timeout(err)
 
