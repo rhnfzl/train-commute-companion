@@ -106,16 +106,16 @@ def zone_report_stops_silent(s: OccurrenceState, zones: Collection[str]) -> bool
 
 async def deliver(
     o: Obligation, view: LedgerView, notifier: Notifier, now: datetime
-) -> Obligation | None:
-    """One watchdog attempt. None: finished (sent or dropped). Otherwise the obligation to keep."""
+) -> tuple[Obligation | None, bool]:
+    """One watchdog attempt: the obligation to keep (None: finished) and whether it was sent."""
     verdict = revalidate(o, view, now)
     if verdict == "drop":
-        return None
+        return None, False
     if verdict == "hold":
-        return o
+        return o, False
     if await notifier.send(view.current(o)):
-        return None
-    return replace(o, attempts=o.attempts + 1)
+        return None, True
+    return replace(o, attempts=o.attempts + 1), False
 
 
 async def post_copy(

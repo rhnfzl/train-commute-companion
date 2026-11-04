@@ -104,9 +104,10 @@ class Flaky:
 def test_failed_stopped_following_is_retried():
     o = ob(EventKind.STOPPED_FOLLOWING)
     n = Flaky([False, True])
-    kept = asyncio.run(deliver(o, View(holds=False), n, NOW))
-    assert kept is not None and kept.attempts == 1
-    assert asyncio.run(deliver(kept, View(holds=False), n, NOW + timedelta(minutes=2))) is None
+    kept, sent = asyncio.run(deliver(o, View(holds=False), n, NOW))
+    assert kept is not None and kept.attempts == 1 and not sent
+    later = NOW + timedelta(minutes=2)
+    assert asyncio.run(deliver(kept, View(holds=False), n, later)) == (None, True)
     assert n.sent == 2
 
 
@@ -174,7 +175,7 @@ def test_send_regenerates_the_message_from_current_state():  # rule 5
             return False
 
     n = Record()
-    kept = asyncio.run(deliver(frozen, Current(), n, NOW))
+    kept, _ = asyncio.run(deliver(frozen, Current(), n, NOW))
     assert [e.text for e in n.sent] == [now_text]
     assert kept is not None and kept.event == frozen.event  # the stored fact stays as written
 

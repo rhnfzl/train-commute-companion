@@ -1571,7 +1571,6 @@ class Runtime:
                 if port is not None and not o.webhook_copied and o.id not in self._copied:
                     copies |= self._copy(o)
                 # a fresh clock per message: a slow send must not leave the next one judged early
-                n = len(self.events_log)  # the logging notifier appends what it sent
                 v = held_view if o.id in self._held else view
                 r = await deliver(o, v, self._notifier, self._clock.now())
                 sent = len(self.events_log) > n
