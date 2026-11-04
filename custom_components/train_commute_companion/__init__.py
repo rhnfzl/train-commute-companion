@@ -1,6 +1,7 @@
 """Train Commute Companion: the core runtime on its own thread, read through a coordinator."""
 
 import os
+import threading
 from functools import partial
 from pathlib import Path
 
@@ -68,6 +69,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         hass.loop.call_soon_threadsafe(set_started)
 
     lock = file_lock(state_path)
+    retired = threading.Event()
+    # built here on hass.loop: an HA object, and unload needs it to cancel its pending pushes
+    notifier = HaNotifier(hass, entry_id, notify_service, loud_style, retired)
 
     def build() -> host_mod.Parts:
         clock = host_mod.make_clock()
@@ -81,7 +85,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
                 webhook_secret,
                 clock.now,
                 token=webhook_token,
-                stopped=host.retired.is_set,
+                stopped=retired.is_set,
             )
             close_provider = close
 
@@ -93,7 +97,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
 
         rt = Runtime(
             profile_path=Path(profiles_path),
-            store=EntryMarkedStore(JsonFileStore(state_path), started, mark, host.retired, lock),
+            store=EntryMarkedStore(JsonFileStore(state_path), started, mark, retired, lock),
             provider=provider,
             notifier=notifier,
             clock=clock,
@@ -102,16 +106,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         )
         return host_mod.Parts(rt, clock, close)
 
-    host = host_mod.RuntimeHost(build, autorun=host_mod.AUTORUN)
-    # built here on hass.loop: an HA object, and unload needs it to cancel its pending pushes
-    notifier = HaNotifier(hass, entry_id, notify_service, loud_style, host.retired)
+    host = host_mod.RuntimeHost(build, retired=retired, autorun=host_mod.AUTORUN)
 
     tracker: LocationTracker | None = None
 
     async def stop() -> None:
         if tracker is not None:
             await tracker.stop()  # before the host, so no event is sent to a retired runtime
-        host.retired.set()  # first, so no push or write starts while the thread is being stopped
+        retired.set()  # first, so no push or write starts while the thread is being stopped
         await notifier.async_stop()
         await host.stop()
 

@@ -66,7 +66,9 @@ def _serve(loop: asyncio.AbstractEventLoop) -> None:
 
 
 class RuntimeHost:
-    def __init__(self, build: Callable[[], Parts], *, autorun: bool) -> None:
+    def __init__(
+        self, build: Callable[[], Parts], *, retired: threading.Event, autorun: bool
+    ) -> None:
         self._build = build
         self._autorun = autorun
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -75,7 +77,7 @@ class RuntimeHost:
         self._task: asyncio.Task[None] | None = None
         self._drain: concurrent.futures.Future[None] | None = None
         # set by stop(); the store and notifier built for this host refuse to write or deliver
-        self.retired = threading.Event()
+        self.retired = retired
 
     async def start(self) -> None:
         loop = asyncio.new_event_loop()

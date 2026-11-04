@@ -71,7 +71,7 @@ def no_runtime_thread() -> bool:
 
 @pytest.fixture
 async def host(hass, tmp_path):
-    h = RuntimeHost(builder(tmp_path), autorun=True)
+    h = RuntimeHost(builder(tmp_path), retired=threading.Event(), autorun=True)
     await h.start()
     yield h
     await h.stop()
@@ -89,7 +89,7 @@ async def test_run_awaits_coroutines_and_propagates_errors(hass, host):
 
 async def test_stop_cancels_run_forever_and_joins(hass, tmp_path, caplog):
     closed: list[bool] = []
-    host = RuntimeHost(builder(tmp_path, closed=closed), autorun=True)
+    host = RuntimeHost(builder(tmp_path, closed=closed), retired=threading.Event(), autorun=True)
     await host.start()
     assert host.alive
     t0 = time.monotonic()
@@ -105,7 +105,9 @@ async def test_stop_cancels_run_forever_and_joins(hass, tmp_path, caplog):
 
 async def test_real_crash_then_stop_leaves_no_task_or_thread(hass, tmp_path):
     closed: list[bool] = []
-    host = RuntimeHost(builder(tmp_path, crash=True, closed=closed), autorun=True)
+    host = RuntimeHost(
+        builder(tmp_path, crash=True, closed=closed), retired=threading.Event(), autorun=True
+    )
     await host.start()
     for _ in range(500):
         if not host.alive:
@@ -126,7 +128,7 @@ async def test_build_error_surfaces_from_start(hass):
     def build() -> Parts:
         raise ValueError("bad build")
 
-    host = RuntimeHost(build, autorun=True)
+    host = RuntimeHost(build, retired=threading.Event(), autorun=True)
     with pytest.raises(ValueError, match="bad build"):
         await host.start()
     await host.stop()
