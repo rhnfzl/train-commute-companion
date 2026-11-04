@@ -1,0 +1,30 @@
+# shared by Validate and Release, so a release waits on the project's own checks only
+name: Tests
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"  # the Docker image's Python
+      - run: uv run --locked --extra app pytest -q
+      - run: uv run --locked --extra app mypy src app/tcc_app
+      - run: uv run --locked ruff check src tests tests_ha tests_app custom_components app
+      - run: uv run --locked --python 3.14 --group ha pytest tests_ha -q
+        env:
+          UV_PROJECT_ENVIRONMENT: .venv-ha
+      - run: >-
+          uv run --locked --python 3.14 --group ha mypy --explicit-package-bases
+          --namespace-packages -p custom_components.train_commute_companion
+        env:
+          UV_PROJECT_ENVIRONMENT: .venv-ha
