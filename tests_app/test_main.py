@@ -24,8 +24,8 @@ from webhook_receiver import Receiver
 
 from train_commute_companion.lifecycle import Leaving
 from train_commute_companion.model import EventKind
-from train_commute_companion.runtime import WebhookPoster
 from train_commute_companion.store import JsonFileStore
+from train_commute_companion.webhook_send import WebhookPoster
 
 ENV = {"NS_API_KEY": "k", "TELEGRAM_BOT_TOKEN": TOKEN}
 URL, URL2 = "https://hooks.example.invalid/tcc", "https://hooks2.example.invalid/tcc"

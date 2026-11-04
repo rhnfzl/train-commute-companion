@@ -1,5 +1,5 @@
 """Outbound webhook payload and Standard Webhooks signature. Pure: no network, clock or logging;
-the sender (`runtime.WebhookPoster`) owns delivery."""
+the sender (`webhook_send.WebhookPoster`) owns delivery."""
 
 import base64
 import hashlib

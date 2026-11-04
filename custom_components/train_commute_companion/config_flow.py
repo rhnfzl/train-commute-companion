@@ -25,8 +25,9 @@ from homeassistant.helpers.selector import (
 from train_commute_companion.model import Severity
 from train_commute_companion.providers.base import AuthError, ProviderError
 from train_commute_companion.providers.ns import NsProvider
-from train_commute_companion.runtime import SystemClock, send_webhook_tests
+from train_commute_companion.runtime import SystemClock
 from train_commute_companion.webhook import check_secret, check_token, parse_urls
+from train_commute_companion.webhook_send import send_webhook_tests
 
 from . import host as host_mod
 from . import notifier as notifier_mod

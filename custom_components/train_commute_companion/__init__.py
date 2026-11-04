@@ -10,8 +10,9 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
-from train_commute_companion.runtime import Runtime, WebhookPoster
+from train_commute_companion.runtime import Runtime
 from train_commute_companion.store import JsonFileStore
+from train_commute_companion.webhook_send import WebhookPoster
 
 from . import host as host_mod
 from .const import (

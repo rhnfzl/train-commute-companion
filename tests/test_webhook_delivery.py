@@ -28,7 +28,7 @@ from test_runtime_rules import (
 )
 from webhook_receiver import Receiver
 
-from train_commute_companion import runtime
+from train_commute_companion import webhook_send
 from train_commute_companion.delivery import Obligation, WebhookCopy
 from train_commute_companion.lifecycle import NotTravelling
 from train_commute_companion.lookahead import (
@@ -44,8 +44,6 @@ from train_commute_companion.runtime import (
     MAX_COPIES,
     POLL_EVERY_S,
     Runtime,
-    WebhookPoster,
-    send_webhook_tests,
 )
 from train_commute_companion.serde import dumps, loads
 from train_commute_companion.store import PersistedState
@@ -57,6 +55,7 @@ from train_commute_companion.webhook import (
     probe_id,
     url_id,
 )
+from train_commute_companion.webhook_send import WebhookPoster, send_webhook_tests
 
 SECRET = "test-webhook-secret-0001"
 TOKEN = "test-webhook-token-0001"
@@ -976,7 +975,7 @@ async def test_store_never_holds_a_webhook_url(tmp_path):
 
 
 async def test_stalled_or_endless_answer_is_cut_at_the_deadline(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtime, "TRY_DEADLINE_S", 0.05)  # Review Focus 1
+    monkeypatch.setattr(webhook_send, "TRY_DEADLINE_S", 0.05)  # Review Focus 1
     rig = await wstarted(tmp_path, "20:00")
     rig.end.gate = asyncio.Event()  # never answers
     alert(rig, 1)
@@ -1096,7 +1095,7 @@ async def test_webhook_test_sends_are_signed_marked_and_never_stored(tmp_path, c
     b.error = httpx.ReadTimeout
     (r,) = await send_webhook_tests(rig.client, [URL2], SECRET, rig.clock.now)
     assert (r.loud, r.silent) == ("ReadTimeout", "ReadTimeout")
-    monkeypatch.setattr(runtime, "TRY_DEADLINE_S", 0.05)
+    monkeypatch.setattr(webhook_send, "TRY_DEADLINE_S", 0.05)
     b.error, b.gate = None, asyncio.Event()  # never answers
     (r,) = await send_webhook_tests(rig.client, [URL2], SECRET, rig.clock.now)
     assert (r.loud, r.silent) == ("TimeoutError", "TimeoutError")
@@ -1115,7 +1114,9 @@ async def test_webhook_test_sends_are_signed_marked_and_never_stored(tmp_path, c
     assert res[0].ok and rig.poster.failing and rig.poster.down == rest
     await rig.rt.watchdog_once()
     assert stored_copies(rig) == () and rig.rt._copies == {}
-    mine = [r.getMessage() for r in caplog.records if r.name == "train_commute_companion.runtime"]
+    mine = [
+        r.getMessage() for r in caplog.records if r.name == "train_commute_companion.webhook_send"
+    ]
     assert mine == [
         f"webhook test to {HOST}: accepted",
         f"webhook test to {HOST2}: not accepted (loud 401, silent 401)",

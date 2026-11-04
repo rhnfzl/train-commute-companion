@@ -21,11 +21,10 @@ from train_commute_companion.runtime import (
     Clock,
     Runtime,
     SystemClock,
-    WebhookPoster,
-    send_webhook_tests,
 )
 from train_commute_companion.store import JsonFileStore
 from train_commute_companion.webhook import check_secret, check_token, parse_urls
+from train_commute_companion.webhook_send import WebhookPoster, send_webhook_tests
 
 from . import owntracks
 from .bot import Bot
