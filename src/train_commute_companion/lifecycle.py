@@ -55,6 +55,7 @@ from train_commute_companion.model import (
     TrainId,
     TransferState,
     display_name,
+    train_ident,
 )
 from train_commute_companion.providers.base import ProviderAnswer, Query
 from train_commute_companion.transfer import check_transfer, transfer_minimum
@@ -421,7 +422,7 @@ def make_event(
     Pass `facts` when the text holds a live time that drifts without being news."""
     key = ctx.schedule.key
     name = display_name(ctx.profile.name)
-    ident = "" if train is None else f":{train.train_number}@{train.planned_departure.isoformat()}"
+    ident = "" if train is None else f":{train_ident(train)}"
     return AlertEvent(
         ctx.profile.id,
         ctx.profile.name,
@@ -983,13 +984,7 @@ def _relock(
     # the replacement by identity, not by its live time: a drifting estimate is not news (7.5)
     # and its stated time by its delay, which `_stated` turns into 3-min news steps
     late = (_departure(c) - to_utc(c.legs[0].train.planned_departure)) // timedelta(minutes=1)
-    facts = (
-        f"{text}|"
-        + ",".join(
-            f"{x.train.train_number}@{x.train.planned_departure.isoformat()}" for x in c.legs
-        )
-        + f"|~{late}"
-    )
+    facts = f"{text}|" + ",".join(train_ident(x.train) for x in c.legs) + f"|~{late}"
     text += f". Next good connection: {hhmm(_departure(c))}" + (
         f", new route via {via}." if how == "new_route" else "."
     )
@@ -1417,7 +1412,7 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
         retained.append(t.state.lock)
         for e in t.events:
             head, _, body = e.text.partition(": ")
-            key = f"{e.key}:retained:{first.train_number}@{first.planned_departure.isoformat()}"
+            key = f"{e.key}:retained:{train_ident(first)}"
             events.append(replace(e, text=f"{head}: {on}{body}", key=key))
     s = replace(s, retained=tuple(retained))
     t = (_restore(s, ctx, pool) or _follow(s, ctx, pool, asked)) if live else Transition(s, ())
