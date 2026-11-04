@@ -1162,7 +1162,7 @@ class Runtime:
 
     def _obligation(self, e: AlertEvent, s: OccurrenceState | None, now: datetime) -> Obligation:
         # a LEAVE_NOW has no fixed expiry: still_advised checks its current departure minus
-        # buffer at send time (is_good), so a delayed escape train still catchable goes out
+        # buffer at send time (check_good), so a delayed escape train still catchable goes out
         if s is not None:
             revision = s.route_revision
         else:
@@ -2180,7 +2180,7 @@ class Runtime:
             if c.legs and c.legs[0].board.code == station
             and _utc(c.legs[0].train.planned_departure).replace(second=0, microsecond=0) == minute
         ]  # fmt: skip
-        # 6.1: two trains in one boarding minute are uncertain even by number, so is_good refuses
+        # 6.1: two trains in one boarding minute are uncertain even by number, so check_good refuses
         if len({(c.legs[0].train.operating_date, c.legs[0].train.train_number) for c in same}) > 1:
             return f"two trains leave {station} at {hhmm}; NS data cannot tell them apart"
         found = [c for c in same if train_number in (None, c.legs[0].train.train_number)]

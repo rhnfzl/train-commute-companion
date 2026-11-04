@@ -283,17 +283,17 @@ def test_pair_transfer_ignores_another_connections_change():
     assert a.leg.change_possible is None and b.leg.reachable is None
 
 
-def test_is_good_judges_a_cut_short_whose_copy_omits_the_alight():
+def test_check_good_judges_a_cut_short_whose_copy_omits_the_alight():
     from test_board import kw
 
-    from train_commute_companion.board import is_good
+    from train_commute_companion.board import check_good
     from train_commute_companion.lifecycle import _pool
 
     raw = one(r6666())
     short = r6666("BBB", "09:05", stops=["XA"])
     short = replace(short, stops=(short.stops[0], _cut(short.stops[1]), short.stops[2]))
     pool = _pool([at_(OLDER, raw), at_(NEWER, one(short))])
-    g = is_good(raw, pool, **kw())
+    g = check_good(raw, pool, **kw())
     assert not g.ok and g.reason == "leg cut_short"
 
 

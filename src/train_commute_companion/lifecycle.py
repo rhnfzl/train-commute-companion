@@ -13,8 +13,8 @@ from train_commute_companion.board import (
     GoodCheck,
     GoodKwargs,
     catch_from,
+    check_good,
     choose_replacement,
-    is_good,
     max_transfers,
 )
 from train_commute_companion.calendar import TZ, resolve_local
@@ -632,7 +632,7 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
             station = done[-1].alight_stop if done else p.origin(d)
         if n_before and kept is None:
             return _refuse(s, ctx, "the change from your current train is not in NS data")
-        check = is_good(rest, pool, **_good_kw(s, ctx, station, kept, n_before))
+        check = check_good(rest, pool, **_good_kw(s, ctx, station, kept, n_before))
     if not check.ok:
         return _refuse(s, ctx, check.reason)
     riding = source is not None or s.travelling
@@ -907,7 +907,7 @@ def _restore(s: OccurrenceState, ctx: Ctx, pool: _Pool) -> Transition | None:
             good = [
                 c
                 for c in pool.connections
-                if c.legs[0].train == h.train and is_good(c, pool, **kw).ok
+                if c.legs[0].train == h.train and check_good(c, pool, **kw).ok
             ]
             if not good:
                 continue
@@ -1282,7 +1282,7 @@ def _follow(
         if not _may_be_on(x, now):
             # 6.3: follow the new route only within the cap and if good, else relock
             checkable = not k or kept is not None
-            if checkable and is_good(rc, pool, **_good_kw(s, ctx, x.board_station, kept, k)).ok:
+            if checkable and check_good(rc, pool, **_good_kw(s, ctx, x.board_station, kept, k)).ok:
                 new = _journey(lock, legs[:k], rc.legs, LockSource.RELOCK)
                 note = _event(
                     ctx, EventKind.ROUTE_CHANGED, Severity.LOUD, f"{text}, following it.", x.train

@@ -4,7 +4,7 @@ import itertools
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, tzinfo
 
-from train_commute_companion.board import GoodKwargs, choose_replacement, is_good, max_transfers
+from train_commute_companion.board import GoodKwargs, check_good, choose_replacement, max_transfers
 from train_commute_companion.classify import (
     classify_leg,
     current_connection,
@@ -218,7 +218,7 @@ def still_advised(
     reference: datetime | None,
 ) -> Connection | None:
     """Rule 5(b): the advised train's connection as `answer` shows it now, while advice is
-    still gated, waiting is still bad and the train still saves enough and passes `is_good`
+    still gated, waiting is still bad and the train still saves enough and passes `check_good`
     with the current catch (so its current departure minus buffer is its expiry)."""
     if not _gate(s, ctx):
         return None
@@ -230,7 +230,7 @@ def _candidates(
     s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, reference: datetime | None
 ) -> list[tuple[timedelta, Connection]]:
     """(saving, connection) for every earlier first train that beats waiting by the minimum
-    saving and passes `is_good` with the current catch; empty while waiting is not bad (7.6)."""
+    saving and passes `check_good` with the current catch; empty while waiting is not bad (7.6)."""
     prof, d = ctx.profile, ctx.direction
     usual = prof.journey(d)
     # what waiting means: the lock's first train, else the effective usual first departure
@@ -266,7 +266,7 @@ def _candidates(
             if arr is None or _departure(cur) >= wait_from:
                 continue
             saving = (ride_arr or _FAR) - arr  # no baseline: soonest arrival wins
-            if saving < need or not is_good(c, answer, **kw).ok:
+            if saving < need or not check_good(c, answer, **kw).ok:
                 continue
             found.append((saving, cur))
     return found
@@ -286,7 +286,7 @@ def advise(
     s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, usual_planned_arrival: datetime | None
 ) -> tuple[AdviceRecord, list[AlertEvent]]:
     """`answer` is a healthy board from the occurrence's origin. The earlier first train must
-    pass `is_good` (which also enforces catching it with the buffer, so advice ends by itself
+    pass `check_good` (which also enforces catching it with the buffer, so advice ends by itself
     at the escape train's departure minus buffer). Without the usual's planned arrival only
     lateness is not judged: an absent or unrideable journey is still bad."""
     record = s.advice or AdviceRecord(None, None, False, delivered=False)

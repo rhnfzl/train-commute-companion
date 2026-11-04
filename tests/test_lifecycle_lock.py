@@ -240,7 +240,7 @@ def test_choose_over_cap_refused():
     assert t.state is s
     assert [(e.kind, e.severity) for e in t.events] == [(EventKind.CHOOSE_REFUSED, Severity.LOUD)]
     assert "refused" in t.events[0].text and "cap" in t.events[0].text
-    # failing is_good is refused too: 08:12 cannot be caught at 08:05 with a 10-min buffer
+    # failing check_good is refused too: 08:12 cannot be caught at 08:05 with a 10-min buffer
     uncatchable = apply_action(s, ctx(at("08:05")), pick(USUAL))
     assert uncatchable.state is s and "cannot be caught" in uncatchable.events[0].text
 

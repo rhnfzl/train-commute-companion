@@ -1,4 +1,4 @@
-"""The one `is_good` predicate and the replacement chooser (7.12 rule 1, 7.4, 6.3). Pure."""
+"""The one `check_good` rule and the replacement chooser (7.12 rule 1, 7.4, 6.3). Pure."""
 
 import itertools
 from collections.abc import Mapping, Sequence
@@ -64,7 +64,7 @@ class GoodKwargs(TypedDict):
     profile_min: Mapping[str, int]
 
 
-def is_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) -> GoodCheck:
+def check_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) -> GoodCheck:
     """`done_transfers` counts transfers made before `kept_incoming` boarded; the transfer from
     `kept_incoming` into the first new leg is counted here. Every leg is identified in `answer`
     (6.1): a leg that shares its boarding minute with another train is uncertain."""
@@ -130,7 +130,7 @@ def choose_replacement(
     seen_in = evidence(answer)
     cur = {id(c): current_connection(seen_in, c) for c in pool}
     ranked = sorted(pool, key=lambda c: _expected_departure(cur[id(c)]))
-    good = [c for c in ranked if is_good(c, answer, **kw).ok]
+    good = [c for c in ranked if check_good(c, answer, **kw).ok]
     for c in good:
         if matches_pattern(c, usual_remaining):
             return cur[id(c)], "usual_pattern"
