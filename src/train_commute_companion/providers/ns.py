@@ -347,6 +347,8 @@ class NsProvider:
 
     async def _get(self, path: str, params: dict[str, str] | None = None) -> object:
         # Messages are fixed text: the key and the request URL never enter an exception.
+        if not self._key.isascii():  # no header can carry it, so NS can never accept it
+            raise AuthError("the NS API key has non-ASCII characters")
         try:
             async with asyncio.timeout(self._deadline):
                 r = await self._client.get(

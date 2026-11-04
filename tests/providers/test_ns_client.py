@@ -189,3 +189,13 @@ def test_map_station_positions_never_raises():
 
     for bad in (None, 3, "x", {"payload": None}, {"payload": [None, 1, {"lat": 1, "lng": 2}]}):
         assert map_station_positions(bad) == {}
+
+
+async def test_non_ascii_key_is_an_auth_error_and_sends_nothing():
+    def h(req):
+        raise AssertionError("no request goes out")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(h))
+    with pytest.raises(AuthError) as e:
+        await NsProvider("ke\u200by", client, lambda: NOW).stations()
+    assert "ke\u200by" not in str(e.value)
