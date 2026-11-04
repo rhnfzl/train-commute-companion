@@ -76,6 +76,8 @@ class Settings:
                 chat_id = int(raw)
             except ValueError:
                 raise ValueError("TELEGRAM_CHAT_ID must be a whole number") from None
+            if chat_id < 1:  # group and channel ids are negative; there every member could act
+                raise ValueError("TELEGRAM_CHAT_ID must be a private chat, not a group")
         lookahead_at = LOOKAHEAD_AT
         if (raw := _optional(env, "TCC_LOOKAHEAD_AT")) is not None:
             try:

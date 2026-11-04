@@ -97,6 +97,13 @@ def test_settings_owntracks_secret_checked():
         assert bad not in str(e.value)
 
 
+@pytest.mark.parametrize("chat", ["-1000001", "-1001000001", "0"])
+def test_settings_refuse_a_chat_that_is_not_private(chat):
+    with pytest.raises(ValueError, match="TELEGRAM_CHAT_ID must be a private chat") as e:
+        Settings.from_env({**ENV, "TELEGRAM_CHAT_ID": chat})
+    assert chat not in str(e.value)
+
+
 async def test_build_passes_the_lookahead_time(tmp_path, tg):
     clock = TickClock(at("05:20"))
     app = make_app(tmp_path, tg, clock, lookahead_at=time(5, 30))

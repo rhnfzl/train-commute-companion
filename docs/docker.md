@@ -21,7 +21,7 @@ Run every command below from the `examples/` directory of this checkout, where t
    cp profiles.yaml config/
    ```
 
-2. Start it with `docker compose up -d --build`, then send the bot a message from a **private chat**. Never use a group: every member could act and share location.
+2. Start it with `docker compose up -d --build`, then send the bot a message from a **private chat**. A group is refused at startup: every member could act and share location.
 3. The log (`docker compose logs tcc`) shows a line with the chat id. Put it in `.env` as `TELEGRAM_CHAT_ID` and apply it with `docker compose up -d --force-recreate tcc` (a plain `restart` keeps the old environment).
 4. In `config/profiles.yaml`, replace `AAA` with your own station codes and check the file:
 
@@ -50,7 +50,7 @@ Everything comes from the environment (`.env`):
 | --- | --- |
 | `NS_API_KEY` | your NS key |
 | `TELEGRAM_BOT_TOKEN` | the bot token |
-| `TELEGRAM_CHAT_ID` | the one chat allowed to talk to the bot |
+| `TELEGRAM_CHAT_ID` | the one chat allowed to talk to the bot; must be a private chat, a group id is refused |
 | `OWNTRACKS_SECRET` | optional, 16+ printable ASCII characters without spaces; turns on the OwnTracks endpoint |
 | `TCC_HEALTH_TOKEN` | optional, 16+ printable ASCII characters without spaces; lets a caller with `Authorization: Bearer <token>` read the full `/health` report |
 | `TCC_LOOKAHEAD_AT` | when the planned-works look-ahead runs, `HH:MM`, default `06:00` |
