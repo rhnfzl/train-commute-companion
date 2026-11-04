@@ -8,7 +8,7 @@ from train_commute_companion.calendar import TZ, is_commute_day, resolve_local
 from train_commute_companion.classify import classify_leg, current_connection, merge_arrivals
 from train_commute_companion.delivery import Obligation
 from train_commute_companion.lifecycle import FOLLOW_LIMIT
-from train_commute_companion.match import matches_pattern, usual_connection
+from train_commute_companion.match import matches_pattern, planned_departure, usual_connection
 from train_commute_companion.messages import data_unclear_text
 from train_commute_companion.model import (
     AlertEvent,
@@ -103,7 +103,7 @@ def _clock_min(t: time) -> int:
 def signature_of(c: Connection, service_date: date) -> Signature:
     legs = []
     for leg in c.legs:
-        dep = (leg.board.planned_departure or leg.train.planned_departure).astimezone(UTC)
+        dep = planned_departure(leg)
         arr = leg.alight.planned_arrival
         local = dep.astimezone(TZ)
         dur = 0 if arr is None else int((arr.astimezone(UTC) - dep).total_seconds() // 60)
@@ -236,15 +236,15 @@ def probe_dates(
     return out
 
 
-def _dep(leg: Leg) -> datetime:
-    return (leg.board.planned_departure or leg.train.planned_departure).astimezone(UTC)
-
-
 def _nearest(conns: Sequence[Connection], ref: datetime) -> Connection | None:
     """Departing within 15 min of `ref`, nearest first, the earlier on a tie."""
     at = ref.astimezone(UTC)
-    near = [c for c in conns if abs(_dep(c.legs[0]) - at) <= SEARCH]
-    return min(near, key=lambda c: (abs(_dep(c.legs[0]) - at), _dep(c.legs[0])), default=None)
+    near = [c for c in conns if abs(planned_departure(c.legs[0]) - at) <= SEARCH]
+    return min(
+        near,
+        key=lambda c: (abs(planned_departure(c.legs[0]) - at), planned_departure(c.legs[0])),
+        default=None,
+    )
 
 
 def _kind(leg: Leg, alight: str) -> LegKind:
@@ -295,7 +295,7 @@ def _leg_reasons(cur: Connection, c: Connection) -> list[str]:
 
 
 def _covered(c: Connection, works: PlannedWorks) -> bool:
-    start = _dep(c.legs[0])
+    start = planned_departure(c.legs[0])
     last = c.legs[-1].alight.planned_arrival
     end = start if last is None else last.astimezone(UTC)
     stops = [s for leg in c.legs for s in leg.stops]
@@ -349,7 +349,10 @@ def evaluate(
         near = _nearest([c for c in ends if matches_pattern(c, j.transfers)], first)
         if near is not None:
             only = replace(whole_ans, connections=tuple(ends))  # the tie-break sees `ends` only
-            whole = usual_connection(only, st[0], _dep(near.legs[0]), j.transfers, sig) or near
+            whole = (
+                usual_connection(only, st[0], planned_departure(near.legs[0]), j.transfers, sig)
+                or near
+            )
         else:
             pattern = _nearest([c for c in ends if not matches_pattern(c, j.transfers)], first)
 
@@ -359,7 +362,7 @@ def evaluate(
     if n > 1:
         for i in range(n):
             a = by_route.get((st[i], st[i + 1]))
-            ref = deps[i] or (_dep(whole.legs[i]) if whole is not None else None)
+            ref = deps[i] or (planned_departure(whole.legs[i]) if whole is not None else None)
             answered.append(a is not None and ref is not None)
             direct = (
                 []
@@ -451,7 +454,7 @@ def evaluate(
             and not any(_covered(x, works) for x in copies(c))
         )
         if li is None and c is not None:  # a seed is anchored on the profile's first train
-            local = _dep(c.legs[0]).astimezone(TZ)
+            local = planned_departure(c.legs[0]).astimezone(TZ)
             clean = (
                 clean
                 and local.date() == sd

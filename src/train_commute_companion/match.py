@@ -40,7 +40,8 @@ def current_arrival(answer: ProviderAnswer, c: Connection) -> datetime:
     return _arrival(cur.legs[-1]) if cur.destination == c.destination else _UNKNOWN
 
 
-def _dep(leg: Leg) -> datetime:
+def planned_departure(leg: Leg) -> datetime:
+    """The leg's planned departure from its boarding stop, in UTC."""
     return (leg.board.planned_departure or leg.train.planned_departure).astimezone(UTC)
 
 
@@ -49,7 +50,7 @@ def _fits(c: Connection, sig: Signature, first_departure: datetime) -> bool:
         return False
     base = first_departure.astimezone(TZ).date()  # clock time and day_offset are Amsterdam-local
     for leg, s in zip(c.legs, sig.legs, strict=True):
-        dep = _dep(leg).astimezone(TZ)
+        dep = planned_departure(leg).astimezone(TZ)
         arr = leg.alight.planned_arrival
         if (
             (leg.board.code, leg.alight.code) != (s.board, s.alight)
@@ -77,7 +78,7 @@ def usual_connection(
         for c in answer.connections
         if matches_pattern(c, transfers)
         and c.legs[0].board.code == origin
-        and _minute(_dep(c.legs[0])) == want
+        and _minute(planned_departure(c.legs[0])) == want
         and train_only_now(answer, c)
     ]
     if signature is not None:
@@ -85,7 +86,10 @@ def usual_connection(
     if not found:
         return None
     # later legs' departures are the 6.3 tie-break after the earliest arrival
-    return min(found, key=lambda c: (current_arrival(answer, c), *(_dep(x) for x in c.legs[1:])))
+    return min(
+        found,
+        key=lambda c: (current_arrival(answer, c), *(planned_departure(x) for x in c.legs[1:])),
+    )
 
 
 def remaining_pattern(full_transfers: tuple[str, ...], from_station: str) -> tuple[str, ...]:
