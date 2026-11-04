@@ -213,10 +213,14 @@ class Bot:
         msg, edited, cb = (_obj(update.get(k)) for k in ALLOWED)
         chat = _obj((msg or edited or _obj(cb.get("message"))).get("chat")).get("id")
         if self._chat is None or chat != self._chat:
-            log.warning(
-                "ignored an update from chat %s; set TELEGRAM_CHAT_ID to this id to use this chat",
-                chat,
+            # startup refuses a group id, so only a private chat may be pointed at it
+            private = isinstance(chat, int) and chat > 0
+            hint = (
+                "set TELEGRAM_CHAT_ID to this id to use this chat"
+                if private
+                else "not a private chat, so it cannot be TELEGRAM_CHAT_ID"
             )
+            log.warning("ignored an update from chat %s; %s", chat, hint)
             return
         if not cb and "location" in (msg or edited):
             self._location(msg or edited)  # no command: a failure is logged, never answered

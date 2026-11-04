@@ -249,6 +249,13 @@ async def test_no_chat_id_ignores_every_chat(app, caplog):
     assert app.tg.sent == [] and "1000001" in caplog.text
 
 
+async def test_a_group_is_not_told_to_become_the_chat_id(app, caplog):
+    caplog.set_level(logging.WARNING)
+    await app.new_bot(chat=None).handle(app.msg("/status", chat=-1001000001))
+    assert app.tg.sent == [] and "-1001000001" in caplog.text
+    assert "set TELEGRAM_CHAT_ID" not in caplog.text and "not a private chat" in caplog.text
+
+
 # --- delivery test (rule 16) ---
 
 
