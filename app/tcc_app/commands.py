@@ -10,7 +10,14 @@ from typing import Any
 
 from train_commute_companion.calendar import TZ, hhmm
 from train_commute_companion.health import BoardHealth
-from train_commute_companion.model import Connection, Direction, LegKind, Provenance, TimeObs
+from train_commute_companion.model import (
+    Connection,
+    Direction,
+    LegKind,
+    Provenance,
+    TimeObs,
+    display_name,
+)
 from train_commute_companion.view import LegView, OccurrenceView, RuntimeView
 from train_commute_companion.webhook import WebhookTestResult
 
@@ -38,10 +45,6 @@ class Target:
 
 def _key(s: str) -> str:
     return s.strip().lower().replace(" ", "_")
-
-
-def _pretty(name: str) -> str:
-    return name.replace("_", " ").title()
 
 
 def _day(d: date) -> str:
@@ -126,7 +129,7 @@ def _next_time(c: Connection) -> datetime:
 
 def _occurrence(o: OccurrenceView) -> list[str]:
     k = o.key
-    head = f"{_pretty(o.profile_name)} {k.direction.value} {_day(k.service_date)}: {o.direction_state.value}"
+    head = f"{display_name(o.profile_name)} {k.direction.value} {_day(k.service_date)}: {o.direction_state.value}"
     if o.not_travelling:
         head += " (not travelling)"
     if o.route_changed:
@@ -202,7 +205,7 @@ def _works_ahead(view: RuntimeView) -> list[str]:
         pid, _, d = key.rpartition("|")  # a profile id may contain "|"; the direction never does
         if days:
             dates = ", ".join(_day(w.service_date) for w in days)
-            lines.append(f"Works ahead: {_pretty(names.get(pid, pid))} {d}: {dates}")
+            lines.append(f"Works ahead: {display_name(names.get(pid, pid))} {d}: {dates}")
     return lines
 
 
@@ -255,7 +258,7 @@ def _name(view: RuntimeView, profile_id: str) -> str:
 def status_tool(view: RuntimeView, confirmed: bool, profile_id: str) -> dict[str, Any]:
     return {
         "profile": profile_id,
-        "name": _pretty(_name(view, profile_id)),
+        "name": display_name(_name(view, profile_id)),
         "text": render_status(for_profile(view, profile_id), confirmed),
     }
 

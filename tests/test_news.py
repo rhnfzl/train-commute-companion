@@ -148,12 +148,14 @@ def test_replacement_keyed_by_planned_departure_onward_trains_and_platform():  #
 
 def test_repeated_missing_and_retained_events_sent_once():
     c = ctx(at("08:00"))
-    from train_commute_companion.lifecycle import _event
+    from train_commute_companion.lifecycle import make_event
 
     def evs():
         return [
-            _event(c, EventKind.MISSING, Severity.LOUD, "x"),
-            replace(_event(c, EventKind.MISSING, Severity.LOUD, "y"), key="missing:retained:77"),
+            make_event(c, EventKind.MISSING, Severity.LOUD, "x"),
+            replace(
+                make_event(c, EventKind.MISSING, Severity.LOUD, "y"), key="missing:retained:77"
+            ),
         ]
 
     ledger: dict[str, Severity] = {}

@@ -17,8 +17,8 @@ from train_commute_companion.lifecycle import (
     LegProgress,
     LegState,
     OccurrenceState,
-    _event,
     catch_from_state,
+    make_event,
 )
 from train_commute_companion.match import current_arrival, train_only_now, usual_connection
 from train_commute_companion.model import (
@@ -305,8 +305,10 @@ def advise(
             return record, []  # already told
         # renewed after a withdrawal: a new episode with its own delivery identity (7.6)
         text = leave_now_text(best[1], ctx.now.tzinfo)
-        ev = _event(ctx, EventKind.LEAVE_NOW, Severity.LOUD, text, train, ctx.now.isoformat())
-        return AdviceRecord(train, ctx.now, False, delivered=False), [ev]
+        event = make_event(
+            ctx, EventKind.LEAVE_NOW, Severity.LOUD, text, train, ctx.now.isoformat()
+        )
+        return AdviceRecord(train, ctx.now, False, delivered=False), [event]
     if advised is None or record.withdrawn or bad:
         return record, []
     if not record.delivered:  # never told: nothing to withdraw, its LEAVE_NOW is not sent
@@ -322,7 +324,7 @@ def advise(
         return record, []
     if t.astimezone(UTC) < catch.not_before.astimezone(UTC):
         return record, []
-    ev = _event(
+    event = make_event(
         ctx,
         EventKind.EARLIER_TRAIN_WITHDRAWN,
         Severity.SILENT,
@@ -330,4 +332,4 @@ def advise(
         advised,
         "" if record.sent_at is None else record.sent_at.isoformat(),  # the episode it ends
     )
-    return replace(record, withdrawn=True), [ev]
+    return replace(record, withdrawn=True), [event]

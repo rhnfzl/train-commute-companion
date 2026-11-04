@@ -16,14 +16,15 @@ from train_commute_companion.lifecycle import (
     LegState,
     LockSource,
     OccurrenceState,
-    _next_good,
-    _observe,
-    _pool,
-    _resolved,
-    _unfinished,
+    find_next_good,
+    is_resolved,
+    merged_pool,
+    observe,
+    unfinished_leg,
 )
 from train_commute_companion.lookahead import BaselineHistory, LookAheadLedger
 from train_commute_companion.model import (
+    LIVE_PREFIX,
     AdviceRecord,
     ClassifiedLeg,
     Connection,
@@ -41,7 +42,7 @@ from train_commute_companion.model import (
 from train_commute_companion.providers.base import ProviderAnswer
 from train_commute_companion.transfer import check_transfer, transfer_minimum
 
-_LIVE_ROUTE_CHANGED = f"live:{EventKind.ROUTE_CHANGED.value}:"  # runtime's live-fact prefix
+_LIVE_ROUTE_CHANGED = f"{LIVE_PREFIX}{EventKind.ROUTE_CHANGED.value}:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,12 +179,12 @@ def _leg_view(x: LegProgress, cl: ClassifiedLeg | None, ob: Observation) -> LegV
 def occurrence_view(
     s: OccurrenceState, ctx: Ctx, answers: Sequence[ProviderAnswer]
 ) -> OccurrenceView:
-    pool = _pool(answers) if answers else None
+    pool = merged_pool(answers) if answers else None
 
     def observed(x: LegProgress) -> tuple[ClassifiedLeg | None, Observation]:
         if pool is None:
             return None, Observation.MISSING
-        cl, ob, _ = _observe(pool, x)
+        cl, ob, _ = observe(pool, x)
         return cl, ob
 
     def legs(xs: Sequence[LegProgress]) -> tuple[LegView, ...]:
@@ -203,17 +204,17 @@ def occurrence_view(
         t = check_transfer(inc, out, station, ctx.profile.transfer_min)
         transfers.append(TransferView(station, t.state, t.margin_min, t.minimum))
 
-    resolved = _resolved(s)
+    resolved = is_resolved(s)
     next_good = None
     if pool is not None and not resolved:
-        x = None if s.lock is None else _unfinished(s.lock)
+        x = None if s.lock is None else unfinished_leg(s.lock)
         if s.lock is None:
-            next_good = _next_good(s, ctx, pool)
-        elif x is not None:  # as `_left_note` names it (7.7, rule 7)
+            next_good = find_next_good(s, ctx, pool)
+        elif x is not None:  # as `left_note` names it (7.7, rule 7)
             i = s.lock.legs.index(x)
-            kept = _observe(pool, s.lock.legs[i - 1])[0] if i else None
+            kept = observe(pool, s.lock.legs[i - 1])[0] if i else None
             if not i or kept is not None:
-                next_good = _next_good(s, ctx, pool, x.train, x.board_station, kept, i)
+                next_good = find_next_good(s, ctx, pool, x.train, x.board_station, kept, i)
 
     return OccurrenceView(
         s.key,

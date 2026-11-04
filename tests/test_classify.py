@@ -287,12 +287,12 @@ def test_check_good_judges_a_cut_short_whose_copy_omits_the_alight():
     from test_board import kw
 
     from train_commute_companion.board import check_good
-    from train_commute_companion.lifecycle import _pool
+    from train_commute_companion.lifecycle import merged_pool
 
     raw = one(r6666())
     short = r6666("BBB", "09:05", stops=["XA"])
     short = replace(short, stops=(short.stops[0], _cut(short.stops[1]), short.stops[2]))
-    pool = _pool([at_(OLDER, raw), at_(NEWER, one(short))])
+    pool = merged_pool([at_(OLDER, raw), at_(NEWER, one(short))])
     g = check_good(raw, pool, **kw())
     assert not g.ok and g.reason == "leg cut_short"
 
@@ -318,14 +318,14 @@ def test_pair_transfer_conflicting_changes_at_one_fetch_take_the_worst(caplog):
 
 
 def test_find_leg_judges_identity_over_every_answer_of_the_pool():
-    from train_commute_companion.lifecycle import _Pool
+    from train_commute_companion.lifecycle import Pool
 
     c = make_connection([R1300, r6666()])
     origin = ProviderAnswer(Query("AAA", "RTD", fetched(NEWER)), (c,), fetched(NEWER))
     other = make_leg("UT", "RTD", "08:50", "09:24", number="1234")  # same onward minute
     transfer = at_(NEWER, one(other))
     # the runtime's origin pool: candidates from the origin, every answer as evidence
-    pool = _Pool(origin.query, (c,), fetched(NEWER), (origin, transfer))
+    pool = Pool(origin.query, (c,), fetched(NEWER), (origin, transfer))
     assert find_leg(pool, r6666().train, "UT") == (None, Observation.UNCERTAIN)
     assert find_leg(origin, r6666().train, "UT")[1] is Observation.SEEN
 

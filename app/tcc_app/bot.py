@@ -15,12 +15,11 @@ from typing import Any, TypeVar
 
 from train_commute_companion.lifecycle import Leaving, NotTravelling
 from train_commute_companion.location import number
-from train_commute_companion.model import Direction
+from train_commute_companion.model import Direction, display_name
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.webhook import WebhookTestResult
 
 from .commands import (
-    _pretty,
     command_word,
     parse_target,
     render_status,
@@ -278,7 +277,7 @@ class Bot:
             except ValueError as e:
                 await self._reply(str(e))
                 return
-            name = _pretty(t.profile_name)
+            name = display_name(t.profile_name)
             if word == "/choose":
                 if t.departure is None:
                     await self._reply(USAGE_CHOOSE)
@@ -317,7 +316,7 @@ class Bot:
         except ValueError:  # unparseable: answered, ignored
             return
         names = {x.profile_id: x.profile_name for x in self._rt.view().directions}
-        name = _pretty(names.get(pid, pid))
+        name = display_name(names.get(pid, pid))
         if tag == "l" and not rest:
             await self._leaving(pid, name, service_date, direction)
         elif tag == "s" and not rest:

@@ -619,7 +619,7 @@ def test_auto_lock_sees_a_cancellation_in_another_answer_of_the_poll():  # 6.2, 
 
 
 def test_auto_lock_left_note_reads_the_newest_copy():  # 6.2, rule 7
-    from train_commute_companion.lifecycle import _Pool
+    from train_commute_companion.lifecycle import Pool
 
     older = make_leg("AAA", "RTD", "08:12", "09:24", number="1234", stops=["BBB", "UT"])
     newer = make_leg(
@@ -629,7 +629,7 @@ def test_auto_lock_left_note_reads_the_newest_copy():  # 6.2, rule 7
     s = occ(None, direction_state=DirectionState.IDLE)
     c = ctx(at("08:15"), DIRECT)  # the older copy left at 08:12 and arrives first
     a, b = ans("AAA", conn(older), when="08:10"), ans("AAA", conn(newer), when="08:11")
-    pool = _Pool(a.query, (*b.connections, *a.connections), b.fetched_at, (a, b))
+    pool = Pool(a.query, (*b.connections, *a.connections), b.fetched_at, (a, b))
     t = on_tick(s, c, pool)
     assert t.state.lock is not None
     assert not any("has left" in e.text for e in t.events)

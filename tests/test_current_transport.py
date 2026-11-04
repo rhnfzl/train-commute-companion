@@ -18,7 +18,7 @@ from test_lifecycle_follow import (
 )
 
 from train_commute_companion.advice import _ridden
-from train_commute_companion.lifecycle import _pool, auto_lock
+from train_commute_companion.lifecycle import auto_lock, merged_pool
 from train_commute_companion.match import route_changed, usual_connection
 from train_commute_companion.news import all_good
 from train_commute_companion.providers.base import ProviderAnswer, Query
@@ -38,7 +38,9 @@ def answer(origin, when, *conns):
 
 def pool():
     # the origin answer still shows B as a train; the newer transfer answer shows the bus
-    return _pool([answer("AAA", "08:00", A, B), answer("UT", "08:01", conn(A2_LATE), conn(B2_BUS))])
+    return merged_pool(
+        [answer("AAA", "08:00", A, B), answer("UT", "08:01", conn(A2_LATE), conn(B2_BUS))]
+    )
 
 
 def test_usual_connection_skips_a_train_that_is_now_a_bus():
@@ -64,7 +66,7 @@ def test_route_change_never_picks_a_bus():
     older = answer("AAA", "08:00", bus_way, train_way)
     newer = answer("BBB", "08:01", conn(replace(x, alternative_transport=True)))
     assert route_changed([L1.train], older, ("UT",)) is bus_way  # still a train
-    assert route_changed([L1.train], _pool([older, newer]), ("UT",)) is train_way
+    assert route_changed([L1.train], merged_pool([older, newer]), ("UT",)) is train_way
 
 
 def test_no_all_good_for_a_locked_train_any_answer_shows_as_a_bus():
@@ -85,7 +87,7 @@ def test_a_locked_train_now_a_bus_alerts_loud_and_relocks():
     t = poll(
         occ(journey([L1, B2])),
         ctx(at("08:02")),
-        *_pool(
+        *merged_pool(
             [answer("AAA", "08:00", A, B), answer("UT", "08:01", conn(A2), conn(B2_BUS))]
         ).answers,
     )

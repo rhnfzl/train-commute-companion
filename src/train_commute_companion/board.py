@@ -7,10 +7,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal, TypedDict, Unpack
 
 from train_commute_companion.classify import (
-    _expected_departure,
     classify_leg,
     current_connection,
     evidence,
+    expected_departure,
     find_leg,
     pair_transfer,
 )
@@ -129,7 +129,7 @@ def choose_replacement(
     # ranked and returned as current copies, judged on the raw ones (their alight stops)
     seen_in = evidence(answer)
     cur = {id(c): current_connection(seen_in, c) for c in pool}
-    ranked = sorted(pool, key=lambda c: _expected_departure(cur[id(c)]))
+    ranked = sorted(pool, key=lambda c: expected_departure(cur[id(c)]))
     good = [c for c in ranked if check_good(c, answer, **kw).ok]
     for c in good:
         if matches_pattern(c, usual_remaining):

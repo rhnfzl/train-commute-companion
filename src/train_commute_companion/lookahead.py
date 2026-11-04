@@ -23,6 +23,7 @@ from train_commute_companion.model import (
     SignatureLeg,
     TrainId,
     TransferState,
+    display_name,
 )
 from train_commute_companion.profile import find_overlaps
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
@@ -81,7 +82,7 @@ class ProbeResult:
 @dataclass(frozen=True, slots=True)
 class LookAheadLedger:
     # "<service date>|<leg index or j>" -> entries; a warn/loud/restored mark ends in
-    # "#<id of the obligation that carries it>", read with _mark/_owner
+    # "#<id of the obligation that carries it>", read with entry_mark/_owner
     per_date: Mapping[str, tuple[str, ...]]
     pending: tuple[Obligation, ...]
     last_run: datetime | None  # last successful run (look-ahead health only)
@@ -248,7 +249,7 @@ def _nearest(conns: Sequence[Connection], ref: datetime) -> Connection | None:
 
 
 def _kind(leg: Leg, alight: str) -> LegKind:
-    # 6.3: a train NS runs as other transport is no train, read as cancelled like `_observe`
+    # 6.3: a train NS runs as other transport is no train, read as cancelled like `observe`
     return LegKind.CANCELLED if leg.alternative_transport else classify_leg(leg, alight).kind
 
 
@@ -494,10 +495,6 @@ def evaluate(
 # ---- the run
 
 
-def _title(p: Profile) -> str:
-    return p.name.replace("_", " ").title()
-
-
 def _clock_text(t: time) -> str:
     return f"{t:%H:%M}"
 
@@ -582,7 +579,7 @@ def _overlaps(
     return bool(find_overlaps([p, *others], start, first))
 
 
-def _mark(entry: str) -> str:
+def entry_mark(entry: str) -> str:
     return entry.partition("#")[0]  # no fingerprint holds "#"
 
 
@@ -610,7 +607,7 @@ def render_message(
         else EventKind.RESTORED
     )
     text = (
-        f"{_title(p)}, {sd:%A} {sd.day} {sd:%b}: "
+        f"{display_name(p.name)}, {sd:%A} {sd.day} {sd:%b}: "
         + ". ".join(dict.fromkeys(t for _, t, _, _ in fs))
         + "."
     )
@@ -805,7 +802,7 @@ def run_lookahead(
             and not r.fingerprint.startswith("pattern:")
             and _differs(signature_of(r.connection, sd), exp, DEP_TOL_MIN, DUR_TOL_MIN)
         )
-        entries = tuple(_mark(x) for x in per_date.get(key, ()))
+        entries = tuple(entry_mark(x) for x in per_date.get(key, ()))
         at = next(
             (
                 i
@@ -895,7 +892,7 @@ def run_lookahead(
                 per_date[k] = (*per_date[k][:i], f"{per_date[k][i]}#{ob.id}", *per_date[k][i + 1 :])
         else:  # the carried facts' marks move to the message that now carries them
             per_date = {
-                k: tuple(f"{_mark(x)}#{ob.id}" if _owner(x) == was else x for x in v)
+                k: tuple(f"{entry_mark(x)}#{ob.id}" if _owner(x) == was else x for x in v)
                 for k, v in per_date.items()
             }
     # 6b. rule 23: copies of one train in one answer that disagree, once per train, date and
@@ -909,11 +906,11 @@ def run_lookahead(
             told.add((sd, tk))
             key = f"{sd.isoformat()}|u:{tk}"
             mark = f"unclear:{u.fingerprint}"
-            marks = [_mark(x) for x in per_date.get(key, ()) if x.startswith("unclear:")]
+            marks = [entry_mark(x) for x in per_date.get(key, ()) if x.startswith("unclear:")]
             if marks and marks[-1] == mark:
                 continue
             fact = f"{key}|{mark}"
-            text = f"{_title(p)}, {sd:%A} {sd.day} {sd:%b}: " + data_unclear_text(
+            text = f"{display_name(p.name)}, {sd:%A} {sd.day} {sd:%b}: " + data_unclear_text(
                 u.label, u.station, u.copies
             )
             event = AlertEvent(
@@ -941,7 +938,7 @@ def run_lookahead(
             EventKind.PROFILE_REFUSED,
             Severity.LOUD,
             None,
-            f"{_title(p)}: profile change refused: {reason}.",
+            f"{display_name(p.name)}: profile change refused: {reason}.",
             f"lookahead|{p.id}|{d.value}|refused|{reason}",
             now,
         )

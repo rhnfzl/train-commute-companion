@@ -53,14 +53,15 @@ from train_commute_companion.lifecycle import (
     LegState,
     NotTravelling,
     OccurrenceState,
+    Pool,
     UserAction,
-    _first_open,
-    _left_note,
-    _Pool,
-    _pool,
     apply_action,
     ends,
+    first_open,
+    is_resolved,
+    left_note,
     location_queries,
+    merged_pool,
     on_location,
     on_poll,
     on_tick,
@@ -73,8 +74,8 @@ from train_commute_companion.lookahead import (
     BaselineHistory,
     LookAheadLedger,
     ProbeResult,
-    _mark,
     carried_ids,
+    entry_mark,
     evaluate,
     forget_pending,
     probe_dates,
@@ -88,6 +89,7 @@ from train_commute_companion.lookahead import (
 from train_commute_companion.match import usual_connection
 from train_commute_companion.messages import CHECK_APP
 from train_commute_companion.model import (
+    LIVE_PREFIX,
     AlertEvent,
     Config,
     Direction,
@@ -101,6 +103,8 @@ from train_commute_companion.model import (
     Signature,
     TrainId,
     UsualJourney,
+    display_name,
+    train_ident,
 )
 from train_commute_companion.news import Fact, all_good, escalations, severity, unsent
 from train_commute_companion.notify import Notifier, WebhookPort
@@ -147,9 +151,6 @@ BACKOFF_MIN = (2, 4, 8)
 # a rejected key: stays at 30 until a success, never stops (the key may be fixed on NS's side)
 BACKOFF_AUTH_MIN = (2, 5, 15, 30)
 _SENT = "sent:"  # delivery-ledger entries in `alert_keys`: fact key -> severity it was sent at
-# fact keys the latest healthy poll reported: a fact that a healthy poll no longer reports has
-# ended, so its delivery entry goes too and the same fact coming back later is news (7.5)
-_LIVE = "live:"
 # ongoing facts a poll restates while they last: a held one holds while its key is live (rule 5)
 _ONGOING = frozenset(
     {
@@ -244,10 +245,6 @@ def _reasons(errors: Sequence[ProfileError]) -> str:
     return "; ".join(f"{e.path}: {e.message}" for e in errors)
 
 
-def _title(name: str) -> str:
-    return name.replace("_", " ").title()
-
-
 def _with_settings(route: Profile, settings: Profile) -> Profile:
     """`route`'s trains with `settings`' settings (7.12 rule 10)."""
 
@@ -293,11 +290,6 @@ def _in_quiet(window: tuple[time, time] | None, now: datetime) -> bool:
         return False
     t, (a, b) = now.astimezone(TZ).time(), window
     return a <= t < b if a <= b else (t >= a or t < b)
-
-
-def _resolved(s: OccurrenceState) -> bool:
-    done = s.direction_state in (DirectionState.DONE, DirectionState.EXPIRED)
-    return s.not_travelling or (done and not s.retained)
 
 
 def _fresh_state(key: OccurrenceKey, revision: int, baseline: int | None) -> OccurrenceState:
@@ -489,8 +481,10 @@ def _covers(x: Obligation, o: Obligation) -> bool:
 
 def _broken(s: OccurrenceState, t: TrainId | None) -> bool:
     """A live break (cancelled, cut short, missing) is held for train `t`."""
-    ident = "" if t is None else f":{_ident(t)}:"
-    return any(key.startswith(_LIVE + b) and ident in key for key in s.alert_keys for b in _BREAKS)
+    ident = "" if t is None else f":{train_ident(t)}:"
+    return any(
+        key.startswith(LIVE_PREFIX + b) and ident in key for key in s.alert_keys for b in _BREAKS
+    )
 
 
 class _View:
@@ -568,7 +562,7 @@ class _View:
                 live.append(f)
                 continue
             date_, leg, rest = parts
-            entries = [_mark(x) for x in led.per_date.get(f"{date_}|{leg}", ())]
+            entries = [entry_mark(x) for x in led.per_date.get(f"{date_}|{leg}", ())]
             last = next(
                 (x for x in reversed(entries) if x.startswith(("warn:", "unclear:", "restored:"))),
                 "",
@@ -683,7 +677,7 @@ class _View:
         p = _find(self._s.config, e.profile_id)
         if p is None or p.name == e.profile_name:
             return e
-        old, new = _title(e.profile_name), _title(p.name)
+        old, new = display_name(e.profile_name), display_name(p.name)
         text = new + e.text[len(old) :] if e.text.startswith((old + ":", old + ",")) else e.text
         return replace(e, profile_name=p.name, text=text)
 
@@ -707,11 +701,11 @@ class _View:
             )
             body = None if c is None else leave_now_text(c, ctx.now.tzinfo)
         elif e.kind is EventKind.NEXT_CONNECTION:
-            pool = _pool(answers)
+            pool = merged_pool(answers)
             for j in (*((s.lock,) if s.lock else ()), *s.retained):
                 i = next((i for i, x in enumerate(j.legs) if x.train == e.train), None)
                 if i is not None:
-                    body = _left_note(s, ctx, pool, j, i).text.partition(": ")[2]
+                    body = left_note(s, ctx, pool, j, i).text.partition(": ")[2]
                     break
         elif e.kind is EventKind.ALL_GOOD:  # with the platform the latest answers give (7.9)
             g = all_good(
@@ -737,7 +731,7 @@ class _View:
         if not live or e.train in {x.train for x in live} or ":retained:" in e.key:
             return e  # a retained warning already names its own next connection (rule 7)
         named = _named(e.key)
-        if named and [_ident(x.train) for x in live][-len(named) :] == named:
+        if named and [train_ident(x.train) for x in live][-len(named) :] == named:
             return e
         head, tail = _twin(e.text)
         if (i := head.find(" Next good connection:")) >= 0:
@@ -867,10 +861,6 @@ def _advice_told(st: PersistedState, told: Sequence[tuple[Obligation, bool]]) ->
     return replace(st, occurrences=occs)
 
 
-def _ident(t: TrainId) -> str:
-    return f"{t.train_number}@{t.planned_departure.isoformat()}"
-
-
 def _named(key: str) -> list[str]:
     """The replacement a journey warning names, by identity, from its key (`_relock`)."""
     part = next((x for x in key.split("|")[1:] if "@" in x and not x.startswith("stated")), "")
@@ -894,7 +884,7 @@ def _states_current(key: str, kind: EventKind, keys: Mapping[str, str]) -> bool:
     return [keys.get(x) for x in slots] == said
 
 
-def _origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> _Pool | None:
+def _origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> Pool | None:
     """Every connection asked from the origin, newest answer first, so an earlier train searched
     for advice and the usual or locked train are judged together (7.6). Every answer of the poll
     is its evidence: each train is read as its current copy, so an older healthy copy never
@@ -909,7 +899,7 @@ def _origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> _Pool | None:
         return None
     asked = next(a for a in answers if a.query.origin == origin).query  # the poll's own query
     conns = tuple(c for a in mine for c in a.connections)
-    return _Pool(asked, conns, mine[0].fetched_at, tuple(answers))
+    return Pool(asked, conns, mine[0].fetched_at, tuple(answers))
 
 
 async def every(clock: Clock, seconds: float, step: Callable[[], Awaitable[None]]) -> None:
@@ -1077,7 +1067,7 @@ class Runtime:
         """A locked leg as the latest answers show it: departure (expected, else planned) and
         its platform, for a message naming it."""
         answers = self._boards.get(k, ())
-        leg = find_leg(_pool(answers), x.train, x.board_station)[0] if answers else None
+        leg = find_leg(merged_pool(answers), x.train, x.board_station)[0] if answers else None
         run = None
         if leg is not None:
             run = current_run(answers, leg.train, x.board_station, x.intended_alight)
@@ -1181,7 +1171,7 @@ class Runtime:
     def _app_obligation(self, kind: EventKind, body: str, now: datetime, tag: str) -> Obligation:
         e = AlertEvent(
             "", _APP, None, None, None, kind, Severity.LOUD, None,
-            f"{_title(_APP)}: {body}", f"{kind.value}:{tag}:{now.isoformat()}", now,
+            f"{display_name(_APP)}: {body}", f"{kind.value}:{tag}:{now.isoformat()}", now,
         )  # fmt: skip
         return self._obligation(e, None, now)
 
@@ -1198,11 +1188,11 @@ class Runtime:
         keys = dict(s.alert_keys)
         if polled:
             emitted = {e.key for e in events}
-            for k in [k for k in keys if k.startswith(_LIVE)]:
-                if k[len(_LIVE) :] not in emitted:
+            for k in [k for k in keys if k.startswith(LIVE_PREFIX)]:
+                if k[len(LIVE_PREFIX) :] not in emitted:
                     keys.pop(k)
-                    keys.pop(_SENT + k[len(_LIVE) :], None)
-            keys.update({_LIVE + k: "1" for k in emitted})
+                    keys.pop(_SENT + k[len(LIVE_PREFIX) :], None)
+            keys.update({LIVE_PREFIX + k: "1" for k in emitted})
         sent = {k[len(_SENT) :]: Severity(v) for k, v in keys.items() if k.startswith(_SENT)}
         out = list(unsent(sent, events))
         facts = [
@@ -1223,7 +1213,7 @@ class Runtime:
         twins = [
             x for x in self._st.occurrences.values()
             if x.key != s.key and x.key.profile_id == s.key.profile_id
-            and x.key.direction is s.key.direction and not _resolved(x)
+            and x.key.direction is s.key.direction and not is_resolved(x)
         ]  # fmt: skip
         obligations = []
         for e in out:
@@ -1779,7 +1769,7 @@ class Runtime:
         s = self._st.occurrences.get(k)
         now = self._clock.now()
         ctx = None if s is None else self._ctx(s, now)
-        if s is None or ctx is None or _resolved(s):
+        if s is None or ctx is None or is_resolved(s):
             return
         followed = s.lock is not None or bool(s.retained)
         if not followed and to_utc(now) >= to_utc(ctx.schedule.window_end):
@@ -1860,7 +1850,7 @@ class Runtime:
             return s.lock.planned_final_arrival
         return None
 
-    def _remember_usual(self, k: str, ctx: Ctx, merged: _Pool) -> None:
+    def _remember_usual(self, k: str, ctx: Ctx, merged: Pool) -> None:
         """Before a lock: what the poll shows of every usual leg (rules 13, 20), each as its
         current copy, so the watchdog judges it on the same terms as a locked leg, never on
         invented timing."""
@@ -1889,7 +1879,7 @@ class Runtime:
         self._before[k] = tuple(out)
 
     def _remember(self, k: str, s: OccurrenceState, answers: Sequence[ProviderAnswer]) -> None:
-        pool = _pool(answers)
+        pool = merged_pool(answers)
         seen = self._seen.setdefault(k, {})
         for j in (*((s.lock,) if s.lock else ()), *s.retained):
             for x in j.legs:
@@ -1959,7 +1949,7 @@ class Runtime:
         legs = self._watched(k, s, ctx, now)
         health = board_health(s.poll_records, now)
         blind, reason = cannot_see(legs, health, now)
-        name = _title(ctx.profile.name)
+        name = display_name(ctx.profile.name)
         out = []
 
         def event(kind: EventKind, body: str, tag: str) -> AlertEvent:
@@ -2008,7 +1998,7 @@ class Runtime:
                 continue
             t = on_tick(s, ctx)
             events = list(t.events)
-            if not _resolved(t.state):
+            if not is_resolved(t.state):
                 events += self._health_events(k, t.state, ctx, now)
             if t.state != s or events:
                 changes[k] = (t.state, events)
@@ -2079,7 +2069,7 @@ class Runtime:
         cands = sorted(
             (
                 s for s in self._st.occurrences.values()
-                if s.key.profile_id == profile_id and not _resolved(s)
+                if s.key.profile_id == profile_id and not is_resolved(s)
                 and service_date in (None, s.key.service_date)
                 and direction in (None, s.key.direction)
             ),
@@ -2088,7 +2078,7 @@ class Runtime:
         named = _find(self._st.config, profile_id) or next(
             (p for s in cands if (p := self._profile_for(s)) is not None), None
         )
-        gone = f"no journey of {_title(named.name if named else profile_id)} is being followed now"
+        gone = f"no journey of {display_name(named.name if named else profile_id)} is being followed now"
         hhmm = f"{departure:%H:%M}"
 
         def named_leg(x: LegProgress) -> bool:
@@ -2119,14 +2109,14 @@ class Runtime:
         else:
             # at a transfer station: target_occurrence would skip it as riding
             occ = next(
-                (s for s in cands if s.lock and 0 < _first_open(s.lock) < len(s.lock.legs)),
+                (s for s in cands if s.lock and 0 < first_open(s.lock) < len(s.lock.legs)),
                 None,
             ) or target_occurrence(cands, Leaving(service_date, now))
             ctx = None if occ is None else self._ctx(occ, now)
             if occ is None or ctx is None:
                 return gone
             w = ctx.schedule
-            n = 0 if occ.lock is None else _first_open(occ.lock)
+            n = 0 if occ.lock is None else first_open(occ.lock)
             lock = occ.lock
             if lock and n:
                 # an onward train continues the kept incoming leg: dated from it, not the window
@@ -2187,7 +2177,7 @@ class Runtime:
         ranked = sorted(found, key=lambda c: to_utc(c.legs[-1].alight.planned_arrival or far))
         # rule 21: a reload during the request may have removed or archived the occurrence
         now_occ = self._st.occurrences.get(k)
-        if now_occ is None or _resolved(now_occ):
+        if now_occ is None or is_resolved(now_occ):
             return gone
         if (now_occ.generation, now_occ.route_revision, now_occ.baseline_version) != mark:
             return "your journey changed while NS answered; try again"
@@ -2236,7 +2226,7 @@ class Runtime:
             s = self._st.occurrences.get(k)
             now = self._clock.now()
             ctx = None if s is None else self._ctx(s, now)
-            if s is None or ctx is None or _resolved(s) or stale(ctx):
+            if s is None or ctx is None or is_resolved(s) or stale(ctx):
                 continue
             gen, p, d = s.generation, ctx.profile, ctx.direction
             got = await self._fetch(Query(p.origin(d), p.destination(d), now), True, None)
@@ -2248,7 +2238,7 @@ class Runtime:
             # never written back from the old copy (rule 21)
             s = self._st.occurrences.get(k)
             ctx = None if s is None else self._ctx(s, now)
-            if s is None or ctx is None or _resolved(s) or stale(ctx):
+            if s is None or ctx is None or is_resolved(s) or stale(ctx):
                 continue
             # an answer asked under another generation is stale; the report itself still counts
             answer = None if isinstance(got, str) or s.generation != gen else got
@@ -2338,7 +2328,7 @@ class Runtime:
             p = _find(new, s.key.profile_id)
             if route is not None and p is not None and _same_route(route, p):
                 rev = new.revision
-            elif s.lock is not None or s.retained or _resolved(s):
+            elif s.lock is not None or s.retained or is_resolved(s):
                 rev = s.route_revision  # locked or riding: runs on its route revision (rule 10)
             else:
                 continue  # not locked yet: created again from the new route when its window opens
@@ -2625,7 +2615,7 @@ class Runtime:
             keys = dict(s.alert_keys)
             for x in s.alert_keys:
                 if x.startswith(_SENT):
-                    keys.setdefault(_LIVE + x[len(_SENT) :], "1")
+                    keys.setdefault(LIVE_PREFIX + x[len(_SENT) :], "1")
             a = s.advice
             # a record saved before `delivered` loads as told; its LEAVE_NOW still owed was not
             if (

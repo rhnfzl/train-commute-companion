@@ -82,6 +82,12 @@ class TimeObs:
     observed_at: datetime
 
 
+# `alert_keys` entries for the fact keys the latest healthy poll reported: a fact that a healthy
+# poll no longer reports has ended, so its delivery entry goes too and the same fact coming back
+# later is news (7.5)
+LIVE_PREFIX = "live:"
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class TrainId:
     operating_date: date
@@ -97,6 +103,10 @@ class TrainId:
 
     def __hash__(self) -> int:
         return hash(self._key())
+
+
+def train_ident(t: TrainId) -> str:
+    return f"{t.train_number}@{t.planned_departure.isoformat()}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,6 +309,10 @@ class Profile:
 
     def destination(self, d: Direction) -> str:
         return self.work_station if d is Direction.OUTBOUND else self.home_station
+
+
+def display_name(name: str) -> str:
+    return name.replace("_", " ").title()
 
 
 @dataclass(frozen=True, slots=True)

@@ -12,8 +12,8 @@ from train_commute_companion.lifecycle import (
     Ctx,
     Journey,
     OccurrenceState,
-    _event,
     announced,
+    make_event,
 )
 from train_commute_companion.messages import all_good_text
 from train_commute_companion.model import (
@@ -29,6 +29,7 @@ from train_commute_companion.model import (
     TrainId,
     TransferCheck,
     TransferState,
+    train_ident,
 )
 from train_commute_companion.providers.base import ProviderAnswer
 from train_commute_companion.transfer import check_transfer
@@ -51,13 +52,9 @@ _SILENT = frozenset(
 Delays = tuple[int | None, int | None]  # (departure, arrival) delay a message last stated
 
 
-def _ident(t: TrainId) -> str:
-    return f"{t.train_number}@{t.planned_departure.isoformat()}"
-
-
 def segment(leg: Leg) -> str:
     """A leg's identity for delay history: the train, by planned departure, over its stops."""
-    return f"{_ident(leg.train)}/{leg.board.code}/{leg.alight.code}"
+    return f"{train_ident(leg.train)}/{leg.board.code}/{leg.alight.code}"
 
 
 def announced_delays(
@@ -104,7 +101,7 @@ def alert_key(
     legs = [
         "/".join(
             (
-                _ident(c.leg.train),
+                train_ident(c.leg.train),
                 c.leg.board.code,
                 c.leg.alight.code,
                 # ok against delayed is the delay itself, which `delays` states by news
@@ -289,4 +286,4 @@ def all_good(s: OccurrenceState, board: Board, ctx: Ctx) -> AlertEvent | None:
         ):
             return None
     legs = [c.leg for c in seen]
-    return _event(ctx, EventKind.ALL_GOOD, Severity.SILENT, all_good_text(legs), legs[0].train)
+    return make_event(ctx, EventKind.ALL_GOOD, Severity.SILENT, all_good_text(legs), legs[0].train)

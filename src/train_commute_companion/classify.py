@@ -41,14 +41,14 @@ def served(s: Stop) -> bool:
     return not s.passing and (not s.cancelled or reported)
 
 
-def _expected_departure(conn: Connection) -> datetime:
+def expected_departure(conn: Connection) -> datetime:
     d = conn.legs[0].board.departure
     t = d.value if d and d.value else d.planned if d else None
     return (t or conn.legs[0].train.planned_departure).astimezone(UTC)
 
 
 def sort_by_expected_departure(conns: Iterable[Connection]) -> list[Connection]:
-    return sorted(conns, key=_expected_departure)
+    return sorted(conns, key=expected_departure)
 
 
 def classify_leg(leg: Leg, alight_station: str) -> ClassifiedLeg:
