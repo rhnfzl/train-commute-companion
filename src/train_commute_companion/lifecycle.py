@@ -8,15 +8,6 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 
-from train_commute_companion.board import (
-    Catchability,
-    GoodCheck,
-    GoodKwargs,
-    catch_from,
-    check_good,
-    choose_replacement,
-    max_transfers,
-)
 from train_commute_companion.calendar import TZ, hhmm, resolve_local, to_utc
 from train_commute_companion.classify import (
     classify_leg,
@@ -63,6 +54,15 @@ from train_commute_companion.model import (
     train_ident,
 )
 from train_commute_companion.providers.base import ProviderAnswer, Query
+from train_commute_companion.replacement import (
+    Catchability,
+    GoodCheck,
+    GoodKwargs,
+    catch_from,
+    check_good,
+    choose_replacement,
+    max_transfers,
+)
 from train_commute_companion.transfer import check_transfer, transfer_minimum
 from train_commute_companion.unclear import disagreement, newest_copies, train_key
 

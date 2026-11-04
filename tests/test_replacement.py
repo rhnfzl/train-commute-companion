@@ -4,16 +4,16 @@ from typing import Any
 
 from builders import AMS, make_connection, make_leg
 
-from train_commute_companion.board import (
+from train_commute_companion.classify import classify_leg
+from train_commute_companion.model import Observation, Provenance
+from train_commute_companion.providers.base import ProviderAnswer, Query
+from train_commute_companion.replacement import (
     Catchability,
     catch_from,
     check_good,
     choose_replacement,
     max_transfers,
 )
-from train_commute_companion.classify import classify_leg
-from train_commute_companion.model import Observation, Provenance
-from train_commute_companion.providers.base import ProviderAnswer, Query
 
 
 def dt(s: str) -> datetime:

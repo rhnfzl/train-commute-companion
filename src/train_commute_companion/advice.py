@@ -4,7 +4,6 @@ import itertools
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, tzinfo
 
-from train_commute_companion.board import GoodKwargs, check_good, choose_replacement, max_transfers
 from train_commute_companion.classify import (
     classify_leg,
     current_connection,
@@ -34,6 +33,12 @@ from train_commute_companion.model import (
     TransferState,
 )
 from train_commute_companion.providers.base import ProviderAnswer, Query
+from train_commute_companion.replacement import (
+    GoodKwargs,
+    check_good,
+    choose_replacement,
+    max_transfers,
+)
 from train_commute_companion.transfer import check_transfer
 
 

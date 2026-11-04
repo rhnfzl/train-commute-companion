@@ -53,7 +53,7 @@ PORTED: dict[str, str] = {
     "board:46": "tests/test_lifecycle_follow.py::test_route_changed_before_boarding_follows_within_cap",
     "board:47": "merged:board:7",
     "board:48": "overridden:6.3",  # 6.3: route_changed needs the usual pattern, which is always known
-    "board:49": "tests/test_board.py::test_buffer_catchability_before_tap_and_after_station_report",
+    "board:49": "tests/test_replacement.py::test_buffer_catchability_before_tap_and_after_station_report",
     "board:50": "overridden:7.12",  # 7.12 rule 2: a locked or retained leg absent from a healthy answer is missing, not news
     "board:51": "tests/test_lifecycle_follow.py::test_cancelled_second_leg_relocks_from_transfer",
     "board:52": "tests/ported/test_lifecycle_follow_rows.py::test_rerouted_journey_later_leg_cancelled_keeps_the_ridden_train",
@@ -84,7 +84,7 @@ PORTED: dict[str, str] = {
     "board:77": "tests/test_news.py::test_all_good_once_when_all_reported_and_ok",
     "board:78": "tests/test_schedule.py::test_window_anchored_on_previous_evening",
     "board:79": "overridden:6.3",  # 6.3: with no lock the query time is the effective departure
-    "board:80": "tests/test_board.py::test_buffer_catchability_before_tap_and_after_station_report",
+    "board:80": "tests/test_replacement.py::test_buffer_catchability_before_tap_and_after_station_report",
     "board:81": "tests/ported/test_board_classify.py::test_cut_short_has_no_arrival_delay_but_keeps_departure_delay",
     "board:82": "overridden:7.12",  # 7.12 rule 2: every unfinished leg is refreshed each poll
     "board:83": "overridden:9",  # 9/6.2: kind comes from stops on the board; no single-train sensors
@@ -104,8 +104,8 @@ PORTED: dict[str, str] = {
     "lifecycle:13": "tests/ported/test_lifecycle_follow_rows.py::test_cancellation_after_planned_arrival_still_alerts_and_moves_the_lock",
     "lifecycle:14": "tests/test_model.py::test_time_before_4am_rolls_to_next_day",
     "lifecycle:15": "overridden:7.12",
-    "lifecycle:16": "tests/test_board.py::test_buffer_catchability_before_tap_and_after_station_report",
-    "lifecycle:17": "tests/test_board.py::test_buffer_catchability_before_tap_and_after_station_report",
+    "lifecycle:16": "tests/test_replacement.py::test_buffer_catchability_before_tap_and_after_station_report",
+    "lifecycle:17": "tests/test_replacement.py::test_buffer_catchability_before_tap_and_after_station_report",
     "lifecycle:18": "overridden:12",
     "lifecycle:19": "tests/test_location.py::test_location_never_silences_alert",
     "lifecycle:20": "tests/test_delivery.py::test_destination_zone_report_stops_repeat_silent_messages",

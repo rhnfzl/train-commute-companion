@@ -284,10 +284,10 @@ def test_pair_transfer_ignores_another_connections_change():
 
 
 def test_check_good_judges_a_cut_short_whose_copy_omits_the_alight():
-    from test_board import kw
+    from test_replacement import kw
 
-    from train_commute_companion.board import check_good
     from train_commute_companion.lifecycle import merged_pool
+    from train_commute_companion.replacement import check_good
 
     raw = one(r6666())
     short = r6666("BBB", "09:05", stops=["XA"])
