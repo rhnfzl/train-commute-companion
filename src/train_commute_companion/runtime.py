@@ -23,7 +23,7 @@ from train_commute_companion.advice import (
     still_advised,
     waiting_is_bad,
 )
-from train_commute_companion.calendar import TZ, resolve_local, to_utc
+from train_commute_companion.calendar import TZ, floor_to_minute, hhmm, resolve_local, to_utc
 from train_commute_companion.classify import current_run, evidence, find_leg
 from train_commute_companion.delivery import (
     APP_WARNINGS,
@@ -750,7 +750,7 @@ class _RuntimeLedger:
         if not left:
             nxt = "Next good connection: {}{}.".format(*rt._leg_now(k, ahead[0]))
         else:
-            now = f"{left[-1].train.planned_departure.astimezone(TZ):%H:%M}"
+            now = hhmm(left[-1].train.planned_departure)
             onward = "".join(
                 f", then the {t} from {x.board_station}{pl}"
                 for x in ahead
@@ -1085,7 +1085,7 @@ class Runtime:
         dep = None if g is None else g.departure
         t = dep.value if dep is not None and dep.value is not None else x.train.planned_departure
         track = None if g is None else g.actual_track or g.planned_track
-        return f"{t.astimezone(TZ):%H:%M}", f" (platform {track})" if track else ""
+        return hhmm(t), f" (platform {track})" if track else ""
 
     def _signature(
         self, p: Profile, d: Direction, sd: date, version: int | None = None
@@ -2099,7 +2099,7 @@ class Runtime:
             (p for s in cands if (p := self._profile_for(s)) is not None), None
         )
         gone = f"no journey of {display_name(named.name if named else profile_id)} is being followed now"
-        hhmm = f"{departure:%H:%M}"
+        named_at = f"{departure:%H:%M}"
 
         def named_leg(x: LegProgress) -> bool:
             t = x.train.planned_departure.astimezone(TZ)
@@ -2155,7 +2155,7 @@ class Runtime:
                 key=to_utc,
             )  # fmt: skip
             if not inside:
-                return f"{hhmm} is outside the {ctx.direction.value} window"
+                return f"{named_at} is outside the {ctx.direction.value} window"
             when = inside[0]
         if occ is None or ctx is None:
             return gone
@@ -2181,18 +2181,18 @@ class Runtime:
         if isinstance(got, str):
             await self._deliver()
             return f"NS did not answer ({got}); try again"
-        minute = to_utc(when).replace(second=0, microsecond=0)
+        minute = floor_to_minute(when)
         same = [
             c for c in got.connections
             if c.legs and c.legs[0].board.code == station
-            and to_utc(c.legs[0].train.planned_departure).replace(second=0, microsecond=0) == minute
+            and floor_to_minute(c.legs[0].train.planned_departure) == minute
         ]  # fmt: skip
         # 6.1: two trains in one boarding minute are uncertain even by number, so check_good refuses
         if len({(c.legs[0].train.operating_date, c.legs[0].train.train_number) for c in same}) > 1:
-            return f"two trains leave {station} at {hhmm}; NS data cannot tell them apart"
+            return f"two trains leave {station} at {named_at}; NS data cannot tell them apart"
         found = [c for c in same if train_number in (None, c.legs[0].train.train_number)]
         if not found:
-            return f"no train at {hhmm} from {station} in NS data"
+            return f"no train at {named_at} from {station} in NS data"
         far = datetime.max.replace(tzinfo=UTC)
         ranked = sorted(found, key=lambda c: to_utc(c.legs[-1].alight.planned_arrival or far))
         # rule 21: a reload during the request may have removed or archived the occurrence

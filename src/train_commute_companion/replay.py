@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-from train_commute_companion.calendar import TZ, resolve_local
+from train_commute_companion.calendar import TZ, hhmm, resolve_local
 from train_commute_companion.lifecycle import Leaving, NotTravelling
 from train_commute_companion.location import LOCATION_KINDS, LocationEvent
 from train_commute_companion.model import Connection
@@ -80,9 +80,9 @@ class PrintNotifier:
 
 
 def _end(
-    lg: dict[str, Any], code: str, hhmm: str, delay: int, day: date, name: str
+    lg: dict[str, Any], code: str, clock: str, delay: int, day: date, name: str
 ) -> dict[str, Any]:
-    planned = _local(hhmm, day, name)
+    planned = _local(clock, day, name)
     actual = (planned.astimezone(UTC) + timedelta(minutes=delay)).astimezone(TZ)
     gone = bool(lg.get("cancelled", False))  # a cancelled stop reports no time
     fmt = "%Y-%m-%dT%H:%M:%S%z"
@@ -172,7 +172,7 @@ class ReplayProvider:
 
 
 def format_event(e: Any) -> str:
-    return f"{e.created_at.astimezone(TZ):%H:%M} {e.severity.name} {e.kind.value}: {e.text}"
+    return f"{hhmm(e.created_at)} {e.severity.name} {e.kind.value}: {e.text}"
 
 
 def _read(path: Path) -> Any:

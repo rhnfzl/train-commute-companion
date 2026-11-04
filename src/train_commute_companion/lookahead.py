@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 
-from train_commute_companion.calendar import TZ, is_commute_day, resolve_local
+from train_commute_companion.calendar import TZ, is_commute_day, minute_of_day, resolve_local
 from train_commute_companion.classify import classify_leg, current_connection, merge_arrivals
 from train_commute_companion.delivery import Obligation
 from train_commute_companion.lifecycle import FOLLOW_LIMIT
@@ -97,10 +97,6 @@ class LookAheadLedger:
 # ---- signatures
 
 
-def _clock_min(t: time) -> int:
-    return t.hour * 60 + t.minute
-
-
 def signature_of(c: Connection, service_date: date) -> Signature:
     legs = []
     for leg in c.legs:
@@ -127,7 +123,7 @@ def signature_text(s: Signature) -> str:
 
 
 def _abs_min(x: SignatureLeg) -> int:
-    return x.day_offset * 1440 + _clock_min(x.departure)
+    return x.day_offset * 1440 + minute_of_day(x.departure)
 
 
 def _duration(s: Signature) -> int:
