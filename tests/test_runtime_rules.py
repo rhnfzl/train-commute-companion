@@ -5,7 +5,7 @@ look-ahead writers, the shared budget, the poll deadline, baselines and health (
 import asyncio
 import json
 from dataclasses import replace
-from datetime import UTC, date, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 from builders import _on_track, make_connection, make_leg, planned_at_alight
@@ -38,11 +38,12 @@ from train_commute_companion.model import (
 from train_commute_companion.providers.base import (
     AuthError,
     MalformedAnswer,
+    PlannedWorks,
     Query,
     RateLimited,
     ServerError,
 )
-from train_commute_companion.runtime import _View
+from train_commute_companion.runtime import Runtime, _View
 from train_commute_companion.serde import dumps, loads
 from train_commute_companion.store import PersistedState
 
@@ -1360,6 +1361,41 @@ async def test_lookahead_retried_each_poll_interval_until_a_run_completes(tmp_pa
         await rig.rt.run_forever()
     assert rig.provider.works_calls == 2
     assert led().last_applied < at("06:10")
+
+
+@pytest.mark.usefixtures("inline_file_reads")
+async def test_lookahead_at_moves_the_daily_run(tmp_path):
+    rig = Rig(tmp_path, "04:00")  # before the default look-ahead time too
+    rig.rt = Runtime(
+        profile_path=rig.path,
+        store=rig.store,
+        provider=rig.provider,
+        notifier=rig.notifier,
+        clock=rig.clock,
+        known_stations=None,
+        lookahead_at=time(7, 12),
+    )
+    first_works: list[datetime] = []
+    plain = rig.provider.planned_works
+
+    async def works() -> PlannedWorks:
+        first_works.append(rig.clock.now())
+        return await plain()
+
+    rig.provider.planned_works = works  # type: ignore[method-assign]
+
+    async def sleep(seconds: float) -> None:
+        await asyncio.sleep(0)
+        if first_works or rig.clock.now() >= at("08:12"):
+            raise Stop
+        rig.clock.jump(min(seconds, 30) / 60)
+
+    rig.clock.sleep = sleep  # type: ignore[method-assign]
+    try:
+        await rig.rt.run_forever()
+    except Stop:
+        pass
+    assert first_works and at("07:12") <= first_works[0] < at("07:12") + timedelta(minutes=1)
 
 
 # --- codex whole-plan review: a retained journey is told from its own position (rule 7) ---

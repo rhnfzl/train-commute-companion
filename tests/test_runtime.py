@@ -1420,46 +1420,6 @@ async def test_now_is_the_runtime_clock(tmp_path):
     assert rig.rt.now() == at("07:50")
 
 
-class _Stop(Exception):
-    pass
-
-
-async def test_lookahead_at_moves_the_daily_run(tmp_path):
-    from datetime import time
-
-    rig = Rig(tmp_path, "04:00")  # before the default look-ahead time too
-    rig.rt = Runtime(
-        profile_path=rig.path,
-        store=rig.store,
-        provider=rig.provider,
-        notifier=rig.notifier,
-        clock=rig.clock,
-        known_stations=None,
-        lookahead_at=time(7, 12),
-    )
-    first_works: list[datetime] = []
-    plain = rig.provider.planned_works
-
-    async def works() -> PlannedWorks:
-        first_works.append(rig.clock.now())
-        return await plain()
-
-    rig.provider.planned_works = works  # type: ignore[method-assign]
-
-    async def sleep(seconds: float) -> None:
-        await asyncio.sleep(0)
-        if first_works or rig.clock.now() >= at("08:12"):
-            raise _Stop
-        rig.clock.jump(min(seconds, 30) / 60)
-
-    rig.clock.sleep = sleep  # type: ignore[method-assign]
-    try:
-        await rig.rt.run_forever()
-    except _Stop:
-        pass
-    assert first_works and at("07:12") <= first_works[0] < at("07:12") + timedelta(minutes=1)
-
-
 # --- choose a train by its time; act reports a miss (7.13, N3) ---
 
 PROFILES_DIR = Path(__file__).parent / "data" / "profiles"
