@@ -17,7 +17,7 @@ location:
 - `source: telegram` reads the position from the live location you share with the bot.
 - `station_radius_m` is the size of every station zone in metres. The default is 150.
 
-Then, in the chat with your bot, tap the attachment button, pick Location, then "Share My Live Location", and choose "until I turn it off". A live location with a time limit stops by itself, and the companion falls back to times alone. Only the chat set in `TELEGRAM_CHAT_ID` is read; a location from any other chat is ignored.
+Then, in the chat with your bot, tap the attachment button, pick Location, then "Share My Live Location", and choose "until I turn it off". A live location with a time limit stops by itself, and the companion falls back to times alone. Only the chat set in `TELEGRAM_CHAT_ID` is read; a location from any other chat is ignored. That chat is one person's, so every position goes to every profile with `source: telegram`. For a second person, run a second copy with its own bot.
 
 ## Stations
 
