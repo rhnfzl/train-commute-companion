@@ -228,7 +228,7 @@ def test_done_main_journey_with_retained_remainder_takes_actions_and_location():
 def located(
     s: OccurrenceState, zone: str, kind: Literal["enter", "leave", "report"], when: str, now: str
 ) -> OccurrenceState:
-    return on_location(s, ctx(at(now)), LocationEvent(zone, kind, at(when), at(when))).state
+    return on_location(s, ctx(at(now)), LocationEvent(zone, kind, at(when))).state
 
 
 def test_leave_after_arrival_is_not_arrival_evidence():  # rule 6 needs presence, 8.4
@@ -258,13 +258,13 @@ def test_progress_changes_raise_the_generation():  # rule 21
     assert end.state.direction_state is DirectionState.DONE
     assert end.state.generation == arrived().generation + 1
     # a missed train with nothing to relock to is still a change
-    e = LocationEvent("AAA", "report", at("08:13"), at("08:13"))
+    e = LocationEvent("AAA", "report", at("08:13"))
     m = on_location(usual_locked(), ctx(at("08:14")), e, ans("AAA", conn(L1, L2), when="08:14"))
     assert m.state.lock is not None and m.state.lock.legs[0].state is LegState.MISSED
     assert m.state.generation == usual_locked().generation + 1
     # the first platform report waives the buffer for the same station lock
     st = replace(usual_locked(), lock=replace(usual_locked().lock, source=LockSource.STATION))
-    e = LocationEvent("AAA", "enter", at("08:00"), at("08:00"))
+    e = LocationEvent("AAA", "enter", at("08:00"))
     a = on_location(st, ctx(at("08:00")), e, ans("AAA", conn(L1, L2), when="08:00"))
     assert a.state.at_station and a.state.generation == st.generation + 1
 

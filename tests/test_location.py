@@ -50,7 +50,7 @@ EARLY = conn(E1, E2)
 
 
 def event(zone: str, kind: str, when: str) -> LocationEvent:
-    return LocationEvent(zone, kind, at(when), at(when))  # type: ignore[arg-type]
+    return LocationEvent(zone, kind, at(when))  # type: ignore[arg-type]
 
 
 def locate(s: OccurrenceState, now: str, e: LocationEvent, *conns: object) -> Transition:

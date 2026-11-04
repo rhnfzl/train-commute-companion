@@ -28,6 +28,10 @@ def all_good_text(legs: Sequence[Leg]) -> str:
     return text + (f", platform {track}." if track else ".")
 
 
+def no_journey_text(name: str) -> str:
+    return f"no journey of {name} is being followed now"
+
+
 def data_unclear_text(label: str, station: str, copies: Sequence[str]) -> str:
     text = f"NS data unclear for {label or 'your train'}{' at ' + station if station else ''}."
     text += "".join(f" Copy {i}: {c}." for i, c in enumerate(copies, 1))

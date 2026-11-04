@@ -31,7 +31,6 @@ class LocationEvent:
     zone: str | None  # a station zone is named by its station code
     kind: LocationKind
     at: datetime  # when the position was taken
-    received_at: datetime
 
 
 def number(v: object) -> float | None:

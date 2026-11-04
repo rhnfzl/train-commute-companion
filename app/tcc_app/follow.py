@@ -121,5 +121,5 @@ class Follower:
         mem.last_at = at
         mem.track, events = next_zone(mem.track, zone, at)
         for name, kind in events:
-            event = LocationEvent(name, kind, fix.at, self._rt.now())
+            event = LocationEvent(name, kind, fix.at)
             await self._rt.location(pid, event, loc, epoch)

@@ -77,7 +77,7 @@ from train_commute_companion.lookahead import (
     service_date,
 )
 from train_commute_companion.match import usual_connection
-from train_commute_companion.messages import CHECK_APP
+from train_commute_companion.messages import CHECK_APP, no_journey_text
 from train_commute_companion.model import (
     LIVE_PREFIX,
     AlertEvent,
@@ -1891,11 +1891,12 @@ class Runtime:
 
     async def act(
         self, profile_id: str, action: UserAction, direction: Direction | None = None
-    ) -> bool:
+    ) -> str | None:
         """`choose`, `leaving` and `not travelling` through the serialised writer (7.13).
         `direction`: only that direction's occurrences are targeted (both share a date).
-        False when nothing was targeted: an unknown profile, or no occurrence to act on. A
-        removed profile still running on an occurrence is known (rule 10)."""
+        None when written; else why not, as `choose_at`: nothing was targeted, an unknown
+        profile or no occurrence to act on. A removed profile still running on an occurrence
+        is known (rule 10)."""
         now = self._clock.now()
         self._create_occurrences(now)
         mine = [
@@ -1905,7 +1906,7 @@ class Runtime:
         target = target_occurrence(mine, action)
         p = None if target is None else self._profile_for(target)
         if target is None or p is None:
-            return False
+            return no_journey_text(display_name(self._shown_name(profile_id)))
         keys = [target.key]
         if isinstance(action, NotTravelling) and action.whole_day:
             keys = list(whole_day_keys(p, target.key))  # its own route revision's day_offset
@@ -1925,10 +1926,22 @@ class Runtime:
                 changes[k] = (t.state, t.events)
         self._apply(changes, keep=True)  # nothing recomputes a user action (rule 22)
         await self._deliver()
-        return True
+        return None
 
-    async def choose(self, profile_id: str, choice: Choose) -> bool:
-        return await self.act(profile_id, choice)
+    async def leaving(
+        self, profile_id: str, service_date: date | None = None, direction: Direction | None = None
+    ) -> str | None:
+        """`act` with a `Leaving` tapped now, by the runtime's own clock."""
+        return await self.act(profile_id, Leaving(service_date, self._clock.now()), direction)
+
+    def _shown_name(self, profile_id: str) -> str:
+        """The name `view` shows for the profile: a removed one keeps its newest occurrence's."""
+        p = _find(self._st.config, profile_id)
+        if p is None:
+            mine = [s for s in self._st.occurrences.values() if s.key.profile_id == profile_id]
+            newest = max(mine, key=lambda s: s.key.service_date, default=None)
+            p = None if newest is None else self._profile_for(newest)
+        return profile_id if p is None else p.name
 
     async def choose_at(
         self,
@@ -1955,7 +1968,7 @@ class Runtime:
         named = _find(self._st.config, profile_id) or next(
             (p for s in cands if (p := self._profile_for(s)) is not None), None
         )
-        gone = f"no journey of {display_name(named.name if named else profile_id)} is being followed now"
+        gone = no_journey_text(display_name(named.name if named else profile_id))
         named_at = f"{departure:%H:%M}"
 
         def named_leg(x: LegProgress) -> bool:
@@ -2077,8 +2090,7 @@ class Runtime:
         why = [refusal(c) for c in choices]
         # the earliest arrival that passes; when none does, the earliest is refused loudly
         i = next((n for n, r in enumerate(why) if r is None), 0)
-        ok = await self.act(profile_id, choices[i], d)
-        return why[i] if ok else gone
+        return why[i] if await self.act(profile_id, choices[i], d) is None else gone
 
     async def location(
         self,

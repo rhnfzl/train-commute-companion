@@ -82,7 +82,7 @@ async def test_run_executes_on_the_runtime_thread(hass, host):
 
 
 async def test_run_awaits_coroutines_and_propagates_errors(hass, host):
-    assert await host.run(lambda rt: rt.act("nobody", NotTravelling(None, False))) is False
+    assert await host.run(lambda rt: rt.act("nobody", NotTravelling(None, False))) is not None
     with pytest.raises(ZeroDivisionError):
         await host.run(lambda rt: 1 / 0)
 

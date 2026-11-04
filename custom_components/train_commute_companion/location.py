@@ -4,7 +4,6 @@ only adds alerts; the zone logic and every consequence of an event live in the c
 import asyncio
 import logging
 from collections.abc import Coroutine, Iterable, Mapping
-from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -202,15 +201,13 @@ class LocationTracker:
                     for name, kind in changes:
                         if not live():  # checked with no await before the dispatch
                             return
-                        event = LocationEvent(name, kind, at, at)
+                        event = LocationEvent(name, kind, at)
 
                         def send(
                             rt: Runtime, msg: LocationEvent = event
                         ) -> Coroutine[Any, Any, None]:
                             # the core rechecks the source after its own request, before any write
-                            return rt.location(
-                                pid, replace(msg, received_at=rt.now()), source, epoch=epoch
-                            )
+                            return rt.location(pid, msg, source, epoch=epoch)
 
                         await host.run(send)
                 except Exception:

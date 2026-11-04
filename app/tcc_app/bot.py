@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from train_commute_companion.location import number
-from train_commute_companion.model import Direction, Leaving, NotTravelling, display_name
+from train_commute_companion.model import Direction, NotTravelling, display_name
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.webhook import WebhookTestResult
 
@@ -285,10 +285,10 @@ class Bot:
                     t.profile_id, name, t.departure, t.train, t.service_date, t.direction
                 )
             elif word == "/leaving":
-                await self._leaving(t.profile_id, name, t.service_date, t.direction)
+                await self._leaving(t.profile_id, t.service_date, t.direction)
             else:
                 whole = t.whole_day or t.direction is None
-                await self._skip(t.profile_id, name, t.service_date, t.direction, whole)
+                await self._skip(t.profile_id, t.service_date, t.direction, whole)
 
     async def _button(self, cb: dict[str, Any]) -> None:
         try:
@@ -317,9 +317,9 @@ class Bot:
         names = {x.profile_id: x.profile_name for x in self._rt.view().directions}
         name = display_name(names.get(pid, pid))
         if tag == "l" and not rest:
-            await self._leaving(pid, name, service_date, direction)
+            await self._leaving(pid, service_date, direction)
         elif tag == "s" and not rest:
-            await self._skip(pid, name, service_date, direction, False)
+            await self._skip(pid, service_date, direction, False)
         elif at is not None and len(rest) <= 2:
             await self._choose(pid, name, at, rest[1] if len(rest) == 2 else None,
                                service_date, direction)  # fmt: skip
@@ -333,18 +333,16 @@ class Bot:
         reason = await self._call(self._rt.choose_at(pid, at, train, day, direction))
         await self._reply(f"Locked the {at:%H:%M} for {name}." if reason is None else reason)
 
-    async def _leaving(
-        self, pid: str, name: str, day: date | None, direction: Direction | None
-    ) -> None:
-        done = await self._call(self._rt.act(pid, Leaving(day, self._rt.now()), direction))
-        await self._reply("Marked as leaving now." if done else _nothing(name))
+    async def _leaving(self, pid: str, day: date | None, direction: Direction | None) -> None:
+        reason = await self._call(self._rt.leaving(pid, day, direction))
+        await self._reply("Marked as leaving now." if reason is None else _nothing(reason))
 
     async def _skip(
-        self, pid: str, name: str, day: date | None, direction: Direction | None, whole: bool
+        self, pid: str, day: date | None, direction: Direction | None, whole: bool
     ) -> None:
-        done = await self._call(self._rt.act(pid, NotTravelling(day, whole), direction))
-        if not done:
-            await self._reply(_nothing(name))
+        reason = await self._call(self._rt.act(pid, NotTravelling(day, whole), direction))
+        if reason is not None:
+            await self._reply(_nothing(reason))
         elif whole:
             await self._reply("Not travelling today: alerts for both directions stop.")
         else:
@@ -389,8 +387,8 @@ class Bot:
         await self._api.call("sendMessage", {"chat_id": self._chat, "text": text, **params})
 
 
-def _nothing(name: str) -> str:
-    return f"Nothing to act on: no journey of {name} is being followed now."
+def _nothing(reason: str) -> str:
+    return f"Nothing to act on: {reason}."
 
 
 def _obj(v: Any) -> dict[str, Any]:

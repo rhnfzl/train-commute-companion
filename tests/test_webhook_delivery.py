@@ -686,7 +686,7 @@ async def test_skip_during_an_in_flight_post_is_never_undone(tmp_path, whole_day
     rig.end.status = 503
     rig.end.gate.set()
     await task
-    assert await skip
+    assert await skip is None
     assert copies(rig, EventKind.CANCELLED) == []
     for written in rig.store.copies[skipped_at:]:  # never restored, not even for a moment
         assert not any(x.obligation.event.kind is EventKind.CANCELLED for x in written)

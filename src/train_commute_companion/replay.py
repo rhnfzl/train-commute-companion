@@ -15,7 +15,7 @@ import yaml
 
 from train_commute_companion.calendar import TZ, hhmm, resolve_local
 from train_commute_companion.location import LOCATION_KINDS, LocationEvent
-from train_commute_companion.model import Connection, Leaving, NotTravelling
+from train_commute_companion.model import Connection, NotTravelling
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
 from train_commute_companion.providers.ns import map_trips
 from train_commute_companion.runtime import Runtime
@@ -259,9 +259,9 @@ async def apply_event(rt: Runtime, e: dict[str, Any], now: datetime) -> None:
         kind = next((k for k in LOCATION_KINDS if k == raw), None)
         if kind is None:
             raise ReplayError(f"location kind {raw!r}: use enter, leave or report")
-        await rt.location(pid, LocationEvent(str(e["location"]), kind, now, now))
+        await rt.location(pid, LocationEvent(str(e["location"]), kind, now))
     elif e.get("action") == "leaving":
-        await rt.act(pid, Leaving(None, now))
+        await rt.leaving(pid)
     elif e.get("action") == "not_travelling":
         await rt.act(pid, NotTravelling(None, bool(e.get("whole_day", False))))
     else:

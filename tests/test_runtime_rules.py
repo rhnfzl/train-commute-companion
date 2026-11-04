@@ -200,7 +200,7 @@ async def test_location_does_not_resurrect_a_skipped_occurrence(tmp_path):
             await rig.rt.act("p1", NotTravelling(mon, False))
 
     rig.provider.hook = skip_first_during_second
-    await rig.rt.location("p1", LocationEvent("home", "leave", rig.clock.now(), rig.clock.now()))
+    await rig.rt.location("p1", LocationEvent("home", "leave", rig.clock.now()))
     assert len(calls) == 2
     s = rig.occ("p1|outbound|2026-10-26")
     assert s is None or s.not_travelling

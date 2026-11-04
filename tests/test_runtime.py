@@ -1461,7 +1461,7 @@ async def test_location_source_changed_during_request_is_not_written(tmp_path, a
         return await real(q)
 
     rig.provider.trips = held
-    event = LocationEvent("UT", "enter", rig.clock.now(), rig.clock.now())
+    event = LocationEvent("UT", "enter", rig.clock.now())
     task = asyncio.create_task(rig.rt.location("p1", event, source))
     await asked.wait()
     rig.write(text=(PROFILES_DIR / f"{after}.yaml").read_text())
@@ -1511,7 +1511,7 @@ async def test_location_source_switched_away_and_back_during_request_is_not_writ
     rig, asked, release = await _switch_rig(tmp_path)
     view = rig.rt.view()
     source, epoch = view.profiles[0].location, view.location_epochs.get("p1", 0)
-    event = LocationEvent("UT", "enter", rig.clock.now(), rig.clock.now())
+    event = LocationEvent("UT", "enter", rig.clock.now())
     task = asyncio.create_task(rig.rt.location("p1", event, source, epoch))
     await asked.wait()
     await _switch_away_and_back(rig)
@@ -1524,7 +1524,7 @@ async def test_location_source_switched_away_and_back_during_request_is_not_writ
 async def test_location_without_epoch_keeps_the_value_check(tmp_path):
     rig, asked, release = await _switch_rig(tmp_path)
     source = rig.rt.view().profiles[0].location
-    event = LocationEvent("UT", "enter", rig.clock.now(), rig.clock.now())
+    event = LocationEvent("UT", "enter", rig.clock.now())
     task = asyncio.create_task(rig.rt.location("p1", event, source))
     await asked.wait()
     await _switch_away_and_back(rig)
@@ -1555,7 +1555,7 @@ async def test_location_epoch_bumps_only_on_location_changes(tmp_path):
 async def test_choose_at_retained_remainder_promotes_ridden_train(tmp_path):  # N3, required
     rig = await one_transfer(tmp_path)
     rig.clock.set("08:18")  # at AAA after the 08:12 left: it may still dwell with the user on it
-    await rig.rt.location("p1", LocationEvent("AAA", "report", at("08:18"), at("08:18")))
+    await rig.rt.location("p1", LocationEvent("AAA", "report", at("08:18")))
     rig.clock.set("08:20")
     await rig.rt.poll_once()
     pre = only_occurrence(rig.rt)
@@ -1576,7 +1576,7 @@ async def test_choose_at_retained_from_missed_transfer_queries_transfer_station(
     rig = await one_transfer(tmp_path)
     await rig.run_until("08:44")
     rig.clock.set("08:53")  # at UT after the delayed 08:46 left: missed transfer, kept retained
-    await rig.rt.location("p1", LocationEvent("UT", "report", at("08:53"), at("08:53")))
+    await rig.rt.location("p1", LocationEvent("UT", "report", at("08:53")))
     pre = only_occurrence(rig.rt)
     assert pre.retained[0].legs[0].train.planned_departure == at("08:46")
     assert await rig.rt.choose_at("p1", time(8, 46)) is None
@@ -1604,7 +1604,7 @@ async def test_station_report_finds_missed_first_train_ns_no_longer_lists(tmp_pa
     rig = await one_transfer(tmp_path)
     departing_from_asked_time(rig)
     rig.clock.set("08:18")  # at AAA after the 08:12 left; a query from AAA now omits it
-    await rig.rt.location("p1", LocationEvent("AAA", "report", at("08:18"), at("08:18")))
+    await rig.rt.location("p1", LocationEvent("AAA", "report", at("08:18")))
     assert EventKind.MISSED_FIRST_TRAIN in kinds(rig.rt.events_log)
     s = only_occurrence(rig.rt)
     assert s.lock.legs[0].train.planned_departure == at("08:44")
@@ -1616,7 +1616,7 @@ async def test_station_report_finds_missed_transfer_ns_no_longer_lists(tmp_path)
     departing_from_asked_time(rig)
     await rig.run_until("08:44")
     rig.clock.set("08:53")  # at UT after the delayed 08:46 left; a query from AAA now omits it
-    await rig.rt.location("p1", LocationEvent("UT", "report", at("08:53"), at("08:53")))
+    await rig.rt.location("p1", LocationEvent("UT", "report", at("08:53")))
     assert EventKind.MISSED_TRANSFER in kinds(rig.rt.events_log)
     assert only_occurrence(rig.rt).retained[0].legs[0].train.planned_departure == at("08:46")
 
@@ -1750,11 +1750,12 @@ async def test_choose_at_target_gone_after_request_returns_reason(tmp_path):
 
 async def test_act_returns_false_for_unknown_profile_or_no_target(tmp_path):
     rig = await one_transfer(tmp_path)
-    assert await rig.rt.act("nobody", NotTravelling(None, False)) is False
-    assert await rig.rt.act("p2", NotTravelling(None, False)) is False  # saturdays only
-    assert await rig.rt.act("p1", NotTravelling(date(2026, 10, 28), False)) is False
+    nobody = await rig.rt.act("nobody", NotTravelling(None, False))
+    assert nobody == "no journey of Nobody is being followed now"
+    assert await rig.rt.act("p2", NotTravelling(None, False)) is not None  # saturdays only
+    assert await rig.rt.act("p1", NotTravelling(date(2026, 10, 28), False)) is not None
     assert not rig.occ().not_travelling
-    assert await rig.rt.act("p1", NotTravelling(None, False)) is True
+    assert await rig.rt.act("p1", NotTravelling(None, False)) is None
     assert rig.occ().not_travelling
 
 
@@ -1766,7 +1767,7 @@ async def test_act_reaches_a_removed_profile_that_still_runs(tmp_path):
     await rig.rt.reload()
     assert rig.rt.config.profiles[0].id == "p2" and len(rig.rt.config.profiles) == 1
     assert rig.occ() is not None  # runs to its end (rule 10)
-    assert await rig.rt.act("p1", NotTravelling(None, False)) is True
+    assert await rig.rt.act("p1", NotTravelling(None, False)) is None
     s = rig.occ()
     assert s.not_travelling and s.direction_state is DirectionState.EXPIRED
 
@@ -1782,7 +1783,7 @@ async def test_whole_day_uses_the_running_route_day_offset(tmp_path):
     rig.write(text=(PROFILES_DIR / "night_return_offset.yaml").read_text())
     await rig.rt.reload()
     assert rig.rt.config.profiles[0].return_.day_offset == 1
-    assert await rig.rt.act("p1", NotTravelling(None, True)) is True
+    assert await rig.rt.act("p1", NotTravelling(None, True)) is None
     assert rig.occ(ret).not_travelling
     # the commute day of the running route: tonight's outbound, not the one of the day before
     assert rig.occ("p1|outbound|2026-10-27").not_travelling
@@ -1793,7 +1794,7 @@ async def test_act_direction_picks_that_direction_on_a_shared_date(tmp_path):
     key = OccurrenceKey("p1", Direction.RETURN, DAY)
     rev = rig.rt.config.revision
     rig.occ_set(_fresh_state(key, rev, None), "p1|return|2026-10-27")
-    assert await rig.rt.act("p1", NotTravelling(DAY, False), Direction.RETURN) is True
+    assert await rig.rt.act("p1", NotTravelling(DAY, False), Direction.RETURN) is None
     assert rig.occ("p1|return|2026-10-27").not_travelling
     assert not rig.occ().not_travelling and rig.occ().lock is not None  # outbound keeps alerting
 
@@ -1870,14 +1871,14 @@ async def test_view_profiles_are_detached_from_the_runtime(tmp_path):
 
 async def test_dated_choose_or_leaving_refused_on_a_skipped_occurrence(tmp_path):
     rig = await one_transfer(tmp_path)
-    assert await rig.rt.act("p1", NotTravelling(None, False)) is True
+    assert await rig.rt.act("p1", NotTravelling(None, False)) is None
     before = rig.occ()
-    assert await rig.rt.act("p1", Leaving(DAY, rig.clock.now())) is False
+    assert await rig.rt.act("p1", Leaving(DAY, rig.clock.now())) is not None
     choice = Choose(DAY, ONE_TRANSFER[1], ())
-    assert await rig.rt.act("p1", choice) is False
+    assert await rig.rt.act("p1", choice) is not None
     assert "is being followed" in await rig.rt.choose_at("p1", time(8, 44), service_date=DAY)
     assert rig.occ() == before and not refused(rig.rt)
-    assert await rig.rt.act("p1", NotTravelling(DAY, False)) is True  # explicit skip still lands
+    assert await rig.rt.act("p1", NotTravelling(DAY, False)) is None  # explicit skip still lands
 
 
 class ThreadSpyPath(Path):  # Path subclasses work on 3.12+

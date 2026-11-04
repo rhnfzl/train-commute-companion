@@ -67,9 +67,7 @@ async def test_choose_service_locks_departure(hass):
 async def test_choose_retained_remainder_the_user_rides(hass):  # review-codex-rev11 N3, required
     h = await setup_tcc(hass, PROFILE, now="08:00")
     await drive(h, "08:18")  # auto lock 08:12
-    await h.host.run(
-        lambda rt: rt.location("p1", LocationEvent("AAA", "report", at("08:18"), at("08:18")))
-    )
+    await h.host.run(lambda rt: rt.location("p1", LocationEvent("AAA", "report", at("08:18"))))
     await drive(h, "08:20")  # rule 7: lock now 08:44, 08:12 retained
     pre = await h.host.run(lambda rt: only_occurrence(rt))
     assert pre.lock.legs[0].train.planned_departure == at("08:44")

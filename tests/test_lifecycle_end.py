@@ -57,7 +57,7 @@ def arrived() -> OccurrenceState:
 
 
 def report(s: OccurrenceState, zone: str, when: str) -> OccurrenceState:
-    e = LocationEvent(zone, "report", at(when), at(when))
+    e = LocationEvent(zone, "report", at(when))
     return on_location(s, ctx(at(when)), e).state
 
 

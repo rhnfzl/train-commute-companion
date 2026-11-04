@@ -9,7 +9,8 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 
-from train_commute_companion.model import Direction, Leaving, NotTravelling
+from train_commute_companion.messages import no_journey_text
+from train_commute_companion.model import Direction, NotTravelling
 from train_commute_companion.runtime import Runtime
 
 from .const import DOMAIN
@@ -80,15 +81,18 @@ async def do_choose(
             direction=direction,
         ),
     )
+    await _refresh_or_refuse(data, reason)
+
+
+async def _refresh_or_refuse(data: TccData, reason: str | None) -> None:
     await data.coordinator.async_request_refresh()
     if reason is not None:
         raise ServiceValidationError(reason)
 
 
-async def _refresh_or_refuse(data: TccData, ok: bool, name: str) -> None:
-    await data.coordinator.async_request_refresh()
-    if not ok:
-        raise ServiceValidationError(f"no journey of {name} is being followed now")
+def _refused_as(name: str, reason: str | None) -> str | None:
+    """These two refusals name the profile as configured, not in the core's display form."""
+    return None if reason is None else no_journey_text(name)
 
 
 async def do_leaving(
@@ -98,11 +102,8 @@ async def do_leaving(
     service_date: date | None,
     direction: Direction | None,
 ) -> None:
-    # the tap time is read on the runtime thread, from the runtime's clock
-    ok = await _call_runtime(
-        data, lambda rt: rt.act(profile_id, Leaving(service_date, rt.now()), direction)
-    )
-    await _refresh_or_refuse(data, ok, name)
+    reason = await _call_runtime(data, lambda rt: rt.leaving(profile_id, service_date, direction))
+    await _refresh_or_refuse(data, _refused_as(name, reason))
 
 
 async def do_not_travelling(
@@ -113,10 +114,10 @@ async def do_not_travelling(
     direction: Direction | None,
     whole_day: bool,
 ) -> None:
-    ok = await _call_runtime(
+    reason = await _call_runtime(
         data, lambda rt: rt.act(profile_id, NotTravelling(service_date, whole_day), direction)
     )
-    await _refresh_or_refuse(data, ok, name)
+    await _refresh_or_refuse(data, _refused_as(name, reason))
 
 
 async def _handle_choose(call: ServiceCall) -> None:
