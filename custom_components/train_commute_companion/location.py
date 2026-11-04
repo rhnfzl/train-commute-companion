@@ -37,9 +37,9 @@ def _num(v: object) -> float | None:
     return f if math.isfinite(f) else None
 
 
-def _fix(state: State | None) -> tuple[float, float] | None:
+def _fix(state: State) -> tuple[float, float] | None:
     """The coordinates of a state; None for unavailable, unknown or a tracker with no GPS."""
-    if state is None or state.state in ("unavailable", "unknown"):
+    if state.state in ("unavailable", "unknown"):
         return None
     lat, lon = _num(state.attributes.get("latitude")), _num(state.attributes.get("longitude"))
     return None if lat is None or lon is None else (lat, lon)
@@ -146,15 +146,14 @@ class LocationTracker:
             entity, epoch = tracked
             self._gen[pid] = gen = object()
             state = self._hass.states.get(entity)  # 7.2: the state found now only seeds the zone
-            if (pos := _fix(state)) is not None and state is not None:
+            if state is not None and (pos := _fix(state)) is not None:
                 at, acc = state.last_updated, _acc(state)
                 self._spawn(self._handle(pid, gen, epoch, pos, at, acc, seed=True), pid)
 
     @callback
     def _on_change(self, event: Event[EventStateChangedData]) -> None:
         new, old = event.data["new_state"], event.data["old_state"]
-        pos = _fix(new)
-        if new is None or pos is None:
+        if new is None or (pos := _fix(new)) is None:
             return
         # an unchanged fix is no news: last_updated also moves on an attribute change (rule 7)
         if old is not None and _fix(old) == pos and _acc(old) == _acc(new):

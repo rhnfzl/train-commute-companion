@@ -556,8 +556,7 @@ class _View:
         joins the legs inside a whole-journey fingerprint."""
         assert o.look_ahead is not None
         led = self._s.lookahead.get(_dkey(o.look_ahead[0], o.look_ahead[1]))
-        fs = self._stored_facts(o)
-        if led is None or not fs:
+        if led is None or not (fs := led.facts.get(o.id)):
             return None
         live = []
         for f in fs:

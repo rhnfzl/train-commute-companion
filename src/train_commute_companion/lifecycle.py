@@ -1144,8 +1144,11 @@ def _follow(
         # at risk warns before a change; once the onward train left, only broken is news
         ahead = nxt is not None and nxt.state not in _DEPARTED
         # 6.1, 7.3: an uncertain leg makes its change at risk, never fine, whatever progress says
-        unsure = Observation.UNCERTAIN in (seen[i][1], seen[i + 1][1]) if nxt else False
-        if nxt is not None and nxt.state is not LegState.DONE and unsure:
+        if (
+            nxt is not None
+            and nxt.state is not LegState.DONE
+            and Observation.UNCERTAIN in (seen[i][1], seen[i + 1][1])
+        ):
             events.append(_at_risk(ctx, x, nxt, "a train is not reliably identified"))
         if cl is None:  # missing or uncertain: reported, never relocked on
             continue
