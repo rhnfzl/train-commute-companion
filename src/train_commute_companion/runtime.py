@@ -111,6 +111,7 @@ from train_commute_companion.providers.base import (
 )
 from train_commute_companion.schedule import dated_schedule, schedules_active
 from train_commute_companion.store import PersistedState, StorageError, Store
+from train_commute_companion.unclear import train_key
 from train_commute_companion.view import (
     DirectionInfo,
     RuntimeView,
@@ -645,7 +646,11 @@ class _View:
                     and still_advised(s, ctx, origin, e.train, ref) is not None
                 )
             return a.withdrawn and not needed(s, ctx, origin, rt._usual_arrival(s, ctx, origin))
-        return True  # choose_refused: the answer to a command the user gave, true as said
+        if e.kind is EventKind.DATA_UNCLEAR:  # while its values are the latest told for its train
+            slot = None if e.train is None else f"unclear#{train_key(e.train)}"
+            return slot is not None and e.key.rpartition(":")[2] == s.alert_keys.get(slot)
+        # the answer to a command the user gave is true as said; a new kind must say what holds it
+        return e.kind is EventKind.CHOOSE_REFUSED
 
     def newer_covers(self, o: Obligation) -> bool:
         return any(_covers(x, o) for x in self._s.obligations)

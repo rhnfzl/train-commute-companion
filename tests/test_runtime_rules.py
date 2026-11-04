@@ -42,6 +42,7 @@ from train_commute_companion.providers.base import (
     RateLimited,
     ServerError,
 )
+from train_commute_companion.runtime import _View
 from train_commute_companion.serde import dumps, loads
 from train_commute_companion.store import PersistedState
 
@@ -2073,3 +2074,27 @@ async def test_partial_relapse_or_recovery_phone_sends_only_live_facts(tmp_path,
     p = rig.rt.config.profiles[0]
     assert got == [render_message(p, o.look_ahead[2], live)]
     assert "back to normal" not in got[0][1] if change == "recovery" else "works" not in got[0][1]
+
+
+async def test_occurrence_data_unclear_holds_only_while_its_values_are_the_latest(tmp_path):
+    rig = await started(tmp_path)
+    rig.notifier.fails = lambda e: True
+    split = [make_connection([planned_at_alight(L1), L2]), make_connection([L1, L2])]
+    moved = [
+        make_connection([planned_at_alight(L1), L2]),
+        make_connection([_on_track(L1, "7"), L2]),
+    ]
+
+    async def poll(hhmm, world):
+        rig.clock.set(hhmm)
+        rig.provider.world = world
+        await rig.rt.poll_once()
+        return [o for o in rig.rt._st.obligations if o.event.kind is EventKind.DATA_UNCLEAR]
+
+    await poll("07:52", [USUAL])
+    (first,) = await poll("07:54", split)
+    view = _View(rig.rt)
+    assert view.fact_holds(first)
+    (second,) = await poll("07:56", moved)
+    assert second.id != first.id and view.fact_holds(second)
+    assert not view.fact_holds(first)  # also when no newer obligation is left to cover it
