@@ -56,9 +56,16 @@ tcc check-profile profiles.yaml
 
 ```bash
 uv run --extra app pytest -q        # core and app tests (the extra installs the MCP SDK)
-uv run ruff check src tests
-uv run mypy --strict src
+uv run --extra app mypy src app/tcc_app
+uv run ruff check src tests tests_ha tests_app custom_components app
+
+# Home Assistant integration: Python 3.14.2+, in its own environment
+export UV_PROJECT_ENVIRONMENT=.venv-ha
+uv run --python 3.14 --group ha pytest tests_ha -q
+uv run --python 3.14 --group ha mypy --explicit-package-bases --namespace-packages -p custom_components.train_commute_companion
 ```
+
+The [Validate workflow](.github/workflows/validate.yml) runs these same commands, and a release runs them before it publishes. Each night it also runs `tests_ha` against the newest Home Assistant test package, because the integration calls private `mobile_app` code.
 
 ## License
 

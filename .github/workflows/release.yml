@@ -7,8 +7,14 @@ on:
 permissions: {}
 
 jobs:
+  validate:
+    uses: ./.github/workflows/validate.yml
+    permissions:
+      contents: read
+
   pypi:
     name: PyPI
+    needs: validate
     runs-on: ubuntu-latest
     # trusted publishing: PyPI trusts this workflow and environment, no token is stored
     environment: pypi

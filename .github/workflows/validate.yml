@@ -6,6 +6,7 @@ on:
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
+  workflow_call:
 
 permissions: {}
 
@@ -26,3 +27,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: home-assistant/actions/hassfest@master
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"  # the Docker image's Python
+      - run: uv run --locked --extra app pytest -q
+      - run: uv run --locked --extra app mypy src app/tcc_app
+      - run: uv run --locked ruff check src tests tests_ha tests_app custom_components app
+      - run: uv run --locked --python 3.14 --group ha pytest tests_ha -q
+        env:
+          UV_PROJECT_ENVIRONMENT: .venv-ha
+      - run: >-
+          uv run --locked --python 3.14 --group ha mypy --explicit-package-bases
+          --namespace-packages -p custom_components.train_commute_companion
+        env:
+          UV_PROJECT_ENVIRONMENT: .venv-ha
+
+  ha-latest:
+    # the integration calls private mobile_app code, so a new HA release can break it unannounced
+    name: Newest Home Assistant
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --python 3.14 --group ha
+      - run: uv pip install --upgrade pytest-homeassistant-custom-component
+      - run: uv run --no-sync pytest tests_ha -q
