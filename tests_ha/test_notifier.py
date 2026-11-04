@@ -117,7 +117,9 @@ async def test_non_phone_target_is_not_called_and_not_delivered(hass):
     assert calls == []
 
 
-@pytest.mark.parametrize("err", [AttributeError("gone"), KeyError("gone")])
+@pytest.mark.parametrize(
+    "err", [AttributeError("gone"), KeyError("gone"), TypeError("gone"), ImportError("gone")]
+)
 async def test_changed_mobile_app_internals_are_a_failed_push(hass, monkeypatch, caplog, err):
     async def boom(*_):
         raise err
@@ -127,6 +129,30 @@ async def test_changed_mobile_app_internals_are_a_failed_push(hass, monkeypatch,
     payload = notify_payload(Severity.LOUD, "x")
     assert await notifier_mod._push(hass, "mobile_app_fake", payload) == (False, False)
     assert "push via notify.mobile_app_fake failed" in caplog.text
+
+
+async def test_changed_relay_signature_is_a_failed_push(hass, monkeypatch, caplog, phone):
+    monkeypatch.setattr(
+        "homeassistant.components.mobile_app.notify._send_message", lambda session: None
+    )
+    payload = notify_payload(Severity.LOUD, "x")
+    assert await notifier_mod.async_push(hass, "mobile_app_phone", payload) is False
+    assert "push via notify.mobile_app_phone failed" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"notify": SimpleNamespace(registered_targets=["hook"]), "config_entries": {}},
+        {"notify": SimpleNamespace(registered_targets={"p": ["hook"]}), "config_entries": {}},
+        {"notify": SimpleNamespace(registered_targets={"p": "hook"}), "config_entries": 1},
+    ],
+)
+async def test_changed_mobile_app_layout_is_no_target(hass, data, caplog):
+    hass.data[notifier_mod.MOBILE_APP] = data
+    assert notifier_mod.mobile_target(hass, "p") is None
+    assert not await notifier_mod.async_push(hass, "p", notify_payload(Severity.LOUD, "x"))
+    assert "notify.p is not a mobile_app phone" in caplog.text
 
 
 async def test_missing_service_returns_false(hass):

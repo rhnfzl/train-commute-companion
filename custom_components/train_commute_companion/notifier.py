@@ -80,8 +80,12 @@ def mobile_target(hass: HomeAssistant, service: str) -> str | None:
     data = hass.data.get(MOBILE_APP)
     if not isinstance(data, dict) or (svc := data.get("notify")) is None:
         return None
-    target = getattr(svc, "registered_targets", {}).get(service)
-    return target if target in data.get("config_entries", {}) else None
+    targets = getattr(svc, "registered_targets", None)
+    entries = data.get("config_entries")
+    if not isinstance(targets, dict) or not isinstance(entries, dict):
+        return None
+    target = targets.get(service)
+    return target if isinstance(target, str) and target in entries else None
 
 
 async def async_push(hass: HomeAssistant, service: str, payload: dict[str, Any]) -> bool:
@@ -102,8 +106,15 @@ async def _push(
         return False, False
     try:
         return await _push_mobile(hass, webhook_id, payload, retired, tasks), False
-    # AttributeError, KeyError: the mobile_app internals _push_mobile reads changed in an HA bump
-    except (HomeAssistantError, TimeoutError, AttributeError, KeyError) as err:
+    # all but the first two: the mobile_app internals _push_mobile uses changed in an HA bump
+    except (
+        HomeAssistantError,
+        TimeoutError,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ImportError,
+    ) as err:
         _LOGGER.warning("push via notify.%s failed: %s", service, repr(err))
         return False, _timeout(err)
 
