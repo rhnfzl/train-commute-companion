@@ -51,7 +51,7 @@ Everything comes from the environment (`.env`):
 | `NS_API_KEY` | your NS key |
 | `TELEGRAM_BOT_TOKEN` | the bot token |
 | `TELEGRAM_CHAT_ID` | the one chat allowed to talk to the bot |
-| `OWNTRACKS_SECRET` | optional; turns on the OwnTracks endpoint |
+| `OWNTRACKS_SECRET` | optional, 16+ printable ASCII characters without spaces; turns on the OwnTracks endpoint |
 | `TCC_HEALTH_TOKEN` | optional, 16+ printable ASCII characters without spaces; lets a caller with `Authorization: Bearer <token>` read the full `/health` report |
 | `TCC_LOOKAHEAD_AT` | when the planned-works look-ahead runs, `HH:MM`, default `06:00` |
 | `TCC_WEBHOOK_URLS` | optional; webhook URLs separated by spaces or commas, for example `http://localhost:8644/webhooks/commute` |

@@ -18,7 +18,7 @@ from test_runtime import PROFILES_DIR, at
 from train_commute_companion.calendar import TZ
 from train_commute_companion.profile import check_lines
 
-SECRET = "test-secret"
+SECRET = "test-owntracks-secret-0001"
 
 
 @pytest.mark.parametrize(

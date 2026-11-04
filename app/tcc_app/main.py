@@ -101,20 +101,22 @@ class Settings:
         if webhook_urls:  # a secret or token without URLs is ignored
             webhook_secret = _required(env, "TCC_WEBHOOK_SECRET")
             webhook_token = _optional(env, "TCC_WEBHOOK_TOKEN") or ""
-            for name, value, check in (
-                ("TCC_WEBHOOK_SECRET", webhook_secret, check_secret),
-                ("TCC_WEBHOOK_TOKEN", webhook_token, check_token),
-            ):
-                try:
-                    if value:
-                        check(value)
-                except ValueError as e:
-                    raise ValueError(f"{name} {e}") from None
+        owntracks_secret = _optional(env, "OWNTRACKS_SECRET")
+        for name, value, check in (
+            ("OWNTRACKS_SECRET", owntracks_secret, check_token),
+            ("TCC_WEBHOOK_SECRET", webhook_secret, check_secret),
+            ("TCC_WEBHOOK_TOKEN", webhook_token, check_token),
+        ):
+            try:
+                if value:
+                    check(value)
+            except ValueError as e:
+                raise ValueError(f"{name} {e}") from None
         return Settings(
             ns_key,
             bot_token,
             chat_id,
-            _optional(env, "OWNTRACKS_SECRET"),
+            owntracks_secret,
             Path(_optional(env, "TCC_PROFILES") or "/config/profiles.yaml"),
             Path(_optional(env, "TCC_STATE_DIR") or "/data"),
             lookahead_at,

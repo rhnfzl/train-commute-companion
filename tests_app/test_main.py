@@ -66,10 +66,10 @@ def test_settings_from_env_defaults_and_refusals():
     with pytest.raises(ValueError, match="TELEGRAM_CHAT_ID") as e:
         Settings.from_env({**ENV, "TELEGRAM_CHAT_ID": "abc"})
     assert "abc" not in str(e.value)
-    s = Settings.from_env({**ENV, "TELEGRAM_CHAT_ID": "1000001", "OWNTRACKS_SECRET": "test-secret",
+    s = Settings.from_env({**ENV, "TELEGRAM_CHAT_ID": "1000001", "OWNTRACKS_SECRET": "test-owntracks-secret-0001",
                            "TCC_PROFILES": "/x/p.yaml", "TCC_STATE_DIR": "/y"})  # fmt: skip
     assert (s.chat_id, s.owntracks_secret, s.profiles, s.state_dir) == (
-        CHAT, "test-secret", Path("/x/p.yaml"), Path("/y")
+        CHAT, "test-owntracks-secret-0001", Path("/x/p.yaml"), Path("/y")
     )  # fmt: skip
     s = Settings.from_env({**ENV, "TCC_LOOKAHEAD_AT": "05:30"})
     assert s.lookahead_at == time(5, 30)
@@ -87,6 +87,13 @@ def test_settings_health_token_optional_and_checked():
                 "test-health-token\n01", "test-health-token\x0701"]:  # fmt: skip
         with pytest.raises(ValueError, match="TCC_HEALTH_TOKEN") as e:
             Settings.from_env({**ENV, "TCC_HEALTH_TOKEN": bad})
+        assert bad not in str(e.value)
+
+
+def test_settings_owntracks_secret_checked():
+    for bad in ["short", "tést-owntracks-secret", "test-owntracks secret-01"]:
+        with pytest.raises(ValueError, match="OWNTRACKS_SECRET must be at least 16") as e:
+            Settings.from_env({**ENV, "OWNTRACKS_SECRET": bad})
         assert bad not in str(e.value)
 
 
