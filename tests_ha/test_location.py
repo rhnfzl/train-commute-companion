@@ -190,6 +190,43 @@ async def test_an_enter_starts_the_report_timer(hass):
     assert await spied(h) == [("UT", "enter"), ("UT", "report")]
 
 
+async def test_a_fix_inside_the_report_timer_is_dropped_not_deferred(hass):
+    h = await setup_tcc(hass, VIA_UT, now="08:00")
+    await start_tracker(h)
+    await drive(h, "08:11")
+    set_person(hass, 52.0, 5.0)  # in AAA's station zone, before the 08:12 leaves
+    assert await spied(h) == [("AAA", "enter")]
+    harness.FREEZER.tick(90)  # after the departure, inside the timer the enter started
+    set_person(hass, 52.00001, 5.0)
+    set_person(hass, 52.00001, 5.0, battery_level=50)  # a still phone: no new fix
+    await drive(h, "08:18")
+    assert await spied(h) == [("AAA", "enter")]
+    assert not any("missed" in c.data["message"].lower() for c in h.pushes), texts(h)
+    set_person(hass, 52.00002, 5.0)  # only the next moved fix reports
+    await drive(h, "08:20")
+    assert await spied(h) == [("AAA", "enter"), ("AAA", "report")]
+    assert any("missed" in c.data["message"].lower() and loud(c) for c in h.pushes), texts(h)
+
+
+async def test_a_failed_enter_starts_no_report_timer(hass):
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    host = h.entry.runtime_data.host
+    spy = await host.run(lambda rt: rt.location)
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("inner failure")
+
+    await host.run(lambda rt: setattr(rt, "location", broken))
+    set_person(hass, 52.1, 5.1)
+    await hass.async_block_till_done()
+    await host.run(lambda rt: setattr(rt, "location", spy))
+    harness.FREEZER.tick(5)
+    set_person(hass, 52.10001, 5.1)
+    assert await spied(h) == [("UT", "report")]  # the core hears the user is here after all
+
+
 async def test_attribute_change_with_old_coordinates_sends_nothing(hass):
     h = await setup_tcc(hass, VIA_UT, now="08:00")
     set_person(hass, 52.0, 5.0)  # in AAA's zone before the train

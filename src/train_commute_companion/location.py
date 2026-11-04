@@ -92,7 +92,9 @@ def next_zone(
 ) -> tuple[ZoneTrack, list[tuple[str, LocationKind]]]:
     """The track after a fix in `zone`, and its events: leave then enter on a change, else a
     report once per `REPORT_EVERY`. An enter already says the user is there, so it starts the
-    timer: a report seconds later would spend a live request to tell the core nothing new."""
+    timer: a report seconds later would spend a live request to tell the core nothing new. The
+    cost: a throttled fix is dropped, not deferred, so one just after a departure raises no
+    missed leg (rule 7) until a later fix in the zone, however long that takes."""
     events: list[tuple[str, LocationKind]] = []
     if zone != track.zone:
         if track.zone is not None:
@@ -106,3 +108,8 @@ def next_zone(
     # the last event, if any, is this zone's enter or report; a plain leave starts no timer
     started = {zone: at} if zone is not None and events else {}
     return ZoneTrack(zone, {**track.reported, **started}), events
+
+
+def undelivered(track: ZoneTrack) -> ZoneTrack:
+    """`track` when its fix never reached the core: the next fix in its zone reports at once."""
+    return ZoneTrack(track.zone, {z: t for z, t in track.reported.items() if z != track.zone})

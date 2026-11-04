@@ -21,6 +21,7 @@ from train_commute_companion.location import (
     resolve_zone,
     seed_zone,
     station_zones,
+    undelivered,
 )
 from train_commute_companion.model import Profile
 from train_commute_companion.runtime import Runtime
@@ -197,18 +198,25 @@ class LocationTracker:
                     return
                 track = self._tracks.get(pid, ZoneTrack())  # never seeded: no zone to leave
                 self._tracks[pid], changes = next_zone(track, zone, at)
-                for name, kind in changes:
-                    if not live():  # checked with no await before the dispatch
-                        return
-                    event = LocationEvent(name, kind, at, at)
+                try:
+                    for name, kind in changes:
+                        if not live():  # checked with no await before the dispatch
+                            return
+                        event = LocationEvent(name, kind, at, at)
 
-                    def send(rt: Runtime, msg: LocationEvent = event) -> Coroutine[Any, Any, None]:
-                        # the core rechecks the source after its own request, before any write
-                        return rt.location(
-                            pid, replace(msg, received_at=rt.now()), source, epoch=epoch
-                        )
+                        def send(
+                            rt: Runtime, msg: LocationEvent = event
+                        ) -> Coroutine[Any, Any, None]:
+                            # the core rechecks the source after its own request, before any write
+                            return rt.location(
+                                pid, replace(msg, received_at=rt.now()), source, epoch=epoch
+                            )
 
-                    await host.run(send)
+                        await host.run(send)
+                except Exception:
+                    if pid in self._tracks:  # a source change meanwhile has dropped this track
+                        self._tracks[pid] = undelivered(self._tracks[pid])
+                    raise
             except RuntimeNotRunning:
                 _LOGGER.debug("location event dropped: the runtime is not running")
             except Exception:
