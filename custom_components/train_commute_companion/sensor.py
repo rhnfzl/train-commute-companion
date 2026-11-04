@@ -19,6 +19,7 @@ from .data import TccConfigEntry
 from .entity import TccEntity, health_state, pick, sync_entities, unique_id
 
 type Fn = Callable[[RuntimeView, str, Direction | None, int | None], Any]
+type AttrsFn = Callable[[RuntimeView, str, Direction | None, int | None], dict[str, Any]]
 
 
 def _prim(v: Any) -> Any:
@@ -141,7 +142,7 @@ def _next_attrs(view: RuntimeView, pid: str, d: Direction | None, n: int | None)
 
 
 # key -> (state, attributes, device class); the functions read one view and return plain values
-SPECS: dict[str, tuple[Fn, Fn, SensorDeviceClass | None]] = {
+SPECS: dict[str, tuple[Fn, AttrsFn, SensorDeviceClass | None]] = {
     "status": (
         lambda v, p, d, n: o.direction_state.value if (o := _occ(v, p, d)) else "none",
         _status,

@@ -60,6 +60,11 @@ line-length = 100
 [tool.mypy]
 strict = true
 
+# HA swaps probatio in as voluptuous at runtime, which mypy cannot see: skip the real package
+[[tool.mypy.overrides]]
+module = "voluptuous.*"
+follow_imports = "skip"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests", "tests_app"]

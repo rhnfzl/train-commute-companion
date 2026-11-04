@@ -120,8 +120,9 @@ class _TestPushMixin:
     hass: HomeAssistant
     _service: str = ""
     _style: str = DEFAULT_LOUD_STYLE
-    # each flow defines _failed(): the form to show again when a test push fails
+    _failed: Callable[[], ConfigFlowResult]  # the form to show again when a test push fails
     _back: str  # the step the menu's "pick another target" returns to
+    async_show_menu: Callable[..., ConfigFlowResult]  # from the flow class it is mixed into
 
     async def _test_menu(self) -> ConfigFlowResult:
         if not await send_tests(self.hass, self._service, self._style):
@@ -140,7 +141,7 @@ class _TestPushMixin:
         return await self._test_menu()
 
 
-class TccConfigFlow(_TestPushMixin, ConfigFlow, domain=DOMAIN):  # type: ignore[misc]
+class TccConfigFlow(_TestPushMixin, ConfigFlow, domain=DOMAIN):
     VERSION = 1
     _back = "notify"
 
@@ -243,7 +244,7 @@ class TccConfigFlow(_TestPushMixin, ConfigFlow, domain=DOMAIN):  # type: ignore[
         )
 
 
-class TccOptionsFlow(_TestPushMixin, OptionsFlowWithReload):  # type: ignore[misc]
+class TccOptionsFlow(_TestPushMixin, OptionsFlowWithReload):
     _back = "settings"
 
     def __init__(self) -> None:

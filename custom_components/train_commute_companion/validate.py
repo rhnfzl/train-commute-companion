@@ -58,7 +58,9 @@ async def validate_file(hass: HomeAssistant, path: str, known: frozenset[str] | 
         loc = p.location
         if loc is None or loc.source != "ha":
             continue
-        checks = [(f"{p.name}.location.entity", loc.entity or "", PERSON_DOMAINS)]
+        checks: list[tuple[str, str, tuple[str, ...]]] = [
+            (f"{p.name}.location.entity", loc.entity or "", PERSON_DOMAINS)
+        ]
         zones = dict(loc.zones)
         zones.setdefault("home", "zone.home")  # an unmapped home is HA's own home zone
         checks += [(f"{p.name}.location.zones.{r}", z, ("zone",)) for r, z in zones.items()]

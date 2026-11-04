@@ -8,7 +8,7 @@ import logging
 import threading
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, cast, overload
 
 import httpx
 
@@ -66,7 +66,9 @@ def _serve(loop: asyncio.AbstractEventLoop) -> None:
         loop.run_forever()
     finally:
         # to_thread's asyncio_N workers end with the loop (close() does not wait); 5 s < join's 10 s
-        loop.run_until_complete(loop.shutdown_default_executor(timeout=5))
+        # typeshed leaves timeout off AbstractEventLoop; the concrete loops take it
+        concrete = cast(asyncio.BaseEventLoop, loop)
+        loop.run_until_complete(concrete.shutdown_default_executor(timeout=5))
         # closed by its own thread, so a thread that outlives stop() still cleans up when it ends
         loop.close()
 
@@ -97,6 +99,12 @@ class RuntimeHost:
                 self._task.add_done_callback(_log_crash)
 
         await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(boot(), loop))
+
+    @overload
+    async def run[T](self, fn: Callable[[Runtime], Awaitable[T]]) -> T: ...
+
+    @overload
+    async def run[T](self, fn: Callable[[Runtime], T]) -> T: ...
 
     async def run[T](self, fn: Callable[[Runtime], Awaitable[T] | T]) -> T:
         loop, parts = self._loop, self._parts
