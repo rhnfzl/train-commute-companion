@@ -35,7 +35,7 @@ from train_commute_companion.match import (
     route_changed,
     usual_connection,
 )
-from train_commute_companion.messages import body as message_body
+from train_commute_companion.messages import data_unclear_text
 from train_commute_companion.model import (
     AdviceRecord,
     AlertEvent,
@@ -1403,9 +1403,7 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
         if u is None or s.alert_keys.get(slot) == u.fingerprint:
             continue
         s = replace(s, alert_keys={**s.alert_keys, slot: u.fingerprint})
-        text = on + message_body(
-            EventKind.DATA_UNCLEAR, label=u.label, station=u.station, copies=u.copies
-        )
+        text = on + data_unclear_text(u.label, u.station, u.copies)
         event = _event(ctx, EventKind.DATA_UNCLEAR, Severity.LOUD, text, x.train)
         date_ = ctx.schedule.key.service_date.isoformat()
         key = f"{EventKind.DATA_UNCLEAR.value}:{date_}:{tk}:{u.fingerprint}"

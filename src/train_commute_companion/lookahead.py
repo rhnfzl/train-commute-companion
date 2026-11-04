@@ -9,7 +9,7 @@ from train_commute_companion.classify import classify_leg, current_connection, m
 from train_commute_companion.delivery import Obligation
 from train_commute_companion.lifecycle import FOLLOW_LIMIT
 from train_commute_companion.match import matches_pattern, usual_connection
-from train_commute_companion.messages import body as message_body
+from train_commute_companion.messages import data_unclear_text
 from train_commute_companion.model import (
     AlertEvent,
     Connection,
@@ -910,8 +910,8 @@ def run_lookahead(
             if marks and marks[-1] == mark:
                 continue
             fact = f"{key}|{mark}"
-            text = f"{_title(p)}, {sd:%A} {sd.day} {sd:%b}: " + message_body(
-                EventKind.DATA_UNCLEAR, label=u.label, station=u.station, copies=u.copies
+            text = f"{_title(p)}, {sd:%A} {sd.day} {sd:%b}: " + data_unclear_text(
+                u.label, u.station, u.copies
             )
             event = AlertEvent(
                 p.id, p.name, d, sd, None, EventKind.DATA_UNCLEAR, Severity.LOUD, None, text,

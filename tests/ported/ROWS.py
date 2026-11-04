@@ -20,7 +20,7 @@ PORTED: dict[str, str] = {
     "board:13": "tests/ported/test_board_classify.py::test_mixed_board_classifies_each_row_by_its_own_stops",
     "board:14": "tests/test_classify.py::test_other_operating_date_is_uncertain",
     "board:15": "tests/test_lifecycle_follow.py::test_cut_short_first_leg_before_transfer_station",
-    "board:16": "tests/test_messages.py::test_cut_short_text_never_says_cancelled",
+    "board:16": "tests/test_lifecycle_follow.py::test_cut_short_first_leg_before_transfer_station",
     "board:17": "tests/ported/test_rows_cut_short_advice.py::test_cut_short_with_no_listed_connection_keeps_the_lock",
     "board:18": "tests/test_lifecycle_follow.py::test_cancelled_first_leg_relocks_whole_journey",
     "board:19": "overridden:7.2",  # 7.2: the auto lock picks the usual connection, no rotating subject
@@ -71,7 +71,7 @@ PORTED: dict[str, str] = {
     "board:64": "merged:board:55",
     "board:65": "tests/test_lifecycle_end.py::test_repeated_estimate_before_its_time_does_not_end_journey",
     "board:66": "overridden:12",  # 12: work-from-home hints are not ported
-    "board:67": "tests/test_messages.py::test_message_starts_with_profile_and_names_leg",
+    "board:67": "tests/test_news.py::test_all_good_once_when_all_reported_and_ok",
     "board:68": "tests/test_advice.py::test_off_by_default_outbound",
     "board:69": "tests/test_lifecycle_follow.py::test_queries_cover_retained_and_restorable",
     "board:70": "tests/test_schedule.py::test_auto_lock_time",
@@ -81,7 +81,7 @@ PORTED: dict[str, str] = {
     "board:74": "tests/test_schedule.py::test_active_uses_baseline",
     "board:75": "tests/test_lifecycle_end.py::test_window_closed_with_no_lock_stops_following",
     "board:76": "overridden:7.10",  # 7.10: baselines are signatures in state, not parsed strings
-    "board:77": "tests/test_messages.py::test_message_starts_with_profile_and_names_leg",
+    "board:77": "tests/test_news.py::test_all_good_once_when_all_reported_and_ok",
     "board:78": "tests/test_schedule.py::test_window_anchored_on_previous_evening",
     "board:79": "overridden:6.3",  # 6.3: with no lock the query time is the effective departure
     "board:80": "tests/test_board.py::test_buffer_catchability_before_tap_and_after_station_report",

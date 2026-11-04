@@ -15,7 +15,7 @@ from train_commute_companion.lifecycle import (
     _event,
     announced,
 )
-from train_commute_companion.messages import body
+from train_commute_companion.messages import all_good_text
 from train_commute_companion.model import (
     AlertEvent,
     ClassifiedLeg,
@@ -293,6 +293,4 @@ def all_good(s: OccurrenceState, board: Board, ctx: Ctx) -> AlertEvent | None:
         ):
             return None
     legs = [c.leg for c in seen]
-    return _event(
-        ctx, EventKind.ALL_GOOD, Severity.SILENT, body(EventKind.ALL_GOOD, legs=legs), legs[0].train
-    )
+    return _event(ctx, EventKind.ALL_GOOD, Severity.SILENT, all_good_text(legs), legs[0].train)
