@@ -7,7 +7,7 @@ import asyncio
 import copy
 import logging
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -763,6 +763,18 @@ async def every(clock: Clock, seconds: float, step: Callable[[], Awaitable[None]
         now = to_utc(clock.now())
         due = max(due, now)
         await clock.sleep((due - now).total_seconds())
+
+
+async def _run_together(*steps: Coroutine[Any, Any, None]) -> None:
+    """`gather` that owns its children: when one raises, the error propagates as it is and the
+    others are cancelled and awaited first; a plain gather would leave them running."""
+    tasks = [asyncio.create_task(s) for s in steps]
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class Runtime:
@@ -2546,7 +2558,7 @@ class Runtime:
         async def main() -> None:
             if not started:
                 await self.start()
-            await asyncio.gather(
+            await _run_together(
                 every(c, POLL_EVERY_S, self.poll_once),
                 every(c, FILE_EVERY_S, self.check_file),
                 daily(),
@@ -2555,6 +2567,6 @@ class Runtime:
         # main first: start() loads the store before its first await, so the watchdog never
         # judges the empty state
         try:
-            await asyncio.gather(main(), every(c, WATCHDOG_EVERY_S, self.watchdog_once))
+            await _run_together(main(), every(c, WATCHDOG_EVERY_S, self.watchdog_once))
         finally:
             await self._stop_posting()

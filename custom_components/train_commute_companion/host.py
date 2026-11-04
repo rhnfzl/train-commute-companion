@@ -132,7 +132,7 @@ class RuntimeHost:
                 tasks: list[asyncio.Future[Any]] = [t for t in asyncio.all_tasks() if t is not me]
                 for t in tasks:
                     t.cancel()
-                # a crashed run_forever leaves its siblings (the watchdog) running
+                # the runtime and any call still in flight through `run`
                 await asyncio.gather(*tasks, return_exceptions=True)
             finally:
                 try:

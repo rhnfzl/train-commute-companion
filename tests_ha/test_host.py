@@ -117,9 +117,8 @@ async def test_real_crash_then_stop_leaves_no_task_or_thread(hass, tmp_path):
     pending = await host.run(
         lambda rt: [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     )
-    assert pending  # the watchdog outlived run_forever
+    assert not pending  # run_forever took its watchdog with it
     await host.stop()
-    assert all(t.done() for t in pending)
     assert closed == [True]
     assert no_runtime_thread()
 

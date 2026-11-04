@@ -1204,6 +1204,27 @@ async def test_no_station_list_runs_the_saved_configuration_and_waits_on_edits(t
     assert rt.config.profiles[0].name == "office_x" and saved == [frozenset({"AAA", "UT", "RTD"})]
 
 
+async def test_run_forever_leaves_no_task_when_start_raises(tmp_path):
+    rig = Rig(tmp_path)
+
+    class Boom(Exception):
+        pass
+
+    async def boom() -> None:
+        await asyncio.sleep(0)  # the watchdog is running by now
+        raise Boom
+
+    async def really_yield(_: float) -> None:
+        await asyncio.sleep(0)
+
+    rig.rt.start = boom  # type: ignore[method-assign]
+    rig.clock.sleep = really_yield  # type: ignore[method-assign]
+    before = asyncio.all_tasks()
+    with pytest.raises(Boom):  # never wrapped: the shells log and judge the crash by it
+        await rig.rt.run_forever()
+    assert asyncio.all_tasks() == before
+
+
 def test_run_starts_without_a_station_list(tmp_path, monkeypatch):
     from train_commute_companion import cli
 
