@@ -13,14 +13,14 @@ ZONE = timedelta(minutes=30)
 FAILED_POLLS = 2
 
 
-PollError = Literal["auth", "rate", "provider", "parse", "timeout"]
+PollFailure = Literal["auth", "rate", "provider", "parse", "timeout"]
 
 
 @dataclass(frozen=True, slots=True)
 class PollRecord:
     at: datetime
     ok: bool
-    error: PollError | None
+    error: PollFailure | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +55,7 @@ def board_health(records: Sequence[PollRecord], now: datetime) -> BoardHealth:
     return BoardHealth(fresh, last_ok, failures, auth)
 
 
-def cannot_see(legs: Sequence[WatchedLeg], health: BoardHealth, now: datetime) -> tuple[bool, str]:
+def blindness(legs: Sequence[WatchedLeg], health: BoardHealth, now: datetime) -> tuple[bool, str]:
     now = to_utc(now)
     board_reason = None
     if not health.fresh:

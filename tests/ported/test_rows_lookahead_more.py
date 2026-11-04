@@ -13,9 +13,9 @@ from lookahead_fixtures import (
 from test_lookahead_rows import HISTORY, week
 
 from train_commute_companion.lookahead import (
-    encode,
     probe_dates,
     signature_of,
+    signature_text,
 )
 from train_commute_companion.model import EventKind
 
@@ -25,7 +25,7 @@ def test_winter_trips_are_read_in_local_time():
     assert rs and all(r.fingerprint not in ("", "no_service") for r in rs)
     assert all(not r.works for r in rs)
     whole = next(r for r in rs if r.leg_index is None)
-    assert encode(signature_of(whole.connection, TUE)).startswith("AAA>UT@08:12+0/28")
+    assert signature_text(signature_of(whole.connection, TUE)).startswith("AAA>UT@08:12+0/28")
 
 
 def test_a_three_minute_shift_on_one_day_only_is_quiet():

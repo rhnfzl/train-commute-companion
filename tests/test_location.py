@@ -27,7 +27,7 @@ from train_commute_companion.lifecycle import (
     LockSource,
     OccurrenceState,
     Transition,
-    ends,
+    may_archive,
     on_location,
     on_poll,
     on_tick,
@@ -115,7 +115,7 @@ def test_location_never_silences_alert():  # safety fixture
     s = locate(s, "08:00", event("AAA", "enter", "08:00"), USUAL).state
     assert s.at_station and s.lock is not None and s.lock.source is LockSource.STATION
     s = locate(s, "08:01", event("RTD", "report", "08:01")).state  # a stray destination report
-    assert not ends(s, at("08:01"), 0)
+    assert not may_archive(s, at("08:01"), 0)
     t = poll(s, ctx(at("08:02")), ans("AAA", conn(L1X, L2), LATER, when="08:02"))
     assert (EventKind.CANCELLED, Severity.LOUD) in kinds(t)
 

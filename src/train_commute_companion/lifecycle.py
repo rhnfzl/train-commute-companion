@@ -208,7 +208,7 @@ _DEPARTED = (LegState.RIDING, LegState.DONE)  # by departure evidence: boarding 
 
 
 def is_resolved(s: OccurrenceState) -> bool:
-    """Nothing left to follow (rule 6, consistent with `ends`): an occurrence whose main journey
+    """Nothing left to follow (rule 6, consistent with `may_archive`): an occurrence whose main journey
     ended still runs while a retained remainder remains (rule 7)."""
     return s.not_travelling or (s.direction_state in _UNRESOLVED_END and not s.retained)
 
@@ -608,8 +608,8 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
     head: tuple[LegProgress, ...] = ()
     if source is not None and source is not s.lock and s.lock is not None:
         at = source.legs[0].board_station
-        ends = [i for i, x in enumerate(s.lock.legs) if x.alight_stop == at]
-        head = s.lock.legs[: ends[0] + 1] if ends else ()
+        alights = [i for i, x in enumerate(s.lock.legs) if x.alight_stop == at]
+        head = s.lock.legs[: alights[0] + 1] if alights else ()
     if source is not None and len(c.legs) == 1:
         check = GoodCheck(c.destination == p.destination(d), "does not arrive at the destination")
         if check.ok and len(head) + len(done) > max_transfers(j.transfers):
@@ -1800,7 +1800,7 @@ def _journey_end(
     return (make_event(ctx, EventKind.STOPPED_FOLLOWING, Severity.LOUD, text, train),)
 
 
-def ends(s: OccurrenceState, now: datetime, pending_journey_warnings: int) -> bool:
+def may_archive(s: OccurrenceState, now: datetime, pending_journey_warnings: int) -> bool:
     """Rule 6: the occurrence may be archived. The caller counts the occurrence's undelivered
     journey warnings in its ledger; none may remain."""
     if pending_journey_warnings > 0:

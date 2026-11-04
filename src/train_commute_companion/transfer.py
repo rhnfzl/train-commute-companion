@@ -42,11 +42,11 @@ def _expected(obs: TimeObs | None) -> datetime | None:
     return None if t is None else t.astimezone(UTC)  # same-zone arithmetic ignores the DST fold
 
 
-def solid(obs: TimeObs | None) -> bool:
+def is_reported(obs: TimeObs | None) -> bool:
     return obs is not None and obs.provenance is Provenance.REPORTED and obs.value is not None
 
 
-def _arrival_at(cl: ClassifiedLeg, station: str) -> Stop | None:
+def _served_stop_at(cl: ClassifiedLeg, station: str) -> Stop | None:
     """The served stop at `station` after boarding; a cut-short leg can still reach it (7.4)."""
     return next((s for s in cl.leg.stops[1:] if s.code == station and served(s)), None)
 
@@ -58,7 +58,7 @@ def check_transfer(
     profile_min: Mapping[str, int],
 ) -> TransferCheck:
     inc, out = incoming.leg, outgoing.leg
-    stop = _arrival_at(incoming, station)
+    stop = _served_stop_at(incoming, station)
     arr_obs, dep_obs = None if stop is None else stop.arrival, out.board.departure
     arr, dep = _expected(arr_obs), _expected(dep_obs)
     margin = None if arr is None or dep is None else int((dep - arr).total_seconds() // 60)
@@ -92,7 +92,7 @@ def check_transfer(
 
     if Observation.SEEN is not incoming.observation or Observation.SEEN is not outgoing.observation:
         return risk("leg not reliably seen")
-    if margin is None or not (solid(arr_obs) and solid(dep_obs)):
+    if margin is None or not (is_reported(arr_obs) and is_reported(dep_obs)):
         return risk("planned or missing time")
     if margin < minimum + AT_RISK_SLACK_MIN:
         return risk("margin below minimum plus 2")

@@ -20,8 +20,8 @@ from train_commute_companion.advice import (
     advice_query,
     advise,
     leave_now_text,
-    needed,
     still_advised,
+    waiting_is_bad,
 )
 from train_commute_companion.calendar import TZ, resolve_local, to_utc
 from train_commute_companion.classify import current_run, evidence, find_leg
@@ -36,11 +36,11 @@ from train_commute_companion.delivery import (
     zone_report_stops_silent,
 )
 from train_commute_companion.health import (
-    PollError,
+    PollFailure,
     PollRecord,
     WatchedLeg,
+    blindness,
     board_health,
-    cannot_see,
     offline,
 )
 from train_commute_companion.lifecycle import (
@@ -56,11 +56,11 @@ from train_commute_companion.lifecycle import (
     Pool,
     UserAction,
     apply_action,
-    ends,
     first_open,
     is_resolved,
     left_note,
     location_queries,
+    may_archive,
     merged_pool,
     on_location,
     on_poll,
@@ -108,7 +108,7 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.news import Fact, all_good, escalations, severity, unsent
 from train_commute_companion.notify import Notifier, WebhookPort
-from train_commute_companion.profile import ProfileError, load_config
+from train_commute_companion.profile import ProfileProblem, load_config
 from train_commute_companion.providers.base import (
     AuthError,
     MalformedAnswer,
@@ -206,7 +206,7 @@ class RequestBudget:
 
     cooldown_until: datetime | None = None
     backoff_step: int = 0
-    reason: PollError = "rate"  # which table the step counts in; a skip reports it (7.11)
+    reason: PollFailure = "rate"  # which table the step counts in; a skip reports it (7.11)
 
     def allow(self, now: datetime, live: bool) -> bool:
         if self.cooldown_until is None:
@@ -220,7 +220,7 @@ class RequestBudget:
     ) -> "RequestBudget":
         if error is None:
             return RequestBudget()
-        reason: PollError
+        reason: PollFailure
         table: tuple[int, ...]
         if isinstance(error, AuthError):
             reason, table = "auth", BACKOFF_AUTH_MIN
@@ -243,7 +243,7 @@ def _dkey(pid: str, d: Direction) -> str:
     return f"{pid}|{d.value}"
 
 
-def _reasons(errors: Sequence[ProfileError]) -> str:
+def _reasons(errors: Sequence[ProfileProblem]) -> str:
     return "; ".join(f"{e.path}: {e.message}" for e in errors)
 
 
@@ -645,7 +645,9 @@ class _RuntimeLedger:
                     and not a.withdrawn
                     and still_advised(s, ctx, origin, e.train, ref) is not None
                 )
-            return a.withdrawn and not needed(s, ctx, origin, rt._usual_arrival(s, ctx, origin))
+            return a.withdrawn and not waiting_is_bad(
+                s, ctx, origin, rt._usual_arrival(s, ctx, origin)
+            )
         if e.kind is EventKind.DATA_UNCLEAR:  # while its values are the latest told for its train
             slot = None if e.train is None else f"unclear#{train_key(e.train)}"
             return slot is not None and e.key.rpartition(":")[2] == s.alert_keys.get(slot)
@@ -984,7 +986,7 @@ class Runtime:
         self._mtime: int | None = None
         self._auth_outage = False
         self._auth_told: set[str] = set()
-        self._blind: dict[str, datetime] = {}  # occurrence -> start of its cannot_see outage
+        self._blind: dict[str, datetime] = {}  # occurrence -> start of its blindness outage
         # per occurrence before a lock: the usual train as the last healthy answer showed it
         self._before: dict[str, tuple[WatchedLeg, ...]] = {}
         self._offline: set[str] = set()
@@ -1262,7 +1264,9 @@ class Runtime:
         for k, s in self._st.occurrences.items():
             ctx = self._ctx(s, now)
             closed = ctx is None or to_utc(now) >= to_utc(ctx.schedule.window_end)
-            if closed and ends(s, now, pending_journey_warnings(self._st.obligations, s.key)):
+            if closed and may_archive(
+                s, now, pending_journey_warnings(self._st.obligations, s.key)
+            ):
                 self._seen.pop(k, None)
                 self._before.pop(k, None)
                 self._boards.pop(k, None)
@@ -1680,7 +1684,7 @@ class Runtime:
         live: bool,
         window_end: datetime | None,
         deadline: datetime | None = None,
-    ) -> ProviderAnswer | PollError:
+    ) -> ProviderAnswer | PollFailure:
         """`deadline`: the poll's own hard deadline (7.1), shared by all its requests."""
         if not self._budget.allow(self._clock.now(), live):
             # skipped by the shared backoff: counts toward board health (7.1), and a rejected
@@ -1694,7 +1698,7 @@ class Runtime:
         before = self._budget
         self.requests += 1
         log.debug("request %d: %s", self.requests, q)
-        error: PollError | None = None
+        error: PollFailure | None = None
         exc: BaseException | None = None
         answer = None
         try:
@@ -1724,7 +1728,7 @@ class Runtime:
         live: bool,
         window_end: datetime | None,
         deadline: datetime | None = None,
-    ) -> tuple[ProviderAnswer, ...] | PollError:
+    ) -> tuple[ProviderAnswer, ...] | PollFailure:
         """All or nothing: a poll missing one answer cannot judge the legs it was for (rule 2).
         One hard deadline for the whole poll, not one per request (7.1)."""
         answers = []
@@ -1736,7 +1740,7 @@ class Runtime:
             answers.append(a)
         return tuple(answers)
 
-    def _auth(self, error: PollError | None, who: str, now: datetime) -> None:
+    def _auth(self, error: PollFailure | None, who: str, now: datetime) -> None:
         """`key_rejected` once per outage and again when each window opens while it lasts."""
         if error is None:
             self._auth_outage, self._auth_told = False, set()
@@ -1795,7 +1799,7 @@ class Runtime:
         gen, end = s.generation, ctx.schedule.window_end
         deadline = to_utc(now) + POLL_DEADLINE  # one hard deadline for every request (7.1)
         got = await self._fetch_all(queries_needed(s, ctx), True, end, deadline)
-        extra: ProviderAnswer | PollError | None = None
+        extra: ProviderAnswer | PollFailure | None = None
         if not isinstance(got, str) and (usual := _origin_answer(got, ctx)) is not None:
             # 7.6: an earlier catchable train is before the time the poll asked from; a failed
             # search leaves advice to the poll's own answers and never fails the poll
@@ -1964,7 +1968,7 @@ class Runtime:
     ) -> list[AlertEvent]:
         legs = self._watched(k, s, ctx, now)
         health = board_health(s.poll_records, now)
-        blind, reason = cannot_see(legs, health, now)
+        blind, reason = blindness(legs, health, now)
         name = display_name(ctx.profile.name)
         out = []
 
@@ -2265,7 +2269,7 @@ class Runtime:
 
     # --- reload (5.2, rule 10) ---
 
-    def _refuse(self, errors: Sequence[ProfileError] | str, now: datetime) -> None:
+    def _refuse(self, errors: Sequence[ProfileProblem] | str, now: datetime) -> None:
         reason = errors if isinstance(errors, str) else _reasons(errors)
         self._refusal = reason
         if not self._store_ok and reason == self._refused_told:

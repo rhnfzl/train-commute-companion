@@ -118,7 +118,7 @@ def _reaches(leg: Leg, alight: str) -> bool:
 _TRUST = {Provenance.MISSING: 0, Provenance.PLANNED: 1, Provenance.REPORTED: 2}
 
 
-def _when(o: TimeObs | None, sign: int) -> tuple[int, float]:
+def _worst_first_key(o: TimeObs | None, sign: int) -> tuple[int, float]:
     """Sort key, worst first: the least trusted time, then the earliest (`sign` 1) or the
     latest (`sign` -1)."""
     t = None if o is None else o.value or o.planned
@@ -128,7 +128,7 @@ def _when(o: TimeObs | None, sign: int) -> tuple[int, float]:
 def _worst_arrival(o: TimeObs | None) -> tuple[tuple[int, float], float]:
     # on equal times the earlier planned one, so the larger delay counts
     p = None if o is None else o.planned
-    return _when(o, -1), p.timestamp() if p else 0.0
+    return _worst_first_key(o, -1), p.timestamp() if p else 0.0
 
 
 def merge_arrivals(leg: Leg, copies: Iterable[Leg]) -> Leg:
@@ -148,7 +148,7 @@ def merge_arrivals(leg: Leg, copies: Iterable[Leg]) -> Leg:
     return replace(leg, stops=(leg.stops[0], *map(worst, leg.stops[1:])))
 
 
-def _arrival_at(leg: Leg, alight: str) -> TimeObs | None:
+def _arrival_obs(leg: Leg, alight: str) -> TimeObs | None:
     return next((s.arrival for s in leg.stops[1:] if s.code == alight), None)
 
 
@@ -213,7 +213,9 @@ def current_run(
     # copies of one fetch that disagree on timing give the worst of each end, in any order
     # (7.3, 7.12): the earliest departure and the latest arrival, least trusted first; a
     # truncated copy still runs, so its departure counts too
-    board_stop = min((r[1].leg.stops[0] for r in at_top), key=lambda s: _when(s.departure, 1))
+    board_stop = min(
+        (r[1].leg.stops[0] for r in at_top), key=lambda s: _worst_first_key(s.departure, 1)
+    )
     bad = [r for r in at_top if stopped(r[1])]
     if bad:
         # rule 7.12: conflicting newest copies never read as running, a missed alarm costs more
@@ -230,7 +232,7 @@ def current_run(
         at = next(r[0] for r in runs if rank(r) == best).astimezone(UTC)
         seen, win = min(
             (r for r in runs if rank(r) == best and r[0].astimezone(UTC) == at),
-            key=lambda r: _when(_arrival_at(r[1].leg, alight), -1),
+            key=lambda r: _worst_first_key(_arrival_obs(r[1].leg, alight), -1),
         )
         # every stop at the worst of its fetch's copies, truncated ones included; departure
         # time, platform and provenance always from the newest answer

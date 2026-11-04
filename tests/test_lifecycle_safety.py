@@ -43,7 +43,7 @@ from train_commute_companion.lifecycle import (
     NotTravelling,
     OccurrenceState,
     apply_action,
-    ends,
+    may_archive,
     on_location,
     on_poll,
     on_tick,
@@ -401,7 +401,7 @@ def test_late_acceptance_stops_at_the_150_minute_limit():  # rules 6, 7
     assert on_tick(s, ctx(at("11:53"))).events == ()  # 09:24 + 150 min is 11:54
     t = on_tick(s, ctx(at("11:54")))
     assert kinds(t) == [(EventKind.STOPPED_FOLLOWING, Severity.LOUD)]
-    assert t.state.direction_state is DirectionState.DONE and ends(t.state, at("11:54"), 0)
+    assert t.state.direction_state is DirectionState.DONE and may_archive(t.state, at("11:54"), 0)
     # a retained remainder too
     r = retained_of(replace(j, legs=(first, last)))
     t = on_tick(r, ctx(at("11:54")))
@@ -490,7 +490,7 @@ def test_promoted_retained_journey_is_followed_and_keeps_the_occurrence():  # ru
     pick = conn(L1, R2)
     t = apply_action(s, ctx(at("08:20")), Choose(None, pick, (ans("AAA", pick),)))
     assert t.events == () and t.state.direction_state is DirectionState.RIDING
-    assert not ends(t.state, at("08:21"), 0)
+    assert not may_archive(t.state, at("08:21"), 0)
     r2x = make_leg("UT", "RTD", "09:05", "09:39", number="6666", cancelled=True)
     p = poll(t.state, ctx(at("08:30")), ans("AAA", conn(L1, r2x)), ans("UT", conn(r2x)))
     assert (EventKind.CANCELLED, Severity.LOUD) in kinds(p)

@@ -24,7 +24,7 @@ from train_commute_companion.lifecycle import (
     NotTravelling,
     OccurrenceState,
     apply_action,
-    ends,
+    may_archive,
     on_location,
     on_tick,
 )
@@ -65,7 +65,7 @@ def test_repeated_estimate_before_its_time_does_not_end_journey():
     assert s.lock.legs[1].state is not LegState.DONE
     t = on_tick(s, ctx(at("10:30")))
     assert t.events == () and t.state.direction_state is not DirectionState.DONE
-    assert not ends(t.state, at("10:30"), 0)
+    assert not may_archive(t.state, at("10:30"), 0)
 
 
 def test_acceptance_needs_two_answers_4_min_apart_5_min_after_arrival():
@@ -105,13 +105,13 @@ def test_accepted_arrival_reopens_when_moved_later():
 def test_last_leg_without_location_evidence_ends_with_loud_stopped_following():  # OQ4 = A
     s = arrived()
     t = on_tick(s, ctx(at("10:02")))
-    assert t.events == () and not ends(t.state, at("10:02"), 0)
+    assert t.events == () and not may_archive(t.state, at("10:02"), 0)
     t = on_tick(s, ctx(at("10:03")))
     assert kinds(t) == [(EventKind.STOPPED_FOLLOWING, Severity.LOUD)]
     assert "arriving at 09:24" in t.events[0].text
     assert t.state.direction_state is DirectionState.DONE
-    assert not ends(t.state, at("10:03"), 1)  # the warning is still pending
-    assert ends(t.state, at("10:03"), 0)
+    assert not may_archive(t.state, at("10:03"), 1)  # the warning is still pending
+    assert may_archive(t.state, at("10:03"), 0)
     assert on_tick(t.state, ctx(at("10:05"))).events == ()  # sent once
 
 
@@ -120,12 +120,12 @@ def test_destination_report_after_accepted_arrival_ends_silently():
         s = report(arrived(), zone, "09:31")
         t = on_tick(s, ctx(at("10:03")))
         assert t.events == () and t.state.direction_state is DirectionState.DONE
-        assert ends(t.state, at("10:03"), 0)
+        assert may_archive(t.state, at("10:03"), 0)
 
 
 def test_destination_report_before_arrival_does_not_end():
     s = report(occ(accepted_first(journey([L1, L2], DONE_RIDE))), "RTD", "09:20")
-    assert not ends(s, at("09:21"), 0)
+    assert not may_archive(s, at("09:21"), 0)
     s = polls(s, "09:29", "09:33")
     t = on_tick(s, ctx(at("10:03")))
     assert kinds(t) == [(EventKind.STOPPED_FOLLOWING, Severity.LOUD)]
@@ -176,10 +176,10 @@ def test_occurrence_not_archived_while_retained_remainder_exists():
     s = polls(s, "09:44", "09:48", c=LATER)
     t = on_tick(s, ctx(at("10:18")))  # the lock's watch ended
     assert t.state.direction_state is DirectionState.DONE and t.state.retained != ()
-    assert not ends(t.state, at("10:18"), 0)
+    assert not may_archive(t.state, at("10:18"), 0)
     t = on_tick(t.state, ctx(at("11:54")))  # the retained limit
     assert t.state.retained == ()
-    assert ends(t.state, at("11:54"), 0)
+    assert may_archive(t.state, at("11:54"), 0)
 
 
 def test_window_closed_with_no_lock_stops_following():
@@ -187,16 +187,16 @@ def test_window_closed_with_no_lock_stops_following():
     assert on_tick(s, ctx(at("10:11"))).events == ()
     t = on_tick(s, ctx(at("10:12")))
     assert kinds(t) == [(EventKind.STOPPED_FOLLOWING, Severity.LOUD)]
-    assert ends(t.state, at("10:12"), 0)
+    assert may_archive(t.state, at("10:12"), 0)
 
 
 def test_not_travelling_ends_regardless_of_state():
     s = replace(occ(journey([L1, L2], RIDE)), not_travelling=True)
-    assert ends(s, at("08:20"), 0)
+    assert may_archive(s, at("08:20"), 0)
     assert on_tick(s, ctx(at("12:00"))).events == ()
 
 
 def test_not_travelling_ends_retained_remainder():  # retained end on NotTravelling (7.12 rule 7)
     s = retained_of(journey([L1, L2], (LegState.MISSED,)))
     t = apply_action(s, ctx(at("08:20")), NotTravelling(None, False))
-    assert t.state.retained == () and ends(t.state, at("08:20"), 0)
+    assert t.state.retained == () and may_archive(t.state, at("08:20"), 0)

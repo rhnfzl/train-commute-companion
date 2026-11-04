@@ -123,7 +123,7 @@ def _ridden(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Connection 
     return min(cut, key=lambda c: current_arrival(answer, c)) if cut else None
 
 
-def _gate(s: OccurrenceState, ctx: Ctx) -> bool:
+def _advice_applies(s: OccurrenceState, ctx: Ctx) -> bool:
     """Rule 17: idle or locked-but-not-travelling; no location or presence needed. Travel is
     judged by evidence (a tap or a departed leg), never by BOARDING, which only means the
     locked train is within the buffer: the escape train's catchability ends advice itself."""
@@ -142,7 +142,7 @@ def _gate(s: OccurrenceState, ctx: Ctx) -> bool:
 _FAR = datetime(2100, 1, 1, tzinfo=UTC)
 
 
-def _kw(s: OccurrenceState, ctx: Ctx) -> GoodKwargs:
+def _good_kw(s: OccurrenceState, ctx: Ctx) -> GoodKwargs:
     prof, d = ctx.profile, ctx.direction
     usual = prof.journey(d)
     return GoodKwargs(
@@ -156,8 +156,8 @@ def _kw(s: OccurrenceState, ctx: Ctx) -> GoodKwargs:
     )
 
 
-def _judge(
-    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, reference: datetime | None
+def _assess_waiting(
+    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, usual_planned_arrival: datetime | None
 ) -> tuple[Connection | None, bool, bool]:
     """(the journey ridden by waiting as its current copy, broken, bad) (7.6). Lateness needs
     the usual's planned arrival; a journey that is not there or not rideable is bad without one."""
@@ -178,30 +178,30 @@ def _judge(
     limit = timedelta(minutes=prof.alerts.earlier_train_threshold_min)
     slow = (
         ride_arr is not None
-        and reference is not None
-        and ride_arr >= reference.astimezone(UTC) + limit
+        and usual_planned_arrival is not None
+        and ride_arr >= usual_planned_arrival.astimezone(UTC) + limit
     )
     return cur, broken, broken or slow
 
 
-def needed(
-    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, reference: datetime | None
+def waiting_is_bad(
+    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, usual_planned_arrival: datetime | None
 ) -> bool:
     """Whether waiting is bad now (7.6): what a withdrawal says no longer holds once it is."""
-    return _judge(s, ctx, answer, reference)[2]
+    return _assess_waiting(s, ctx, answer, usual_planned_arrival)[2]
 
 
 def advice_query(
-    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, reference: datetime | None
+    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, usual_planned_arrival: datetime | None
 ) -> Query | None:
     """The origin searched again from the earliest catchable time, so a train before the one
     `answer` was asked from is in view (7.6, rule 17); only while advice is gated and waiting is
     bad or advice is out (a withdrawal needs to see the advised train)."""
-    if not _gate(s, ctx):
+    if not _advice_applies(s, ctx):
         return None
     a = s.advice
     out = a is not None and a.advised_train is not None and not a.withdrawn
-    if not out and not needed(s, ctx, answer, reference):
+    if not out and not waiting_is_bad(s, ctx, answer, usual_planned_arrival):
         return None
     at = catch_from_state(s, ctx.profile.journey(ctx.direction).buffer_min, ctx.now).not_before
     if at >= answer.query.at.astimezone(UTC):
@@ -215,19 +215,19 @@ def still_advised(
     ctx: Ctx,
     answer: ProviderAnswer,
     train: TrainId,
-    reference: datetime | None,
+    usual_planned_arrival: datetime | None,
 ) -> Connection | None:
     """Rule 5(b): the advised train's connection as `answer` shows it now, while advice is
     still gated, waiting is still bad and the train still saves enough and passes `check_good`
     with the current catch (so its current departure minus buffer is its expiry)."""
-    if not _gate(s, ctx):
+    if not _advice_applies(s, ctx):
         return None
-    found = _candidates(s, ctx, answer, reference)
+    found = _candidates(s, ctx, answer, usual_planned_arrival)
     return next((c for _, c in found if c.legs[0].train == train), None)
 
 
 def _candidates(
-    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, reference: datetime | None
+    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, usual_planned_arrival: datetime | None
 ) -> list[tuple[timedelta, Connection]]:
     """(saving, connection) for every earlier first train that beats waiting by the minimum
     saving and passes `check_good` with the current catch; empty while waiting is not bad (7.6)."""
@@ -237,8 +237,8 @@ def _candidates(
     wait_from = (
         s.lock.legs[0].train.planned_departure if s.lock else ctx.schedule.first_departure
     ).astimezone(UTC)
-    kw = _kw(s, ctx)
-    ride, broken, bad = _judge(s, ctx, answer, reference)
+    kw = _good_kw(s, ctx)
+    ride, broken, bad = _assess_waiting(s, ctx, answer, usual_planned_arrival)
     ride_arr = None if ride is None else _arrival(ride)
     if ride is not None:
         wait_from = _departure(ride)
@@ -290,14 +290,14 @@ def advise(
     at the escape train's departure minus buffer). Without the usual's planned arrival only
     lateness is not judged: an absent or unrideable journey is still bad."""
     record = s.advice or AdviceRecord(None, None, False, delivered=False)
-    if not _gate(s, ctx):
+    if not _advice_applies(s, ctx):
         return record, []
     prof, d = ctx.profile, ctx.direction
     catch = catch_from_state(s, prof.journey(d).buffer_min, ctx.now)
     cands = _candidates(s, ctx, answer, usual_planned_arrival)
     # largest saving; a tie goes to the earlier train
     best = min(cands, key=lambda x: (-x[0], _departure(x[1])), default=None)
-    bad = needed(s, ctx, answer, usual_planned_arrival)
+    bad = waiting_is_bad(s, ctx, answer, usual_planned_arrival)
     advised = record.advised_train
     if best is not None:
         train = best[1].legs[0].train

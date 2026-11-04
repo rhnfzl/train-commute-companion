@@ -5,7 +5,7 @@ import pytest
 
 from train_commute_companion.model import Config, Direction
 from train_commute_companion.profile import (
-    ProfileError,
+    ProfileProblem,
     check_lines,
     find_overlaps,
     load_config,
@@ -202,7 +202,7 @@ def test_tab_indent_gives_line_error():
 
 def test_garbage_input_never_crashes():
     for text in ("", "- 1", "profiles: 3", "profiles: [1]", "\x00"):
-        assert isinstance(parse_profiles(text, None)[1][0], ProfileError)
+        assert isinstance(parse_profiles(text, None)[1][0], ProfileProblem)
 
 
 def test_unquoted_time_gets_a_hint():
@@ -254,7 +254,7 @@ def test_night_windows_overlap_across_midnight_refused():
 NIGHT = (DATA / "night_overlap.yaml").read_text()
 
 
-def refused(text: str, today: date = TODAY) -> list[ProfileError]:
+def refused(text: str, today: date = TODAY) -> list[ProfileProblem]:
     """Errors from both a first start and a reload; both must refuse."""
     first, errs = load_config(text, None, None, today)
     reload, errs2 = load_config(text, None, GOOD_CFG, today)

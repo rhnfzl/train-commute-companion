@@ -44,7 +44,7 @@ _Loader.add_constructor("tag:yaml.org,2002:timestamp", _as_text)
 
 
 @dataclass(frozen=True, slots=True)
-class ProfileError:
+class ProfileProblem:
     profile_id: str | None
     path: str
     message: str
@@ -55,15 +55,15 @@ def slug(name: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_")
 
 
-class _Ctx:
+class _ProfileErrors:
     """Collects errors for one profile."""
 
     def __init__(self, pid: str | None, base: str) -> None:
         self.pid, self.base = pid, base
-        self.errors: list[ProfileError] = []
+        self.errors: list[ProfileProblem] = []
 
     def err(self, path: str, message: str, suggestion: str | None = None) -> None:
-        self.errors.append(ProfileError(self.pid, f"{self.base}.{path}", message, suggestion))
+        self.errors.append(ProfileProblem(self.pid, f"{self.base}.{path}", message, suggestion))
 
     def time(self, v: object, path: str) -> time | None:
         m = _TIME_RE.match(v) if isinstance(v, str) else None
@@ -102,7 +102,7 @@ def _shift(t: time, minutes: int) -> time:
     return time(total // 60, total % 60)
 
 
-def _station(c: _Ctx, v: object, path: str, known: frozenset[str] | None) -> str | None:
+def _station(c: _ProfileErrors, v: object, path: str, known: frozenset[str] | None) -> str | None:
     if not isinstance(v, str) or not v.strip():
         c.err(path, f"missing or not a station code: {v!r}")
         return None
@@ -118,7 +118,7 @@ def _station(c: _Ctx, v: object, path: str, known: frozenset[str] | None) -> str
 
 
 def _journey(
-    c: _Ctx, raw: object, name: str, known: frozenset[str] | None, *, allow_offset: bool
+    c: _ProfileErrors, raw: object, name: str, known: frozenset[str] | None, *, allow_offset: bool
 ) -> UsualJourney | None:
     if not isinstance(raw, dict):
         c.err(name, "missing or not a mapping")
@@ -181,7 +181,7 @@ def _journey(
     return UsualJourney(first, tuple(transfers), window, buf, advice, offset)
 
 
-def _alerts(c: _Ctx, raw: object) -> AlertSettings | None:
+def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
     if raw is None:
         return AlertSettings()
     if not isinstance(raw, dict):
@@ -224,7 +224,7 @@ def _alerts(c: _Ctx, raw: object) -> AlertSettings | None:
     return AlertSettings(thr, sav, late, quiet)
 
 
-def _location(c: _Ctx, raw: object) -> tuple[bool, LocationSettings | None]:
+def _location(c: _ProfileErrors, raw: object) -> tuple[bool, LocationSettings | None]:
     if raw is None:
         return True, None
     if not isinstance(raw, dict):
@@ -252,7 +252,7 @@ def _location(c: _Ctx, raw: object) -> tuple[bool, LocationSettings | None]:
     return True, LocationSettings(source, ent, dict(zones), radius)
 
 
-def _dates(c: _Ctx, raw: object) -> frozenset[date] | None:
+def _dates(c: _ProfileErrors, raw: object) -> frozenset[date] | None:
     if not isinstance(raw, list):
         c.err("extra_dates", "must be a list of YYYY-MM-DD dates, [] for none")
         return None
@@ -277,12 +277,12 @@ def _dates(c: _Ctx, raw: object) -> frozenset[date] | None:
 
 def _profile(
     raw: object, idx: int, known: frozenset[str] | None
-) -> tuple[Profile | None, list[ProfileError]]:
+) -> tuple[Profile | None, list[ProfileProblem]]:
     base = f"profiles[{idx}]"
     if not isinstance(raw, dict):
-        return None, [ProfileError(None, base, "each profile must be a mapping")]
+        return None, [ProfileProblem(None, base, "each profile must be a mapping")]
     pid = raw.get("id")
-    c = _Ctx(pid if isinstance(pid, str) and pid else None, base)
+    c = _ProfileErrors(pid if isinstance(pid, str) and pid else None, base)
     c.keys(
         raw,
         (
@@ -385,7 +385,7 @@ def _profile(
     ), []
 
 
-def _load_yaml(text: str) -> tuple[Any, list[ProfileError]]:
+def _load_yaml(text: str) -> tuple[Any, list[ProfileProblem]]:
     try:
         return yaml.load(text.lstrip("﻿"), Loader=_Loader), []
     except yaml.YAMLError as e:
@@ -397,21 +397,21 @@ def _load_yaml(text: str) -> tuple[Any, list[ProfileError]]:
             if "\t" in problem or "tab" in problem
             else ""
         )
-        return None, [ProfileError(None, "file", f"{where}{problem}{tab}", "fix the YAML syntax")]
+        return None, [ProfileProblem(None, "file", f"{where}{problem}{tab}", "fix the YAML syntax")]
     except ValueError as e:  # an explicit tag such as !!int on text that is not one
-        return None, [ProfileError(None, "file", f"invalid value: {e}", "fix the YAML syntax")]
+        return None, [ProfileProblem(None, "file", f"invalid value: {e}", "fix the YAML syntax")]
 
 
 def parse_profiles(
     text: str, known_stations: frozenset[str] | None
-) -> tuple[list[Profile], list[ProfileError]]:
+) -> tuple[list[Profile], list[ProfileProblem]]:
     data, errors = _load_yaml(text)
     if errors:
         return [], errors
     items = data.get("profiles") if isinstance(data, dict) else None
     if not isinstance(items, list) or not items:
         return [], [
-            ProfileError(
+            ProfileProblem(
                 None,
                 "profiles",
                 "file needs a non-empty 'profiles' list",
@@ -432,7 +432,7 @@ def parse_profiles(
         pid, nm = raw.get("id"), raw.get("name")
         if isinstance(pid, str) and pid in seen_id:
             errors.append(
-                ProfileError(
+                ProfileProblem(
                     pid, f"profiles[{i}].id", f"duplicate id {pid!r}", "ids must be unique"
                 )
             )
@@ -441,7 +441,7 @@ def parse_profiles(
         key = slug(nm) if isinstance(nm, str) else ""
         if key and key in seen_name:
             errors.append(
-                ProfileError(
+                ProfileProblem(
                     pid if isinstance(pid, str) else None,
                     f"profiles[{i}].name",
                     f"duplicate name {nm!r}",
@@ -522,11 +522,11 @@ def _window_overlap(
 
 def _overlap_pairs(
     profiles: Sequence[Profile], today: date, first: FirstTrain | None = None
-) -> list[tuple[Profile, Profile, ProfileError]]:
-    found: dict[tuple[str, str], tuple[Profile, Profile, ProfileError]] = {}
+) -> list[tuple[Profile, Profile, ProfileProblem]]:
+    found: dict[tuple[str, str], tuple[Profile, Profile, ProfileProblem]] = {}
 
     def add(a: Profile, b: Profile, msg: str, hint: str) -> None:
-        found.setdefault((a.id, b.id), (a, b, ProfileError(a.id, "profiles", msg, hint)))
+        found.setdefault((a.id, b.id), (a, b, ProfileProblem(a.id, "profiles", msg, hint)))
 
     pairs = [(a, b) for i, a in enumerate(profiles) for b in profiles[i + 1 :]]
     # a shared weekday collides on every non-holiday week
@@ -577,7 +577,7 @@ def _overlap_pairs(
 
 def find_overlaps(
     profiles: Sequence[Profile], today: date, first: FirstTrain | None = None
-) -> list[ProfileError]:
+) -> list[ProfileProblem]:
     """`first` gives the effective first train of a (profile, direction, commute day), for the
     dated check after an adoption (7.12 rule 19); without it the file's first trains count."""
     return [e for _, _, e in _overlap_pairs(profiles, today, first)]
@@ -585,7 +585,7 @@ def find_overlaps(
 
 def load_config(
     text: str, known_stations: frozenset[str] | None, previous: Config | None, today: date
-) -> tuple[Config | None, list[ProfileError]]:
+) -> tuple[Config | None, list[ProfileProblem]]:
     profiles, errors = parse_profiles(text, known_stations)
     pairs = _overlap_pairs(profiles, today)
     errors = errors + [e for _, _, e in pairs]

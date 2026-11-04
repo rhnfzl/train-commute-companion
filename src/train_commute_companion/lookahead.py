@@ -120,7 +120,7 @@ def signature_of(c: Connection, service_date: date) -> Signature:
     return Signature(tuple(legs))
 
 
-def encode(s: Signature) -> str:
+def signature_text(s: Signature) -> str:
     return ";".join(
         f"{x.board}>{x.alight}@{x.departure:%H:%M}+{x.day_offset}/{x.duration_min}" for x in s.legs
     )
@@ -479,13 +479,13 @@ def evaluate(
         reasons = _leg_reasons(cur(c), c)
         if i in chain_issues:
             reasons.append(chain_issues[i])
-        out.append(result(i, c, reasons, encode(signature_of(c, sd))))
+        out.append(result(i, c, reasons, signature_text(signature_of(c, sd))))
     if whole_ans is not None:
         if whole is not None:
             reasons = _leg_reasons(cur(whole), whole) + whole_issues
-            out.append(result(None, whole, reasons, encode(signature_of(whole, sd))))
+            out.append(result(None, whole, reasons, signature_text(signature_of(whole, sd))))
         elif pattern is not None:
-            head = "pattern:" + encode(signature_of(pattern, sd))
+            head = "pattern:" + signature_text(signature_of(pattern, sd))
             out.append(result(None, pattern, ["pattern"], head))
         else:
             out.append(result(None, None, ["missing"], "missing"))
