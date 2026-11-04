@@ -52,7 +52,8 @@ def _day(d: date) -> str:
     return f"{d:%a} {d.day} {d:%b}"
 
 
-def parse_target(view: RuntimeView, args: Sequence[str]) -> Target | str:
+def parse_target(view: RuntimeView, args: Sequence[str]) -> Target:
+    """The command's target; a ValueError whose message is the reply when it names none."""
     profiles = dict.fromkeys((d.profile_id, d.profile_name) for d in view.directions)
     names = ", ".join(n for _, n in profiles)
 
@@ -72,7 +73,7 @@ def parse_target(view: RuntimeView, args: Sequence[str]) -> Target | str:
                 args = [a for j, a in enumerate(args) if not at < j < end]
                 break
         if profile is None:
-            return f"No profile {named[2:]}. One of: {names}."
+            raise ValueError(f"No profile {named[2:]}. One of: {names}.")
     direction = service_date = departure = train = None
     whole_day = False
     for i, token in enumerate(args):
@@ -81,25 +82,27 @@ def parse_target(view: RuntimeView, args: Sequence[str]) -> Target | str:
         try:
             if _TIME.fullmatch(token):
                 departure = time.fromisoformat(token.zfill(5))
-            elif _DATE.fullmatch(token):
+                continue
+            if _DATE.fullmatch(token):
                 service_date = date.fromisoformat(token)
-            elif token.lower() in (d.value for d in Direction):
-                direction = Direction(token.lower())
-            elif token.lower() == "day":
-                whole_day = True
-            elif (p := find(token)) is not None and profile is None:
-                profile = p
-            elif token.isdigit():
-                train = token
-            elif i == 0 and named is None:  # a lone unknown first word is taken as a profile
-                return f"No profile {token}. One of: {names}."
-            else:
-                return f"I did not understand {token}."
-        except ValueError:  # 25:99
-            return f"I did not understand {token}."
+                continue
+        except ValueError as e:  # 25:99
+            raise ValueError(f"I did not understand {token}.") from e
+        if token.lower() in (d.value for d in Direction):
+            direction = Direction(token.lower())
+        elif token.lower() == "day":
+            whole_day = True
+        elif (p := find(token)) is not None and profile is None:
+            profile = p
+        elif token.isdigit():
+            train = token
+        elif i == 0 and named is None:  # a lone unknown first word is taken as a profile
+            raise ValueError(f"No profile {token}. One of: {names}.")
+        else:
+            raise ValueError(f"I did not understand {token}.")
     if profile is None:
         if len(profiles) != 1:
-            return f"Which profile? One of: {names}."
+            raise ValueError(f"Which profile? One of: {names}.")
         profile = next(iter(profiles))
     return Target(profile[0], profile[1], direction, service_date, departure, train, whole_day)
 
@@ -348,9 +351,10 @@ def answer(view: RuntimeView, confirmed: bool, request: object) -> dict[str, Any
     direction = next((d for d in Direction if d.value == request.get("direction")), None)
     if tool == "get_next_connections" and direction is None:
         return {"error": "Direction must be outbound or return."}
-    target = parse_target(view, [f"p={profile}"] if profile.strip() else [])
-    if isinstance(target, str):
-        return {"error": target}
+    try:
+        target = parse_target(view, [f"p={profile}"] if profile.strip() else [])
+    except ValueError as e:
+        return {"error": str(e)}
     pid = target.profile_id
     if tool == "get_status":
         return status_tool(view, confirmed, pid)

@@ -94,17 +94,27 @@ def view(*occs, names=("office_a",), **kw) -> RuntimeView:
      Target("p1", "office_a", Direction.RETURN, DAY, time(8, 44), "1234")),
     (["day"], Target("p1", "office_a", whole_day=True)),
     (["Office_A"], Target("p1", "office_a")),
-    (["nobody"], "No profile nobody. One of: office_a."),
-    (["08:44", "soon"], "I did not understand soon."),
-    (["25:99"], "I did not understand 25:99."),
 ])  # fmt: skip
 def test_parse_target_one_profile(args, want):
     assert parse_target(view(), args) == want
 
 
+@pytest.mark.parametrize("args, message", [
+    (["nobody"], "No profile nobody. One of: office_a."),
+    (["08:44", "soon"], "I did not understand soon."),
+    (["25:99"], "I did not understand 25:99."),
+])  # fmt: skip
+def test_parse_target_refusal_is_the_reply(args, message):
+    with pytest.raises(ValueError) as e:
+        parse_target(view(), args)
+    assert str(e.value) == message
+
+
 def test_parse_target_two_profiles_asks_which():
     v = view(names=("office_a", "office_b"))
-    assert parse_target(v, ["08:44"]) == "Which profile? One of: office_a, office_b."
+    with pytest.raises(ValueError) as e:
+        parse_target(v, ["08:44"])
+    assert str(e.value) == "Which profile? One of: office_a, office_b."
     assert parse_target(v, ["office b"]) == Target("p2", "office_b")
 
 
@@ -135,7 +145,9 @@ def test_parse_target_profile_id_like_a_keyword():
     v = replace(v, directions=(DirectionInfo("return", "ret", Direction.OUTBOUND, 1),
                                DirectionInfo("p2", "two", Direction.OUTBOUND, 1)))  # fmt: skip
     assert parse_target(v, ["p=return", "return"]) == Target("return", "ret", Direction.RETURN)
-    assert parse_target(v, ["p=nobody"]) == "No profile nobody. One of: ret, two."
+    with pytest.raises(ValueError) as e:
+        parse_target(v, ["p=nobody"])
+    assert str(e.value) == "No profile nobody. One of: ret, two."
 
 
 def test_render_status_two_occurrences_and_global_lines():

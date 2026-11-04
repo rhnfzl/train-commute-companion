@@ -70,15 +70,20 @@ def _fails(check: Callable[[str], None], value: str) -> bool:
     return False
 
 
-async def check_key(hass: HomeAssistant, api_key: str) -> frozenset[str] | str:
-    """The NS station list, or the error key for the form."""
-    provider = NsProvider(api_key, get_async_client(hass), SystemClock().now)
+async def check_key(hass: HomeAssistant, api_key: str) -> frozenset[str]:
+    """The NS station list; AuthError or ProviderError when it cannot be had."""
+    return await NsProvider(api_key, get_async_client(hass), SystemClock().now).stations()
+
+
+async def key_error(hass: HomeAssistant, api_key: str) -> str | None:
+    """The form's error key for an API key NS does not take, else None."""
     try:
-        return await provider.stations()
+        await check_key(hass, api_key)
     except AuthError:
         return "invalid_auth"
     except ProviderError:
         return "cannot_connect"
+    return None
 
 
 def notify_services(hass: HomeAssistant) -> list[str]:
@@ -174,8 +179,8 @@ class TccConfigFlow(_TestPushMixin, ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             path = user_input[CONF_PROFILES_PATH]
             key = user_input[CONF_API_KEY]
-            if isinstance(got := await check_key(self.hass, key), str):
-                errors["base"] = got
+            if (bad_key := await key_error(self.hass, key)) is not None:
+                errors["base"] = bad_key
             if (bad := await check_path(self.hass, path)) is not None:
                 errors[CONF_PROFILES_PATH] = bad
             if not errors:
@@ -225,8 +230,8 @@ class TccConfigFlow(_TestPushMixin, ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             key = user_input[CONF_API_KEY]
-            if isinstance(got := await check_key(self.hass, key), str):
-                errors["base"] = got
+            if (bad_key := await key_error(self.hass, key)) is not None:
+                errors["base"] = bad_key
             else:
                 return self.async_update_reload_and_abort(
                     self._get_reauth_entry(), data_updates={CONF_API_KEY: key}
@@ -270,10 +275,12 @@ class TccOptionsFlow(_TestPushMixin, OptionsFlowWithReload):
                     return await entry.runtime_data.host.run(lambda rt: rt.known_stations), None
             except (host_mod.RuntimeNotRunning, TimeoutError):
                 pass  # the runtime is not answering: ask NS directly
-        got = await check_key(self.hass, entry.data[CONF_API_KEY])
-        if isinstance(got, str):
-            return None, "NS key rejected" if got == "invalid_auth" else "NS not reachable"
-        return got, None
+        try:
+            return await check_key(self.hass, entry.data[CONF_API_KEY]), None
+        except AuthError:
+            return None, "NS key rejected"
+        except ProviderError:
+            return None, "NS not reachable"
 
     async def async_step_validate(
         self, user_input: Mapping[str, Any] | None = None

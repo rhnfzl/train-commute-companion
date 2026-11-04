@@ -267,9 +267,10 @@ class Bot:
             view = self._rt.view()
             await self._reply(render_status(view, self.confirmed), status_buttons(view))
         elif word in ("/choose", "/leaving", "/skip"):
-            t = parse_target(self._rt.view(), args)
-            if isinstance(t, str):
-                await self._reply(t)
+            try:
+                t = parse_target(self._rt.view(), args)
+            except ValueError as e:
+                await self._reply(str(e))
                 return
             name = _pretty(t.profile_name)
             if word == "/choose":

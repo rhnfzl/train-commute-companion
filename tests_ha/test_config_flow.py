@@ -25,7 +25,7 @@ from webhook_receiver import Receiver
 from custom_components.train_commute_companion import notifier
 from custom_components.train_commute_companion.config_flow import notify_services
 from custom_components.train_commute_companion.const import DOMAIN
-from train_commute_companion.providers.base import AuthError
+from train_commute_companion.providers.base import AuthError, ProviderError
 from train_commute_companion.store import JsonFileStore
 
 CHECK_KEY = "custom_components.train_commute_companion.config_flow.check_key"
@@ -138,8 +138,8 @@ async def test_user_step_errors(hass, monkeypatch):
     write_profiles(hass, PROFILE)
     path = str(profiles_path(hass))
     r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
-    for bad, error in (("invalid_auth", "invalid_auth"), ("cannot_connect", "cannot_connect")):
-        with patch(CHECK_KEY, return_value=bad):
+    for bad, error in ((AuthError, "invalid_auth"), (ProviderError, "cannot_connect")):
+        with patch(CHECK_KEY, side_effect=bad):
             r = await step(hass, r, {"api_key": "k", "profiles_path": path})
         assert r["errors"] == {"base": error}
     folder = hass.config.config_dir
@@ -188,7 +188,7 @@ async def test_key_rejected_starts_reauth_and_new_key_reloads(hass):
     assert len(hass.config_entries.flow.async_progress_by_handler(DOMAIN)) == 1
     old = h.entry.runtime_data
     h.provider.error = lambda q: None
-    with patch(CHECK_KEY, return_value="invalid_auth"):
+    with patch(CHECK_KEY, side_effect=AuthError):
         r = await step(hass, flows[0], {"api_key": "bad"})
     assert r["errors"] == {"base": "invalid_auth"}
     with patch(CHECK_KEY, return_value=KNOWN):
@@ -218,10 +218,10 @@ def add_entry(hass, **options):
     return entry
 
 
-async def options_validate(hass, text, key=KNOWN, entry=None):
+async def options_validate(hass, text, key=KNOWN, entry=None, key_error=None):
     entry = entry or add_entry(hass)
     write_profiles(hass, text)
-    with patch(CHECK_KEY, return_value=key):
+    with patch(CHECK_KEY, return_value=key, side_effect=key_error):
         r = await hass.config_entries.options.async_init(entry.entry_id)
         assert r["type"] is FlowResultType.MENU
         return await hass.config_entries.options.async_configure(
@@ -267,8 +267,8 @@ async def test_options_validate_starter_file_reports_only_its_placeholder(hass):
 
 async def test_options_validate_unloaded_with_key_failure(hass):
     text = (PROFILES / "office_a.yaml").read_text()
-    for key, start in (("invalid_auth", "NS key rejected"), ("cannot_connect", "NS not reachable")):
-        r = await options_validate(hass, text, key=key, entry=None)
+    for failure, start in ((AuthError, "NS key rejected"), (ProviderError, "NS not reachable")):
+        r = await options_validate(hass, text, key_error=failure, entry=None)
         lines = r["description_placeholders"]["report"].splitlines()
         assert lines[0].startswith(start)
         assert lines[-1].startswith("station codes not checked")
