@@ -1107,7 +1107,7 @@ async def test_held_warning_names_the_whole_onward_suffix_with_platforms(tmp_pat
     assert old.endswith("Now following your 08:12 train, then the 09:10 from UT (platform 5).")
 
 
-async def test_a_warning_stored_before_facts_were_kept_goes_out_as_written(tmp_path):
+async def test_a_warning_stored_before_facts_were_kept_still_names_the_current_lock(tmp_path):
     rig = await started(tmp_path)
     rig.notifier.fails = lambda e: e.kind is EventKind.CANCELLED
     first = make_leg("UT", "RTD", "08:58", "09:32", number="5800")
@@ -1116,7 +1116,7 @@ async def test_a_warning_stored_before_facts_were_kept_goes_out_as_written(tmp_p
     rig.provider.world = [make_connection([L1, L2X]), make_connection([L1, first]),
                           make_connection([L1, then])]  # fmt: skip
     await rig.rt.poll_once()
-    rig.clock.set("08:22")  # the lock moves on, which would rewrite a warning that has facts
+    rig.clock.set("08:22")  # the lock moves on, so the replacement the warning names is stale
     first_x = make_leg("UT", "RTD", "08:58", "09:32", number="5800", cancelled=True)
     rig.provider.world = [make_connection([L1, L2X]), make_connection([L1, first_x]),
                           make_connection([L1, then])]  # fmt: skip
@@ -1127,7 +1127,9 @@ async def test_a_warning_stored_before_facts_were_kept_goes_out_as_written(tmp_p
     rig.notifier.fails = lambda e: False
     await rig.rt.watchdog_once()
     told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
-    assert "Next good connection: 08:58" in next(t for t in told if "08:50" in t)
+    old = next(t for t in told if "08:50" in t)
+    assert "08:58" not in old
+    assert old.endswith("Now following your 08:12 train, then the 09:10 from UT.")
 
 
 async def test_older_store_occurrence_keeps_its_schedule_through_a_reseed(tmp_path):

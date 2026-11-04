@@ -81,6 +81,7 @@ from train_commute_companion.messages import CHECK_APP, no_journey_text
 from train_commute_companion.model import (
     LIVE_PREFIX,
     AlertEvent,
+    AlertFacts,
     Config,
     Ctx,
     Direction,
@@ -97,6 +98,7 @@ from train_commute_companion.model import (
     Provenance,
     Severity,
     Signature,
+    ToldDelay,
     TrainId,
     UsualJourney,
     WebhookCopy,
@@ -487,9 +489,8 @@ class _RuntimeLedger:
                 s, ctx, origin, rt._usual_arrival(s, ctx, origin)
             )
         if e.kind is EventKind.DATA_UNCLEAR:  # while its values are the latest told for its train
-            slot = None if e.train is None else f"unclear#{train_key(e.train)}"
-            told = None if slot is None else s.alert_keys.get(slot)
-            return told is not None and e.key.endswith(f":{told}")
+            told = None if e.train is None else s.alert_keys.get(f"unclear#{train_key(e.train)}")
+            return told == _facts(e).unclear
         # the answer to a command the user gave is true as said; a new kind must say what holds it
         return e.kind is EventKind.CHOOSE_REFUSED
 
@@ -561,8 +562,7 @@ class _RuntimeLedger:
             body = None if g is None else g.body
         if body is None:
             return e
-        tail = _twin(e.text, s.key.service_date)[1]
-        return replace(e, text=f"{display_name(e.profile_name)}: {body}{tail}")
+        return replace(e, text=f"{display_name(e.profile_name)}: {body}{_facts(e).twin_note}")
 
     def _relocked(self, o: Obligation, e: AlertEvent) -> AlertEvent:
         """Rule 5(a): a journey warning names the current lock, not the replacement frozen at
@@ -572,18 +572,15 @@ class _RuntimeLedger:
         of it has left, else the train now followed and every onward leg still ahead."""
         rt = self._rt
         s = None if o.occurrence is None else self._state.occurrences.get(_okey(o.occurrence))
-        f = e.facts
         if e.kind not in _NAMES_LOCK or e.train is None or s is None or s.lock is None:
             return e
-        if f is None:  # stored before facts were kept: goes out as written
-            return e
+        f = _facts(e)
         live = [x for x in s.lock.legs if x.state not in (LegState.CANCELLED, LegState.RELOCKED)]
         if not live or e.train in {x.train for x in live} or f.on:
             return e  # a retained warning already names its own next connection (rule 7)
         if f.named and tuple(train_ident(x.train) for x in live)[-len(f.named) :] == f.named:
             return e
-        head, tail = _twin(e.text, s.key.service_date)
-        head = head.removesuffix(f.next_clause)
+        head = e.text.removesuffix(f.twin_note).removesuffix(f.next_clause)
         k = _okey(s.key)
         ahead = [x for x in live if x.state in (LegState.PENDING, LegState.BOARDING)]
         left = [x for x in live if x not in ahead]
@@ -597,7 +594,7 @@ class _RuntimeLedger:
                 for t, pl in (rt._leg_now(k, x),)
             )
             nxt = f"Now following your {now} train{onward}."
-        return replace(e, text=f"{head.rstrip()} {nxt}{tail}")
+        return replace(e, text=f"{head.rstrip()} {nxt}{f.twin_note}")
 
 
 def _held_id(o: Obligation) -> tuple[str | None, str, Severity]:
@@ -711,19 +708,37 @@ def _advice_told(st: PersistedState, told: Sequence[tuple[Obligation, bool]]) ->
     return replace(st, occurrences=occs)
 
 
-def _twin_note(day: date) -> str:
-    return f" (service date {day.isoformat()})"
+def _legacy_facts(e: AlertEvent) -> AlertFacts:
+    """What an alert held in a state file from before facts were kept states, read from its key
+    and text: the only place that reads them back, so those alerts keep rules 5(a) and 5(b)."""
+    told: tuple[ToldDelay, ...] = ()
+    base, sep, vals = e.key.rpartition("|stated+")
+    if sep and e.kind in _DELAY_NEWS:
+        base = EventKind.DELAYED.value + base[len(e.kind.value) :]
+        said = vals.split(",")
+        slots = [base + t for t in ("#d", "#a")] if len(said) == 2 else [base]
+        told = tuple(ToldDelay(x, v) for x, v in zip(slots, said, strict=True))
+    part = next((x for x in e.key.split("|")[1:] if "@" in x and not x.startswith("stated")), "")
+    i = e.text.find(" (service date ")
+    head, note = (e.text, "") if i < 0 else (e.text[:i], e.text[i:])
+    j = head.find(" Next good connection:")
+    return AlertFacts(
+        told=told,
+        on="retained" if ":retained:" in e.key else "",
+        named=tuple(x for x in part.split(":retained:")[0].split(",") if x),
+        next_clause="" if j < 0 else head[j:],
+        unclear=e.key.rpartition(":")[2] if e.kind is EventKind.DATA_UNCLEAR else "",
+        twin_note=note,
+    )
 
 
-def _twin(text: str, day: date) -> tuple[str, str]:
-    """The text and its 7.13 twin note, which stays last."""
-    note = _twin_note(day)
-    return (text[: -len(note)], note) if text.endswith(note) else (text, "")
+def _facts(e: AlertEvent) -> AlertFacts:
+    return _legacy_facts(e) if e.facts is None else e.facts
 
 
 def _states_current(e: AlertEvent, keys: Mapping[str, str]) -> bool:
     """A delay message whose stated values are still the ones remembered (`_stated`)."""
-    return e.facts is None or all(keys.get(t.slot) == t.said for t in e.facts.told)
+    return all(keys.get(t.slot) == t.said for t in _facts(e).told)
 
 
 def _origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> Pool | None:
@@ -1084,7 +1099,8 @@ class Runtime:
         for e in out:
             keys[_SENT_PREFIX + e.key] = e.severity.value
             if twins:  # 7.13: alerts name the service date while two occurrences exist
-                e = replace(e, text=e.text + _twin_note(s.key.service_date))
+                note = f" (service date {s.key.service_date.isoformat()})"
+                e = replace(e, text=e.text + note, facts=replace(_facts(e), twin_note=note))
             obligations.append(self._obligation(e, s, now))
         return replace(s, alert_keys=keys), obligations
 

@@ -235,12 +235,14 @@ class AlertFacts:
 
     delays: tuple[LiveDelay, ...] = ()
     told: tuple[ToldDelay, ...] = ()
-    track: str | None = None  # the platform a platform message names
+    moved_slot: str = ""  # a platform message's memory slot, the same for any platform it names
     back_on_plan: bool = False  # that platform is the planned one again
     subject: str = ""  # "your <leg>", which a delay's recovery message opens with
     on: str = ""  # a retained warning's "if you are on the ..." prefix; "" for any other alert
     named: tuple[str, ...] = ()  # the replacement a warning names, by `train_ident`
     next_clause: str = ""  # the text that names it, right after the warning itself
+    unclear: str = ""  # the fingerprint of the values a data-unclear message states
+    twin_note: str = ""  # the 7.13 service date note closing the text, while there are twins
 
 
 @dataclass(frozen=True, slots=True)

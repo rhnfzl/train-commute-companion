@@ -342,13 +342,12 @@ def _stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
     out = []
     for e in events:
         f = e.facts or AlertFacts()
-        if f.track is not None:
+        if f.moved_slot:
             # per boarding segment: a train back on its planned platform is news only once a
             # change was announced for it (1 -> 5 -> 1 says so, an unchanged 1 says nothing)
-            slot = "moved#" + e.key.replace(_track_facts(f.track, f.back_on_plan), "track", 1)
             if not f.back_on_plan:
-                keys[slot] = "1"
-            elif slot not in keys:
+                keys[f.moved_slot] = "1"
+            elif f.moved_slot not in keys:
                 continue
             out.append(e)
             continue
@@ -379,6 +378,11 @@ def _stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
     return Transition(replace(s, alert_keys=keys) if keys != s.alert_keys else s, tuple(out))
 
 
+def _event_key(ctx: Ctx, kind: EventKind, train: TrainId | None, facts: str) -> str:
+    ident = "" if train is None else f":{train_ident(train)}"
+    return f"{kind.value}:{ctx.schedule.key.service_date.isoformat()}{ident}:{facts}"
+
+
 def make_event(
     ctx: Ctx,
     kind: EventKind,
@@ -392,20 +396,18 @@ def make_event(
     so a changed endpoint, replacement or revised arrival is news while a repeat is not.
     Pass `facts` when the text holds a live time that drifts without being news. `stated` holds
     what later steps read of this alert; its live delays join the key in `_stated`."""
-    key = ctx.schedule.key
     name = display_name(ctx.profile.name)
-    ident = "" if train is None else f":{train_ident(train)}"
     return AlertEvent(
         ctx.profile.id,
         ctx.profile.name,
         ctx.direction,
-        key.service_date,
+        ctx.schedule.key.service_date,
         None,
         kind,
         severity,
         train,
         f"{name}: {text}",
-        f"{kind.value}:{key.service_date.isoformat()}{ident}:{text if facts is None else facts}",
+        _event_key(ctx, kind, train, text if facts is None else facts),
         ctx.now,
         stated or AlertFacts(),
     )
@@ -1046,10 +1048,6 @@ def _delayed(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg, *, last: bool) -> Aler
     return make_event(ctx, EventKind.DELAYED, sev, f"{text}.", x.train, _name(x), stated)
 
 
-def _track_facts(track: str, planned: bool) -> str:
-    return f"track {track}" + ("|planned" if planned else "")
-
-
 def _platform(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
     """7.9 `platform_change` for a leg not yet left: loud within 15 min of its expected
     departure, else silent (escalated once it enters the zone, rule 4)."""
@@ -1064,8 +1062,9 @@ def _platform(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
         text = f"your {_name(x)} train leaves from platform {b.planned_track} again, as planned."
     else:
         text = f"your {_name(x)} train now leaves from platform {track} (was {b.planned_track})."
-    facts = _track_facts(track, planned)
-    stated = AlertFacts(track=track, back_on_plan=planned)
+    facts = f"track {track}" + ("|planned" if planned else "")
+    slot = "moved#" + _event_key(ctx, EventKind.PLATFORM_CHANGE, x.train, "track")
+    stated = AlertFacts(moved_slot=slot, back_on_plan=planned)
     return make_event(ctx, EventKind.PLATFORM_CHANGE, sev, text, x.train, facts, stated)
 
 
@@ -1448,7 +1447,8 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
             continue
         s = replace(s, alert_keys={**s.alert_keys, slot: u.fingerprint})
         text = on + data_unclear_text(u.label, u.station, u.copies)
-        event = make_event(ctx, EventKind.DATA_UNCLEAR, Severity.LOUD, text, x.train)
+        stated = AlertFacts(unclear=u.fingerprint)
+        event = make_event(ctx, EventKind.DATA_UNCLEAR, Severity.LOUD, text, x.train, None, stated)
         date_ = ctx.schedule.key.service_date.isoformat()
         key = f"{EventKind.DATA_UNCLEAR.value}:{date_}:{tk}:{u.fingerprint}"
         events.append(replace(event, key=key))
@@ -1465,8 +1465,10 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
         retained.append(t.state.lock)
         for e in t.events:
             text = f"{display_name(e.profile_name)}: {on}{e.body}"
-            key = f"{e.key}:retained:{train_ident(first)}"
-            facts = replace(e.facts or AlertFacts(), on=on)
+            tail = f":retained:{train_ident(first)}"
+            key = e.key + tail
+            f = e.facts or AlertFacts()
+            facts = replace(f, on=on, moved_slot=f.moved_slot and f.moved_slot + tail)
             events.append(replace(e, text=text, key=key, facts=facts))
     s = replace(s, retained=tuple(retained))
     t = (_restore(s, ctx, pool) or _follow(s, ctx, pool, asked)) if live else Transition(s, ())

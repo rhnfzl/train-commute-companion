@@ -24,8 +24,8 @@ from test_lifecycle_follow import (
     with_track,
 )
 
-from train_commute_companion.model import AlertEvent, EventKind, Leg, train_ident
-from train_commute_companion.runtime import _states_current
+from train_commute_companion.model import AlertEvent, EventKind, Leg, Severity, train_ident
+from train_commute_companion.runtime import _legacy_facts, _states_current
 from train_commute_companion.serde import dumps, loads
 
 DAY = "2026-10-27"
@@ -107,8 +107,35 @@ def test_an_event_stored_before_facts_were_kept_still_loads():
     del stored["facts"]
     old = loads(AlertEvent, json.dumps(stored))
     assert old.facts is None and old.key == e.key
-    assert _states_current(old, {})  # nothing to compare: its key is still checked as sent
+    # its stated delays are read from its key, so a stale one is still caught
+    assert _states_current(old, t.state.alert_keys) and not _states_current(old, {})
     assert _states_current(e, t.state.alert_keys) and not _states_current(e, {})
+
+
+def test_a_held_all_clear_stored_before_facts_were_kept_is_stale_once_late_again():
+    c = ctx(at("07:40"), DIRECT)
+    late = poll(occ(journey([_delayed_leg(0)])), c, ans("AAA", conn(_delayed_leg(7))))
+    t = poll(late.state, c, ans("AAA", conn(_delayed_leg(0))))
+    (back,) = [e for e in t.events if e.kind is EventKind.BACK_TO_NORMAL]
+    old = replace(back, facts=None)
+    assert _states_current(old, t.state.alert_keys)
+    again = poll(t.state, c, ans("AAA", conn(_delayed_leg(7))))
+    assert not _states_current(old, again.state.alert_keys)
+
+
+def test_what_is_read_from_an_event_stored_before_facts_were_kept():
+    named = f"{train_ident(R2.train)},{train_ident(L2.train)}"
+    clause = " Next good connection: 08:58."
+    e = AlertEvent(
+        "p1", "office_a", None, None, None, EventKind.CANCELLED, Severity.LOUD, L1.train,
+        f"Office A: your train is cancelled.{clause} (service date {DAY})",
+        f"cancelled:{DAY}:x:your train is cancelled|{named}:retained:y|stated+0", at("07:40"),
+    )  # fmt: skip
+    f = _legacy_facts(e)
+    assert f.named == tuple(named.split(",")) and f.on and not f.told
+    assert f.next_clause == clause and f.twin_note == f" (service date {DAY})"
+    told = replace(e, kind=EventKind.DATA_UNCLEAR, key=f"data_unclear:{DAY}:x:abc123")
+    assert _legacy_facts(told).unclear == "abc123"
 
 
 def test_a_recovery_opens_with_the_retained_prefix_and_keeps_a_colon_in_the_name():
