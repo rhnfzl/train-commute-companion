@@ -309,7 +309,12 @@ def map_stations(payload: object) -> frozenset[str]:
 
 
 def _num(v: object) -> bool:
-    return isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
+    if not isinstance(v, int | float) or isinstance(v, bool):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:  # an integer too large for a float
+        return False
 
 
 def map_station_positions(payload: object) -> dict[str, tuple[float, float]]:

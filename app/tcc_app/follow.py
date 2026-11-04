@@ -27,8 +27,13 @@ Source = Literal["telegram", "owntracks"]
 
 def number(v: object) -> float | None:
     """A finite JSON number (not a bool), else None."""
-    ok = isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
-    return float(v) if ok else None  # type: ignore[arg-type]
+    if not isinstance(v, int | float) or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except OverflowError:  # an integer too large for a float
+        return None
+    return f if math.isfinite(f) else None
 
 
 def stamp(v: object) -> datetime | None:

@@ -153,3 +153,8 @@ async def test_serve_wires_owntracks_only_with_a_secret(tmp_path, tg, secret, ex
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+def test_parse_refuses_an_integer_too_large_for_a_float():
+    body = {"_type": "location", "lat": 10**400, "lon": 5.0, "tst": 1_700_000_000}
+    assert parse(json.dumps(body).encode()) is None

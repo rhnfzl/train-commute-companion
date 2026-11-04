@@ -26,8 +26,13 @@ PLACE_ROLES = ("home", "work")
 
 
 def _num(v: object) -> float | None:
-    ok = isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
-    return float(v) if ok else None  # type: ignore[arg-type]
+    if not isinstance(v, int | float) or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except OverflowError:  # an integer too large for a float
+        return None
+    return f if math.isfinite(f) else None
 
 
 def _fix(state: State | None) -> tuple[float, float] | None:

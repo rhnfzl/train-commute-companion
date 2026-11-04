@@ -7,7 +7,12 @@ from builders import AMS
 
 from train_commute_companion.model import Provenance, TrainId
 from train_commute_companion.providers.base import MalformedAnswer, Query
-from train_commute_companion.providers.ns import map_disruptions, map_stations, map_trips
+from train_commute_companion.providers.ns import (
+    map_disruptions,
+    map_station_positions,
+    map_stations,
+    map_trips,
+)
 
 NOW = datetime(2026, 10, 27, 7, 0, tzinfo=AMS)
 Q = Query("AAA", "BBB", datetime(2026, 10, 27, 8, 0, tzinfo=AMS))
@@ -357,3 +362,8 @@ def test_maintenance_crossing_the_repeated_hour_is_complete():
     w = map_disruptions([item])
     assert w.coverage == "complete"
     assert w.items[0].end - w.items[0].start == timedelta(minutes=20)
+
+
+def test_station_position_with_a_huge_integer_is_left_out():
+    payload = {"payload": [{"code": "AAA", "lat": 10**400, "lng": 5.0}]}
+    assert map_station_positions(payload) == {}
