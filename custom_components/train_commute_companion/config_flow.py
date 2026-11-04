@@ -267,7 +267,7 @@ class TccOptionsFlow(_TestPushMixin, OptionsFlowWithReload):  # type: ignore[mis
             try:
                 async with asyncio.timeout(HOST_TIMEOUT_S):
                     return await entry.runtime_data.host.run(lambda rt: rt.known_stations), None
-            except (RuntimeError, TimeoutError):
+            except (host_mod.RuntimeNotRunning, TimeoutError):
                 pass  # the runtime is not answering: ask NS directly
         got = await check_key(self.hass, entry.data[CONF_API_KEY])
         if isinstance(got, str):

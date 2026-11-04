@@ -409,6 +409,21 @@ async def test_zone_radius_edit_reseeds(hass):
     assert not [c for c in calls if c[1] in ("enter", "leave")], calls
 
 
-
 def test_a_huge_integer_is_no_coordinate():
     assert _num(10**400) is None
+
+
+async def test_a_runtime_error_from_the_core_is_logged_not_taken_for_a_stopped_runtime(
+    hass, caplog
+):
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *HOME)
+    await start_tracker(h)
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("inner failure")
+
+    await h.entry.runtime_data.host.run(lambda rt: setattr(rt, "location", broken))
+    set_person(hass, 52.05, 5.05)
+    await hass.async_block_till_done()
+    assert "location event for" in caplog.text

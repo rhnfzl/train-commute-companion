@@ -16,6 +16,8 @@ from train_commute_companion.location import LocationEvent, Zone, resolve_zone
 from train_commute_companion.model import Profile
 from train_commute_companion.runtime import Runtime
 
+from .host import RuntimeNotRunning
+
 if TYPE_CHECKING:  # data.py imports this module
     from .data import TccConfigEntry  # noqa: TC004 (annotation only, lazy on 3.14)
 
@@ -239,7 +241,7 @@ class LocationTracker:
                         )
 
                     await host.run(send)
-            except RuntimeError:
+            except RuntimeNotRunning:
                 _LOGGER.debug("location event dropped: the runtime is not running")
             except Exception:
                 _LOGGER.exception("location event for %s failed", pid)

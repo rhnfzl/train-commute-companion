@@ -24,6 +24,10 @@ JOIN_TIMEOUT_S = 10
 AUTORUN = True
 
 
+class RuntimeNotRunning(RuntimeError):
+    """`Host.run` found no runtime to ask; a RuntimeError from the call itself is another matter."""
+
+
 class PositionedProvider(Provider, Protocol):
     @property
     def positions(self) -> Mapping[str, tuple[float, float]]: ...
@@ -97,7 +101,7 @@ class RuntimeHost:
     async def run[T](self, fn: Callable[[Runtime], Awaitable[T] | T]) -> T:
         loop, parts = self._loop, self._parts
         if loop is None or parts is None or self.retired.is_set():
-            raise RuntimeError("the runtime is not running")
+            raise RuntimeNotRunning("the runtime is not running")
 
         async def call() -> T:
             r = fn(parts.runtime)

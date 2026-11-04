@@ -214,3 +214,12 @@ async def test_actions_reach_a_removed_profile_that_still_runs(hass):
     await call(hass, "not_travelling", profile="office_a", direction="outbound")
     s = await h.host.run(lambda rt: only_occurrence(rt, Direction.OUTBOUND))
     assert s.direction_state is DirectionState.EXPIRED
+
+
+async def test_a_stopped_runtime_is_a_service_error(hass):
+    h = await setup_tcc(hass, PROFILE)
+    host = h.entry.runtime_data.host
+    host.retired.set()
+    with pytest.raises(HomeAssistantError, match="not running"):
+        await hass.services.async_call(DOMAIN, "leaving", {"profile": "office_a"}, blocking=True)
+    host.retired.clear()

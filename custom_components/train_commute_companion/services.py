@@ -15,6 +15,7 @@ from train_commute_companion.runtime import Runtime
 
 from .const import DOMAIN
 from .data import TccData
+from .host import RuntimeNotRunning
 
 # a choice holds one live request under the core's 90 s deadline
 RUN_TIMEOUT_S = 120
@@ -58,6 +59,8 @@ async def _run[T](data: TccData, fn: Callable[[Runtime], Awaitable[T]]) -> T:
             return await data.host.run(fn)
     except TimeoutError:
         raise HomeAssistantError("the companion is not answering; try again") from None
+    except RuntimeNotRunning:
+        raise HomeAssistantError("the companion is not running; try again") from None
 
 
 async def do_choose(
