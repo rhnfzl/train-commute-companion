@@ -134,7 +134,7 @@ def parse_urls(text: str) -> tuple[str, ...]:
         if url is None:
             raise ValueError(
                 f"entry {n} is not an http or https URL without a user name or password"
-            ) from None
+            )
         if url not in urls:
             urls.append(url)
     return tuple(urls)

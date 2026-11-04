@@ -196,7 +196,7 @@ def test_parse_urls_is_stable_on_its_own_output(text):
 def test_parse_urls_refuses_naming_the_entry_not_the_value(bad):
     with pytest.raises(ValueError, match="entry 2") as e:
         parse_urls(f"{URL1} {bad}")
-    assert bad not in str(e.value) and e.value.__cause__ is None and e.value.__suppress_context__
+    assert bad not in str(e.value) and e.value.__cause__ is None and e.value.__context__ is None
 
 
 @pytest.mark.parametrize(
