@@ -498,7 +498,7 @@ def _title(p: Profile) -> str:
     return p.name.replace("_", " ").title()
 
 
-def _hhmm(t: time) -> str:
+def _clock_text(t: time) -> str:
     return f"{t:%H:%M}"
 
 
@@ -549,8 +549,8 @@ def _warn_text(r: ProbeResult, p: Profile, base: Signature | None) -> str:
     if not parts and r.connection is not None and base is not None:
         now = signature_of(r.connection, r.service_date)
         parts.append(
-            f"your {what} changes to {_hhmm(now.legs[0].departure)}, {_duration(now)} min"
-            f" (was {_hhmm(base.legs[0].departure)}, {_duration(base)} min)"
+            f"your {what} changes to {_clock_text(now.legs[0].departure)}, {_duration(now)} min"
+            f" (was {_clock_text(base.legs[0].departure)}, {_duration(base)} min)"
         )
     return "; ".join(dict.fromkeys(parts))
 
@@ -762,12 +762,12 @@ def run_lookahead(
             new_first = agreed.legs[0].departure
             if agreed.legs[0].day_offset != 0:
                 refusals.append(
-                    f"NS moved your {_hhmm(old_first)} to {_hhmm(new_first)} on another day;"
+                    f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} on another day;"
                     " update your profile"
                 )
             elif _overlaps(p, d, agreed, expected[0], current, others, bases or {}):
                 refusals.append(
-                    f"NS moved your {_hhmm(old_first)} to {_hhmm(new_first)}, which overlaps"
+                    f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)}, which overlaps"
                     " another window; update your profile"
                 )
             else:
@@ -782,7 +782,7 @@ def run_lookahead(
                     (
                         f"adopt:{adopted.version}",
                         (
-                            f"NS moved your {_hhmm(old_first)} to {_hhmm(new_first)} from {when};"
+                            f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} from {when};"
                             " I follow the new time. Update your profile?"
                         ),
                         False,

@@ -66,16 +66,16 @@ def _clock(t: datetime, day: date) -> str:
     return text if local.date() == day else f"{text} on {local:%a} {local.day} {local:%b}"
 
 
-def _utc(*ts: datetime | None) -> list[datetime]:
+def _utc_known(*ts: datetime | None) -> list[datetime]:
     return [t.astimezone(UTC) for t in ts if t is not None]
 
 
 def _earliest(s: Stop) -> datetime | None:
-    return min(_utc(s.planned_arrival, s.planned_departure), default=None)
+    return min(_utc_known(s.planned_arrival, s.planned_departure), default=None)
 
 
 def _planned(s: Stop) -> datetime | None:
-    return next(iter(_utc(s.planned_arrival or s.planned_departure)), None)
+    return next(iter(_utc_known(s.planned_arrival or s.planned_departure)), None)
 
 
 def _flag(on: bool, yes: str, no: str) -> tuple[Value, str]:

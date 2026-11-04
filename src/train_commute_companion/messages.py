@@ -1,21 +1,16 @@
 """Alert text shared by more than one caller (7.9, 11.1). Pure: every fact comes in as an argument."""
 
 from collections.abc import Sequence
-from datetime import datetime
 
-from train_commute_companion.calendar import TZ
+from train_commute_companion.calendar import hhmm
 from train_commute_companion.model import Leg
 
 CHECK_APP = "check the NS app"
 
 
-def _hhmm(t: datetime) -> str:
-    return t.astimezone(TZ).strftime("%H:%M")
-
-
 def _when(leg: Leg) -> str:
     d = leg.board.departure
-    return _hhmm((d and (d.value or d.planned)) or leg.train.planned_departure)
+    return hhmm((d and (d.value or d.planned)) or leg.train.planned_departure)
 
 
 def _changes(legs: Sequence[Leg]) -> str:

@@ -3,7 +3,7 @@
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, time, timedelta
 
-from train_commute_companion.calendar import TZ, is_commute_day, resolve_local
+from train_commute_companion.calendar import TZ, is_commute_day, minute_of_day, resolve_local
 from train_commute_companion.model import (
     Config,
     DatedSchedule,
@@ -20,10 +20,6 @@ def effective_first_train(j: UsualJourney, baseline_first_train: time | None) ->
     return j.first_train if baseline_first_train is None else baseline_first_train
 
 
-def _minutes(t: time) -> int:
-    return t.hour * 60 + t.minute
-
-
 def _local(naive: datetime, edge: str) -> datetime:
     return resolve_local(naive.date(), naive.time(), edge="end" if edge == "end" else "start")
 
@@ -35,8 +31,8 @@ def dated_schedule(
     service_date = commute_day + timedelta(days=j.day_offset)
     eff = effective_first_train(j, baseline_first_train)
     # clock differences, so an adoption moves the window by the same amount
-    before = timedelta(minutes=(_minutes(j.first_train) - _minutes(j.window[0])) % 1440)
-    after = timedelta(minutes=(_minutes(j.window[1]) - _minutes(j.first_train)) % 1440)
+    before = timedelta(minutes=(minute_of_day(j.first_train) - minute_of_day(j.window[0])) % 1440)
+    after = timedelta(minutes=(minute_of_day(j.window[1]) - minute_of_day(j.first_train)) % 1440)
     first = datetime.combine(service_date, eff)
     return DatedSchedule(
         OccurrenceKey(p.id, d, service_date),

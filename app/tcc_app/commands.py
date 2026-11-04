@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
-from train_commute_companion.calendar import TZ
+from train_commute_companion.calendar import TZ, hhmm
 from train_commute_companion.health import BoardHealth
 from train_commute_companion.model import Connection, Direction, LegKind, Provenance, TimeObs
 from train_commute_companion.view import LegView, OccurrenceView, RuntimeView
@@ -42,10 +42,6 @@ def _key(s: str) -> str:
 
 def _pretty(name: str) -> str:
     return name.replace("_", " ").title()
-
-
-def _hm(t: datetime) -> str:
-    return t.astimezone(TZ).strftime("%H:%M")
 
 
 def _day(d: date) -> str:
@@ -109,7 +105,7 @@ def parse_target(view: RuntimeView, args: Sequence[str]) -> Target:
 
 def _leg_line(x: LegView, prefix: str = "  ") -> str:
     state = "on time per NS" if x.state is LegKind.OK else x.state  # never read as proven (rule 20)
-    line = f"{prefix}{_hm(x.departure or x.planned_departure)} {x.board} to {x.alight}: {state}"
+    line = f"{prefix}{hhmm(x.departure or x.planned_departure)} {x.board} to {x.alight}: {state}"
     if x.departure_delay_min:
         line += f", +{x.departure_delay_min} min"
     if x.departure_platform:
@@ -142,13 +138,13 @@ def _occurrence(o: OccurrenceView) -> list[str]:
             line += f" ({t.margin_min} min, needs {t.minimum})"
         out.append(line)
     for journey in o.retained:
-        out += [_leg_line(x, f"  if you are on the {_hm(x.planned_departure)}: ") for x in journey]
+        out += [_leg_line(x, f"  if you are on the {hhmm(x.planned_departure)}: ") for x in journey]
     if o.next_good is not None:
         out.append(
-            f"  next good connection: {_hm(_next_time(o.next_good))} from {o.next_good.legs[0].board.code}"
+            f"  next good connection: {hhmm(_next_time(o.next_good))} from {o.next_good.legs[0].board.code}"
         )
     if o.advice is not None and o.advice.advised_train is not None and not o.advice.withdrawn:
-        out.append(f"  earlier train advised: the {_hm(o.advice.advised_train.planned_departure)}")
+        out.append(f"  earlier train advised: the {hhmm(o.advice.advised_train.planned_departure)}")
     out.append(_health_line(o.health))
     return out
 
@@ -159,7 +155,7 @@ def _health_line(h: BoardHealth) -> str:
             "  NS data: fresh, last poll failed" if h.consecutive_failures else "  NS data: fresh"
         )
     return (
-        f"  NS data: not fresh since {_hm(h.last_ok_at)}"
+        f"  NS data: not fresh since {hhmm(h.last_ok_at)}"
         if h.last_ok_at
         else "  NS data: not fresh"
     )
@@ -216,7 +212,9 @@ def _check_lines(view: RuntimeView) -> list[str]:
         if ok is None:
             lines.append("Planned-works check: not run yet")
         elif _stale(view, ok):
-            lines.append(f"Planned-works check: last ok {_day(ok.astimezone(TZ).date())} {_hm(ok)}")
+            lines.append(
+                f"Planned-works check: last ok {_day(ok.astimezone(TZ).date())} {hhmm(ok)}"
+            )
     return lines
 
 
@@ -265,7 +263,7 @@ def status_tool(view: RuntimeView, confirmed: bool, profile_id: str) -> dict[str
 def _reported_hm(obs: TimeObs | None) -> str | None:
     if obs is None or obs.provenance is not Provenance.REPORTED or obs.value is None:
         return None  # a planned time is never shown as a reported one (rule 20)
-    return _hm(obs.value)
+    return hhmm(obs.value)
 
 
 def _connection(c: Connection) -> dict[str, Any]:
@@ -277,14 +275,14 @@ def _connection(c: Connection) -> dict[str, Any]:
                 "train_number": leg.train.train_number,
                 "board": b.code,
                 "alight": a.code,
-                "planned_departure": _hm(b.planned_departure or leg.train.planned_departure),
+                "planned_departure": hhmm(b.planned_departure or leg.train.planned_departure),
                 "departure": _reported_hm(b.departure),
-                "planned_arrival": None if a.planned_arrival is None else _hm(a.planned_arrival),
+                "planned_arrival": None if a.planned_arrival is None else hhmm(a.planned_arrival),
                 "arrival": _reported_hm(a.arrival),
                 "platform": b.actual_track or b.planned_track,
             }
         )
-    return {"departure": _hm(_next_time(c)), "from": c.legs[0].board.code, "legs": legs}
+    return {"departure": hhmm(_next_time(c)), "from": c.legs[0].board.code, "legs": legs}
 
 
 def connections_tool(
@@ -379,12 +377,12 @@ def status_buttons(view: RuntimeView) -> dict[str, Any] | None:
         if o.next_good is not None:
             # the core names a train by its planned departure; the label shows the reported one
             train = o.next_good.legs[0].train
-            hm, num = _hm(train.planned_departure), train.train_number
+            hm, num = hhmm(train.planned_departure), train.train_number
             data = callback_data(
                 "c", k.profile_id, k.direction.value, day, hm, num
             ) or callback_data("c", k.profile_id, k.direction.value, day, hm)
             if data is not None:
-                row.append({"text": f"Take {_hm(_next_time(o.next_good))}", "callback_data": data})
+                row.append({"text": f"Take {hhmm(_next_time(o.next_good))}", "callback_data": data})
         if row:
             rows.append(row)
     return {"inline_keyboard": rows} if rows else None

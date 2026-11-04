@@ -2,9 +2,9 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 
-from train_commute_companion.calendar import TZ
+from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.classify import classify_leg, current_run, find_leg
 from train_commute_companion.health import FRESH_FOR, board_health
 from train_commute_companion.lifecycle import (
@@ -177,7 +177,7 @@ def escalations(ledger: Mapping[str, Severity], facts: Sequence[Fact], now: date
         minutes = (
             None
             if f.departure is None
-            else int((_utc(f.departure) - _utc(now)) // timedelta(minutes=1))
+            else int((to_utc(f.departure) - to_utc(now)) // timedelta(minutes=1))
         )
         sev = severity(
             f.kind,
@@ -189,10 +189,6 @@ def escalations(ledger: Mapping[str, Severity], facts: Sequence[Fact], now: date
         if sev is Severity.LOUD:
             out.append(f.key)
     return out
-
-
-def _utc(t: datetime) -> datetime:
-    return t.astimezone(UTC)
 
 
 def unsent(ledger: Mapping[str, Severity], events: Sequence[AlertEvent]) -> list[AlertEvent]:
@@ -245,8 +241,8 @@ def all_good(s: OccurrenceState, board: Board, ctx: Ctx) -> AlertEvent | None:
     h = board_health((*s.poll_records, *board.polls), ctx.now)
     if not h.fresh or h.consecutive_failures or h.auth_failed:
         return None
-    newest = max(board.answers, key=lambda a: _utc(a.fetched_at))
-    if _utc(ctx.now) - _utc(newest.fetched_at) >= FRESH_FOR:
+    newest = max(board.answers, key=lambda a: to_utc(a.fetched_at))
+    if to_utc(ctx.now) - to_utc(newest.fetched_at) >= FRESH_FOR:
         return None
     merged = ProviderAnswer(
         newest.query, tuple(c for a in board.answers for c in a.connections), newest.fetched_at

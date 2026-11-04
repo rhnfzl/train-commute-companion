@@ -7,6 +7,22 @@ from zoneinfo import ZoneInfo
 TZ = ZoneInfo("Europe/Amsterdam")
 
 
+def to_utc(t: datetime) -> datetime:
+    return t.astimezone(UTC)  # same-zone arithmetic and ordering ignore the DST fold
+
+
+def hhmm(t: datetime) -> str:
+    return t.astimezone(TZ).strftime("%H:%M")
+
+
+def floor_to_minute(t: datetime) -> datetime:
+    return t.astimezone(UTC).replace(second=0, microsecond=0)
+
+
+def minute_of_day(t: time) -> int:
+    return t.hour * 60 + t.minute
+
+
 def _easter(year: int) -> date:
     """Anonymous Gregorian algorithm."""
     a, b, c = year % 19, year // 100, year % 100

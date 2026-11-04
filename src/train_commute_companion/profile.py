@@ -8,7 +8,7 @@ from typing import Any, cast, get_args
 
 import yaml
 
-from train_commute_companion.calendar import TZ, is_commute_day
+from train_commute_companion.calendar import TZ, is_commute_day, minute_of_day
 from train_commute_companion.model import (
     AlertSettings,
     Config,
@@ -102,10 +102,6 @@ def _shift(t: time, minutes: int) -> time:
     return time(total // 60, total % 60)
 
 
-def _minutes(t: time) -> int:
-    return t.hour * 60 + t.minute
-
-
 def _station(c: _Ctx, v: object, path: str, known: frozenset[str] | None) -> str | None:
     if not isinstance(v, str) or not v.strip():
         c.err(path, f"missing or not a station code: {v!r}")
@@ -164,9 +160,9 @@ def _journey(
     elif w is not None:
         c.err(f"{name}.window", 'must be two times, for example ["07:12", "10:12"]')
     if first and window and buf is not None:
-        before = (_minutes(first) - _minutes(window[0])) % 1440
-        after = (_minutes(window[1]) - _minutes(first)) % 1440
-        if before + after != (_minutes(window[1]) - _minutes(window[0])) % 1440:
+        before = (minute_of_day(first) - minute_of_day(window[0])) % 1440
+        after = (minute_of_day(window[1]) - minute_of_day(first)) % 1440
+        if before + after != (minute_of_day(window[1]) - minute_of_day(window[0])) % 1440:
             c.err(f"{name}.window", "window does not contain first_train")
         elif after == 0:  # windows are half-open, so the end itself is outside
             c.err(

@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from train_commute_companion.calendar import TZ
+from train_commute_companion.calendar import TZ, floor_to_minute
 from train_commute_companion.classify import current_connection, evidence
 from train_commute_companion.model import Connection, Leg, Signature, TrainId
 from train_commute_companion.providers.base import ProviderAnswer
@@ -17,10 +17,6 @@ def train_only_now(answer: ProviderAnswer, c: Connection) -> bool:
     """6.3 eligibility: the intended plan and every train's current copy are trains; `c`
     itself stays the raw connection (its alight stops)."""
     return c.is_train_only and current_connection(evidence(answer), c).is_train_only
-
-
-def _minute(t: datetime) -> datetime:
-    return t.astimezone(UTC).replace(second=0, microsecond=0)
 
 
 _UNKNOWN = datetime.max.replace(tzinfo=UTC)
@@ -72,13 +68,13 @@ def usual_connection(
     signature: Signature | None,
 ) -> Connection | None:
     """The matching connection whose leg 1 leaves `origin` at `first_departure` (6.3)."""
-    want = _minute(first_departure)
+    want = floor_to_minute(first_departure)
     found = [
         c
         for c in answer.connections
         if matches_pattern(c, transfers)
         and c.legs[0].board.code == origin
-        and _minute(planned_departure(c.legs[0])) == want
+        and floor_to_minute(planned_departure(c.legs[0])) == want
         and train_only_now(answer, c)
     ]
     if signature is not None:

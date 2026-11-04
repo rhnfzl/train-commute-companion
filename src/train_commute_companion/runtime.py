@@ -23,7 +23,7 @@ from train_commute_companion.advice import (
     needed,
     still_advised,
 )
-from train_commute_companion.calendar import TZ, resolve_local
+from train_commute_companion.calendar import TZ, resolve_local, to_utc
 from train_commute_companion.classify import current_run, evidence, find_leg
 from train_commute_companion.delivery import (
     APP_WARNINGS,
@@ -197,10 +197,6 @@ class SystemClock:
         await asyncio.sleep(seconds)
 
 
-def _utc(t: datetime) -> datetime:
-    return t.astimezone(UTC)
-
-
 @dataclass(frozen=True, slots=True)
 class RequestBudget:
     """One per API key, shared by every profile and look-ahead (7.12 rule 14)."""
@@ -214,7 +210,7 @@ class RequestBudget:
             return True
         # live journeys first: look-ahead waits one more poll interval after a cooldown
         extra = timedelta(0) if live else timedelta(seconds=POLL_EVERY_S)
-        return _utc(now) >= _utc(self.cooldown_until) + extra
+        return to_utc(now) >= to_utc(self.cooldown_until) + extra
 
     def on_result(
         self, error: BaseException | None, now: datetime, window_end: datetime | None
@@ -230,9 +226,9 @@ class RequestBudget:
         else:
             return self
         step = min((self.backoff_step if self.reason == reason else 0) + 1, len(table))
-        until = _utc(now) + timedelta(minutes=table[step - 1])
-        if window_end is not None and _utc(now) < _utc(window_end):
-            until = min(until, _utc(window_end))
+        until = to_utc(now) + timedelta(minutes=table[step - 1])
+        if window_end is not None and to_utc(now) < to_utc(window_end):
+            until = min(until, to_utc(window_end))
         return RequestBudget(until, step, reason)
 
 
@@ -388,7 +384,7 @@ class WebhookPoster:
     def due(self, urls: Collection[str]) -> frozenset[str]:
         if self._stopped():
             return frozenset()
-        t = _utc(self._now())
+        t = to_utc(self._now())
         return frozenset(u for u in urls if u not in self.down or t >= self.down[u])
 
     async def post(
@@ -403,7 +399,7 @@ class WebhookPoster:
         hdrs = headers(self._secret, msg_id, int(start.timestamp()), b, self._token)
         was_down = {u for u in todo if u in self.down}
         # reserved before the request: a cut-off try has an unknown result and counts as a try
-        self.down.update(dict.fromkeys(todo, _utc(start) + timedelta(seconds=REST_S)))
+        self.down.update(dict.fromkeys(todo, to_utc(start) + timedelta(seconds=REST_S)))
         first = set(todo) - was_down
         self._in_flight |= first
         self.on_reserve()
@@ -487,7 +483,7 @@ def _covers(x: Obligation, o: Obligation) -> bool:
         and x.occurrence == o.occurrence
         and x.event.kind in family(o.event.kind)
         and x.event.train == o.event.train
-        and _utc(x.event.created_at) > _utc(o.event.created_at)
+        and to_utc(x.event.created_at) > to_utc(o.event.created_at)
     )
 
 
@@ -864,7 +860,7 @@ def _advice_told(st: PersistedState, told: Sequence[tuple[Obligation, bool]]) ->
         a = None if s is None else s.advice
         if k is None or s is None or a is None or a.sent_at is None:
             continue
-        if a.advised_train != o.event.train or _utc(a.sent_at) != _utc(o.event.created_at):
+        if a.advised_train != o.event.train or to_utc(a.sent_at) != to_utc(o.event.created_at):
             continue  # an older episode's message
         a = replace(a, delivered=True) if sent else replace(a, withdrawn=True)
         occs[k] = replace(s, advice=a)
@@ -906,7 +902,7 @@ def _origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> _Pool | None:
     origin = ctx.profile.origin(ctx.direction)
     mine = sorted(
         (a for a in answers if a.query.origin == origin),
-        key=lambda a: _utc(a.fetched_at),
+        key=lambda a: to_utc(a.fetched_at),
         reverse=True,
     )
     if not mine:
@@ -919,14 +915,14 @@ def _origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> _Pool | None:
 async def every(clock: Clock, seconds: float, step: Callable[[], Awaitable[None]]) -> None:
     """Runs `step` on fixed start times `seconds` apart (7.1: a poll every 2 min, not 2 min
     after the last one ended). A step that overran a whole interval starts again at once."""
-    due = _utc(clock.now())
+    due = to_utc(clock.now())
     while True:
         try:
             await step()
         except Exception:  # one failing loop must not stop the others (rule 12)
             log.exception("runtime step failed")
         due += timedelta(seconds=seconds)
-        now = _utc(clock.now())
+        now = to_utc(clock.now())
         due = max(due, now)
         await clock.sleep((due - now).total_seconds())
 
@@ -1263,7 +1259,7 @@ class Runtime:
         occs = {}
         for k, s in self._st.occurrences.items():
             ctx = self._ctx(s, now)
-            closed = ctx is None or _utc(now) >= _utc(ctx.schedule.window_end)
+            closed = ctx is None or to_utc(now) >= to_utc(ctx.schedule.window_end)
             if closed and ends(s, now, pending_journey_warnings(self._st.obligations, s.key)):
                 self._seen.pop(k, None)
                 self._before.pop(k, None)
@@ -1497,7 +1493,7 @@ class Runtime:
     def _waits(self, o: Obligation) -> bool:
         """Not judged yet: written before this start (judged once the reconcile ran, rule 11),
         or judged on observations while its occurrence has no healthy answer (rule 5b)."""
-        if self._since is not None and _utc(o.event.created_at) < _utc(self._since):
+        if self._since is not None and to_utc(o.event.created_at) < to_utc(self._since):
             return True
         k = None if o.occurrence is None else _okey(o.occurrence)
         return o.event.kind in _OBSERVED and k in self._st.occurrences and k not in self._boards
@@ -1519,7 +1515,7 @@ class Runtime:
         if len(self._copies) >= MAX_COPIES:  # overload: a never-tried copy goes first (Q1)
             pool = [c for c in self._copies.values() if c.first_try is None]
             old = min(
-                pool or self._copies.values(), key=lambda c: _utc(c.obligation.event.created_at)
+                pool or self._copies.values(), key=lambda c: to_utc(c.obligation.event.created_at)
             )
             self._drop_copy(old.id)
             log.warning("dropped a webhook copy: more than %d owed", MAX_COPIES)
@@ -1548,7 +1544,7 @@ class Runtime:
             cur,
             done=cur.done + tuple(u for u in r.done if u not in cur.done),
             first_try=cur.first_try or r.first_try,
-            last_try=max(tries, key=_utc, default=None),
+            last_try=max(tries, key=to_utc, default=None),
         )
         if all(url_id(u) in merged.done for u in port.urls):
             self._drop_copy(c.id)
@@ -1605,14 +1601,14 @@ class Runtime:
             self._copies.values(),
             key=lambda c: (
                 c.first_try is not None,
-                _utc(c.last_try or c.obligation.event.created_at),
-                _utc(c.obligation.event.created_at),
+                to_utc(c.last_try or c.obligation.event.created_at),
+                to_utc(c.obligation.event.created_at),
             ),
         ):
             if self._copies.get(c.id) is not c:
                 continue  # removed or replaced since
             now = self._clock.now()
-            if c.first_try is not None and _utc(now) - _utc(c.first_try) >= GIVE_UP:
+            if c.first_try is not None and to_utc(now) - to_utc(c.first_try) >= GIVE_UP:
                 self._drop_copy(c.id)
                 log.warning("gave up a webhook copy after 2 h")
                 continue
@@ -1685,8 +1681,8 @@ class Runtime:
             # key still reads as one through its cooldown (7.11)
             return self._budget.reason
         started = self._clock.now()
-        deadline = deadline or _utc(started) + POLL_DEADLINE
-        left = (_utc(deadline) - _utc(started)).total_seconds()
+        deadline = deadline or to_utc(started) + POLL_DEADLINE
+        left = (to_utc(deadline) - to_utc(started)).total_seconds()
         if left <= 0:
             return "timeout"
         before = self._budget
@@ -1708,7 +1704,7 @@ class Runtime:
         except ProviderError as e:
             error, exc = "provider", e
         now = self._clock.now()
-        if error is None and _utc(now) > _utc(deadline):
+        if error is None and to_utc(now) > to_utc(deadline):
             error = "timeout"  # a late answer never overwrites a newer one (7.1)
         if exc is not None or error is None:  # a timeout neither backs off nor resets it
             self._settle(before, exc, window_end)
@@ -1726,7 +1722,7 @@ class Runtime:
         """All or nothing: a poll missing one answer cannot judge the legs it was for (rule 2).
         One hard deadline for the whole poll, not one per request (7.1)."""
         answers = []
-        deadline = deadline or _utc(self._clock.now()) + POLL_DEADLINE
+        deadline = deadline or to_utc(self._clock.now()) + POLL_DEADLINE
         for q in queries:
             a = await self._fetch(q, live, window_end, deadline)
             if isinstance(a, str):
@@ -1786,12 +1782,12 @@ class Runtime:
         if s is None or ctx is None or _resolved(s):
             return
         followed = s.lock is not None or bool(s.retained)
-        if not followed and _utc(now) >= _utc(ctx.schedule.window_end):
+        if not followed and to_utc(now) >= to_utc(ctx.schedule.window_end):
             t = on_tick(s, ctx)
             self._apply({k: (t.state, t.events)})
             return  # the window only selects the first train (rule 19)
         gen, end = s.generation, ctx.schedule.window_end
-        deadline = _utc(now) + POLL_DEADLINE  # one hard deadline for every request (7.1)
+        deadline = to_utc(now) + POLL_DEADLINE  # one hard deadline for every request (7.1)
         got = await self._fetch_all(queries_needed(s, ctx), True, end, deadline)
         extra: ProviderAnswer | PollError | None = None
         if not isinstance(got, str) and (usual := _origin_answer(got, ctx)) is not None:
@@ -1852,7 +1848,7 @@ class Runtime:
             last = sig.legs[-1]
             day = ctx.schedule.key.service_date + timedelta(days=last.day_offset)
             dep = resolve_local(day, last.departure, edge="start")
-            return _utc(dep) + timedelta(minutes=last.duration_min)
+            return to_utc(dep) + timedelta(minutes=last.duration_min)
         if s.advice is not None and s.advice.usual_arrival is not None:
             return s.advice.usual_arrival
         p, d, first = ctx.profile, ctx.direction, ctx.schedule.first_departure
@@ -1860,7 +1856,7 @@ class Runtime:
             c = usual_connection(answer, p.origin(d), first, p.journey(d).transfers, None)
             if c is not None and c.legs[-1].alight.planned_arrival is not None:
                 return c.legs[-1].alight.planned_arrival
-        if s.lock is not None and _utc(s.lock.legs[0].train.planned_departure) == _utc(first):
+        if s.lock is not None and to_utc(s.lock.legs[0].train.planned_departure) == to_utc(first):
             return s.lock.planned_final_arrival
         return None
 
@@ -1931,10 +1927,10 @@ class Runtime:
                 if x.state in (LegState.CANCELLED, LegState.RELOCKED):
                     continue
                 w = x.watch_until
-                watched = x.state is LegState.DONE and (w is None or _utc(now) < _utc(w))
+                watched = x.state is LegState.DONE and (w is None or to_utc(now) < to_utc(w))
                 if x.state is LegState.DONE and not watched:
                     continue
-                gone = _utc(now) >= _utc(x.train.planned_departure)  # may be on it (rule 7)
+                gone = to_utc(now) >= to_utc(x.train.planned_departure)  # may be on it (rule 7)
                 riding = (
                     watched
                     or x.state in (LegState.RIDING, LegState.MISSED)
@@ -1989,7 +1985,7 @@ class Runtime:
             out.append(event(EventKind.CAN_SEE_TRAIN_AGAIN, text, since.isoformat()))
         zone = timedelta(minutes=30)
         near = any(
-            x.riding_or_watched or timedelta(0) <= _utc(x.departure) - _utc(now) <= zone
+            x.riding_or_watched or timedelta(0) <= to_utc(x.departure) - to_utc(now) <= zone
             for x in legs
         )
         if s.poll_records and offline(health, near) and k not in self._offline:
@@ -2135,18 +2131,18 @@ class Runtime:
             if lock and n:
                 # an onward train continues the kept incoming leg: dated from it, not the window
                 station = lock.legs[n - 1].alight_stop
-                lo = _utc(lock.legs[n - 1].train.planned_departure)
+                lo = to_utc(lock.legs[n - 1].train.planned_departure)
                 hi = lo + timedelta(days=1)
             else:
                 station = ctx.profile.origin(ctx.direction)
-                lo, hi = _utc(w.window_start), _utc(w.window_end)
+                lo, hi = to_utc(w.window_start), to_utc(w.window_end)
             first = lo.astimezone(TZ).date()
             inside = sorted(
                 (
                     t for d in (first, first + timedelta(days=1)) for edge in ("start", "end")
-                    if lo <= _utc(t := resolve_local(d, departure, edge=edge)) < hi
+                    if lo <= to_utc(t := resolve_local(d, departure, edge=edge)) < hi
                 ),
-                key=_utc,
+                key=to_utc,
             )  # fmt: skip
             if not inside:
                 return f"{hhmm} is outside the {ctx.direction.value} window"
@@ -2157,7 +2153,7 @@ class Runtime:
         # rule 21: what the choice is judged on must still hold when it is written
         mark = (occ.generation, occ.route_revision, occ.baseline_version)
         # one deadline for every request of the choice: the shell waits 120 s in all
-        deadline = _utc(self._clock.now()) + POLL_DEADLINE
+        deadline = to_utc(self._clock.now()) + POLL_DEADLINE
         boards: tuple[ProviderAnswer, ...] = ()
         if station != ctx.profile.origin(ctx.direction):
             # the change from the kept incoming leg is judged on a fresh observation of it,
@@ -2175,11 +2171,11 @@ class Runtime:
         if isinstance(got, str):
             await self._deliver()
             return f"NS did not answer ({got}); try again"
-        minute = _utc(when).replace(second=0, microsecond=0)
+        minute = to_utc(when).replace(second=0, microsecond=0)
         same = [
             c for c in got.connections
             if c.legs and c.legs[0].board.code == station
-            and _utc(c.legs[0].train.planned_departure).replace(second=0, microsecond=0) == minute
+            and to_utc(c.legs[0].train.planned_departure).replace(second=0, microsecond=0) == minute
         ]  # fmt: skip
         # 6.1: two trains in one boarding minute are uncertain even by number, so check_good refuses
         if len({(c.legs[0].train.operating_date, c.legs[0].train.train_number) for c in same}) > 1:
@@ -2188,7 +2184,7 @@ class Runtime:
         if not found:
             return f"no train at {hhmm} from {station} in NS data"
         far = datetime.max.replace(tzinfo=UTC)
-        ranked = sorted(found, key=lambda c: _utc(c.legs[-1].alight.planned_arrival or far))
+        ranked = sorted(found, key=lambda c: to_utc(c.legs[-1].alight.planned_arrival or far))
         # rule 21: a reload during the request may have removed or archived the occurrence
         now_occ = self._st.occurrences.get(k)
         if now_occ is None or _resolved(now_occ):
@@ -2314,7 +2310,7 @@ class Runtime:
     def _stations_due(self) -> bool:
         last = self._stations_tried
         gap = timedelta(seconds=POLL_EVERY_S)
-        return last is None or _utc(self._clock.now()) - _utc(last) >= gap
+        return last is None or to_utc(self._clock.now()) - to_utc(last) >= gap
 
     async def _fetch_stations(self) -> None:
         """At most once per poll interval: the station list through the shared budget."""
@@ -2415,7 +2411,7 @@ class Runtime:
             for d in Direction
         ]
         return all(
-            x is not None and x.last_applied is not None and _utc(x.last_applied) >= _utc(since)
+            x is not None and x.last_applied is not None and to_utc(x.last_applied) >= to_utc(since)
             for x in leds
         )
 
@@ -2641,7 +2637,7 @@ class Runtime:
                     and o.occurrence is not None
                     and _okey(o.occurrence) == k
                     and o.event.train == a.advised_train
-                    and _utc(o.event.created_at) == _utc(a.sent_at)
+                    and to_utc(o.event.created_at) == to_utc(a.sent_at)
                     for o in st.obligations
                 )
             ):
@@ -2678,12 +2674,12 @@ class Runtime:
             while True:
                 now = self._clock.now().astimezone(TZ)
                 six = resolve_local(now.date(), self._lookahead_at, edge="start")
-                if _utc(six) <= _utc(now) and self._lookahead_done(six):
+                if to_utc(six) <= to_utc(now) and self._lookahead_done(six):
                     six = resolve_local(
                         now.date() + timedelta(days=1), self._lookahead_at, edge="start"
                     )
-                if _utc(six) > _utc(now):
-                    await self._clock.sleep((_utc(six) - _utc(now)).total_seconds())
+                if to_utc(six) > to_utc(now):
+                    await self._clock.sleep((to_utc(six) - to_utc(now)).total_seconds())
                     continue
                 try:
                     await self.lookahead_once()

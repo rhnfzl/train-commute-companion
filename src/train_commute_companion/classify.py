@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from itertools import pairwise
 
+from train_commute_companion.calendar import floor_to_minute
 from train_commute_companion.model import (
     ClassifiedLeg,
     Connection,
@@ -78,22 +79,18 @@ def classify_leg(leg: Leg, alight_station: str) -> ClassifiedLeg:
     return ClassifiedLeg(leg, kind, Observation.SEEN, dep, arr, last_served)
 
 
-def _minute(t: datetime) -> datetime:
-    return t.astimezone(UTC).replace(second=0, microsecond=0)
-
-
 def find_leg(
     answer: ProviderAnswer, train: TrainId, board_station: str
 ) -> tuple[Leg | None, Observation]:
     """Exact planned departure at `board_station` plus the stored number; never by proximity.
     Identity is judged over every answer of the poll (6.1); a leg is returned from
     `answer.connections` first, so a pool's own candidates keep their copy."""
-    want = _minute(train.planned_departure)
+    want = floor_to_minute(train.planned_departure)
     found: dict[tuple[object, str], Leg] = {}
     for conn in (*answer.connections, *(c for a in evidence(answer) for c in a.connections)):
         for leg in conn.legs:
             dep = leg.board.planned_departure
-            if leg.board.code == board_station and dep is not None and _minute(dep) == want:
+            if leg.board.code == board_station and dep is not None and floor_to_minute(dep) == want:
                 found.setdefault((leg.train.operating_date, leg.train.train_number), leg)
     if not found:
         return None, Observation.MISSING
