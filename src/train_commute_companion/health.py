@@ -12,11 +12,14 @@ ZONE = timedelta(minutes=30)
 FAILED_POLLS = 2
 
 
+PollError = Literal["auth", "rate", "provider", "parse", "timeout"]
+
+
 @dataclass(frozen=True, slots=True)
 class PollRecord:
     at: datetime
     ok: bool
-    error: Literal["auth", "rate", "provider", "parse", "timeout"] | None
+    error: PollError | None
 
 
 @dataclass(frozen=True, slots=True)

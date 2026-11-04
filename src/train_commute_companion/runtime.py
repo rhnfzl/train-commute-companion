@@ -12,7 +12,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 import httpx
 
@@ -35,7 +35,14 @@ from train_commute_companion.delivery import (
     post_copy,
     zone_report_stops_silent,
 )
-from train_commute_companion.health import PollRecord, WatchedLeg, board_health, cannot_see, offline
+from train_commute_companion.health import (
+    PollError,
+    PollRecord,
+    WatchedLeg,
+    board_health,
+    cannot_see,
+    offline,
+)
 from train_commute_companion.lifecycle import (
     Board,
     Choose,
@@ -175,9 +182,6 @@ TIMEOUT = httpx.Timeout(TRY_DEADLINE_S)
 REST_S = 60
 GIVE_UP = timedelta(hours=2)
 MAX_COPIES = 200
-
-PollError = Literal["auth", "rate", "provider", "parse", "timeout"]
-
 
 class Clock(Protocol):
     def now(self) -> datetime: ...

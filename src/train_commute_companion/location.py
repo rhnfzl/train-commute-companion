@@ -4,7 +4,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Literal, get_args
 
 _EARTH_M = 6_371_000.0
 
@@ -17,10 +17,14 @@ class Zone:
     radius_m: float
 
 
+LocationKind = Literal["enter", "leave", "report"]
+LOCATION_KINDS: tuple[LocationKind, ...] = get_args(LocationKind)
+
+
 @dataclass(frozen=True, slots=True)
 class LocationEvent:
     zone: str | None  # a station zone is named by its station code
-    kind: Literal["enter", "leave", "report"]
+    kind: LocationKind
     at: datetime  # when the position was taken
     received_at: datetime
 

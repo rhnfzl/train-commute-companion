@@ -264,9 +264,12 @@ class AlertSettings:
     quiet_hours: tuple[time, time] | None = None
 
 
+LocationSource = Literal["ha", "telegram", "owntracks"]
+
+
 @dataclass(frozen=True, slots=True)
 class LocationSettings:
-    source: Literal["ha", "telegram", "owntracks"]
+    source: LocationSource
     entity: str | None
     zones: Mapping[str, str]
     station_radius_m: int = 150  # last and defaulted, so stored configs still decode

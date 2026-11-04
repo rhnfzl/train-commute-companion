@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any, Literal, cast
+from typing import Any, cast, get_args
 
 import yaml
 
@@ -16,6 +16,7 @@ from train_commute_companion.model import (
     Config,
     Direction,
     LocationSettings,
+    LocationSource,
     Profile,
     UsualJourney,
 )
@@ -25,7 +26,7 @@ ALLOWED_TRAVELLER = "me"
 FALLBACK_TRANSFER_MIN = 5
 _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 _TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
-_SOURCES = ("ha", "telegram", "owntracks")
+_SOURCES: tuple[LocationSource, ...] = get_args(LocationSource)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # a year and two weeks from two days back: every weekday pair meets both DST nights
 _SCAN_DAYS = 380
@@ -241,7 +242,8 @@ def _location(c: _Ctx, raw: object) -> tuple[bool, LocationSettings | None]:
     radius = raw.get("station_radius_m", 150)
     if isinstance(radius, bool) or not isinstance(radius, int) or radius <= 0:
         c.err("location.station_radius_m", "must be a whole number of metres above 0")
-    if src not in _SOURCES:
+    source = next((s for s in _SOURCES if s == src), None)
+    if source is None:
         c.err("location.source", f"must be one of {', '.join(_SOURCES)}, got {src!r}")
     if ent is not None and not isinstance(ent, str):
         c.err("location.entity", "must be text")
@@ -251,11 +253,9 @@ def _location(c: _Ctx, raw: object) -> tuple[bool, LocationSettings | None]:
         isinstance(k, str) and isinstance(v, str) for k, v in zones.items()
     ):
         c.err("location.zones", "must map names to zone names")
-    if len(c.errors) > n:
+    if source is None or len(c.errors) > n:
         return False, None
-    return True, LocationSettings(
-        cast(Literal["ha", "telegram", "owntracks"], src), ent, dict(zones), radius
-    )
+    return True, LocationSettings(source, ent, dict(zones), radius)
 
 
 def _dates(c: _Ctx, raw: object) -> frozenset[date] | None:

@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from train_commute_companion.calendar import TZ
 from train_commute_companion.lifecycle import STALE_LOCATION
-from train_commute_companion.location import LocationEvent, Zone, resolve_zone
+from train_commute_companion.location import LocationEvent, LocationKind, Zone, resolve_zone
 from train_commute_companion.model import LocationSettings, Profile
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.view import RuntimeView
@@ -151,7 +151,7 @@ class Follower:
         if at <= mem.last_at:
             return
         prev, mem.prev, mem.last_at = mem.prev, zone, at
-        events: list[tuple[str, Literal["enter", "leave", "report"]]] = []
+        events: list[tuple[str, LocationKind]] = []
         if zone != prev:
             if prev is not None:
                 events.append((prev, "leave"))

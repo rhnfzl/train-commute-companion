@@ -15,7 +15,7 @@ import yaml
 
 from train_commute_companion.calendar import TZ, resolve_local
 from train_commute_companion.lifecycle import Leaving, NotTravelling
-from train_commute_companion.location import LocationEvent
+from train_commute_companion.location import LOCATION_KINDS, LocationEvent
 from train_commute_companion.model import Connection
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
 from train_commute_companion.providers.ns import map_trips
@@ -255,10 +255,11 @@ async def apply_event(rt: Runtime, e: dict[str, Any], now: datetime) -> None:
     cfg = rt.config
     pid = str(e.get("profile") or (cfg.profiles[0].id if cfg and cfg.profiles else ""))
     if "location" in e:
-        kind = str(e.get("kind", "enter"))
-        if kind not in ("enter", "leave", "report"):
-            raise ReplayError(f"location kind {kind!r}: use enter, leave or report")
-        await rt.location(pid, LocationEvent(str(e["location"]), kind, now, now))  # type: ignore[arg-type]
+        raw = str(e.get("kind", "enter"))
+        kind = next((k for k in LOCATION_KINDS if k == raw), None)
+        if kind is None:
+            raise ReplayError(f"location kind {raw!r}: use enter, leave or report")
+        await rt.location(pid, LocationEvent(str(e["location"]), kind, now, now))
     elif e.get("action") == "leaving":
         await rt.act(pid, Leaving(None, now))
     elif e.get("action") == "not_travelling":
