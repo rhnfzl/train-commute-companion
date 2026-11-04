@@ -147,26 +147,81 @@ def _bound(copies: Sequence[Leg], keys: list[list[str]], targets: list[str]) -> 
     return max((x for x in targets if any(x in k for k in keys)), key=when)
 
 
-def disagreement(copies: Sequence[Leg], alight: str, *also: str) -> Unclear | None:
-    """Where copies of one train differ on the user's own trip, up to the furthest of
-    `alight` and `also` (where the user gets off); None when they agree."""
-    if len(copies) < 2:
-        return None
-    # one station can be a code in one copy and its UIC number in another (providers/ns.py `_ids`)
+def _station_ids(copies: Sequence[Leg]) -> dict[str, str]:
+    """One station can be a code in one copy and its UIC number in another (providers/ns.py)."""
     ids: dict[str, str] = {}
     for g in copies:
         for s in g.stops:
             if s.uic:
                 ids[s.code] = ids[s.uic] = s.uic
+    return ids
+
+
+@dataclass(frozen=True, slots=True)
+class _Scope:
+    """The part of a copy on the user's own trip, up to the stop `bound`."""
+
+    bound: str | None
+    after: frozenset[str] = frozenset()  # stops past the bound in a copy that holds it
+    bound_at: datetime | None = None  # its latest planned time
+
+    def covers(self, j: int, x: str, early: datetime | None, cut: int | None) -> bool:
+        """Stop `j`, named `x`, of a copy whose bound stop is at `cut` (None: it lacks it)."""
+        if self.bound is None:
+            return j == 0  # no bound known: nothing past boarding is risked
+        if cut is not None:
+            return j <= cut  # stop order, never time
+        # the copy lacks the bound stop: bounded by planned time
+        return j == 0 or (
+            x not in self.after
+            and early is not None
+            and self.bound_at is not None
+            and early <= self.bound_at
+        )
+
+
+def _scope(copies: Sequence[Leg], keys: list[list[str]], bound: str | None) -> _Scope:
+    if bound is None:
+        return _Scope(None)
+    holders = [(i, k.index(bound)) for i, k in enumerate(keys) if bound in k]
+    return _Scope(
+        bound,
+        frozenset(x for i, at in holders for x in keys[i][at + 1 :]),
+        max((t for i, at in holders if (t := _planned(copies[i].stops[at]))), default=None),
+    )
+
+
+def _render(
+    copies: Sequence[Leg],
+    found: dict[tuple[Item, ...], str],
+    kept: list[tuple[Item, ...]],
+    names: dict[str, tuple[bool, str]],
+    station: str,
+) -> Unclear:
+    cats = [g.category for g in copies if not g.alternative_transport] or [
+        g.category for g in copies
+    ]
+    # keyed by station name: NS may send a stop's UIC number in one poll and not the next
+    named = sorted(
+        json.dumps([(names[x][1] if x != _LEG else x, f, v) for x, f, v in c]) for c in kept
+    )
+    return Unclear(
+        fingerprint=hashlib.sha256(json.dumps(named).encode()).hexdigest()[:16],
+        label=f"{min(cats)} {copies[0].train.train_number}",
+        station=names[station][1],
+        copies=tuple(found[c] for c in kept),
+    )
+
+
+def disagreement(copies: Sequence[Leg], alight: str, *also: str) -> Unclear | None:
+    """Where copies of one train differ on the user's own trip, up to the furthest of
+    `alight` and `also` (where the user gets off); None when they agree."""
+    if len(copies) < 2:
+        return None
+    ids = _station_ids(copies)
     keys = [[ids.get(s.code, s.code) for s in g.stops] for g in copies]
     targets = list(dict.fromkeys(ids.get(a, a) for a in (alight, *also)))
-    bound = _bound(copies, keys, targets)
-    holders = [i for i, k in enumerate(keys) if bound in k]
-    after = {x for i in holders for x in keys[i][keys[i].index(str(bound)) + 1 :]}
-    bound_at = max(
-        (t for i in holders if (t := _planned(copies[i].stops[keys[i].index(str(bound))]))),
-        default=None,
-    )
+    scope = _scope(copies, keys, _bound(copies, keys, targets))
     boards = {k[0] for k in keys}
 
     names: dict[str, tuple[bool, str]] = {}  # a code-named stop names the station first
@@ -181,31 +236,20 @@ def disagreement(copies: Sequence[Leg], alight: str, *also: str) -> Unclear | No
             g.cancelled, "train cancelled", "train runs"
         )
         last = len(g.stops) - 1
-        cut = keys[i].index(bound) if bound in keys[i] else None
+        cut = keys[i].index(scope.bound) if scope.bound in keys[i] else None
         for j, (x, s) in enumerate(zip(keys[i], g.stops, strict=True)):
             names[x] = min(names.get(x, (True, s.name)), (bool(s.uic) and s.code == s.uic, s.name))
             early = _earliest(s)
             if early is not None:
                 route[x] = min(route.get(x, early), early)
-            if bound is None:
-                part = j == 0  # no bound known: nothing past boarding is risked
-            elif cut is not None:
-                part = j <= cut  # stop order, never time
-            else:  # the copy lacks the bound stop: bounded by planned time
-                part = j == 0 or (
-                    x not in after
-                    and early is not None
-                    and bound_at is not None
-                    and early <= bound_at
-                )
-            if not part:
+            if not scope.covers(j, x, early, cut):
                 continue
             fields = ["canc"]
-            if j != last and x != bound:  # a leg end gives only its own side
+            if j != last and x != scope.bound:  # a leg end gives only its own side
                 fields += ["pdep", "dep", "plat0" if j == 0 else "plat"]
             if j != 0 and x not in boards:
                 # where the user gets off its arrival platform counts, through stop or not
-                fields += ["parr", "arr"] + (["aplat"] if j == last or x == bound else [])
+                fields += ["parr", "arr"] + (["aplat"] if j == last or x == scope.bound else [])
             for f in fields:
                 if _platformed(f, s):
                     stated.setdefault((x, f), {})[i] = _state(f, s, day)
@@ -235,16 +279,4 @@ def disagreement(copies: Sequence[Leg], alight: str, *also: str) -> Unclear | No
     )
     if len(kept) < 2:
         return None
-    cats = [g.category for g in copies if not g.alternative_transport] or [
-        g.category for g in copies
-    ]
-    # keyed by station name: NS may send a stop's UIC number in one poll and not the next
-    named = sorted(
-        json.dumps([(names[x][1] if x != _LEG else x, f, v) for x, f, v in c]) for c in kept
-    )
-    return Unclear(
-        fingerprint=hashlib.sha256(json.dumps(named).encode()).hexdigest()[:16],
-        label=f"{min(cats)} {copies[0].train.train_number}",
-        station=names[station][1],
-        copies=tuple(found[c] for c in kept),
-    )
+    return _render(copies, found, kept, names, station)
