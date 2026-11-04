@@ -148,6 +148,7 @@ class ReplayProvider:
     def __init__(self, clock: ReplayClock, script: list[_Scripted]) -> None:
         self._clock = clock
         self._script = sorted(script, key=lambda s: s.at.astimezone(UTC))
+        self.positions: dict[str, tuple[float, float]] = {}
 
     async def trips(self, q: Query) -> ProviderAnswer:
         now = self._clock.now()

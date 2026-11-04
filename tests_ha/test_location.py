@@ -320,14 +320,16 @@ async def test_source_change_during_pending_work_drops_it(hass, text, monkeypatc
     set_person(hass, *FAR)
     await start_tracker(h)
     waiting, release = asyncio.Event(), asyncio.Event()
-    real = h.host.positions
+    real = h.host.run
 
-    async def held():
-        waiting.set()
-        await release.wait()
-        return await real()
+    async def held(fn):
+        task = asyncio.current_task()
+        if task is not None and task.get_name().startswith("tcc location"):
+            waiting.set()
+            await release.wait()
+        return await real(fn)
 
-    monkeypatch.setattr(h.host, "positions", held)
+    monkeypatch.setattr(h.host, "run", held)
     set_person(hass, 52.1, 5.1)  # the old source enters UT while the positions read waits
     await waiting.wait()
     await reload_profiles(h, text)

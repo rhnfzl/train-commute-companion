@@ -6,9 +6,9 @@ import concurrent.futures
 import inspect
 import logging
 import threading
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, cast, overload
+from typing import Any, cast, overload
 
 import httpx
 
@@ -28,16 +28,10 @@ class RuntimeNotRunning(RuntimeError):
     """`Host.run` found no runtime to ask; a RuntimeError from the call itself is another matter."""
 
 
-class PositionedProvider(Provider, Protocol):
-    @property
-    def positions(self) -> Mapping[str, tuple[float, float]]: ...
-
-
 @dataclass
 class Parts:
     runtime: Runtime
     clock: Clock
-    provider: PositionedProvider
     close: Callable[[], Awaitable[None]]
 
 
@@ -45,9 +39,7 @@ def make_clock() -> Clock:
     return SystemClock()
 
 
-def make_provider(
-    api_key: str, clock: Clock
-) -> tuple[PositionedProvider, Callable[[], Awaitable[None]]]:
+def make_provider(api_key: str, clock: Clock) -> tuple[Provider, Callable[[], Awaitable[None]]]:
     client = httpx.AsyncClient()
     return NsProvider(api_key, client, clock.now), client.aclose
 
@@ -123,13 +115,6 @@ class RuntimeHost:
         if t is None or not t.is_alive() or self.retired.is_set():
             return False
         return not self._autorun or (task is not None and not task.done())
-
-    async def positions(self) -> dict[str, tuple[float, float]]:
-        def read(_: Runtime) -> dict[str, tuple[float, float]]:
-            assert self._parts is not None
-            return dict(self._parts.provider.positions)
-
-        return await self.run(read)
 
     async def stop(self) -> None:
         """Never raises a shutdown timeout: a runtime stuck in a synchronous call is retired (no

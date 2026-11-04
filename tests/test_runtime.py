@@ -129,6 +129,7 @@ class Provider:
     def __init__(self, clock: FakeClock, world: list[Connection]) -> None:
         self.clock = clock
         self.world = world
+        self.positions: dict[str, tuple[float, float]] = {}
         self.calls: list[Query] = []
         self.error: Callable[[Query], Exception | None] = lambda q: None
         self.hook: Callable[[Query], object] | None = None

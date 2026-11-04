@@ -862,6 +862,10 @@ class Runtime:
         return self._st
 
     @property
+    def positions(self) -> Mapping[str, tuple[float, float]]:
+        return self._provider.positions
+
+    @property
     def refusal(self) -> str | None:
         """Why the last reload refused the file (or waits for the station list); None if not."""
         return self._refusal

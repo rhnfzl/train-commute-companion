@@ -100,7 +100,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
             require_stations=True,
             webhooks=webhooks,
         )
-        return host_mod.Parts(rt, clock, provider, close)
+        return host_mod.Parts(rt, clock, close)
 
     host = host_mod.RuntimeHost(build, autorun=host_mod.AUTORUN)
     # built here on hass.loop: an HA object, and unload needs it to cancel its pending pushes

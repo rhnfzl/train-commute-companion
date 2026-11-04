@@ -3,7 +3,7 @@ consequences live in the core; here only which zone a fix is in and what changed
 
 import asyncio
 import logging
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -58,10 +58,8 @@ class _Memory:
 
 
 class Follower:
-    def __init__(
-        self, rt: Runtime, positions: Callable[[], Mapping[str, tuple[float, float]]]
-    ) -> None:
-        self._rt, self._positions = rt, positions
+    def __init__(self, rt: Runtime) -> None:
+        self._rt = rt
         self._locks: dict[str, asyncio.Lock] = {}  # a lock queues FIFO: arrival order per profile
         self._memory: dict[str, _Memory] = {}
         self._tasks: set[asyncio.Task[None]] = set()
@@ -109,7 +107,7 @@ class Follower:
         if fix.acc is not None and fix.acc > loc.station_radius_m:
             return
         running = running_stations(view.occurrences, pid)
-        zones = station_zones(profile, loc.station_radius_m, self._positions(), running)
+        zones = station_zones(profile, loc.station_radius_m, self._rt.positions, running)
         zone = resolve_zone(fix.lat, fix.lon, zones)
         if zone is None:  # OwnTracks regions, by the configured name the core compares
             names = (loc.zones.get(role, role) for role in PLACE_ROLES)

@@ -185,7 +185,7 @@ class LocationTracker:
                 source = profile.location
                 if acc is not None and acc > source.station_radius_m:
                     return  # it cannot place the user in a station circle (8, rule 6)
-                positions = await host.positions()
+                positions = await host.run(lambda rt: dict(rt.positions))
                 if not live():
                     return
                 # read again after the await: the view may have moved on

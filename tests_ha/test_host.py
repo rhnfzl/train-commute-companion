@@ -41,7 +41,6 @@ def builder(tmp_path: Path, *, crash: bool = False, closed: list[bool] | None = 
     def build() -> Parts:
         clock = YieldingClock()
         provider = ReplayProvider(clock, [])
-        provider.positions = {}
         rt = Runtime(
             profile_path=path,
             store=MemoryStore(),
@@ -61,7 +60,7 @@ def builder(tmp_path: Path, *, crash: bool = False, closed: list[bool] | None = 
             if closed is not None:
                 closed.append(True)
 
-        return Parts(rt, clock, provider, close)
+        return Parts(rt, clock, close)
 
     return build
 
@@ -86,10 +85,6 @@ async def test_run_awaits_coroutines_and_propagates_errors(hass, host):
     assert await host.run(lambda rt: rt.act("nobody", NotTravelling(None, False))) is False
     with pytest.raises(ZeroDivisionError):
         await host.run(lambda rt: 1 / 0)
-
-
-async def test_positions_is_a_copy_read_on_the_runtime_thread(hass, host):
-    assert await host.positions() == {}
 
 
 async def test_stop_cancels_run_forever_and_joins(hass, tmp_path, caplog):

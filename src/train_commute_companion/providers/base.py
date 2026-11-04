@@ -1,5 +1,6 @@
 """Provider contract: neutral answer types, errors and the protocol."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
@@ -67,6 +68,11 @@ class PlannedWorks:
 
 
 class Provider(Protocol):
+    @property
+    def positions(self) -> Mapping[str, tuple[float, float]]:
+        """Station code -> (latitude, longitude); empty until `stations` has succeeded."""
+        ...
+
     async def trips(self, q: Query) -> ProviderAnswer:
         """Raises ProviderError or a subclass on a failed request or an unreadable answer, a
         transport error included: the runtime handles nothing else from a provider but its own

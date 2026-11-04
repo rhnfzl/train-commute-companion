@@ -157,8 +157,7 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         lookahead_at=s.lookahead_at,
         webhooks=webhooks,
     )
-    # NsProvider fills `positions` with the station list; a test provider may have none
-    follower = Follower(rt, lambda: getattr(provider, "positions", {}))
+    follower = Follower(rt)
     bot = Bot(api, rt, s.chat_id, s.state_dir / "telegram.json", follower, webhook_test)
     return App(s, rt, notifier, bot, follower, webhooks)
 
