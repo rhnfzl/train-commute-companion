@@ -2,7 +2,6 @@ FROM python:3.14-slim
 COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_NO_DEV=1 UV_PROJECT_ENVIRONMENT=/opt/tcc/.venv
 WORKDIR /opt/tcc
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --locked --no-install-project --extra app
 COPY src ./src

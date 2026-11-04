@@ -6,10 +6,10 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import httpx
 
+from train_commute_companion.calendar import TZ
 from train_commute_companion.model import (
     Connection,
     Leg,
@@ -30,15 +30,13 @@ from train_commute_companion.providers.base import (
     ServerError,
 )
 
-AMS = ZoneInfo("Europe/Amsterdam")
-
 
 def _dt(v: object) -> datetime | None:
     if not isinstance(v, str):
         return None
     for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M%z"):
         try:
-            return datetime.strptime(v, fmt).astimezone(AMS)
+            return datetime.strptime(v, fmt).astimezone(TZ)
         except ValueError:
             pass
     return None

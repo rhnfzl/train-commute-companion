@@ -4554,6 +4554,7 @@ source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "pyyaml" },
+    { name = "tzdata" },
 ]
 
 [package.optional-dependencies]
@@ -4605,6 +4606,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", marker = "extra == 'app'", specifier = ">=2.3,<3" },
     { name = "pyyaml", specifier = ">=6" },
+    { name = "tzdata" },
 ]
 provides-extras = ["app"]
 
