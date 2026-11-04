@@ -267,8 +267,9 @@ class Bot:
             view = self._rt.view()
             await self._reply(render_status(view, self.confirmed), status_buttons(view))
         elif word in ("/choose", "/leaving", "/skip"):
+            view = self._rt.view()  # outside the try: only parse_target's refusals are replies
             try:
-                t = parse_target(self._rt.view(), args)
+                t = parse_target(view, args)
             except ValueError as e:
                 await self._reply(str(e))
                 return

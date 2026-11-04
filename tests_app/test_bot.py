@@ -615,3 +615,14 @@ async def test_a_failed_command_is_answered_without_its_text(app, monkeypatch, c
     await app.bot.handle(app.msg("/choose 08:44"))
     assert app.texts() == ["That failed; see the app log."]
     assert "Telegram command failed" in caplog.text
+
+
+@pytest.mark.parametrize("command", ["/choose 08:44", "/leaving", "/skip"])
+async def test_a_failed_view_is_not_read_as_a_target_refusal(app, monkeypatch, caplog, command):
+    def broken():
+        raise ValueError("inner detail")
+
+    monkeypatch.setattr(app.rt, "view", broken)
+    await app.bot.handle(app.msg(command))
+    assert app.texts() == ["That failed; see the app log."]
+    assert "Telegram command failed" in caplog.text
