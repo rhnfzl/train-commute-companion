@@ -275,6 +275,45 @@ def _dates(c: _ProfileErrors, raw: object) -> frozenset[date] | None:
     return frozenset(out) if ok else None
 
 
+def _days(c: _ProfileErrors, rd: object) -> set[int]:
+    days: set[int] = set()
+    if not isinstance(rd, list):
+        c.err("days", "must be a list such as [tue, wed]")
+        return days
+    for i, d in enumerate(rd):
+        if isinstance(d, str) and d.lower() in _DAYS:
+            days.add(_DAYS.index(d.lower()) + 1)
+        else:
+            c.err(f"days[{i}]", f"not a weekday: {d!r}", f"use {', '.join(_DAYS)}")
+    return days
+
+
+def _transfer_min(c: _ProfileErrors, raw: Mapping[str, object]) -> dict[str, int]:
+    """Reads the raw journeys, so a transfer station of a journey that failed to parse is still
+    checked and every error comes out in one pass."""
+    tm_raw = raw.get("transfer_min", {})
+    tm: dict[str, int] = {}
+    if not isinstance(tm_raw, dict):
+        c.err("transfer_min", "must be a mapping such as { UT: 4 }")
+        return tm
+    for k, v in tm_raw.items():
+        iv = c.integer(v, f"transfer_min.{k}", 1)
+        if iv is not None:
+            tm[str(k)] = iv
+    for key in ("outbound", "return"):
+        j = raw.get(key)
+        tl = j.get("transfers") if isinstance(j, dict) else None
+        for s in tl if isinstance(tl, list) else ():
+            if isinstance(s, str) and s not in tm_raw:
+                c.err(
+                    f"transfer_min.{s}",
+                    f"no transfer_min for transfer station {s}",
+                    f"add transfer_min: {{ {s}: {FALLBACK_TRANSFER_MIN} }} "
+                    f"({FALLBACK_TRANSFER_MIN} min is the fallback)",
+                )
+    return tm
+
+
 def _profile(
     raw: object, idx: int, known: frozenset[str] | None
 ) -> tuple[Profile | None, list[ProfileProblem]]:
@@ -315,16 +354,8 @@ def _profile(
     trav = raw.get("traveller", ALLOWED_TRAVELLER)
     if trav != ALLOWED_TRAVELLER:
         c.err("traveller", f"only {ALLOWED_TRAVELLER!r} is allowed in this version, got {trav!r}")
-    days: set[int] = set()
     rd = raw.get("days", [])
-    if not isinstance(rd, list):
-        c.err("days", "must be a list such as [tue, wed]")
-    else:
-        for i, d in enumerate(rd):
-            if isinstance(d, str) and d.lower() in _DAYS:
-                days.add(_DAYS.index(d.lower()) + 1)
-            else:
-                c.err(f"days[{i}]", f"not a weekday: {d!r}", f"use {', '.join(_DAYS)}")
+    days = _days(c, rd)
     extra = _dates(c, raw.get("extra_dates", []))
     if not days and extra == frozenset() and isinstance(rd, list):
         c.err("days", "no days and no extra_dates: the profile would never run")
@@ -333,26 +364,7 @@ def _profile(
     work = _station(c, raw.get("work_station"), "work_station", known)
     out = _journey(c, raw.get("outbound"), "outbound", known, allow_offset=False)
     ret = _journey(c, raw.get("return"), "return", known, allow_offset=True)
-    tm_raw = raw.get("transfer_min", {})
-    tm: dict[str, int] = {}
-    if not isinstance(tm_raw, dict):
-        c.err("transfer_min", "must be a mapping such as { UT: 4 }")
-    else:
-        for k, v in tm_raw.items():
-            iv = c.integer(v, f"transfer_min.{k}", 1)
-            if iv is not None:
-                tm[str(k)] = iv
-        for key in ("outbound", "return"):
-            j = raw.get(key)
-            tl = j.get("transfers") if isinstance(j, dict) else None
-            for s in tl if isinstance(tl, list) else ():
-                if isinstance(s, str) and s not in tm_raw:
-                    c.err(
-                        f"transfer_min.{s}",
-                        f"no transfer_min for transfer station {s}",
-                        f"add transfer_min: {{ {s}: {FALLBACK_TRANSFER_MIN} }} "
-                        f"({FALLBACK_TRANSFER_MIN} min is the fallback)",
-                    )
+    tm = _transfer_min(c, raw)
     alerts = _alerts(c, raw.get("alerts"))
     loc_ok, loc = _location(c, raw.get("location"))
     if c.errors or not (
