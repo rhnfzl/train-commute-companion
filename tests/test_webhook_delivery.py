@@ -29,14 +29,21 @@ from test_runtime_rules import (
 from webhook_receiver import Receiver
 
 from train_commute_companion import webhook_send
-from train_commute_companion.delivery import Obligation, WebhookCopy
 from train_commute_companion.lookahead import (
     BaselineHistory,
     BaselineVersion,
     render_message,
     signature_of,
 )
-from train_commute_companion.model import AlertEvent, Direction, EventKind, NotTravelling, Severity
+from train_commute_companion.model import (
+    AlertEvent,
+    Direction,
+    EventKind,
+    NotTravelling,
+    Obligation,
+    Severity,
+    WebhookCopy,
+)
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, ServerError
 from train_commute_companion.runtime import (
     GIVE_UP,

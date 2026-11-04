@@ -22,7 +22,6 @@ from test_runtime import (
     started,
 )
 
-from train_commute_companion.delivery import Obligation
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import BaselineHistory, BaselineVersion, render_message
 from train_commute_companion.model import (
@@ -31,6 +30,7 @@ from train_commute_companion.model import (
     DirectionState,
     EventKind,
     NotTravelling,
+    Obligation,
     Provenance,
     Severity,
     Signature,

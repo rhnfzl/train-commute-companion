@@ -10,10 +10,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from train_commute_companion.delivery import Obligation, WebhookCopy
 from train_commute_companion.lifecycle import OccurrenceState
 from train_commute_companion.lookahead import BaselineHistory, LookAheadLedger
-from train_commute_companion.model import Config
+from train_commute_companion.model import Config, Obligation, WebhookCopy
 from train_commute_companion.serde import decode, encode
 
 VERSION = 1

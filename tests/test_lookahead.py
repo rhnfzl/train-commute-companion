@@ -23,7 +23,6 @@ from lookahead_fixtures import (
     run,
 )
 
-from train_commute_companion.delivery import Obligation
 from train_commute_companion.lookahead import (
     BaselineHistory,
     BaselineVersion,
@@ -43,6 +42,7 @@ from train_commute_companion.model import (
     AlertEvent,
     Direction,
     EventKind,
+    Obligation,
     Severity,
     Signature,
     SignatureLeg,

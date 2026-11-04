@@ -2,9 +2,11 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 from typing import Literal
+
+FOLLOW_LIMIT = timedelta(minutes=150)
 
 
 class Direction(StrEnum):
@@ -358,3 +360,31 @@ class Leaving:
 class NotTravelling:
     service_date: date | None
     whole_day: bool
+
+
+@dataclass(frozen=True, slots=True)
+class Obligation:
+    id: str
+    event: AlertEvent
+    occurrence: OccurrenceKey | None
+    look_ahead: tuple[str, Direction, date] | None
+    route_revision: int
+    baseline_version: int | None
+    fact_key: str
+    expires_at: datetime | None
+    attempts: int
+    webhook_copied: bool = False  # its webhook copy was made (stored before: made next pass)
+
+
+@dataclass(frozen=True, slots=True)
+class WebhookCopy:
+    """A durable webhook copy of an alert, apart from its phone obligation: a receiver can
+    never change phone delivery. `id` is `webhook.event_id(obligation.id)`; `done` holds the
+    `url_id` of every URL that accepted it, never a URL; `last_try` is the latest pass in which
+    some URL was really tried."""
+
+    id: str
+    obligation: Obligation
+    done: tuple[str, ...] = ()
+    first_try: datetime | None = None
+    last_try: datetime | None = None

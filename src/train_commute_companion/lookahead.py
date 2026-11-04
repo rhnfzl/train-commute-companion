@@ -6,17 +6,17 @@ from datetime import UTC, date, datetime, time, timedelta
 
 from train_commute_companion.calendar import TZ, is_commute_day, minute_of_day, resolve_local
 from train_commute_companion.classify import classify_leg, current_connection, merge_arrivals
-from train_commute_companion.delivery import Obligation
-from train_commute_companion.lifecycle import FOLLOW_LIMIT
 from train_commute_companion.match import matches_pattern, planned_departure, usual_connection
 from train_commute_companion.messages import data_unclear_text
 from train_commute_companion.model import (
+    FOLLOW_LIMIT,
     AlertEvent,
     Connection,
     Direction,
     EventKind,
     Leg,
     LegKind,
+    Obligation,
     Profile,
     Severity,
     Signature,

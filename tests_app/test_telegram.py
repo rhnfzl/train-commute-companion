@@ -15,8 +15,7 @@ from tcc_app.telegram import (
 )
 from test_runtime import DAY, FakeClock, Rig, at
 
-from train_commute_companion.delivery import Obligation
-from train_commute_companion.model import AlertEvent, Direction, EventKind, Severity
+from train_commute_companion.model import AlertEvent, Direction, EventKind, Obligation, Severity
 
 TEXT = "Office A: your UT to RTD train is cancelled. Next good connection: 08:44, platform 5."
 

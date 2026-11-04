@@ -25,8 +25,6 @@ from train_commute_companion.classify import current_run, evidence, find_leg
 from train_commute_companion.delivery import (
     APP_WARNINGS,
     JOURNEY_WARNINGS,
-    Obligation,
-    WebhookCopy,
     deliver,
     pending_journey_warnings,
     post_copy,
@@ -92,6 +90,7 @@ from train_commute_companion.model import (
     LegState,
     LocationSettings,
     NotTravelling,
+    Obligation,
     Observation,
     OccurrenceKey,
     Profile,
@@ -100,6 +99,7 @@ from train_commute_companion.model import (
     Signature,
     TrainId,
     UsualJourney,
+    WebhookCopy,
     display_name,
     train_ident,
 )

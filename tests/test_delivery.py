@@ -5,8 +5,6 @@ from datetime import date, datetime, timedelta
 from builders import AMS
 
 from train_commute_companion.delivery import (
-    Obligation,
-    WebhookCopy,
     deliver,
     pending_journey_warnings,
     post_copy,
@@ -17,8 +15,10 @@ from train_commute_companion.model import (
     AlertEvent,
     Direction,
     EventKind,
+    Obligation,
     OccurrenceKey,
     Severity,
+    WebhookCopy,
 )
 from train_commute_companion.webhook import event_id, url_id
 

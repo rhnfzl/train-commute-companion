@@ -37,6 +37,7 @@ from train_commute_companion.match import (
 )
 from train_commute_companion.messages import data_unclear_text
 from train_commute_companion.model import (
+    FOLLOW_LIMIT,
     AdviceRecord,
     AlertEvent,
     ClassifiedLeg,
@@ -1390,7 +1391,6 @@ ERRAND_TIMEOUT = timedelta(minutes=45)
 ACCEPT_AFTER = timedelta(minutes=5)
 ACCEPT_APART = timedelta(minutes=4)
 LAST_WATCH = timedelta(minutes=30)
-FOLLOW_LIMIT = timedelta(minutes=150)
 _NOT_ACCEPTABLE = (LegState.CANCELLED, LegState.RELOCKED)
 _MISSABLE = (LegState.PENDING, LegState.BOARDING, LegState.RIDING)
 

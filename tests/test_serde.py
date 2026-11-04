@@ -6,7 +6,6 @@ import pytest
 from lookahead_fixtures import NEXT_TUE, NOW, OUT, P, confirmed, ledger
 from test_lifecycle_follow import L1, L2, RIDE, at, journey, occ
 
-from train_commute_companion.delivery import Obligation, WebhookCopy
 from train_commute_companion.health import PollRecord
 from train_commute_companion.lifecycle import OccurrenceState
 from train_commute_companion.lookahead import BaselineHistory
@@ -16,7 +15,9 @@ from train_commute_companion.model import (
     Config,
     EventKind,
     LocationSettings,
+    Obligation,
     Severity,
+    WebhookCopy,
 )
 from train_commute_companion.serde import decode, dumps, encode, loads
 from train_commute_companion.store import PersistedState
