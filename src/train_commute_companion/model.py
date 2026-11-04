@@ -14,6 +14,17 @@ class Direction(StrEnum):
     RETURN = "return"
 
 
+def direction_key(profile_id: str, d: Direction) -> str:
+    """The stored key of one profile's direction."""
+    return f"{profile_id}|{d.value}"
+
+
+def split_direction_key(key: str) -> tuple[str, str]:
+    """The profile id and direction of a `direction_key`."""
+    pid, _, d = key.rpartition("|")  # a profile id may contain "|"; the direction never does
+    return pid, d
+
+
 class LegKind(StrEnum):
     OK = "ok"
     DELAYED = "delayed"

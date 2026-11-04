@@ -11,7 +11,15 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from train_commute_companion.model import Connection, Direction, Leg, Provenance, Stop, TimeObs
+from train_commute_companion.model import (
+    Connection,
+    Direction,
+    Leg,
+    Provenance,
+    Stop,
+    TimeObs,
+    direction_key,
+)
 from train_commute_companion.view import (
     LegView,
     OccurrenceView,
@@ -102,7 +110,7 @@ def _advised(view: RuntimeView, pid: str, d: Direction | None, n: int | None) ->
 
 def _works(view: RuntimeView, pid: str, d: Direction | None) -> tuple[WorksDay, ...]:
     assert d is not None
-    return view.works.get(f"{pid}|{d.value}", ())
+    return view.works.get(direction_key(pid, d), ())
 
 
 def _health_attrs(
@@ -110,7 +118,7 @@ def _health_attrs(
 ) -> dict[str, Any]:
     out: dict[str, Any] = {"store_ok": view.store_ok, "requests": view.requests}
     out["lookahead_last_ok"] = {
-        d.value: _to_primitive(view.lookahead_last_ok.get(f"{pid}|{d.value}")) for d in Direction
+        d.value: _to_primitive(view.lookahead_last_ok.get(direction_key(pid, d))) for d in Direction
     }
     for direction in Direction:
         occ = shown_and_others(view, pid, direction)[0]

@@ -32,13 +32,19 @@ from train_commute_companion.lookahead import (
     ProbeResult,
     _overlaps,
     _probed_end,
+    adopt_key,
+    cancel_key,
     carried_ids,
+    day_key,
     evaluate,
     forget_pending,
     probe_dates,
     rebase_on_edit,
     reset_on_edit,
     run_lookahead,
+    split_day_key,
+    split_fact_key,
+    unclear_day_key,
 )
 from train_commute_companion.model import (
     AlertEvent,
@@ -48,6 +54,8 @@ from train_commute_companion.model import (
     Severity,
     Signature,
     SignatureLeg,
+    direction_key,
+    split_direction_key,
 )
 from train_commute_companion.profile import find_overlaps, parse_profiles
 from train_commute_companion.providers.base import PlannedWork, PlannedWorks, ProviderAnswer
@@ -827,3 +835,27 @@ def test_forget_pending_takes_back_an_unclear_mark():
 )
 def test_a_reason_reads_in_stored_marks_as_it_always_did(reason, token):
     assert reason.token == token
+
+
+def test_stored_keys_keep_their_form_and_read_back():
+    assert day_key(TUE, None) == "2026-10-27|j" and day_key(TUE, 1) == "2026-10-27|1"
+    assert split_day_key(day_key(TUE, 1)) == (TUE, "1")
+    assert unclear_day_key(TUE, "t") == "2026-10-27|u:t"
+    assert adopt_key(2) == "adopt:2" and cancel_key(2) == "cancel:2"
+    assert direction_key("a|b", Direction.OUTBOUND) == "a|b|outbound"
+    assert split_direction_key("a|b|outbound") == ("a|b", "outbound")
+
+
+@pytest.mark.parametrize(
+    ("key", "read"),
+    [
+        ("2026-10-27|1|warn:x|cancelled:1", ("2026-10-27|1", "warn:x|cancelled:1")),
+        ("2026-10-27|j|warn:x|loud", ("2026-10-27|j", "warn:x|loud")),
+        ("2026-10-27|1|restored", ("2026-10-27|1", "restored")),
+        ("2026-10-27|u:t|unclear:ab", ("2026-10-27|u:t", "unclear:ab")),
+        ("adopt:2", None),
+        ("cancel:2", None),
+    ],
+)
+def test_a_fact_key_names_its_ledger_key_and_mark(key, read):
+    assert split_fact_key(key) == read

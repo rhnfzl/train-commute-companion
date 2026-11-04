@@ -19,7 +19,12 @@ from train_commute_companion.lifecycle import (
     observe,
     unfinished_leg,
 )
-from train_commute_companion.lookahead import BaselineHistory, LookAheadLedger
+from train_commute_companion.lookahead import (
+    WHOLE_JOURNEY,
+    BaselineHistory,
+    LookAheadLedger,
+    split_day_key,
+)
 from train_commute_companion.model import (
     LIVE_PREFIX,
     AdviceRecord,
@@ -38,6 +43,7 @@ from train_commute_companion.model import (
     Stop,
     TimeObs,
     TransferState,
+    direction_key,
 )
 from train_commute_companion.providers.base import ProviderAnswer
 from train_commute_companion.transfer import check_transfer, transfer_minimum
@@ -239,9 +245,11 @@ def works_ahead(ledger: LookAheadLedger, today: date) -> tuple[WorksDay, ...]:
     out = []
     for key, entries in ledger.per_date.items():
         marks = [e for e in entries if e.startswith(("warn:", "restored:"))]
-        day, _, leg = key.partition("|")
-        if marks and marks[-1].startswith("warn:") and date.fromisoformat(day) >= today:
-            out.append(WorksDay(date.fromisoformat(day), None if leg == "j" else int(leg)))
+        if not marks or not marks[-1].startswith("warn:"):
+            continue
+        day, leg = split_day_key(key)
+        if day >= today:
+            out.append(WorksDay(day, None if leg == WHOLE_JOURNEY else int(leg)))
     return tuple(sorted(out, key=lambda w: (w.service_date, w.leg_index is not None, w.leg_index)))
 
 
@@ -252,7 +260,7 @@ def moved(
     out = []
     for p in profiles:
         for d in Direction:
-            hist = baselines.get(f"{p.id}|{d.value}")
+            hist = baselines.get(direction_key(p.id, d))
             confirmed = [v for v in (hist.versions if hist else ()) if v.confirmed]
             if not confirmed:
                 continue

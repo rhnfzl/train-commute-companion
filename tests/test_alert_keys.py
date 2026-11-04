@@ -24,8 +24,9 @@ from test_lifecycle_follow import (
     with_track,
 )
 
+from train_commute_companion.lifecycle import legacy_facts
 from train_commute_companion.model import AlertEvent, EventKind, Leg, Severity, train_ident
-from train_commute_companion.runtime import _legacy_facts, _states_current
+from train_commute_companion.runtime import _states_current
 from train_commute_companion.serde import dumps, loads
 
 DAY = "2026-10-27"
@@ -131,11 +132,11 @@ def test_what_is_read_from_an_event_stored_before_facts_were_kept():
         f"Office A: your train is cancelled.{clause} (service date {DAY})",
         f"cancelled:{DAY}:x:your train is cancelled|{named}:retained:y|stated+0", at("07:40"),
     )  # fmt: skip
-    f = _legacy_facts(e)
+    f = legacy_facts(e)
     assert f.named == tuple(named.split(",")) and f.on and not f.told
     assert f.next_clause == clause and f.twin_note == f" (service date {DAY})"
     told = replace(e, kind=EventKind.DATA_UNCLEAR, key=f"data_unclear:{DAY}:x:abc123")
-    assert _legacy_facts(told).unclear == "abc123"
+    assert legacy_facts(told).unclear == "abc123"
 
 
 def test_a_recovery_opens_with_the_retained_prefix_and_keeps_a_colon_in_the_name():

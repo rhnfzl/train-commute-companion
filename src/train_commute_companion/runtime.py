@@ -39,6 +39,7 @@ from train_commute_companion.health import (
     offline,
 )
 from train_commute_companion.lifecycle import (
+    DELAY_NEWS,
     Board,
     Choose,
     LegProgress,
@@ -49,6 +50,7 @@ from train_commute_companion.lifecycle import (
     first_open,
     is_resolved,
     left_note,
+    legacy_facts,
     location_queries,
     may_archive,
     merged_pool,
@@ -65,6 +67,8 @@ from train_commute_companion.lookahead import (
     LookAheadFact,
     LookAheadLedger,
     ProbeResult,
+    adopt_key,
+    bundle_key,
     carried_ids,
     entry_mark,
     evaluate,
@@ -76,6 +80,7 @@ from train_commute_companion.lookahead import (
     reset_on_edit,
     run_lookahead,
     service_date,
+    split_fact_key,
 )
 from train_commute_companion.match import usual_connection
 from train_commute_companion.messages import CHECK_APP, no_journey_text
@@ -99,11 +104,12 @@ from train_commute_companion.model import (
     Provenance,
     Severity,
     Signature,
-    ToldDelay,
     TrainId,
     UsualJourney,
     WebhookCopy,
+    direction_key,
     display_name,
+    split_direction_key,
     train_ident,
 )
 from train_commute_companion.news import Fact, all_good, escalations, severity, unsent
@@ -154,7 +160,6 @@ _ONGOING = frozenset(
         EventKind.NO_CONNECTION,
     }
 )
-_DELAY_NEWS = frozenset({EventKind.DELAYED, EventKind.NEARLY_ON_TIME, EventKind.BACK_TO_NORMAL})
 # judged on the latest healthy answers (rule 5b): held while an occurrence has none yet
 _OBSERVED = frozenset(
     {
@@ -225,10 +230,6 @@ class RequestBudget:
 
 def _okey(k: OccurrenceKey) -> str:
     return f"{k.profile_id}|{k.direction.value}|{k.service_date.isoformat()}"
-
-
-def _dkey(pid: str, d: Direction) -> str:
-    return f"{pid}|{d.value}"
 
 
 def _reasons(errors: Sequence[ProfileProblem]) -> str:
@@ -309,7 +310,7 @@ def _covers(x: Obligation, o: Obligation) -> bool:
     the same kind or both delay news). Rule 5(a): a warning is never covered."""
 
     def family(k: EventKind) -> frozenset[EventKind]:
-        return _DELAY_NEWS if k in _DELAY_NEWS else frozenset({k})
+        return DELAY_NEWS if k in DELAY_NEWS else frozenset({k})
 
     return (
         o.occurrence is not None
@@ -366,7 +367,7 @@ class _RuntimeLedger:
                 and o.route_revision != self._state.config.revision
             ):
                 return False
-            hist = self._state.baselines.get(_dkey(pid, d), BaselineHistory())
+            hist = self._state.baselines.get(direction_key(pid, d), BaselineHistory())
             versions = {v.version for v in hist.versions}
             if o.baseline_version is not None and o.baseline_version not in versions:
                 return False
@@ -386,7 +387,7 @@ class _RuntimeLedger:
 
     def _stored_facts(self, o: Obligation) -> tuple[LookAheadFact, ...]:
         assert o.look_ahead is not None
-        led = self._state.lookahead.get(_dkey(o.look_ahead[0], o.look_ahead[1]))
+        led = self._state.lookahead.get(direction_key(o.look_ahead[0], o.look_ahead[1]))
         return () if led is None else tuple(led.facts.get(o.id, ()))
 
     def _live_facts(self, o: Obligation) -> tuple[LookAheadFact, ...] | None:
@@ -397,19 +398,17 @@ class _RuntimeLedger:
         (stored before facts were kept). Reads the stored facts, never o.fact_key: ";" also
         joins the legs inside a whole-journey fingerprint."""
         assert o.look_ahead is not None
-        led = self._state.lookahead.get(_dkey(o.look_ahead[0], o.look_ahead[1]))
+        led = self._state.lookahead.get(direction_key(o.look_ahead[0], o.look_ahead[1]))
         if led is None or not (fs := led.facts.get(o.id)):
             return None
         live = []
         for f in fs:
-            parts = f.key.split("|", 2)  # "<date>|<leg>|warn:<fp>[|loud]" or "...|restored"
-            if len(parts) < 3 or not (
-                parts[2].startswith(("warn:", "unclear:")) or parts[2] == "restored"
-            ):
+            dated = split_fact_key(f.key)
+            if dated is None:
                 live.append(f)
                 continue
-            date_, leg, rest = parts
-            entries = [entry_mark(x) for x in led.per_date.get(f"{date_}|{leg}", ())]
+            key, rest = dated
+            entries = [entry_mark(x) for x in led.per_date.get(key, ())]
             last = next(
                 (x for x in reversed(entries) if x.startswith(("warn:", "unclear:", "restored:"))),
                 "",
@@ -441,7 +440,7 @@ class _RuntimeLedger:
         rt, e, k = self._rt, o.event, _okey(s.key)
         legs = [x for j in (*((s.lock,) if s.lock else ()), *s.retained) for x in j.legs]
         unfinished = any(x.train == e.train and x.state not in _FINISHED_LEG_STATES for x in legs)
-        if e.kind in _DELAY_NEWS:  # the delay memory still says what the message stated
+        if e.kind in DELAY_NEWS:  # the delay memory still says what the message stated
             if not _states_current(e, s.alert_keys):
                 return False
             if e.kind is EventKind.DELAYED:
@@ -649,7 +648,7 @@ class _Delta:
             self.leds.pop(k, None)
 
     def _runs(self, st: PersistedState, dk: str) -> bool:
-        pid = dk.rpartition("|")[0]  # a profile id may contain "|"; the direction never does
+        pid = split_direction_key(dk)[0]
         then, now = _find(self.cfg, pid), _find(st.config, pid)
         return then is not None and now is not None and _same_route(then, now)
 
@@ -709,32 +708,8 @@ def _advice_told(st: PersistedState, told: Sequence[tuple[Obligation, bool]]) ->
     return replace(st, occurrences=occs)
 
 
-def _legacy_facts(e: AlertEvent) -> AlertFacts:
-    """What an alert held in a state file from before facts were kept states, read from its key
-    and text: the only place that reads them back, so those alerts keep rules 5(a) and 5(b)."""
-    told: tuple[ToldDelay, ...] = ()
-    base, sep, vals = e.key.rpartition("|stated+")
-    if sep and e.kind in _DELAY_NEWS:
-        base = EventKind.DELAYED.value + base[len(e.kind.value) :]
-        said = vals.split(",")
-        slots = [base + t for t in ("#d", "#a")] if len(said) == 2 else [base]
-        told = tuple(ToldDelay(x, v) for x, v in zip(slots, said, strict=True))
-    part = next((x for x in e.key.split("|")[1:] if "@" in x and not x.startswith("stated")), "")
-    i = e.text.find(" (service date ")
-    head, note = (e.text, "") if i < 0 else (e.text[:i], e.text[i:])
-    j = head.find(" Next good connection:")
-    return AlertFacts(
-        told=told,
-        on="retained" if ":retained:" in e.key else "",
-        named=tuple(x for x in part.split(":retained:")[0].split(",") if x),
-        next_clause="" if j < 0 else head[j:],
-        unclear=e.key.rpartition(":")[2] if e.kind is EventKind.DATA_UNCLEAR else "",
-        twin_note=note,
-    )
-
-
 def _facts(e: AlertEvent) -> AlertFacts:
-    return _legacy_facts(e) if e.facts is None else e.facts
+    return legacy_facts(e) if e.facts is None else e.facts
 
 
 def _states_current(e: AlertEvent, keys: Mapping[str, str]) -> bool:
@@ -957,7 +932,7 @@ class Runtime:
     def _signature(
         self, p: Profile, d: Direction, sd: date, version: int | None = None
     ) -> Signature | None:
-        hist = self._st.baselines.get(_dkey(p.id, d), BaselineHistory())
+        hist = self._st.baselines.get(direction_key(p.id, d), BaselineHistory())
         v = next((x for x in hist.versions if x.version == version), None) or hist.in_force(sd)
         n = len(p.journey(d).transfers) + 1
         return v.signature if v is not None and len(v.signature.legs) == n else None
@@ -1017,7 +992,7 @@ class Runtime:
                 k: led.last_run if led else None
                 for p in (cfg.profiles if cfg else ())
                 for d in Direction
-                for k in (f"{p.id}|{d.value}",)
+                for k in (direction_key(p.id, d),)
                 for led in (st.lookahead.get(k),)
             },
         )
@@ -1644,7 +1619,7 @@ class Runtime:
         for sch in schedules_active(cfg, {}, now, first):
             k = _okey(sch.key)
             if k not in occs:
-                hist = self._st.baselines.get(_dkey(sch.key.profile_id, sch.key.direction))
+                hist = self._st.baselines.get(direction_key(sch.key.profile_id, sch.key.direction))
                 v = hist.in_force(sch.key.service_date) if hist else None
                 fresh = _fresh_state(sch.key, cfg.revision, v.version if v else None)
                 own = v.signature if v else None
@@ -2260,11 +2235,11 @@ class Runtime:
             # removed and added again: its old history goes, so it starts from the file like a
             # new profile (a first configuration has no earlier profiles to forget)
             for d in Direction if q is None and old is not None else ():
-                baselines.pop(_dkey(p.id, d), None)
-                ledgers.pop(_dkey(p.id, d), None)
+                baselines.pop(direction_key(p.id, d), None)
+                ledgers.pop(direction_key(p.id, d), None)
             for d in Direction if q is not None else ():
                 assert q is not None
-                dk = _dkey(p.id, d)
+                dk = direction_key(p.id, d)
                 hist = baselines.get(dk)
                 if hist is None:
                     continue
@@ -2314,7 +2289,7 @@ class Runtime:
         """Every configured direction has a look-ahead run written since `since`."""
         cfg = self._st.config
         leds = [
-            self._st.lookahead.get(_dkey(p.id, d))
+            self._st.lookahead.get(direction_key(p.id, d))
             for p in (cfg.profiles if cfg else ())
             for d in Direction
         ]
@@ -2364,7 +2339,7 @@ class Runtime:
         return got
 
     async def _lookahead_direction(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
-        dk = _dkey(p.id, d)
+        dk = direction_key(p.id, d)
         start = self._clock.now()
         today = start.astimezone(TZ).date()
         cfg = self._st.config
@@ -2373,7 +2348,7 @@ class Runtime:
         hist = self._st.baselines.get(dk, BaselineHistory())
         started_baseline = hist.latest
         bases = {
-            x: self._st.baselines.get(_dkey(p.id, x), BaselineHistory()).in_force(today)
+            x: self._st.baselines.get(direction_key(p.id, x), BaselineHistory()).in_force(today)
             for x in Direction
         }
         results: list[ProbeResult] = []
@@ -2396,7 +2371,7 @@ class Runtime:
         current = self._st.baselines.get(dk, BaselineHistory())
         others = [x for x in cfg.profiles if x.id != p.id]
         all_bases = {
-            (x.id, y): self._st.baselines.get(_dkey(x.id, y), BaselineHistory())
+            (x.id, y): self._st.baselines.get(direction_key(x.id, y), BaselineHistory())
             for x in cfg.profiles
             for y in Direction
             if (x.id, y) != (p.id, d)
@@ -2464,10 +2439,10 @@ class Runtime:
             o = c.obligation
             if o.look_ahead is None or o.look_ahead[:2] != (p.id, d) or o.id in was:
                 continue
-            if o.baseline_version not in gone:
+            if o.baseline_version is None or o.baseline_version not in gone:
                 continue
             fs = stored.facts.get(o.id, ())
-            rest = tuple(f for f in fs if f.key != f"adopt:{o.baseline_version}")
+            rest = tuple(f for f in fs if f.key != adopt_key(o.baseline_version))
             if not rest or len(rest) == len(fs):
                 continue  # only the adoption (dropped at its next try), or none bundled
             day = o.look_ahead[2]
@@ -2476,7 +2451,7 @@ class Runtime:
             o = replace(
                 o,
                 baseline_version=b.version if b else None,
-                fact_key=";".join(f.key for f in rest),
+                fact_key=bundle_key(rest),
                 event=replace(o.event, kind=kind, text=text),
             )
             self._copies[c.id] = replace(c, obligation=o)

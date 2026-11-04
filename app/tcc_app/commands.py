@@ -16,7 +16,9 @@ from train_commute_companion.model import (
     LegKind,
     Provenance,
     TimeObs,
+    direction_key,
     display_name,
+    split_direction_key,
 )
 from train_commute_companion.view import LegView, OccurrenceView, RuntimeView
 from train_commute_companion.webhook import WebhookTestResult
@@ -202,7 +204,7 @@ def _works_ahead(view: RuntimeView) -> list[str]:
     names = {d.profile_id: d.profile_name for d in view.directions}
     lines = []
     for key, days in view.works.items():
-        pid, _, d = key.rpartition("|")  # a profile id may contain "|"; the direction never does
+        pid, d = split_direction_key(key)
         if days:
             dates = ", ".join(_day(w.service_date) for w in days)
             lines.append(f"Works ahead: {display_name(names.get(pid, pid))} {d}: {dates}")
@@ -238,7 +240,7 @@ def render_status(view: RuntimeView, confirmed: bool) -> str:
 def for_profile(view: RuntimeView, profile_id: str) -> RuntimeView:
     """The view as one profile alone would see it; the refusal text echoes rejected values and
     read errors, so it is replaced by a fixed text."""
-    keys = {f"{profile_id}|{d.value}" for d in Direction}  # exact keys, never a prefix match
+    keys = {direction_key(profile_id, d) for d in Direction}  # exact keys, never a prefix match
     return replace(
         view,
         profiles=tuple(p for p in view.profiles if p.id == profile_id),
@@ -320,7 +322,7 @@ def works_tool(view: RuntimeView, confirmed: bool, profile_id: str) -> dict[str,
     lines = _works_ahead(v)
     directions = []
     for d in v.directions:
-        key = f"{profile_id}|{d.direction.value}"
+        key = direction_key(profile_id, d.direction)
         ok = v.lookahead_last_ok.get(key)
         if key not in v.lookahead_last_ok:  # a removed profile still running: never checked
             lines.append("Planned-works check: not run yet")

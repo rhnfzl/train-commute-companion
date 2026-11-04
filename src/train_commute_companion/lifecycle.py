@@ -334,6 +334,9 @@ def _recovery(
     return replace(e, kind=kind, severity=Severity.SILENT, text=text, key=key)
 
 
+DELAY_NEWS = frozenset({EventKind.DELAYED, EventKind.NEARLY_ON_TIME, EventKind.BACK_TO_NORMAL})
+
+
 def _stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
     """A stated replacement time or delay in a key moves only by news (7.5): the delay last
     stated per fact is kept in `alert_keys`, so 09:05 to 09:08 is news again while 09:05 to
@@ -410,6 +413,30 @@ def make_event(
         key=_event_key(ctx, kind, train, text if facts is None else facts),
         created_at=ctx.now,
         facts=stated or AlertFacts(),
+    )
+
+
+def legacy_facts(e: AlertEvent) -> AlertFacts:
+    """What an alert held in a state file from before facts were kept states, read from its key
+    and text: the only place that reads them back, so those alerts keep rules 5(a) and 5(b)."""
+    told: tuple[ToldDelay, ...] = ()
+    base, sep, vals = e.key.rpartition("|stated+")
+    if sep and e.kind in DELAY_NEWS:
+        base = EventKind.DELAYED.value + base[len(e.kind.value) :]
+        said = vals.split(",")
+        slots = [base + t for t in ("#d", "#a")] if len(said) == 2 else [base]
+        told = tuple(ToldDelay(x, v) for x, v in zip(slots, said, strict=True))
+    part = next((x for x in e.key.split("|")[1:] if "@" in x and not x.startswith("stated")), "")
+    i = e.text.find(" (service date ")
+    head, note = (e.text, "") if i < 0 else (e.text[:i], e.text[i:])
+    j = head.find(" Next good connection:")
+    return AlertFacts(
+        told=told,
+        on="retained" if ":retained:" in e.key else "",
+        named=tuple(x for x in part.split(":retained:")[0].split(",") if x),
+        next_clause="" if j < 0 else head[j:],
+        unclear=e.key.rpartition(":")[2] if e.kind is EventKind.DATA_UNCLEAR else "",
+        twin_note=note,
     )
 
 
