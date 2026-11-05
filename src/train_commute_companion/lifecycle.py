@@ -406,7 +406,7 @@ def _on_prefix(j: Journey) -> str:
 
 def _event_key(ctx: Ctx, kind: EventKind, train: TrainId | None, key_facts: str) -> str:
     ident = "" if train is None else f":{train_ident(train)}"
-    return f"{kind.value}:{ctx.schedule.key.service_date.isoformat()}{ident}:{facts}"
+    return f"{kind.value}:{ctx.schedule.key.service_date.isoformat()}{ident}:{key_facts}"
 
 
 def make_event(
@@ -415,12 +415,12 @@ def make_event(
     severity: Severity,
     text: str,
     train: TrainId | None = None,
-    facts: str | None = None,
+    key_facts: str | None = None,
     stated: AlertFacts | None = None,
 ) -> AlertEvent:
-    """The key carries the facts the message states (7.5): `facts` when given, else the text,
+    """The key carries the facts the message states (7.5): `key_facts` when given, else the text,
     so a changed endpoint, replacement or revised arrival is news while a repeat is not.
-    Pass `facts` when the text holds a live time that drifts without being news. `stated` holds
+    Pass `key_facts` when the text holds a live time that drifts without being news. `stated` holds
     what later steps read of this alert; its live delays join the key in `keep_stated`."""
     name = display_name(ctx.profile.name)
     return AlertEvent(
@@ -433,7 +433,7 @@ def make_event(
         severity=severity,
         train=train,
         text=f"{name}: {text}",
-        key=_event_key(ctx, kind, train, text if facts is None else facts),
+        key=_event_key(ctx, kind, train, text if key_facts is None else key_facts),
         created_at=ctx.now,
         facts=stated or AlertFacts(),
     )
@@ -1058,7 +1058,7 @@ def _relock(
     # and its stated time by its delay, which `keep_stated` turns into 3-min news steps
     late = (_departure(c) - to_utc(c.legs[0].train.planned_departure)) // timedelta(minutes=1)
     named = tuple(train_ident(x.train) for x in c.legs)
-    facts = f"{text}|" + ",".join(named)
+    key_facts = f"{text}|" + ",".join(named)
     clause = f" Next good connection: {hhmm(_departure(c))}" + (
         f", new route via {via}." if how == "new_route" else "."
     )
@@ -1067,7 +1067,7 @@ def _relock(
         written = replace(written, cancellation_history=(*s.cancellation_history, history))
     stated = AlertFacts(delays=(LiveDelay("", late),), named=named, next_clause=clause)
     return Transition(
-        written, (make_event(ctx, kind, sev, f"{text}.{clause}", train, facts, stated),)
+        written, (make_event(ctx, kind, sev, f"{text}.{clause}", train, key_facts, stated),)
     )
 
 
@@ -1151,10 +1151,10 @@ def _platform(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
         text = f"your {_name(x)} train leaves from platform {b.planned_track} again, as planned."
     else:
         text = f"your {_name(x)} train now leaves from platform {track} (was {b.planned_track})."
-    facts = f"track {track}" + ("|planned" if planned else "")
+    key_facts = f"track {track}" + ("|planned" if planned else "")
     slot = "moved#" + _event_key(ctx, EventKind.PLATFORM_CHANGE, x.train, "track")
     stated = AlertFacts(moved_slot=slot, back_on_plan=planned)
-    return make_event(ctx, EventKind.PLATFORM_CHANGE, sev, text, x.train, facts, stated)
+    return make_event(ctx, EventKind.PLATFORM_CHANGE, sev, text, x.train, key_facts, stated)
 
 
 @dataclass(frozen=True, slots=True)
