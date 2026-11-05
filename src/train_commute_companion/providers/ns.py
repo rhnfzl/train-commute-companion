@@ -134,22 +134,25 @@ def _number(v: object) -> str | None:
     return v if isinstance(v, str) and v.strip() else None
 
 
-def _leg(raw: object, aliases: dict[str, str], at: datetime) -> Leg:
-    if not isinstance(raw, dict):
-        raise MalformedAnswer("leg is not an object")
+def _leg_stops(raw: dict[str, Any], aliases: dict[str, str], at: datetime) -> tuple[Stop, ...]:
     origin, dest, stops_raw = raw.get("origin"), raw.get("destination"), raw.get("stops")
     if stops_raw is not None and stops_raw != []:
         # a present but broken stop list may hide a cancelled stop: never fall back over it
         if len(_objects(stops_raw, "stops")) < 2:
             raise MalformedAnswer("leg stop list has fewer than two stops")
-        stops = tuple(_stop(s, aliases, at) for s in stops_raw)
-    elif isinstance(origin, dict) and isinstance(dest, dict):
-        stops = (
+        return tuple(_stop(s, aliases, at) for s in stops_raw)
+    if isinstance(origin, dict) and isinstance(dest, dict):
+        return (
             _end_stop(origin, aliases, depart=True, at=at),
             _end_stop(dest, aliases, depart=False, at=at),
         )
-    else:
-        raise MalformedAnswer("leg has no stops and no origin/destination")
+    raise MalformedAnswer("leg has no stops and no origin/destination")
+
+
+def _leg(raw: object, aliases: dict[str, str], at: datetime) -> Leg:
+    if not isinstance(raw, dict):
+        raise MalformedAnswer("leg is not an object")
+    stops = _leg_stops(raw, aliases, at)
     planned_dep = stops[0].planned_departure
     if planned_dep is None:
         raise MalformedAnswer("leg has no planned departure at its boarding stop")
@@ -236,6 +239,29 @@ def _station_ids(s: object) -> set[str] | None:
     return {str(s[k]) for k in ("uicCode", "stationCode") if s.get(k)}
 
 
+def _section_stations(ps: object) -> set[str] | None:
+    """The stations of one publication section; None when any part of it is unreadable."""
+    if not isinstance(ps, dict):
+        return None
+    cons = ps.get("consequence")
+    if cons is not None and not isinstance(cons, dict):
+        return None
+    parts = [p for p in (ps.get("section"), (cons or {}).get("section")) if p is not None]
+    if not parts:
+        return None
+    stations: set[str] = set()
+    for part in parts:
+        st = part.get("stations") if isinstance(part, dict) else None
+        if not isinstance(st, list) or not st:
+            return None
+        for raw in st:
+            ids = _station_ids(raw)
+            if ids is None:
+                return None
+            stations |= ids
+    return stations
+
+
 def _work(d: dict[str, Any]) -> PlannedWork | None:
     """One MAINTENANCE item, or None when it cannot be evaluated."""
     start, end = _dt(d.get("start")), _dt(d.get("end"))
@@ -250,23 +276,10 @@ def _work(d: dict[str, Any]) -> PlannedWork | None:
         return None
     stations: set[str] = set()
     for ps in sections:
-        if not isinstance(ps, dict):
+        ids = _section_stations(ps)
+        if ids is None:
             return None
-        cons = ps.get("consequence")
-        if cons is not None and not isinstance(cons, dict):
-            return None
-        parts = [p for p in (ps.get("section"), (cons or {}).get("section")) if p is not None]
-        if not parts:
-            return None
-        for part in parts:
-            st = part.get("stations") if isinstance(part, dict) else None
-            if not isinstance(st, list) or not st:
-                return None
-            for raw in st:
-                ids = _station_ids(raw)
-                if ids is None:
-                    return None
-                stations |= ids
+        stations |= ids
     return PlannedWork(start, end, frozenset(stations), str(d.get("title", "")))
 
 
@@ -325,6 +338,21 @@ BASE_URL = "https://gateway.apiportal.ns.nl/reisinformatie-api/api"
 REQUEST_DEADLINE_S = 90.0
 
 
+def _raise_for_status(r: httpx.Response) -> None:
+    code = r.status_code
+    if code in (401, 403):
+        raise AuthError(f"NS rejected the API key (HTTP {code})")
+    if code == 429:
+        ra = r.headers.get("Retry-After", "").strip()
+        # a longer value is no real wait, and int() refuses one over its digit limit
+        seconds = int(ra) if ra.isascii() and ra.isdigit() and len(ra) <= 9 else None
+        raise RateLimited("NS rate limited", seconds)
+    if code >= 500:
+        raise ServerError(f"NS answered HTTP {code}")
+    if code >= 400:
+        raise ProviderError(f"NS answered HTTP {code}")
+
+
 class NsProvider:
     def __init__(
         self,
@@ -354,18 +382,7 @@ class NsProvider:
             raise ProviderError("NS request exceeded the deadline") from None
         except httpx.HTTPError as e:
             raise ProviderError(f"NS request failed: {type(e).__name__}") from None
-        code = r.status_code
-        if code in (401, 403):
-            raise AuthError(f"NS rejected the API key (HTTP {code})")
-        if code == 429:
-            ra = r.headers.get("Retry-After", "").strip()
-            # a longer value is no real wait, and int() refuses one over its digit limit
-            seconds = int(ra) if ra.isascii() and ra.isdigit() and len(ra) <= 9 else None
-            raise RateLimited("NS rate limited", seconds)
-        if code >= 500:
-            raise ServerError(f"NS answered HTTP {code}")
-        if code >= 400:
-            raise ProviderError(f"NS answered HTTP {code}")
+        _raise_for_status(r)
         try:
             return r.json()
         except ValueError:
