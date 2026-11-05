@@ -155,7 +155,7 @@ async def test_choose_usage_without_departure(app):
 async def test_choose_retained_remainder_promotes_ridden_train(app):  # N3, required (11.3)
     rig = app.rig
     rig.clock.set("08:18")  # at AAA after the 08:12 left: it may still dwell with the user on it
-    await app.rt.location("p1", LocationEvent("AAA", "report", at("08:18")))
+    await app.rt.report_location("p1", LocationEvent("AAA", "report", at("08:18")))
     rig.clock.set("08:20")
     await app.rt.poll_once()
     pre = only_occurrence(app.rt)

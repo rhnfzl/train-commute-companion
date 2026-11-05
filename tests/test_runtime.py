@@ -1282,7 +1282,7 @@ async def test_location_source_changed_during_request_is_not_written(tmp_path, a
 
     rig.provider.trips = held
     event = LocationEvent("UT", "enter", rig.clock.now())
-    task = asyncio.create_task(rig.rt.location("p1", event, source))
+    task = asyncio.create_task(rig.rt.report_location("p1", event, source))
     await asked.wait()
     rig.write(text=(PROFILES_DIR / f"{after}.yaml").read_text())
     await rig.rt.reload_if_changed()
@@ -1323,7 +1323,7 @@ async def test_location_source_switched_away_and_back_during_request_is_not_writ
     view = rig.rt.view()
     source, epoch = view.profiles[0].location, view.location_epochs.get("p1", 0)
     event = LocationEvent("UT", "enter", rig.clock.now())
-    task = asyncio.create_task(rig.rt.location("p1", event, source, epoch))
+    task = asyncio.create_task(rig.rt.report_location("p1", event, source, epoch))
     await asked.wait()
     await _switch_away_and_back(rig)
     release.set()
@@ -1336,7 +1336,7 @@ async def test_location_without_epoch_keeps_the_value_check(tmp_path):
     rig, asked, release = await _switch_rig(tmp_path)
     source = rig.rt.view().profiles[0].location
     event = LocationEvent("UT", "enter", rig.clock.now())
-    task = asyncio.create_task(rig.rt.location("p1", event, source))
+    task = asyncio.create_task(rig.rt.report_location("p1", event, source))
     await asked.wait()
     await _switch_away_and_back(rig)
     release.set()
@@ -1366,21 +1366,21 @@ async def test_location_epoch_bumps_only_on_location_changes(tmp_path):
 async def test_location_says_whether_ns_answered(tmp_path):
     rig = await one_transfer(tmp_path)
     rig.clock.set("08:18")
-    assert await rig.rt.location("p1", LocationEvent("AAA", "report", at("08:18"))) is True
+    assert await rig.rt.report_location("p1", LocationEvent("AAA", "report", at("08:18"))) is True
     answering = rig.provider.trips
 
     async def timing_out(q):
         raise TimeoutError
 
     rig.provider.trips = timing_out
-    assert await rig.rt.location("p1", LocationEvent("AAA", "report", at("08:18"))) is False
+    assert await rig.rt.report_location("p1", LocationEvent("AAA", "report", at("08:18"))) is False
     rig.provider.trips = answering
 
 
 async def test_choose_at_retained_remainder_promotes_ridden_train(tmp_path):  # N3, required
     rig = await one_transfer(tmp_path)
     rig.clock.set("08:18")  # at AAA after the 08:12 left: it may still dwell with the user on it
-    await rig.rt.location("p1", LocationEvent("AAA", "report", at("08:18")))
+    await rig.rt.report_location("p1", LocationEvent("AAA", "report", at("08:18")))
     rig.clock.set("08:20")
     await rig.rt.poll_once()
     pre = only_occurrence(rig.rt)
@@ -1401,7 +1401,7 @@ async def test_choose_at_retained_from_missed_transfer_queries_transfer_station(
     rig = await one_transfer(tmp_path)
     await rig.run_until("08:44")
     rig.clock.set("08:53")  # at UT after the delayed 08:46 left: missed transfer, kept retained
-    await rig.rt.location("p1", LocationEvent("UT", "report", at("08:53")))
+    await rig.rt.report_location("p1", LocationEvent("UT", "report", at("08:53")))
     pre = only_occurrence(rig.rt)
     assert pre.retained[0].legs[0].train.planned_departure == at("08:46")
     assert await rig.rt.choose_at("p1", time(8, 46)) is None
@@ -1429,7 +1429,7 @@ async def test_station_report_finds_missed_first_train_ns_no_longer_lists(tmp_pa
     rig = await one_transfer(tmp_path)
     departing_from_asked_time(rig)
     rig.clock.set("08:18")  # at AAA after the 08:12 left; a query from AAA now omits it
-    await rig.rt.location("p1", LocationEvent("AAA", "report", at("08:18")))
+    await rig.rt.report_location("p1", LocationEvent("AAA", "report", at("08:18")))
     assert EventKind.MISSED_FIRST_TRAIN in kinds(rig.rt.events_log)
     s = only_occurrence(rig.rt)
     assert s.lock.legs[0].train.planned_departure == at("08:44")
@@ -1441,7 +1441,7 @@ async def test_station_report_finds_missed_transfer_ns_no_longer_lists(tmp_path)
     departing_from_asked_time(rig)
     await rig.run_until("08:44")
     rig.clock.set("08:53")  # at UT after the delayed 08:46 left; a query from AAA now omits it
-    await rig.rt.location("p1", LocationEvent("UT", "report", at("08:53")))
+    await rig.rt.report_location("p1", LocationEvent("UT", "report", at("08:53")))
     assert EventKind.MISSED_TRANSFER in kinds(rig.rt.events_log)
     assert only_occurrence(rig.rt).retained[0].legs[0].train.planned_departure == at("08:46")
 

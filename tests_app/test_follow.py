@@ -67,10 +67,10 @@ async def _failing(*args, **kw):
 @pytest.mark.parametrize("dispatch", [_unanswered, _failing])
 async def test_an_enter_that_never_got_through_starts_no_report_timer(app, dispatch):
     await feed(app, *FAR, "08:29")
-    working = app.rt.location
-    app.rt.location = dispatch
+    working = app.rt.report_location
+    app.rt.report_location = dispatch
     await feed(app, *UT, "08:30")
-    app.rt.location = working
+    app.rt.report_location = working
     await feed(app, 52.10001, 5.1, "08:30:30")
     assert spied(app) == [("UT", "report")]  # the core hears the user is here after all
 
@@ -114,14 +114,14 @@ async def test_future_and_stale_fixes_change_nothing(app):
 async def test_queued_fix_from_before_a_switch_back_is_dropped(app):
     await feed(app, *FAR, "08:20")
     held, release = asyncio.Event(), asyncio.Event()
-    orig = app.rt.location
+    orig = app.rt.report_location
 
     async def hold(*args, **kw):
         held.set()
         await release.wait()
         return await orig(*args, **kw)
 
-    app.rt.location = hold
+    app.rt.report_location = hold
     app.clock.t = at("08:24")
     app.follower.feed("telegram", Fix(*UT, at("08:24")))
     await held.wait()
@@ -129,7 +129,7 @@ async def test_queued_fix_from_before_a_switch_back_is_dropped(app):
     await switch(app, "located_via_ut_owntracks", "located_via_ut_telegram")
     release.set()
     await app.follower.drain()
-    app.rt.location = orig
+    app.rt.report_location = orig
     assert spied(app) == [("UT", "enter")]  # the held one; the core drops it on its epoch
     assert "UT" not in only_occurrence(app.rt).zone_reports
     await feed(app, *FAR, "08:26")  # seeds: the queued fix was neither sent nor a seed

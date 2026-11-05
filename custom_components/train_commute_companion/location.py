@@ -235,7 +235,7 @@ class LocationTracker:
     ) -> bool:
         def send(rt: Runtime) -> Coroutine[Any, Any, bool]:
             # the core rechecks the source after its own request, before any write
-            return rt.location(pid, event, source, epoch=epoch)
+            return rt.report_location(pid, event, source, epoch=epoch)
 
         return await self._entry.runtime_data.host.run(send)
 

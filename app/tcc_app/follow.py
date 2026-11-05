@@ -132,7 +132,7 @@ class Follower:
         try:
             for name, kind in events:
                 event = LocationEvent(name, kind, fix.at)
-                if not await self._rt.location(pid, event, loc, epoch):
+                if not await self._rt.report_location(pid, event, loc, epoch):
                     mem.track = undelivered(mem.track)
         except Exception:
             mem.track = undelivered(mem.track)

@@ -338,7 +338,7 @@ class Runtime:
         self._sending = asyncio.Lock()
         self.requests = 0  # NS publishes no quota (7.1): counted and logged
         # set while start() reconciles: messages stored before it wait for the fresh poll
-        self._since: datetime | None = None
+        self._reconcile_started_at: datetime | None = None
 
         def read() -> PersistedState:
             return self._writer.st
@@ -547,7 +547,8 @@ class Runtime:
     def _waits(self, o: Obligation) -> bool:
         """Not judged yet: written before this start (judged once the reconcile ran, rule 11),
         or judged on observations while its occurrence has no healthy answer (rule 5b)."""
-        if self._since is not None and to_utc(o.event.created_at) < to_utc(self._since):
+        started = self._reconcile_started_at
+        if started is not None and to_utc(o.event.created_at) < to_utc(started):
             return True
         k = None if o.occurrence is None else okey(o.occurrence)
         return (
@@ -699,7 +700,7 @@ class Runtime:
             answers.append(a)
         return tuple(answers)
 
-    def _auth(self, error: PollFailure | None, who: str, now: datetime) -> None:
+    def _track_key_rejection(self, error: PollFailure | None, who: str, now: datetime) -> None:
         """`key_rejected` once per outage and again when each window opens while it lasts."""
         if error is None:
             self._auth_outage, self._auth_told = False, set()
@@ -789,7 +790,7 @@ class Runtime:
             error = "auth"
         elif advice_error is not None:
             log.warning("advice search for %s failed (%s)", k, advice_error)
-        self._auth(error, k, now)
+        self._track_key_rejection(error, k, now)
         poll = PollAnswers(answers, (PollRecord(now, error is None, error),), gen)
         t = on_poll(s, ctx, poll)
         st, events = t.state, list(t.events)
@@ -1127,7 +1128,7 @@ class Runtime:
         out: tuple[ProviderAnswer, ...] = ()
         for queries in asks:
             got = await self._fetch_all(queries, True, end, deadline)
-            self._auth(got if isinstance(got, str) else None, k, self._clock.now())
+            self._track_key_rejection(got if isinstance(got, str) else None, k, self._clock.now())
             if isinstance(got, str):
                 await self._deliver()
                 return f"NS did not answer ({got}); try again"
@@ -1149,7 +1150,7 @@ class Runtime:
         events = apply_action(t, ctx, choice).events
         return next((e.text for e in events if e.kind is EventKind.CHOOSE_REFUSED), None)
 
-    async def location(
+    async def report_location(
         self,
         profile_id: str,
         event: LocationEvent,
@@ -1186,7 +1187,7 @@ class Runtime:
             watched = () if isinstance(more, str) else more
             now = self._clock.now()
             # a rejected key on either request is reported; a healthy first answer clears an outage
-            self._auth("auth" if failed_more == "auth" else failed, k, now)
+            self._track_key_rejection("auth" if failed_more == "auth" else failed, k, now)
             # re-read after the request: an occurrence skipped, archived or edited meanwhile is
             # never written back from the old copy (rule 21)
             s = self._writer.st.occurrences.get(k)
@@ -1346,10 +1347,11 @@ class Runtime:
         except (ProviderError, TimeoutError) as e:
             self._update_budget(before, e, None)
             if isinstance(e, AuthError):
-                self._auth("auth", "lookahead", now)
+                self._track_key_rejection("auth", "lookahead", now)
             return PlannedWorks((), "unknown")
         self._update_budget(before, None, None)
-        self._auth(None, "lookahead", now)  # an accepted key ends the outage (7.11)
+        # an accepted key ends the outage (7.11)
+        self._track_key_rejection(None, "lookahead", now)
         return works
 
     async def stations(self) -> frozenset[str] | None:
@@ -1365,15 +1367,22 @@ class Runtime:
         except (ProviderError, TimeoutError) as e:
             self._update_budget(before, e, None)
             if isinstance(e, AuthError):
-                self._auth("auth", "stations", now)
+                self._track_key_rejection("auth", "stations", now)
             return None
         self._update_budget(before, None, None)
-        self._auth(None, "stations", now)  # an accepted key ends the outage (7.11)
+        # an accepted key ends the outage (7.11)
+        self._track_key_rejection(None, "stations", now)
         return got
 
     async def _lookahead_direction(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
         run = await probe_direction(
-            self._writer.st, p, d, works, self._clock.now(), self._fetch_all, self._auth
+            self._writer.st,
+            p,
+            d,
+            works,
+            self._clock.now(),
+            self._fetch_all,
+            self._track_key_rejection,
         )
         st = None if run is None else applied_run(self._writer.st, self._queue, p, d, run)
         if st is not None:
@@ -1384,11 +1393,12 @@ class Runtime:
 
     async def start(self) -> None:
         now = self._clock.now()
-        self._since = now  # stored messages wait for the reconcile poll (rules 5, 11)
+        # stored messages wait for the reconcile poll (rules 5, 11)
+        self._reconcile_started_at = now
         try:
             await self._load_and_reconcile(now)
         finally:
-            self._since = None
+            self._reconcile_started_at = None
         self._apply({})
         await self._deliver()
         self._started = True

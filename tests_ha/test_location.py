@@ -57,13 +57,13 @@ def set_home_zone(hass):
 
 
 def spy_on_location(rt: Runtime, calls: list[tuple[str | None, LocationKind]]) -> None:
-    orig = rt.location
+    orig = rt.report_location
 
     async def spy(profile_id, event, *rest, **kw):
         calls.append((event.zone, event.kind))
         return await orig(profile_id, event, *rest, **kw)
 
-    rt.location = spy
+    rt.report_location = spy
 
 
 async def start_tracker(h: Harness) -> None:
@@ -216,15 +216,15 @@ async def test_a_failed_enter_starts_no_report_timer(hass):
     set_person(hass, *FAR)
     await start_tracker(h)
     host = h.entry.runtime_data.host
-    spy = await host.run(lambda rt: rt.location)
+    spy = await host.run(lambda rt: rt.report_location)
 
     async def broken(*args, **kwargs):
         raise RuntimeError("inner failure")
 
-    await host.run(lambda rt: setattr(rt, "location", broken))
+    await host.run(lambda rt: setattr(rt, "report_location", broken))
     set_person(hass, 52.1, 5.1)
     await hass.async_block_till_done()
-    await host.run(lambda rt: setattr(rt, "location", spy))
+    await host.run(lambda rt: setattr(rt, "report_location", spy))
     ha_rig.FREEZER.tick(5)
     set_person(hass, 52.10001, 5.1)
     assert await spied(h) == [("UT", "report")]  # the core hears the user is here after all
@@ -509,7 +509,7 @@ async def test_a_runtime_error_from_the_core_is_logged_not_taken_for_a_stopped_r
     async def broken(*args, **kwargs):
         raise RuntimeError("inner failure")
 
-    await h.entry.runtime_data.host.run(lambda rt: setattr(rt, "location", broken))
+    await h.entry.runtime_data.host.run(lambda rt: setattr(rt, "report_location", broken))
     set_person(hass, 52.05, 5.05)
     await hass.async_block_till_done()
     assert "location event for" in caplog.text

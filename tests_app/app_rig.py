@@ -155,16 +155,16 @@ def make_app(tmp_path: Path, tg: FakeTelegram, clock: TickClock, provider=None,
 
 
 def spied(app: Any) -> list[tuple[str | None, str]]:
-    """What reached `rt.location`, as `(zone, kind)`; installs the spy on first use."""
+    """What reached `rt.report_location`, as `(zone, kind)`; installs the spy on first use."""
     if not hasattr(app, "calls"):
         app.calls = calls = []
-        orig = app.rt.location
+        orig = app.rt.report_location
 
         async def spy(profile_id: str, event: Any, *rest: Any, **kw: Any) -> bool:
             calls.append((event.zone, event.kind))
             return await orig(profile_id, event, *rest, **kw)
 
-        app.rt.location = spy
+        app.rt.report_location = spy
     return list(app.calls)
 
 

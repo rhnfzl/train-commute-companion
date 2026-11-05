@@ -268,7 +268,7 @@ async def apply_event(rt: Runtime, e: dict[str, Any], now: datetime) -> None:
         kind = next((k for k in LOCATION_KINDS if k == raw), None)
         if kind is None:
             raise ReplayError(f"location kind {raw!r}: use enter, leave or report")
-        await rt.location(pid, LocationEvent(str(e["location"]), kind, now))
+        await rt.report_location(pid, LocationEvent(str(e["location"]), kind, now))
     elif e.get("action") == "leaving":
         await rt.leaving(pid)
     elif e.get("action") == "not_travelling":
