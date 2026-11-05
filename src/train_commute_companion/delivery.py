@@ -5,8 +5,10 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Literal, Protocol
 
+from train_commute_companion.calendar import to_utc
 from train_commute_companion.lifecycle import OccurrenceState
 from train_commute_companion.model import (
+    DELAY_NEWS,
     AlertEvent,
     EventKind,
     Obligation,
@@ -30,6 +32,24 @@ JOURNEY_WARNINGS = frozenset(
         EventKind.STOPPED_FOLLOWING,
     }
 )
+
+
+def covers(x: Obligation, o: Obligation) -> bool:
+    """Rule 5(b): `x` is a newer message about what `o` reported (same occurrence and train,
+    the same kind or both delay news). Rule 5(a): a warning is never covered."""
+
+    def family(k: EventKind) -> frozenset[EventKind]:
+        return DELAY_NEWS if k in DELAY_NEWS else frozenset({k})
+
+    return (
+        o.occurrence is not None
+        and o.event.kind not in APP_WARNINGS | JOURNEY_WARNINGS
+        and x.id != o.id
+        and x.occurrence == o.occurrence
+        and x.event.kind in family(o.event.kind)
+        and x.event.train == o.event.train
+        and to_utc(x.event.created_at) > to_utc(o.event.created_at)
+    )
 
 
 class Ledger(Protocol):

@@ -8,10 +8,9 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 from train_commute_companion.calendar import to_utc
-from train_commute_companion.delivery import JOURNEY_WARNINGS, Ledger, post_copy
+from train_commute_companion.delivery import JOURNEY_WARNINGS, Ledger, covers, post_copy
 from train_commute_companion.model import Obligation, OccurrenceKey, WebhookCopy
 from train_commute_companion.notify import WebhookPort
-from train_commute_companion.revalidation import covers
 from train_commute_companion.store import PersistedState
 from train_commute_companion.webhook import event_id, url_id
 

@@ -28,6 +28,7 @@ from train_commute_companion.match import (
 )
 from train_commute_companion.messages import data_unclear_text
 from train_commute_companion.model import (
+    DELAY_NEWS,
     FOLLOW_LIMIT,
     AdviceRecord,
     AlertEvent,
@@ -345,9 +346,6 @@ def _recovery(
     text = f"{display_name(e.profile_name)}: {facts.on}{facts.subject} train {tail}"
     key = kind.value + e.key[len(e.kind.value) :]
     return replace(e, kind=kind, severity=Severity.SILENT, text=text, key=key)
-
-
-DELAY_NEWS = frozenset({EventKind.DELAYED, EventKind.NEARLY_ON_TIME, EventKind.BACK_TO_NORMAL})
 
 
 def _stated_delays(e: AlertEvent, f: AlertFacts, keys: dict[str, str]) -> AlertEvent | None:

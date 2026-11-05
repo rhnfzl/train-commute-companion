@@ -94,6 +94,9 @@ class EventKind(StrEnum):
     DATA_UNCLEAR = "data_unclear"
 
 
+DELAY_NEWS = frozenset({EventKind.DELAYED, EventKind.NEARLY_ON_TIME, EventKind.BACK_TO_NORMAL})
+
+
 @dataclass(frozen=True, slots=True)
 class TimeObs:
     planned: datetime | None  # None when the provider reported a time without a planned one

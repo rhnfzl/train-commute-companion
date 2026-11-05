@@ -11,16 +11,11 @@ from train_commute_companion.advice import (
     usual_arrival,
     waiting_is_bad,
 )
-from train_commute_companion.calendar import TZ, hhmm, to_utc
+from train_commute_companion.calendar import TZ, hhmm
 from train_commute_companion.classify import current_run, find_leg
-from train_commute_companion.delivery import (
-    APP_WARNINGS,
-    JOURNEY_WARNINGS,
-    zone_report_stops_silent,
-)
+from train_commute_companion.delivery import JOURNEY_WARNINGS, covers, zone_report_stops_silent
 from train_commute_companion.health import WatchedLeg
 from train_commute_companion.lifecycle import (
-    DELAY_NEWS,
     LegProgress,
     OccurrenceState,
     PollAnswers,
@@ -32,6 +27,7 @@ from train_commute_companion.lifecycle import (
 from train_commute_companion.lookahead import entry_mark, render_message
 from train_commute_companion.lookahead_probe import BaselineHistory, LookAheadFact, split_fact_key
 from train_commute_companion.model import (
+    DELAY_NEWS,
     LIVE_PREFIX,
     SENT_PREFIX,
     AlertEvent,
@@ -113,24 +109,6 @@ def alert_facts(e: AlertEvent) -> AlertFacts:
 def states_current(e: AlertEvent, keys: Mapping[str, str]) -> bool:
     """A delay message whose stated values are still the ones `lifecycle.keep_stated` remembers."""
     return all(keys.get(t.slot) == t.said for t in alert_facts(e).told)
-
-
-def covers(x: Obligation, o: Obligation) -> bool:
-    """Rule 5(b): `x` is a newer message about what `o` reported (same occurrence and train,
-    the same kind or both delay news). Rule 5(a): a warning is never covered."""
-
-    def family(k: EventKind) -> frozenset[EventKind]:
-        return DELAY_NEWS if k in DELAY_NEWS else frozenset({k})
-
-    return (
-        o.occurrence is not None
-        and o.event.kind not in APP_WARNINGS | JOURNEY_WARNINGS
-        and x.id != o.id
-        and x.occurrence == o.occurrence
-        and x.event.kind in family(o.event.kind)
-        and x.event.train == o.event.train
-        and to_utc(x.event.created_at) > to_utc(o.event.created_at)
-    )
 
 
 def leg_now(answers: Sequence[ProviderAnswer], x: LegProgress) -> tuple[str, str]:
