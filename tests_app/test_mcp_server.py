@@ -19,6 +19,7 @@ from tcc_app.main import mcp_answer
 from tcc_app.mcp_server import NOT_RUNNING, build
 from tcc_app.web import start_readout
 
+from train_commute_companion.model import Direction
 from train_commute_companion.providers.base import AuthError
 from train_commute_companion.store import StorageError
 
@@ -45,7 +46,7 @@ async def test_exactly_three_read_only_tools(served, sock):
         assert a.idempotent_hint and not a.open_world_hint, t.name
         assert t.description
     nxt = next(t for t in tools if t.name == "get_next_connections")
-    assert nxt.input_schema["properties"]["direction"]["enum"] == ["outbound", "return"]
+    assert nxt.input_schema["properties"]["direction"]["enum"] == [d.value for d in Direction]
 
 
 async def test_tools_return_the_readout(served, sock):
