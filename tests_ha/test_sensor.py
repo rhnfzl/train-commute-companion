@@ -230,7 +230,7 @@ async def test_two_occurrences_of_one_direction_show_oldest_and_list_others(hass
             route_revision=rt.config.revision,
             settings_revision=rt.config.revision,
         )
-        rt._st = replace(
+        rt._writer.st = replace(
             rt.state, occurrences={**rt.state.occurrences, "p1|outbound|2026-10-26": old}
         )
 
@@ -251,7 +251,7 @@ async def test_attributes_are_json_primitives(hass):
     def retain(rt):
         s = only_occurrence(rt)
         kept = journey([make_leg("AAA", "UT", "08:12", "08:40", number="1234")], (LegState.DONE,))
-        rt._st = replace(
+        rt._writer.st = replace(
             rt.state,
             occurrences={
                 **rt.state.occurrences,

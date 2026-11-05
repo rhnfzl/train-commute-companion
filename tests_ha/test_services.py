@@ -133,7 +133,7 @@ async def test_not_travelling_with_date_and_direction_touches_only_that_directio
     def seed(rt):  # as the core test does: both of Tuesday's directions unresolved at once
         st = rt.state
         fresh = _fresh_state(key, rt.config.revision, None)
-        rt._st = replace(st, occurrences={**st.occurrences, "p1|return|2026-10-27": fresh})
+        rt._writer.st = replace(st, occurrences={**st.occurrences, "p1|return|2026-10-27": fresh})
 
     await h.host.run(seed)
     await call(

@@ -188,7 +188,7 @@ async def test_adoption_carried_into_the_next_day_through_ha(hass):
     h.provider.world = [usual_on(d, "08:15") for d in days]
 
     def seed(rt):
-        rt._st = replace(
+        rt._writer.st = replace(
             rt.state, baselines={"p1|outbound": baseline(time(8, 12), date(2026, 10, 1))}
         )
 

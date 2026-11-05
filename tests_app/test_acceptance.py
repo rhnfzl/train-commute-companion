@@ -209,7 +209,7 @@ async def test_adoption_carried_into_the_next_day_through_telegram(tmp_path, tg)
     provider = Provider(clock, [usual_on(d, "08:15") for d in days])
     app = build_at(tmp_path, tg, clock, provider)
     await app.rt.start()
-    app.rt._st = replace(
+    app.rt._writer.st = replace(
         app.rt.state, baselines={"p1|outbound": baseline(time(8, 12), date(2026, 10, 1))}
     )
     clock.t = datetime(2026, 10, 26, 5, 55, tzinfo=AMS)

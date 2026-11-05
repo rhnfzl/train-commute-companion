@@ -48,9 +48,9 @@ class World:
         return self
 
     def set_occ(self, s) -> None:
-        st = self.rt._st
+        st = self.rt._writer.st
         k = next(k for k, v in st.occurrences.items() if v.key == s.key)
-        self.rt._st = replace(st, occurrences={**st.occurrences, k: s})
+        self.rt._writer.st = replace(st, occurrences={**st.occurrences, k: s})
 
     def view_with(self, conns):
         """The occurrence's view over one answer holding `conns` instead of the polled ones."""

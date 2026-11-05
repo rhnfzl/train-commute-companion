@@ -325,9 +325,9 @@ HOOKS = {"webhook_urls": (URL,), "webhook_secret": SECRET}
 async def test_build_adds_a_poster_only_when_webhooks_are_set(tmp_path, tg):
     clock = TickClock(at("07:50"))
     app = make_app(tmp_path, tg, clock)
-    assert app.webhooks is None and app.rt._webhooks is None and app.bot._webhook_test is None
+    assert app.webhooks is None and app.rt._queue.port is None and app.bot._webhook_test is None
     app = make_app(tmp_path, tg, clock, webhook_token=WTOKEN, **HOOKS)
-    assert isinstance(app.webhooks, WebhookPoster) and app.rt._webhooks is app.webhooks
+    assert isinstance(app.webhooks, WebhookPoster) and app.rt._queue.port is app.webhooks
     assert app.webhooks.urls == (URL,) and app.webhooks._token == WTOKEN
     assert app.bot._webhook_test is not None
 

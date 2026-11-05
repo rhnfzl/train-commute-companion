@@ -7,7 +7,7 @@ import asyncio
 import logging
 from collections import Counter
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Protocol
@@ -20,10 +20,8 @@ from train_commute_companion.advice import (
 from train_commute_companion.calendar import TZ, floor_to_minute, resolve_local, to_utc
 from train_commute_companion.classify import current_run, evidence, find_leg
 from train_commute_companion.delivery import (
-    JOURNEY_WARNINGS,
     deliver,
     pending_journey_warnings,
-    post_copy,
 )
 from train_commute_companion.health import (
     PollFailure,
@@ -95,11 +93,9 @@ from train_commute_companion.model import (
     Provenance,
     Severity,
     TrainId,
-    WebhookCopy,
     direction_key,
     display_name,
     okey,
-    split_direction_key,
 )
 from train_commute_companion.news import Fact, all_good, escalations, severity, unsent
 from train_commute_companion.notify import Notifier, WebhookPort
@@ -120,7 +116,6 @@ from train_commute_companion.revalidation import (
     LiveLedger,
     PollMemory,
     alert_facts,
-    covers,
 )
 from train_commute_companion.revisions import (
     effective_profile,
@@ -132,9 +127,10 @@ from train_commute_companion.revisions import (
     signature_for,
 )
 from train_commute_companion.schedule import schedules_active
+from train_commute_companion.state_writer import StateWriter
 from train_commute_companion.store import PersistedState, StorageError, Store
 from train_commute_companion.view import RuntimeView, runtime_view
-from train_commute_companion.webhook import event_id, url_id
+from train_commute_companion.webhook_queue import CopyQueue
 
 log = logging.getLogger(__name__)
 
@@ -147,10 +143,6 @@ BACKOFF_MIN = (2, 4, 8)
 # a rejected key: stays at 30 until a success, never stops (the key may be fixed on NS's side)
 BACKOFF_AUTH_MIN = (2, 5, 15, 30)
 _APP = "app"  # profile name on application warnings, which belong to no profile
-# webhooks: a copy is given up GIVE_UP after its first try (owner decision Q1); at most
-# MAX_COPIES are owed (one try a minute cannot keep up with faster alerts)
-GIVE_UP = timedelta(hours=2)
-MAX_COPIES = 200
 
 
 class Clock(Protocol):
@@ -227,100 +219,6 @@ class _LoggingNotifier:
         return ok
 
 
-def _held_id(o: Obligation) -> tuple[str | None, str, Severity]:
-    """An alert's identity across recomputations of the same change (rule 22)."""
-    return None if o.occurrence is None else okey(o.occurrence), o.event.key, o.event.severity
-
-
-def _with_obligation(
-    d: Mapping[str, Obligation], i: str, r: Obligation | None
-) -> dict[str, Obligation]:
-    return {k: v for k, v in d.items() if k != i} if r is None else {**d, i: r}
-
-
-_LEDGER = ("alert_keys", "poll_records")  # composed apart: the newest of each (rule 22)
-
-
-class _Delta:
-    """Rule 22: what a kept change (a user action, a look-ahead run) did to `old`, replayable
-    onto a later state: the occurrence fields it changed (not the ledger), the look-ahead
-    histories and ledgers, and the obligations it finished or updated. Its new obligations are
-    held apart. A newer kept change supersedes what this one did to the same occurrence or
-    look-ahead key, and a look-ahead result replays only while its route still runs."""
-
-    def __init__(self, old: PersistedState, new: PersistedState) -> None:
-        self.occs: dict[str, OccurrenceState | dict[str, Any] | None] = {}
-        for k in old.occurrences.keys() | new.occurrences.keys():
-            a, b = old.occurrences.get(k), new.occurrences.get(k)
-            if b is None:
-                self.occs[k] = None
-            elif a is None:
-                self.occs[k] = b
-            elif diff := {
-                f.name: getattr(b, f.name)
-                for f in fields(b)
-                if f.name not in _LEDGER and getattr(a, f.name) != getattr(b, f.name)
-            }:
-                self.occs[k] = diff
-        self.bases = {k: v for k, v in new.baselines.items() if old.baselines.get(k) != v}
-        self.leds = {k: v for k, v in new.lookahead.items() if old.lookahead.get(k) != v}
-        self.cfg = new.config
-        self.was = {o.id: o for o in old.obligations}
-        now = {o.id: o for o in new.obligations}
-        self.gone = self.was.keys() - now.keys()
-        self.changed = {i: o for i, o in now.items() if i in self.was and self.was[i] != o}
-
-    def supersede(self, newer: "_Delta") -> None:
-        for k in newer.occs:
-            self.occs.pop(k, None)
-        for k in newer.bases.keys() | newer.leds.keys():
-            self.bases.pop(k, None)
-            self.leds.pop(k, None)
-
-    def _runs(self, st: PersistedState, dk: str) -> bool:
-        pid = split_direction_key(dk)[0]
-        then, now = find_profile(self.cfg, pid), find_profile(st.config, pid)
-        return then is not None and now is not None and same_route(then, now)
-
-    def __call__(self, st: PersistedState) -> PersistedState:
-        out = dict(st.occurrences)
-        for k, c in self.occs.items():
-            cur = out.get(k)
-            if c is None:
-                out.pop(k, None)
-            elif isinstance(c, dict):
-                if cur is not None:
-                    out[k] = replace(cur, **c)
-            else:
-                out[k] = (
-                    c
-                    if cur is None
-                    else replace(c, alert_keys=cur.alert_keys, poll_records=cur.poll_records)
-                )
-        obls = tuple(self.changed.get(o.id, o) for o in st.obligations if o.id not in self.gone)
-        bases = {k: v for k, v in self.bases.items() if self._runs(st, k)}
-        leds = {k: v for k, v in self.leds.items() if self._runs(st, k)}
-        return replace(
-            st,
-            occurrences=out,
-            baselines={**st.baselines, **bases},
-            lookahead={**st.lookahead, **leds},
-            obligations=obls,
-        )
-
-
-def _prune(st: PersistedState) -> PersistedState:
-    """The configuration snapshots still referenced (rule 5(c) judges obligations on theirs),
-    computed on the whole write, held alerts included (rule 22)."""
-    live = {s.route_revision for s in st.occurrences.values()}
-    live |= {st.config.revision} if st.config else set()
-    live |= {o.route_revision for o in st.obligations}
-    live |= {o.route_revision for v in st.lookahead.values() for o in v.pending}
-    live |= {c.obligation.route_revision for c in st.webhook_copies}  # read by fact_holds
-    snaps = {r: c for r, c in st.config_snapshots.items() if r in live}
-    return st if snaps == st.config_snapshots else replace(st, config_snapshots=snaps)
-
-
 def _advice_told(st: PersistedState, told: Sequence[tuple[Obligation, bool]]) -> PersistedState:
     """7.6: the advice episode a finished LEAVE_NOW belongs to is delivered once sent, and
     ended silently once dropped unsent, so the same train can be advised again."""
@@ -383,16 +281,14 @@ class Runtime:
         webhooks: WebhookPort | None = None,
     ) -> None:
         self._path = profile_path
-        self._webhooks = webhooks
-        if webhooks is not None:
-            webhooks.on_reserve = self._save_rest
-        # rule 22: the one live record of owed webhook copies, written with every save and never
-        # rebuilt from `_st` (a failed write resets `_st`). `_held_copies`: copies of alerts
-        # held in memory, judged with the held view. `_copied`: obligations whose copy was made
-        # since the last delivery write landed (a failed write resets their `webhook_copied`)
-        self._copies: dict[str, WebhookCopy] = {}
-        self._held_copies: set[str] = set()
-        self._copied: set[str] = set()
+        self._queue = CopyQueue(
+            webhooks,
+            clock.now,
+            self._save_rest,
+            self._waits,
+            lambda held: self._held_ledger if held else self._ledger,
+        )
+        self._writer = StateWriter(store, self._queue, self._storage_note)
         self._lookahead_at = lookahead_at
         self._refusal: str | None = None
         self._started = False
@@ -402,28 +298,7 @@ class Runtime:
         self._notifier = _LoggingNotifier(notifier, self.events_log)
         self._clock = clock
         self.known_stations = known_stations
-        self._st = PersistedState(None, {}, {}, {}, {}, (), False)
         self._budget = RequestBudget()
-        self._store_ok = True
-        # rule 22: only a written state is applied. `_st` is the last written (or loaded) state
-        # and everything runs from it; while writes fail it only gains what unwritten changes
-        # observed and told (poll records, the delivery ledger in `_marks`), never their
-        # decisions. `_durable` is that written state as written. Pending until one write lands:
-        # `_base` the newest change, retried by the watchdog (a poll's is recomputed anyway);
-        # `_ops` the changes nothing recomputes (a user action, a look-ahead run, delivery
-        # outcomes), replayed onto whatever is written next; `_held` their new alerts, sent from
-        # memory and judged on `_shadow` (the last state a write tried); `_gone` obligations
-        # finished meanwhile; `_told` alerts sent from memory. `_notes`: `storage_failed`, which
-        # never uses the store
-        self._durable = self._st
-        self._base: PersistedState | None = None
-        self._ops: list[Callable[[PersistedState], PersistedState]] = []
-        self._marks: dict[str, Mapping[str, str]] = {}
-        self._held: dict[str, Obligation] = {}
-        self._gone: set[str] = set()
-        self._told: set[tuple[str | None, str, Severity]] = set()
-        self._shadow: PersistedState | None = None
-        self._notes: dict[str, Obligation] = {}
         self._refused_told: str | None = None
         self._mtime: int | None = None
         self._auth_outage = False
@@ -434,18 +309,15 @@ class Runtime:
         # per occurrence and train: what the last healthy poll showed of it (rule 13)
         self._seen: dict[str, dict[TrainId, WatchedLeg]] = {}
         self._sending = asyncio.Lock()
-        self._post_task: asyncio.Task[None] | None = None  # the running webhook pass
-        self._post_again = False
         self.requests = 0  # NS publishes no quota (7.1): counted and logged
         # set while start() reconciles: messages stored before it wait for the fresh poll
         self._since: datetime | None = None
-        self._ledger = LiveLedger(lambda: self._st, lambda: self._st, self._memory, clock.now)
-        self._held_ledger = LiveLedger(
-            lambda: self._st,
-            lambda: self._st if self._shadow is None else self._shadow,
-            self._memory,
-            clock.now,
-        )
+
+        def read() -> PersistedState:
+            return self._writer.st
+
+        self._ledger = LiveLedger(read, read, self._memory, clock.now)
+        self._held_ledger = LiveLedger(read, self._writer.judged, self._memory, clock.now)
         # an edit waiting for the station list retries it under the shared budget
         self._require_stations = require_stations
         self._on_stations = on_stations
@@ -459,11 +331,11 @@ class Runtime:
 
     @property
     def config(self) -> Config | None:
-        return self._st.config
+        return self._writer.st.config
 
     @property
     def state(self) -> PersistedState:
-        return self._st
+        return self._writer.st
 
     @property
     def positions(self) -> Mapping[str, tuple[float, float]]:
@@ -476,7 +348,7 @@ class Runtime:
 
     @property
     def store_ok(self) -> bool:
-        return self._store_ok
+        return self._writer.store_ok
 
     @property
     def key_rejected(self) -> bool:
@@ -490,27 +362,25 @@ class Runtime:
         return self._clock.now()
 
     def _profile_for(self, s: OccurrenceState) -> Profile | None:
-        return profile_for(self._st, s)
+        return profile_for(self._writer.st, s)
 
     def _ctx(self, s: OccurrenceState, now: datetime) -> Ctx | None:
-        return occurrence_ctx(self._st, s, now)
+        return occurrence_ctx(self._writer.st, s, now)
 
     def view(self) -> RuntimeView:
         """A frozen snapshot for shells (5.4): nothing in it changes as the runtime goes on. It
         shows the written state (rule 22); an unsent alert counts whether written or not."""
-        live = [o for o in self._st.obligations if o.id not in self._gone]
-        mem = (*self._held.values(), *self._notes.values())
         now = self._clock.now()
         return runtime_view(
-            self._st,
+            self._writer.st,
             self._memory.boards,
             now,
             lambda s: self._ctx(s, now),
             started=self._started,
             refusal=self._refusal,
-            store_ok=self._store_ok,
+            store_ok=self._writer.store_ok,
             key_rejected=self._auth_outage,
-            undelivered=sum(o.attempts > 0 for o in (*live, *mem)),
+            undelivered=self._writer.undelivered(),
             requests=self.requests,
             location_epochs=self._loc_epoch,
         )
@@ -523,7 +393,7 @@ class Runtime:
         if s is not None:
             revision = s.route_revision
         else:
-            revision = self._st.config.revision if self._st.config else 0
+            revision = self._writer.st.config.revision if self._writer.st.config else 0
         # one poll shares `now` and the key names neither profile nor direction (7.12 rule 6)
         d = e.direction.value if e.direction else ""
         return Obligation(
@@ -556,7 +426,7 @@ class Runtime:
 
     def _app_warning(self, kind: EventKind, body: str, now: datetime, tag: str = "") -> None:
         o = self._app_obligation(kind, body, now, tag)
-        self._st = replace(self._st, obligations=(*self._st.obligations, o))
+        self._writer.st = replace(self._writer.st, obligations=(*self._writer.st.obligations, o))
 
     def _record(
         self, s: OccurrenceState, events: Sequence[AlertEvent], now: datetime, polled: bool
@@ -592,7 +462,7 @@ class Runtime:
         if not out:
             return (s if keys == s.alert_keys else replace(s, alert_keys=keys)), []
         twins = [
-            x for x in self._st.occurrences.values()
+            x for x in self._writer.st.occurrences.values()
             if x.key != s.key and x.key.profile_id == s.key.profile_id
             and x.key.direction is s.key.direction and not is_resolved(x)
         ]  # fmt: skip
@@ -613,27 +483,27 @@ class Runtime:
         stage: bool = True,
     ) -> None:
         now = self._clock.now()
-        occs = dict(self._st.occurrences)
-        obligations = list(self._st.obligations)
+        occs = dict(self._writer.st.occurrences)
+        obligations = list(self._writer.st.obligations)
         for k, (s, events) in changes.items():
             occs[k] = s  # twins see the occurrences written so far
-            self._st = replace(self._st, occurrences=occs)
+            self._writer.st = replace(self._writer.st, occurrences=occs)
             s, new = self._record(s, events, now, polled)
             occs[k] = s
             obligations += new
-        self._st = replace(self._st, occurrences=occs, obligations=tuple(obligations))
+        self._writer.st = replace(self._writer.st, occurrences=occs, obligations=tuple(obligations))
         self._archive(now)
-        self._save(keep, stage)
+        self._writer.save(keep, stage)
 
     def _archive(self, now: datetime) -> None:
         """Rule 6: an occurrence leaves the store once it ended and its pending journey warnings
         were delivered; it stays until its window closed so it is not created again."""
         occs = {}
-        for k, s in self._st.occurrences.items():
+        for k, s in self._writer.st.occurrences.items():
             ctx = self._ctx(s, now)
             closed = ctx is None or to_utc(now) >= to_utc(ctx.schedule.window_end)
             if closed and may_archive(
-                s, now, pending_journey_warnings(self._st.obligations, s.key)
+                s, now, pending_journey_warnings(self._writer.st.obligations, s.key)
             ):
                 self._seen.pop(k, None)
                 self._before.pop(k, None)
@@ -642,177 +512,8 @@ class Runtime:
                 self._memory.offline.discard(k)
                 continue
             occs[k] = s
-        self._st = replace(self._st, occurrences=occs)  # snapshots are pruned on write
-
-    def _save(
-        self,
-        keep: bool = False,
-        stage: bool = True,
-        cand: PersistedState | None = None,
-        op: Callable[[PersistedState], PersistedState] | None = None,
-    ) -> bool:
-        """Rule 22: writes the changed state (`cand`, else `_st`) as one, with every change
-        still waiting; only once written is it applied. A failed write leaves the last written
-        state running and keeps the change: as the newest to retry (`stage`), and when nothing
-        recomputes it (`keep`, or its own `op`) to replay onto whatever is written next. Its new
-        alerts go from memory. A first configuration runs anyway: nothing else could."""
-        cand = self._st if cand is None else cand
-        # only what this change did: restaging carries other waiting changes it must not replace
-        mine = _Delta(self._durable, cand) if op is None and keep else None
-        if self._base is not None and cand is not self._base:
-            cand = self._restage(self._durable, cand)  # what waits on other occurrences too
-        if mine is not None:
-            op = mine
-            for x in self._ops:  # a newer action supersedes an older one (rule 22)
-                if isinstance(x, _Delta):
-                    x.supersede(mine)
-        try:
-            composed = self._compose(cand)
-            port = self._webhooks
-            down = {} if port is None else {url_id(u): t for u, t in port.down.items()}
-            write = _prune(
-                replace(composed, webhook_copies=tuple(self._copies.values()), webhook_down=down)
-            )
-            self._store.save(write)
-        except StorageError as e:
-            self._pend(cand, stage, op)
-            if self._store_ok:  # one loud storage_failed per outage, held in memory only
-                self._store_ok = False
-                log.error("store write failed: %s", e)
-                o = self._app_obligation(
-                    EventKind.STORAGE_FAILED,
-                    "could not save state, alerts may repeat or be lost.",
-                    self._clock.now(),
-                    "",
-                )
-                self._notes[o.id] = o
-            return False
-        self._st = self._durable = write
-        self._base, self._ops, self._marks, self._shadow = None, [], {}, None
-        self._held, self._gone, self._told = {}, set(), set()
-        self._store_ok = True
-        return True
-
-    def _compose(self, cand: PersistedState) -> PersistedState:
-        """`cand` with every change still waiting (rule 22): the kept changes replayed, the
-        newest poll records and delivery ledger, held alerts in and finished ones out."""
-        if self._shadow is None and not self._held and not self._gone:
-            return cand
-        st = cand
-        for op in self._ops:
-            st = op(st)
-        occs = {}
-        for k, s in st.occurrences.items():
-            # the running state holds the newest of both; an occurrence it lacks, the marks
-            cur = self._st.occurrences.get(k)
-            occs[k] = (
-                replace(s, alert_keys=self._marks.get(k, s.alert_keys))
-                if cur is None
-                else replace(s, alert_keys=cur.alert_keys, poll_records=cur.poll_records)
-            )
-        known = {o.id for o in self._durable.obligations}
-        taken = {_held_id(o) for o in self._held.values()} | self._told
-        # a held alert whose copy was made is written with its mark (rule 22)
-        held = {
-            k: replace(o, webhook_copied=True) if k in self._copied else o
-            for k, o in self._held.items()
-        }
-        obls = [
-            held.get(o.id, o)
-            for o in st.obligations
-            if o.id not in self._gone
-            and (o.id in known or o.id in held or _held_id(o) not in taken)
-        ]
-        ids = {o.id for o in obls}
-        obls += [o for o in held.values() if o.id not in ids]
-        ledgers = {
-            k: replace(
-                v,
-                pending=tuple(held.get(o.id, o) for o in v.pending if o.id not in self._gone),
-            )
-            for k, v in st.lookahead.items()
-        }
-        return replace(st, occurrences=occs, obligations=tuple(obls), lookahead=ledgers)
-
-    def _pend(
-        self,
-        cand: PersistedState,
-        stage: bool,
-        op: Callable[[PersistedState], PersistedState] | None,
-    ) -> None:
-        """A failed write (rule 22): the change waits, the last written state runs on with
-        what the change observed and told (poll records, delivery ledger), its new alerts are
-        held to go from memory."""
-        base = self._durable
-        if op is not None:
-            self._ops.append(op)
-        if stage or self._base is None:
-            self._base = self._restage(base, cand)
-        known = {o.id for o in base.obligations}
-        taken = {_held_id(o) for o in self._held.values()} | self._told
-        for o in cand.obligations:
-            if o.id in known or o.id in self._held or o.id in self._gone or _held_id(o) in taken:
-                continue  # a recomputed alert already held or sent from memory is not again
-            self._held[o.id] = o
-            taken.add(_held_id(o))
-        for k, x in self._st.occurrences.items():  # the newest ledger, computed on the marks
-            was = base.occurrences.get(k)
-            if k in self._marks or was is None or was.alert_keys != x.alert_keys:
-                self._marks[k] = x.alert_keys
-        if base.config is None and cand.config is not None:
-            base = replace(base, config=cand.config, config_snapshots=cand.config_snapshots)
-            self._durable = base
-        occs = {}
-        for k, x in base.occurrences.items():
-            cur = self._st.occurrences.get(k)
-            occs[k] = replace(
-                x,
-                alert_keys=self._marks.get(k, x.alert_keys),
-                poll_records=x.poll_records if cur is None else cur.poll_records,
-            )
-        self._st = replace(base, occurrences=occs)
-        # a journey fact told from memory that a healthy poll ended leaves the ledger: its
-        # recurrence is news again (7.5), as it is with a working store
-        self._told = {
-            t
-            for t in self._told
-            if t[0] is None
-            or (s := self._st.occurrences.get(t[0])) is not None
-            and SENT_PREFIX + t[1] in s.alert_keys
-        }
-        self._shadow = self._compose(self._base)
-
-    def _restage(self, base: PersistedState, cand: PersistedState) -> PersistedState:
-        """The newest change to retry: `cand`, keeping every occurrence an earlier waiting
-        change made that `cand` left as written (a poll of another occurrence, a no-op)."""
-        old = self._base
-        if old is None:
-            return cand
-
-        def bare(x: OccurrenceState) -> OccurrenceState:
-            return replace(x, alert_keys={}, poll_records=())
-
-        def revs(x: OccurrenceState | None) -> tuple[int, int] | None:
-            return None if x is None else (x.route_revision, x.settings_revision)
-
-        # a waiting configuration `cand` left as written is not carried (the file watch tries
-        # it again, 5.2), and neither is what it did to an occurrence: never revisions alone
-        stale = old.config != base.config and cand.config == base.config
-        occs = {}
-        for k in old.occurrences.keys() | cand.occurrences.keys():
-            c, o, w = cand.occurrences.get(k), old.occurrences.get(k), base.occurrences.get(k)
-            if c is None and w is not None:
-                continue  # ended by `cand`
-            if stale and w is not None and revs(o) != revs(w):
-                if c is not None:
-                    occs[k] = c  # computed on the written configuration
-            elif c is not None and (
-                w is None and o is None or w is not None and bare(c) != bare(w)
-            ):
-                occs[k] = c
-            elif o is not None:
-                occs[k] = o
-        return replace(cand, occurrences=occs)
+        # snapshots are pruned on write
+        self._writer.st = replace(self._writer.st, occurrences=occs)
 
     async def _deliver(self) -> None:
         """Every pending obligation, revalidated right before sending (rule 5). Merges by id,
@@ -822,32 +523,15 @@ class Runtime:
         phone send or the loop that delivers (an alert's advice can expire)."""
         async with self._sending:
             await self._deliver_pass()
-        self._post_soon()
+        self._queue.soon()
 
-    def _post_soon(self) -> None:
-        """A webhook pass now, or one more round of the running one (copies made meanwhile)."""
-        if self._webhooks is None:
-            return
-        if self._post_task is not None and not self._post_task.done():
-            self._post_again = True
-            return
-        self._post_task = asyncio.get_running_loop().create_task(self._post_passes())
-
-    async def _post_passes(self) -> None:
-        port = self._webhooks
-        assert port is not None
-        again = True
-        while again:
-            self._post_again = False
-            before = dict(self._copies)
-            try:
-                await self._post_copies(port, self._ledger, self._held_ledger)
-            except Exception:  # a broken pass must not stop the next one
-                log.exception("webhook pass failed")
-            finally:  # a copy that ended or was tried is recorded, also when shutdown cancels
-                if self._copies != before:
-                    self._record_delivery(set(), {}, (), True)
-            again = self._post_again
+    def _storage_note(self) -> Obligation:
+        return self._app_obligation(
+            EventKind.STORAGE_FAILED,
+            "could not save state, alerts may repeat or be lost.",
+            self._clock.now(),
+            "",
+        )
 
     def _save_rest(self) -> None:
         """Writes the webhook rests now, synchronously, before a try's request leaves (rule 22:
@@ -856,13 +540,7 @@ class Runtime:
 
     async def webhooks_idle(self) -> None:
         """Waits until no webhook pass runs (a clean shutdown, tests)."""
-        while (t := self._post_task) is not None and not t.done():
-            await asyncio.wait({t})
-
-    async def _stop_posting(self) -> None:
-        if (t := self._post_task) is not None and not t.done():
-            t.cancel()
-            await asyncio.wait({t})
+        await self._queue.idle()
 
     def _waits(self, o: Obligation) -> bool:
         """Not judged yet: written before this start (judged once the reconcile ran, rule 11),
@@ -871,135 +549,43 @@ class Runtime:
             return True
         k = None if o.occurrence is None else okey(o.occurrence)
         return (
-            o.event.kind in OBSERVED and k in self._st.occurrences and k not in self._memory.boards
+            o.event.kind in OBSERVED
+            and k in self._writer.st.occurrences
+            and k not in self._memory.boards
         )
-
-    def _drop_copy(self, cid: str) -> None:
-        self._copies.pop(cid, None)
-        self._held_copies.discard(cid)
-
-    def _stage_webhook_copy(self, o: Obligation) -> bool:
-        """The webhook copy of an obligation handed to the phone; True when one was made."""
-        self._copied.add(o.id)
-        cid = event_id(o.id)
-        if cid in self._copies:
-            return False
-        # rule 5(b): the copies this message covers end now, so a receiver that comes back never
-        # gets them after it, also once its own copy was accepted or a restart came between
-        for c in [c for c in self._copies.values() if covers(o, c.obligation)]:
-            self._drop_copy(c.id)
-        if len(self._copies) >= MAX_COPIES:  # overload: a never-tried copy goes first (Q1)
-            pool = [c for c in self._copies.values() if c.first_try is None]
-            old = min(
-                pool or self._copies.values(), key=lambda c: to_utc(c.obligation.event.created_at)
-            )
-            self._drop_copy(old.id)
-            log.warning("dropped a webhook copy: more than %d owed", MAX_COPIES)
-        self._copies[cid] = WebhookCopy(cid, o)
-        if o.id in self._held:
-            self._held_copies.add(cid)
-        return True
-
-    def _merge_copy(self, port: WebhookPort, c: WebhookCopy, r: WebhookCopy | None) -> None:
-        """A copy's try result, merged into what is there now: `act`, a poll or the look-ahead
-        run can change the copies while the POST awaits."""
-        cur = self._copies.get(c.id)
-        if cur is None:
-            return  # skipped or given up meanwhile: never restored
-        if cur is c:
-            if r is None:
-                self._drop_copy(c.id)
-            elif r is not c:
-                self._copies[c.id] = r
-            return
-        if r is None:  # every URL `c` still owed took the text sent at the try
-            self._drop_copy(c.id)
-            return
-        tries = [t for t in (cur.last_try, r.last_try) if t is not None]
-        merged = replace(
-            cur,
-            done=cur.done + tuple(u for u in r.done if u not in cur.done),
-            first_try=cur.first_try or r.first_try,
-            last_try=max(tries, key=to_utc, default=None),
-        )
-        if all(url_id(u) in merged.done for u in port.urls):
-            self._drop_copy(c.id)
-        else:
-            self._copies[c.id] = merged
 
     async def _deliver_pass(self) -> None:
         finished: set[str] = set()
         kept: dict[str, Obligation] = {}
         told: list[tuple[Obligation, bool]] = []  # finished LEAVE_NOW, sent (else dropped)
-        port = self._webhooks
+        w, port = self._writer, self._queue.port
         copies = False  # the webhook copies changed
         try:
-            for o in (*self._st.obligations, *self._held.values(), *self._notes.values()):
-                if o.id in self._gone:
+            for o in (*w.st.obligations, *w.held.values(), *w.notes.values()):
+                if o.id in w.gone:
                     continue  # finished while the store was down (rule 22)
-                mem = o.id in self._held or o.id in self._notes
-                if not mem and all(x.id != o.id for x in self._st.obligations):
+                mem = o.id in w.held or o.id in w.notes
+                if not mem and all(x.id != o.id for x in w.st.obligations):
                     continue  # removed by a change written while an earlier send awaited
                 if self._waits(o):
                     continue
-                if port is not None and not o.webhook_copied and o.id not in self._copied:
-                    copies |= self._stage_webhook_copy(o)
+                if port is not None and not o.webhook_copied and o.id not in self._queue.copied:
+                    copies |= self._queue.stage(o, o.id in w.held)
                 # a fresh clock per message: a slow send must not leave the next one judged early
-                v = self._held_ledger if o.id in self._held else self._ledger
+                v = self._held_ledger if o.id in w.held else self._ledger
                 r, sent = await deliver(o, v, self._notifier, self._clock.now())
                 if r is not None and port is not None and not r.webhook_copied:
                     r = replace(r, webhook_copied=True)
                 if r is None and o.event.kind is EventKind.LEAVE_NOW:
                     told.append((o, sent))
-                # where it is now: a write landing during the send may have written a held one
-                if o.id in self._notes:
-                    self._notes = _with_obligation(self._notes, o.id, r)
-                elif o.id in self._held:
-                    self._held = _with_obligation(self._held, o.id, r)
-                    if r is None:
-                        self._gone.add(o.id)
-                        if sent:
-                            self._told.add(_held_id(o))
-                elif r is None:
+                if w.settle(o, r, sent):
+                    continue
+                if r is None:
                     finished.add(o.id)
                 elif r != o:
                     kept[o.id] = r
         finally:  # each acknowledged send is recorded, also when shutdown cancels the pass
             self._record_delivery(finished, kept, told, copies)
-
-    async def _post_copies(
-        self, port: WebhookPort, ledger: LiveLedger, held_ledger: LiveLedger
-    ) -> None:
-        """After the phone sends: each owed copy once. Never tried first, oldest first, then
-        least recently tried first, so a failing URL's one try per rest goes to every copy in
-        turn. The give-up check comes before every wait (owner decision Q1)."""
-        for c in sorted(
-            self._copies.values(),
-            key=lambda c: (
-                c.first_try is not None,
-                to_utc(c.last_try or c.obligation.event.created_at),
-                to_utc(c.obligation.event.created_at),
-            ),
-        ):
-            if self._copies.get(c.id) is not c:
-                continue  # removed or replaced since
-            now = self._clock.now()
-            if c.first_try is not None and to_utc(now) - to_utc(c.first_try) >= GIVE_UP:
-                self._drop_copy(c.id)
-                log.warning("gave up a webhook copy after 2 h")
-                continue
-            if self._waits(c.obligation):
-                continue
-            v = held_ledger if c.id in self._held_copies else ledger
-            cur = c
-
-            def started(x: WebhookCopy) -> None:  # the first try is written before it goes out
-                nonlocal cur
-                cur = self._copies[x.id] = x
-                self._record_delivery(set(), {}, (), True)
-
-            r = await post_copy(c, v, port, now, started)
-            self._merge_copy(port, cur, r)
 
     def _record_delivery(
         self,
@@ -1011,7 +597,7 @@ class Runtime:
         if not finished and not kept and not told and not copies:
             return
 
-        marks = set(self._copied)  # written too: a phone send in flight is not in `kept` yet
+        marks = set(self._queue.copied)  # written too: a phone send in flight is not in `kept` yet
 
         def outcome(st: PersistedState) -> PersistedState:
             def survive(xs: Iterable[Obligation]) -> tuple[Obligation, ...]:
@@ -1025,12 +611,13 @@ class Runtime:
             st = _advice_told(st, told)
             return replace(st, obligations=survive(st.obligations), lookahead=ledgers)
 
-        self._st = outcome(self._st)
+        self._writer.st = outcome(self._writer.st)
         self._archive(self._clock.now())
-        self._gone |= finished
-        mem = set(self._held) | set(self._notes)  # read before a landed write empties `_held`
-        if self._save(stage=False, op=outcome):
-            self._copied = {i for i in self._copied if i in mem}
+        w = self._writer
+        w.gone |= finished
+        mem = set(w.held) | set(w.notes)  # read before a landed write empties `held`
+        if w.save(stage=False, op=outcome):
+            self._queue.copied = {i for i in self._queue.copied if i in mem}
 
     # --- provider access under the shared budget ---
 
@@ -1120,20 +707,22 @@ class Runtime:
     # --- polling ---
 
     def _create_occurrences(self, now: datetime) -> None:
-        cfg = self._st.config
+        cfg = self._writer.st.config
         if cfg is None:
             return
 
         def first(p: Profile, d: Direction, commute_day: date) -> time | None:
             # each occurrence's window from the baseline in force on its own service date
-            sig = signature_for(self._st, p, d, service_date(p, d, commute_day))
+            sig = signature_for(self._writer.st, p, d, service_date(p, d, commute_day))
             return sig.legs[0].departure if sig is not None else None
 
-        occs = dict(self._st.occurrences)
+        occs = dict(self._writer.st.occurrences)
         for sch in schedules_active(cfg, {}, now, first):
             k = okey(sch.key)
             if k not in occs:
-                hist = self._st.baselines.get(direction_key(sch.key.profile_id, sch.key.direction))
+                hist = self._writer.st.baselines.get(
+                    direction_key(sch.key.profile_id, sch.key.direction)
+                )
                 v = hist.in_force(sch.key.service_date) if hist else None
                 fresh = _fresh_state(sch.key, cfg.revision, v.version if v else None)
                 own = v.signature if v else None
@@ -1141,18 +730,18 @@ class Runtime:
                     fresh,
                     baseline_signature=own,
                     baseline_frozen=True,
-                    alert_keys=self._marks.get(k, {}),  # told while the store was down (r22)
+                    alert_keys=self._writer.marks.get(k, {}),  # told while the store was down (r22)
                 )
-        self._st = replace(self._st, occurrences=occs)
+        self._writer.st = replace(self._writer.st, occurrences=occs)
 
     async def poll_once(self) -> None:
         self._create_occurrences(self._clock.now())
-        for k in sorted(self._st.occurrences):
+        for k in sorted(self._writer.st.occurrences):
             await self._poll_occurrence(k)
         await self._deliver()
 
     async def _poll_occurrence(self, k: str) -> None:
-        s = self._st.occurrences.get(k)
+        s = self._writer.st.occurrences.get(k)
         now = self._clock.now()
         ctx = None if s is None else self._ctx(s, now)
         if s is None or ctx is None or is_resolved(s):
@@ -1173,7 +762,7 @@ class Runtime:
             extra = None if q is None else await self._fetch(q, True, end, deadline)
             got = got if extra is None or isinstance(extra, str) else (*got, extra)
         now = self._clock.now()
-        s = self._st.occurrences.get(k)
+        s = self._writer.st.occurrences.get(k)
         ctx = None if s is None else self._ctx(s, now)
         if s is None or ctx is None:
             return
@@ -1361,10 +950,9 @@ class Runtime:
 
     async def watchdog_once(self) -> None:
         now = self._clock.now()
-        if self._shadow is not None:  # the waiting changes, written again (rule 22)
-            self._save(stage=False, cand=self._base)
+        self._writer.retry()  # the waiting changes, written again (rule 22)
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
-        for k, s in self._st.occurrences.items():
+        for k, s in self._writer.st.occurrences.items():
             ctx = self._ctx(s, now)
             if ctx is None or s.not_travelling:
                 continue
@@ -1374,12 +962,12 @@ class Runtime:
                 events += self._health_events(k, t.state, ctx, now)
             if t.state != s or events:
                 changes[k] = (t.state, events)
-        before = self._st.occurrences
+        before = self._writer.st.occurrences
         self._archive(now)  # a window closing is itself no change
         if changes:
             self._apply(changes, stage=False)
-        elif self._st.occurrences != before:
-            self._save(stage=False)
+        elif self._writer.st.occurrences != before:
+            self._writer.save(stage=False)
         await self._deliver()
 
     # --- user actions and location ---
@@ -1395,7 +983,7 @@ class Runtime:
         now = self._clock.now()
         self._create_occurrences(now)
         mine = [
-            s for s in self._st.occurrences.values()
+            s for s in self._writer.st.occurrences.values()
             if s.key.profile_id == profile_id and direction in (None, s.key.direction)
         ]  # fmt: skip
         target = target_occurrence(mine, action)
@@ -1406,15 +994,15 @@ class Runtime:
         if isinstance(action, NotTravelling) and action.whole_day:
             keys = list(whole_day_keys(p, target.key))  # its own route revision's day_offset
         if isinstance(action, NotTravelling):  # written with the skip: an archived occurrence
-            for c in list(self._copies.values()):  # would no longer read as skipped
-                if c.obligation.event.kind in JOURNEY_WARNINGS and c.obligation.occurrence in keys:
-                    self._drop_copy(c.id)
-        cfg = self._st.config
+            self._queue.drop_warnings(keys)  # would no longer read as skipped
+        cfg = self._writer.st.config
         revision = cfg.revision if cfg else target.route_revision
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
         for key in keys:
             k = okey(key)
-            s = self._st.occurrences.get(k) or frozen(self._st, _fresh_state(key, revision, None))
+            s = self._writer.st.occurrences.get(k) or frozen(
+                self._writer.st, _fresh_state(key, revision, None)
+            )
             ctx = self._ctx(s, now)
             if ctx is not None:
                 t = apply_action(s, ctx, action)
@@ -1431,9 +1019,11 @@ class Runtime:
 
     def _shown_name(self, profile_id: str) -> str:
         """The name `view` shows for the profile: a removed one keeps its newest occurrence's."""
-        p = find_profile(self._st.config, profile_id)
+        p = find_profile(self._writer.st.config, profile_id)
         if p is None:
-            mine = [s for s in self._st.occurrences.values() if s.key.profile_id == profile_id]
+            mine = [
+                s for s in self._writer.st.occurrences.values() if s.key.profile_id == profile_id
+            ]
             newest = max(mine, key=lambda s: s.key.service_date, default=None)
             p = None if newest is None else self._profile_for(newest)
         return profile_id if p is None else p.name
@@ -1453,14 +1043,14 @@ class Runtime:
         self._create_occurrences(now)
         cands = sorted(
             (
-                s for s in self._st.occurrences.values()
+                s for s in self._writer.st.occurrences.values()
                 if s.key.profile_id == profile_id and not is_resolved(s)
                 and service_date in (None, s.key.service_date)
                 and direction in (None, s.key.direction)
             ),
             key=lambda s: s.key.service_date,
         )  # fmt: skip
-        named = find_profile(self._st.config, profile_id) or next(
+        named = find_profile(self._writer.st.config, profile_id) or next(
             (p for s in cands if (p := self._profile_for(s)) is not None), None
         )
         gone = no_journey_text(display_name(named.name if named else profile_id))
@@ -1561,14 +1151,14 @@ class Runtime:
         far = datetime.max.replace(tzinfo=UTC)
         ranked = sorted(found, key=lambda c: to_utc(c.legs[-1].alight.planned_arrival or far))
         # rule 21: a reload during the request may have removed or archived the occurrence
-        now_occ = self._st.occurrences.get(k)
+        now_occ = self._writer.st.occurrences.get(k)
         if now_occ is None or is_resolved(now_occ):
             return gone
         if (now_occ.generation, now_occ.route_revision, now_occ.baseline_version) != mark:
             return "your journey changed while NS answered; try again"
         d = occ.key.direction
         mine = [
-            s for s in self._st.occurrences.values()
+            s for s in self._writer.st.occurrences.values()
             if s.key.profile_id == profile_id and s.key.direction is d
         ]  # fmt: skip
 
@@ -1605,9 +1195,9 @@ class Runtime:
                 return True
             return source is not None and ctx.profile.location != source
 
-        mine = [k for k, s in self._st.occurrences.items() if s.key.profile_id == profile_id]
+        mine = [k for k, s in self._writer.st.occurrences.items() if s.key.profile_id == profile_id]
         for k in mine:
-            s = self._st.occurrences.get(k)
+            s = self._writer.st.occurrences.get(k)
             now = self._clock.now()
             ctx = None if s is None else self._ctx(s, now)
             if s is None or ctx is None or is_resolved(s) or stale(ctx):
@@ -1620,7 +1210,7 @@ class Runtime:
             self._auth(got if isinstance(got, str) else None, k, now)
             # re-read after the request: an occurrence skipped, archived or edited meanwhile is
             # never written back from the old copy (rule 21)
-            s = self._st.occurrences.get(k)
+            s = self._writer.st.occurrences.get(k)
             ctx = None if s is None else self._ctx(s, now)
             if s is None or ctx is None or is_resolved(s) or stale(ctx):
                 continue
@@ -1636,7 +1226,7 @@ class Runtime:
     def _refuse(self, errors: Sequence[ProfileProblem] | str, now: datetime) -> None:
         reason = errors if isinstance(errors, str) else _reasons(errors)
         self._refusal = reason
-        if not self._store_ok and reason == self._refused_told:
+        if not self._writer.store_ok and reason == self._refused_told:
             return  # the same file retried while its write fails (rule 22): told once
         self._refused_told = reason
         self._app_warning(EventKind.PROFILE_REFUSED, f"profile change refused: {reason}.", now)
@@ -1651,7 +1241,7 @@ class Runtime:
         except (OSError, UnicodeDecodeError) as e:
             self._refuse(f"cannot read {self._path.name} ({e})", now)
         else:
-            old, today = self._st.config, now.astimezone(TZ).date()
+            old, today = self._writer.st.config, now.astimezone(TZ).date()
             if self._require_stations and self.known_stations is None:
                 await self._fetch_stations()
             cfg, errors = load_config(text, self.known_stations, old, today)
@@ -1677,7 +1267,7 @@ class Runtime:
                     self._apply_config(cfg, now)
                     applied = cfg
         self._apply({})
-        if applied is not None and self._shadow is not None:
+        if applied is not None and self._writer.waiting:
             self._mtime = None  # not written, so not active: the file watch tries again (r22)
         await self._deliver()
 
@@ -1698,16 +1288,17 @@ class Runtime:
                 self._on_stations(got)
 
     def _apply_config(self, new: Config, now: datetime) -> None:
-        old, today = self._st.config, now.astimezone(TZ).date()
+        old, today = self._writer.st.config, now.astimezone(TZ).date()
         was = {p.id: p.location for p in (old.profiles if old else ())}
         now_loc = {p.id: p.location for p in new.profiles}
         for pid in was.keys() | now_loc.keys():
             if was.get(pid) != now_loc.get(pid):
                 self._loc_epoch[pid] = self._loc_epoch.get(pid, 0) + 1
-        snaps = {**self._st.config_snapshots, new.revision: new}
+        snaps = {**self._writer.st.config_snapshots, new.revision: new}
         occs = {}
-        for k, s in self._st.occurrences.items():
-            s = frozen(self._st, s)  # its schedule, read before the history is re-seeded below
+        for k, s in self._writer.st.occurrences.items():
+            # its schedule, read before the history is re-seeded below
+            s = frozen(self._writer.st, s)
             route = find_profile(snaps.get(s.route_revision) or old, s.key.profile_id)
             p = find_profile(new, s.key.profile_id)
             if route is not None and p is not None and same_route(route, p):
@@ -1720,7 +1311,7 @@ class Runtime:
             if effective_profile(snaps, new, moved) != self._profile_for(s):
                 moved = replace(moved, generation=s.generation + 1)  # in-flight results are stale
             occs[k] = moved
-        baselines, ledgers = dict(self._st.baselines), dict(self._st.lookahead)
+        baselines, ledgers = dict(self._writer.st.baselines), dict(self._writer.st.lookahead)
         for p in new.profiles:
             q = find_profile(old, p.id)
             # removed and added again: its old history goes, so it starts from the file like a
@@ -1739,8 +1330,8 @@ class Runtime:
                     if not same_route(q, p):  # rule 5(c) drops its pending messages
                         ledgers[dk] = forget_pending(ledgers[dk])
                 baselines[dk] = rebase_on_edit(q, p, d, hist, today)
-        self._st = replace(
-            self._st, config=new, config_snapshots=snaps, occurrences=occs,
+        self._writer.st = replace(
+            self._writer.st, config=new, config_snapshots=snaps, occurrences=occs,
             baselines=baselines, lookahead=ledgers,
         )  # fmt: skip
 
@@ -1762,7 +1353,7 @@ class Runtime:
     # --- look-ahead (7.10, rule 21) ---
 
     async def lookahead_once(self) -> None:
-        cfg = self._st.config
+        cfg = self._writer.st.config
         if cfg is None:
             return
         works = await self._fetch_works()
@@ -1771,16 +1362,16 @@ class Runtime:
         for pid, d in [(p.id, d) for p in cfg.profiles for d in Direction]:
             # the profile as configured now: one held across an earlier direction's requests
             # could be stamped with a newer revision than its own (rule 21)
-            p = find_profile(self._st.config, pid)
+            p = find_profile(self._writer.st.config, pid)
             if p is not None:
                 await self._lookahead_direction(p, d, works)
         await self._deliver()
 
     def _lookahead_done(self, since: datetime) -> bool:
         """Every configured direction has a look-ahead run written since `since`."""
-        cfg = self._st.config
+        cfg = self._writer.st.config
         leds = [
-            self._st.lookahead.get(direction_key(p.id, d))
+            self._writer.st.lookahead.get(direction_key(p.id, d))
             for p in (cfg.profiles if cfg else ())
             for d in Direction
         ]
@@ -1833,13 +1424,15 @@ class Runtime:
         dk = direction_key(p.id, d)
         start = self._clock.now()
         today = start.astimezone(TZ).date()
-        cfg = self._st.config
+        cfg = self._writer.st.config
         assert cfg is not None
         started_revision = cfg.revision
-        hist = self._st.baselines.get(dk, BaselineHistory())
+        hist = self._writer.st.baselines.get(dk, BaselineHistory())
         started_baseline = hist.latest
         bases = {
-            x: self._st.baselines.get(direction_key(p.id, x), BaselineHistory()).in_force(today)
+            x: self._writer.st.baselines.get(direction_key(p.id, x), BaselineHistory()).in_force(
+                today
+            )
             for x in Direction
         }
         results: list[ProbeResult] = []
@@ -1852,17 +1445,17 @@ class Runtime:
             self._auth(None, "lookahead", start)
             results += evaluate(p, d, day, got, works, base)
         # write time: the ledger as stored now with this run's start stamps (rule 21)
-        cfg = self._st.config
+        cfg = self._writer.st.config
         if cfg is None:
             return
-        stored = self._st.lookahead.get(dk) or LookAheadLedger({}, (), None, 0, None)
+        stored = self._writer.st.lookahead.get(dk) or LookAheadLedger({}, (), None, 0, None)
         ledger = replace(
             stored, started_revision=started_revision, started_baseline=started_baseline
         )
-        current = self._st.baselines.get(dk, BaselineHistory())
+        current = self._writer.st.baselines.get(dk, BaselineHistory())
         others = [x for x in cfg.profiles if x.id != p.id]
         all_bases = {
-            (x.id, y): self._st.baselines.get(direction_key(x.id, y), BaselineHistory())
+            (x.id, y): self._writer.st.baselines.get(direction_key(x.id, y), BaselineHistory())
             for x in cfg.profiles
             for y in Direction
             if (x.id, y) != (p.id, d)
@@ -1886,16 +1479,16 @@ class Runtime:
         new_ledger = self._copies_through(p, d, stored, current, new_hist, new_ledger)
         mine = {o.id for o in stored.pending}
         obligations = (
-            *(o for o in self._st.obligations if o.id not in mine),
+            *(o for o in self._writer.st.obligations if o.id not in mine),
             *new_ledger.pending,
         )
-        self._st = replace(
-            self._st,
-            baselines={**self._st.baselines, dk: new_hist},
-            lookahead={**self._st.lookahead, dk: new_ledger},
+        self._writer.st = replace(
+            self._writer.st,
+            baselines={**self._writer.st.baselines, dk: new_hist},
+            lookahead={**self._writer.st.lookahead, dk: new_ledger},
             obligations=tuple(obligations),
         )
-        self._save(keep=True, stage=False)
+        self._writer.save(keep=True, stage=False)
 
     def _copies_through(
         self,
@@ -1917,16 +1510,16 @@ class Runtime:
             if old not in was or new not in pending:
                 continue
             n = replace(pending[new], webhook_copied=True)
-            c = next((c for c in self._copies.values() if c.obligation.id == old), None)
+            c = next((c for c in self._queue.copies.values() if c.obligation.id == old), None)
             if c is not None:  # the same copy: its webhook-id, receipts and tries stay
-                self._copies[c.id] = replace(c, obligation=n)
-                self._held_copies.add(c.id)
+                self._queue.copies[c.id] = replace(c, obligation=n)
+                self._queue.held.add(c.id)
                 pending[new] = n
-            elif was[old].webhook_copied or old in self._copied:  # it ended: no second one
+            elif was[old].webhook_copied or old in self._queue.copied:  # it ended: no second one
                 pending[new] = n
         rewritten: dict[str, tuple[LookAheadFact, ...]] = {}
         gone = {v.version for v in current.versions} - {v.version for v in new_hist.versions}
-        for c in list(self._copies.values()):
+        for c in list(self._queue.copies.values()):
             o = c.obligation
             if o.look_ahead is None or o.look_ahead[:2] != (p.id, d) or o.id in was:
                 continue
@@ -1945,10 +1538,10 @@ class Runtime:
                 fact_key=bundle_key(rest),
                 event=replace(o.event, kind=kind, text=text),
             )
-            self._copies[c.id] = replace(c, obligation=o)
-            self._held_copies.add(c.id)
+            self._queue.copies[c.id] = replace(c, obligation=o)
+            self._queue.held.add(c.id)
             rewritten[o.id] = rest
-        owed = {c.obligation.id for c in self._copies.values()}
+        owed = {c.obligation.id for c in self._queue.copies.values()}
         carry = {i: f for i, f in stored.facts.items() if i in owed}
         return replace(
             new_ledger,
@@ -1976,16 +1569,9 @@ class Runtime:
         except StorageError as e:
             loaded, lost = None, str(e)
         if loaded is not None:
-            self._st = self._migrate_state(loaded)
-            if (port := self._webhooks) is not None:
-                self._copies = {c.id: c for c in loaded.webhook_copies}
-                # a restart keeps each URL's rest and outage: no extra try, no second warning
-                saved = loaded.webhook_down
-                port.down.update({u: saved[url_id(u)] for u in port.urls if url_id(u) in saved})
-            elif n := len(loaded.webhook_copies):
-                # nothing could post them, and a later poster would get stale alerts
-                log.info("dropped %d webhook copies: webhooks are off", n)
-        self._st = self._durable = replace(self._st, started_before=True)
+            self._writer.st = self._migrate_state(loaded)
+            self._queue.restore(loaded)
+        self._writer.begin(replace(self._writer.st, started_before=True))
         if lost is not None:  # rule 22: fresh state, loud, and a write clears "state lost"
             self._app_warning(EventKind.STORAGE_FAILED, f"saved state was lost ({lost}).", now)
         try:
@@ -1995,14 +1581,14 @@ class Runtime:
         await self.reload()
         self._create_occurrences(now)
         # deterministic reconcile: one fresh poll per unarchived occurrence (rule 11)
-        for k in sorted(self._st.occurrences):
+        for k in sorted(self._writer.st.occurrences):
             await self._poll_occurrence(k)
 
     def _migrate_state(self, st: PersistedState) -> PersistedState:
         """A stored state brought into the current model (rule 11): every delivered fact of an
         older store counts as last reported, so the reconcile poll ends the ones that ended (a
         recurrence is news again), and every occurrence gets its own fixed schedule."""
-        self._st = st
+        self._writer.st = st
         occs = {}
         for k, s in st.occurrences.items():
             keys = dict(s.alert_keys)
@@ -2025,7 +1611,7 @@ class Runtime:
                 )
             ):
                 s = replace(s, advice=replace(a, delivered=False))
-            occs[k] = frozen(self._st, replace(s, alert_keys=keys))
+            occs[k] = frozen(self._writer.st, replace(s, alert_keys=keys))
         obligations = tuple(  # stored with the planned departure frozen as expiry
             replace(o, expires_at=None) if o.event.kind is EventKind.LEAVE_NOW else o
             for o in st.obligations
@@ -2085,4 +1671,4 @@ class Runtime:
         try:
             await _run_together(main(), every(c, WATCHDOG_EVERY_S, self.watchdog_once))
         finally:
-            await self._stop_posting()
+            await self._queue.stop()

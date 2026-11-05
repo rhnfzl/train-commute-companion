@@ -209,8 +209,8 @@ class Rig:
         return self.rt.state.occurrences.get(key)
 
     def occ_set(self, s, key: str = "p1|outbound|2026-10-27") -> None:
-        st = self.rt._st
-        self.rt._st = replace(st, occurrences={**st.occurrences, key: s})
+        st = self.rt._writer.st
+        self.rt._writer.st = replace(st, occurrences={**st.occurrences, key: s})
 
     async def run_until(self, hhmm: str, poll: bool = True) -> None:
         """Polls every 2 min and runs the watchdog every 30 s up to `hhmm`."""

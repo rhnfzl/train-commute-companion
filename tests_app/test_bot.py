@@ -306,7 +306,7 @@ async def test_telegram_test_reports_each_webhook(tmp_path, tg):  # Review Focus
     assert not app.bot.confirmed  # the button is the proof
     assert app.webhooks is not None and not app.webhooks.failing
     await app.rt.webhooks_idle()
-    assert app.rt._copies == {} and not (tmp_path / "tcc-state.json").exists()  # never stored
+    assert app.rt._queue.copies == {} and not (tmp_path / "tcc-state.json").exists()  # never stored
     await app.bot.handle(tap(button["callback_data"], 2))
     assert tg.sent[-1]["text"] == "Delivery confirmed. Setup is complete."
     assert app.bot.confirmed

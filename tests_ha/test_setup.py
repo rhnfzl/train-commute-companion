@@ -203,7 +203,7 @@ async def test_moved_prompt_repair(hass):
 
     def seed(baselines):
         def go(rt):
-            rt._st = replace(rt.state, baselines=baselines)
+            rt._writer.st = replace(rt.state, baselines=baselines)
 
         return go
 
@@ -621,7 +621,7 @@ async def test_without_webhook_options_no_client_is_made(hass):
     harness.PATCH.setattr(host_mod, "make_webhook_client", refuse)
     h = await setup_tcc(hass, PROFILE)
     assert h.entry.state is ConfigEntryState.LOADED and h.host.alive
-    assert await h.host.run(lambda rt: rt._webhooks) is None
+    assert await h.host.run(lambda rt: rt._queue.port) is None
 
 
 async def test_options_turning_webhooks_off_drops_saved_copies(hass):  # Review Focus 13
@@ -634,7 +634,7 @@ async def test_options_turning_webhooks_off_drops_saved_copies(hass):  # Review 
     r = await submit(hass, await open_webhooks(hass, h.entry))  # no URLs: no test send
     assert r["type"] is FlowResultType.CREATE_ENTRY and len(rx.requests) == tried
     h = await rebound(h)
-    assert await h.host.run(lambda rt: rt._webhooks) is None
+    assert await h.host.run(lambda rt: rt._queue.port) is None
     await drive(h, "08:08")
     assert stored_copies(hass, h.entry) == ()
     rx.status = 200
