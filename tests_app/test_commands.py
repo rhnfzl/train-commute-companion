@@ -11,11 +11,11 @@ from tcc_app.commands import (
     Target,
     answer,
     command_word,
-    for_profile,
     parse_target,
     render_status,
     render_webhook_tests,
     status_buttons,
+    view_for_profile,
 )
 
 from train_commute_companion.health import BoardHealth
@@ -305,7 +305,7 @@ def test_profile_ids_are_matched_exactly():
         lookahead_last_ok={"p1|outbound": FRESH, "p1|return": FRESH,
                            "p1|child|outbound": None, "p1|child|return": FRESH},
     )  # fmt: skip
-    mine = for_profile(v, "p1")
+    mine = view_for_profile(v, "p1")
     assert set(mine.works) == {"p1|outbound"}
     assert set(mine.lookahead_last_ok) == {"p1|outbound", "p1|return"}
     want = "Works ahead: P1|Child outbound: Wed 4 Nov"

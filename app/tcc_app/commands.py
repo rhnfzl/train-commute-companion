@@ -54,7 +54,9 @@ def _day(d: date) -> str:
     return f"{d:%a} {d.day} {d:%b}"
 
 
-def _find_profile(profiles: Collection[tuple[str, str]], token: str) -> tuple[str, str] | None:
+def _match_profile_token(
+    profiles: Collection[tuple[str, str]], token: str
+) -> tuple[str, str] | None:
     """By id first, then by name; `profiles` holds (id, name) pairs."""
     return next((p for p in profiles if p[0] == token), None) or next(
         (p for p in profiles if _key(p[1]) == _key(token)), None
@@ -68,7 +70,7 @@ def _named_profile(
     at = args.index(named)
     # a spaced name arrives split by whitespace: take the longest run of words that names a profile
     for end in range(len(args), at, -1):
-        profile = _find_profile(profiles, " ".join([named[2:], *args[at + 1 : end]]))
+        profile = _match_profile_token(profiles, " ".join([named[2:], *args[at + 1 : end]]))
         if profile is not None:
             return profile, [a for j, a in enumerate(args) if not at < j < end]
     raise ValueError(f"No profile {named[2:]}. One of: {names}.")
@@ -108,7 +110,7 @@ def parse_target(view: RuntimeView, args: Sequence[str]) -> Target:
             direction = Direction(token.lower())
         elif token.lower() == "day":
             whole_day = True
-        elif (p := _find_profile(profiles, token)) is not None and profile is None:
+        elif (p := _match_profile_token(profiles, token)) is not None and profile is None:
             profile = p
         elif token.isdigit():
             train = token
@@ -252,7 +254,7 @@ def render_status(view: RuntimeView, confirmed: bool) -> str:
     return "\n".join(lines)
 
 
-def for_profile(view: RuntimeView, profile_id: str) -> RuntimeView:
+def view_for_profile(view: RuntimeView, profile_id: str) -> RuntimeView:
     """The view as one profile alone would see it; the refusal text echoes rejected values and
     read errors, so it is replaced by a fixed text."""
     keys = {direction_key(profile_id, d) for d in Direction}  # exact keys, never a prefix match
@@ -276,7 +278,7 @@ def status_tool(view: RuntimeView, confirmed: bool, profile_id: str) -> dict[str
     return {
         "profile": profile_id,
         "name": display_name(_name(view, profile_id)),
-        "text": render_status(for_profile(view, profile_id), confirmed),
+        "text": render_status(view_for_profile(view, profile_id), confirmed),
     }
 
 
@@ -308,7 +310,7 @@ def _connection(c: Connection) -> dict[str, Any]:
 def connections_tool(
     view: RuntimeView, confirmed: bool, profile_id: str, direction: Direction
 ) -> dict[str, Any]:
-    v = for_profile(view, profile_id)
+    v = view_for_profile(view, profile_id)
     occs = sorted(
         (o for o in v.occurrences if not o.resolved and o.key.direction is direction),
         key=lambda o: o.key.service_date,
@@ -333,7 +335,7 @@ def connections_tool(
 
 
 def works_tool(view: RuntimeView, confirmed: bool, profile_id: str) -> dict[str, Any]:
-    v = for_profile(view, profile_id)
+    v = view_for_profile(view, profile_id)
     lines = _works_ahead(v)
     directions = []
     for d in v.directions:

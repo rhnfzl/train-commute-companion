@@ -39,7 +39,7 @@ LEAVING_SCHEMA = vol.Schema(BASE)
 NOT_TRAVELLING_SCHEMA = vol.Schema({**BASE, vol.Optional("whole_day", default=False): cv.boolean})
 
 
-def resolve(hass: HomeAssistant, profile: str) -> tuple[TccData, str, str]:
+def resolve_profile(hass: HomeAssistant, profile: str) -> tuple[TccData, str, str]:
     """The loaded entry and the profile by id, then by name. Directions, not the file's profiles:
     a removed profile that still runs stays actionable (rule 10)."""
     entries = hass.config_entries.async_loaded_entries(DOMAIN)
@@ -130,7 +130,7 @@ async def do_not_travelling(
 
 async def _handle_choose(call: ServiceCall) -> None:
     d = call.data
-    data, pid, _ = resolve(call.hass, d["profile"])
+    data, pid, _ = resolve_profile(call.hass, d["profile"])
     await do_choose(
         data, pid, d["departure"], d.get("train_number"), d.get("service_date"), d.get("direction")
     )
@@ -138,13 +138,13 @@ async def _handle_choose(call: ServiceCall) -> None:
 
 async def _handle_leaving(call: ServiceCall) -> None:
     d = call.data
-    data, pid, name = resolve(call.hass, d["profile"])
+    data, pid, name = resolve_profile(call.hass, d["profile"])
     await do_leaving(data, pid, name, d.get("service_date"), d.get("direction"))
 
 
 async def _handle_not_travelling(call: ServiceCall) -> None:
     d = call.data
-    data, pid, name = resolve(call.hass, d["profile"])
+    data, pid, name = resolve_profile(call.hass, d["profile"])
     await do_not_travelling(
         data, pid, name, d.get("service_date"), d.get("direction"), d["whole_day"]
     )
