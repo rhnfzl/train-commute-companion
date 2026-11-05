@@ -5,7 +5,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from itertools import pairwise
-from typing import NamedTuple
+from typing import Final, Literal, NamedTuple
 
 from train_commute_companion.calendar import (
     MINUTES_PER_DAY,
@@ -41,7 +41,7 @@ SEARCH_WINDOW = timedelta(minutes=15)
 DEP_TOL_MIN = 5
 DUR_TOL_MIN = 10
 REPLACEMENT_HINT = "Check replacement transport nearer the day."
-MISSING_REASON = "missing"
+MISSING_REASON: Final = "missing"
 _PATTERN = "pattern:"
 
 
@@ -70,11 +70,14 @@ class BaselineHistory:
         return max(self.latest or 0, self.floor) + 1
 
 
+ProbeTag = Literal["missing", "pattern", "cancelled", "cut_short", "messages", "maintenance", "short"]
+
+
 @dataclass(frozen=True, slots=True)
 class ProbeReason:
     """Why a probe counts as works. `token` is how it reads in a stored fingerprint."""
 
-    tag: str  # missing, pattern, cancelled, cut_short, messages, maintenance or short
+    tag: ProbeTag
     leg: int | None = None
     stop: str | None = None  # where a leg is cut short, or the station of a short change
     margin: str | None = None  # a short change's minutes, "?" when unknown
@@ -386,9 +389,11 @@ def _leg_reasons(cur: Connection, c: Connection) -> list[ProbeReason]:
         last = classify_leg(leg, c.legs[i].alight.code).last_served
         if k is LegKind.CUT_SHORT and last is not None:
             # the cut of the current copies, so a moved cut is a new warning (7.10, 7.12)
-            out.append(ProbeReason(k.value, leg=i, stop=last.code))
-        elif k in (LegKind.CANCELLED, LegKind.CUT_SHORT):
-            out.append(ProbeReason(k.value, leg=i))
+            out.append(ProbeReason("cut_short", leg=i, stop=last.code))
+        elif k is LegKind.CUT_SHORT:
+            out.append(ProbeReason("cut_short", leg=i))
+        elif k is LegKind.CANCELLED:
+            out.append(ProbeReason("cancelled", leg=i))
         elif leg.messages:
             out.append(ProbeReason("messages", leg=i))
     if cur.status == "MAINTENANCE":
