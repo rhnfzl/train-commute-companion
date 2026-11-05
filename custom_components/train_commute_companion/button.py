@@ -8,7 +8,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from train_commute_companion.calendar import TZ
-from train_commute_companion.model import Direction, DirectionState
+from train_commute_companion.model import Direction, DirectionState, present
 from train_commute_companion.view import RuntimeView
 
 from .coordinator import TccCoordinator
@@ -46,8 +46,8 @@ class TccButton(TccEntity, ButtonEntity):
             await self._choose_next()
 
     async def _choose_next(self) -> None:
-        assert self.direction is not None
-        shown, others = shown_and_others(self.coordinator.data, self.profile_id, self.direction)
+        direction = present(self.direction)
+        shown, others = shown_and_others(self.coordinator.data, self.profile_id, direction)
         occ = next(
             (
                 o

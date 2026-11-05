@@ -19,6 +19,7 @@ from train_commute_companion.model import (
     Stop,
     TimeObs,
     direction_key,
+    present,
 )
 from train_commute_companion.view import (
     LegView,
@@ -52,15 +53,13 @@ def _train_label(leg: LegView) -> str:
 
 
 def _occ(view: RuntimeView, pid: str, d: Direction | None) -> OccurrenceView | None:
-    assert d is not None
-    return shown_and_others(view, pid, d)[0]
+    return shown_and_others(view, pid, present(d))[0]
 
 
 def _status_attrs(
     view: RuntimeView, pid: str, d: Direction | None, n: int | None
 ) -> dict[str, Any]:
-    assert d is not None
-    occ, others = shown_and_others(view, pid, d)
+    occ, others = shown_and_others(view, pid, present(d))
     if occ is None:
         return {
             "service_date": None,
@@ -109,8 +108,7 @@ def _advised(view: RuntimeView, pid: str, d: Direction | None, n: int | None) ->
 
 
 def _works(view: RuntimeView, pid: str, d: Direction | None) -> tuple[WorksDay, ...]:
-    assert d is not None
-    return view.works.get(direction_key(pid, d), ())
+    return view.works.get(direction_key(pid, present(d)), ())
 
 
 def _health_attrs(
@@ -131,13 +129,13 @@ def _health_attrs(
 
 def _leg_state(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> str:
     occ = _occ(view, pid, d)
-    assert n is not None
+    n = present(n)
     return occ.legs[n - 1].state.value if occ and n <= len(occ.legs) else "none"
 
 
 def _leg_attrs(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> dict[str, Any]:
     occ = _occ(view, pid, d)
-    assert n is not None
+    n = present(n)
     return _to_primitive(occ.legs[n - 1]) if occ and n <= len(occ.legs) else {}
 
 
@@ -145,7 +143,7 @@ def _transfer(
     view: RuntimeView, pid: str, d: Direction | None, n: int | None
 ) -> TransferView | None:
     occ = _occ(view, pid, d)
-    assert n is not None
+    n = present(n)
     return occ.transfers[n - 1] if occ and n <= len(occ.transfers) else None
 
 

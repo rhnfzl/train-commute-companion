@@ -23,6 +23,8 @@ MOVED_PREFIX = "moved_"
 
 
 class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
+    config_entry: ConfigEntry  # always passed to __init__ below
+
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, host: RuntimeHost) -> None:
         super().__init__(
             hass,
@@ -36,7 +38,6 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
         self._reauth_started = False
 
     def _reload(self) -> None:
-        assert self.config_entry is not None
         self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
 
     async def _async_update_data(self) -> RuntimeView:
@@ -62,7 +63,6 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
         """Removes the device (and so the entities) of a profile the view no longer has."""
         if not view.started or not view.directions:  # a view without a config knows no profile yet
             return
-        assert self.config_entry is not None
         present = {d.profile_id for d in view.directions}
         registry = dr.async_get(self.hass)
         for device in dr.async_entries_for_config_entry(registry, self.config_entry.entry_id):
@@ -80,7 +80,6 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
             self._reauth_started = False
         elif not self._reauth_started:
             # once per outage; HA also folds it into a reauth flow that is already open
-            assert self.config_entry is not None
             self._reauth_started = True
             self.config_entry.async_start_reauth(hass)
         if view.refusal is not None:
@@ -116,7 +115,6 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
             ir.async_delete_issue(hass, DOMAIN, issue_id)
 
         if view.undelivered > 0:
-            assert self.config_entry is not None
             ir.async_create_issue(
                 hass,
                 DOMAIN,

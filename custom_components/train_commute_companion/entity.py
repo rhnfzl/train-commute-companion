@@ -94,7 +94,6 @@ def sync_entities(
 ) -> Callable[[], None]:
     """Adds entities whose unique ID is new and removes this entry's no longer wanted ones."""
     entry = coordinator.config_entry
-    assert entry is not None
     added: set[str] = set()
 
     @callback
