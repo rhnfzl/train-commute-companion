@@ -13,7 +13,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from tcc_app.web import ask_readout, mcp_socket_path
+from .web import ask_readout, mcp_socket_path
 
 NOT_RUNNING = "The commute app is not running, or its MCP socket is missing."
 READ_ONLY = ToolAnnotations(
