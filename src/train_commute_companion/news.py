@@ -10,10 +10,10 @@ from train_commute_companion.health import FRESH_FOR, board_health
 from train_commute_companion.lifecycle import (
     AT_RISK_LOUD_MIN,
     PLATFORM_LOUD_MIN,
-    Board,
     Journey,
     LegProgress,
     OccurrenceState,
+    PollAnswers,
     announced,
     make_event,
 )
@@ -200,7 +200,7 @@ def unsent(ledger: Mapping[str, Severity], events: Sequence[AlertEvent]) -> list
 
 
 def _contrary(answers: Sequence[ProviderAnswer], train: TrainId, board: str, alight: str) -> bool:
-    """Any copy of the train in any answer of the board that is not ok: a cancelled copy, or
+    """Any copy of the train in any answer of the poll that is not ok: a cancelled copy, or
     one that reaches the alighting stop delayed or not served, whatever order they come in."""
     for a in answers:
         for conn in a.connections:
@@ -281,30 +281,30 @@ def _changes_proven(
     return True
 
 
-def all_good(s: OccurrenceState, board: Board, ctx: Ctx) -> AlertEvent | None:
+def all_good(s: OccurrenceState, poll: PollAnswers, ctx: Ctx) -> AlertEvent | None:
     """Evaluated once, at the first lock. The caller sets `all_good_evaluated`.
     Rule 20: the newest answer is fresh and contains every locked leg, seen, ok and with
-    reported times, every transfer is ok, the board is healthy now (no failed poll since the
-    last success), and no answer of the board says otherwise (6.1: one identity across all
+    reported times, every transfer is ok, polling is healthy now (no failed poll since the
+    last success), and no answer of the poll says otherwise (6.1: one identity across all
     answers; no copy cancelled or late). When in doubt, none."""
-    if s.all_good_evaluated or s.lock is None or not board.answers:
+    if s.all_good_evaluated or s.lock is None or not poll.answers:
         return None
-    h = board_health((*s.poll_records, *board.polls), ctx.now)
+    h = board_health((*s.poll_records, *poll.records), ctx.now)
     if not h.fresh or h.consecutive_failures or h.auth_failed:
         return None
-    newest = max(board.answers, key=lambda a: to_utc(a.fetched_at))
+    newest = max(poll.answers, key=lambda a: to_utc(a.fetched_at))
     if to_utc(ctx.now) - to_utc(newest.fetched_at) >= FRESH_FOR:
         return None
     merged = ProviderAnswer(
-        newest.query, tuple(c for a in board.answers for c in a.connections), newest.fetched_at
+        newest.query, tuple(c for a in poll.answers for c in a.connections), newest.fetched_at
     )
     seen: list[ClassifiedLeg] = []
     for x in s.lock.legs:
-        c = _leg_proven(x, newest, merged, board.answers)
+        c = _leg_proven(x, newest, merged, poll.answers)
         if c is None:
             return None
         seen.append(c)
-    if not _changes_proven(seen, s.lock.legs, board.answers, ctx.profile.transfer_min):
+    if not _changes_proven(seen, s.lock.legs, poll.answers, ctx.profile.transfer_min):
         return None
     legs = [c.leg for c in seen]
     return make_event(ctx, EventKind.ALL_GOOD, Severity.SILENT, all_good_text(legs), legs[0].train)

@@ -4,7 +4,7 @@ the ride advice compares with, nor "on time" (no false reassurance)."""
 from dataclasses import replace
 
 from builders import make_leg
-from lifecycle_fixtures import L1, at, board, conn, ctx, journey, numbers, occ, poll
+from lifecycle_fixtures import L1, at, conn, ctx, journey, numbers, occ, poll, poll_answers
 
 from train_commute_companion.advice import ridden_journey
 from train_commute_companion.lifecycle import auto_lock, merged_pool
@@ -61,7 +61,7 @@ def test_route_change_never_picks_a_bus():
 
 def test_no_all_good_for_a_locked_train_any_answer_shows_as_a_bus():
     s = occ(journey([L1, B2]))
-    good = replace(board(s), answers=(answer("AAA", "08:00", B), answer("AAA", "08:01", B)))
+    good = replace(poll_answers(s), answers=(answer("AAA", "08:00", B), answer("AAA", "08:01", B)))
     assert all_good(s, good, ctx(at("08:02"))) is not None
     bad = replace(
         good, answers=(answer("AAA", "08:00", B), answer("AAA", "08:01", conn(L1, B2_BUS)))

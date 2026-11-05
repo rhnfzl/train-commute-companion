@@ -158,7 +158,7 @@ class Transition:
 class Choose:
     service_date: date | None
     connection: Connection
-    # the fresh healthy answers the connection was picked from (the latest board): identity
+    # the fresh healthy answers the connection was picked from (the latest poll): identity
     # (6.1) and the change from a kept leg (rule 1) are judged on them, never on the copy alone
     answers: tuple[ProviderAnswer, ...]
 
@@ -754,9 +754,9 @@ _KEEP_POLLS = 20  # shortcut: health reads only the latest records; keep more if
 
 
 @dataclass(frozen=True, slots=True)
-class Board:
+class PollAnswers:
     answers: tuple[ProviderAnswer, ...]  # healthy answers only: a failed request raised
-    polls: tuple[PollRecord, ...]
+    records: tuple[PollRecord, ...]
     started_generation: int
 
 
@@ -1503,7 +1503,7 @@ def _advance_all(
     return replace(s, lock=lock, retained=retained, direction_state=state), events
 
 
-def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
+def on_poll(s: OccurrenceState, ctx: Ctx, poll: PollAnswers) -> Transition:
     """Apply one poll (7.4, rule 2). A result started under another generation is discarded
     (rule 21). One lock change per poll; the next poll, at the new generation, sees the rest.
     Ongoing facts (`missing`, `transfer_at_risk`, retained ones keyed `...:retained:<n>`) repeat
@@ -1511,13 +1511,13 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
     acceptance (rule 6) and leg progress (7.7) run first; a lock whose journey ended (`DONE`)
     is no longer followed, while its retained remainders still are (rule 7). Any plan change
     raises the generation once (rule 21)."""
-    if board.started_generation != s.generation:
+    if poll.started_generation != s.generation:
         return Transition(s, ())
     start = s
-    s = replace(s, poll_records=(*s.poll_records, *board.polls)[-_KEEP_POLLS:])
-    if (s.lock is None and not s.retained) or s.not_travelling or not board.answers:
+    s = replace(s, poll_records=(*s.poll_records, *poll.records)[-_KEEP_POLLS:])
+    if (s.lock is None and not s.retained) or s.not_travelling or not poll.answers:
         return Transition(s, ())  # before a lock, auto_lock judges the usual
-    pool = merged_pool(board.answers)
+    pool = merged_pool(poll.answers)
     live = s.lock is not None and s.direction_state is not DirectionState.DONE
     s, events = _accept_all(s, ctx, pool, live)
     s, more = _advance_all(s, ctx, pool, live)
@@ -1545,7 +1545,7 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
         date_ = ctx.schedule.key.service_date.isoformat()
         key = f"{EventKind.DATA_UNCLEAR.value}:{date_}:{tk}:{u.fingerprint}"
         events.append(replace(event, key=key))
-    asked = tuple(a.query for a in board.answers)
+    asked = tuple(a.query for a in poll.answers)
     retained = []
     for r in s.retained:
         # rule 7: a retained remainder gets the locked-journey checks but is never relocked, so

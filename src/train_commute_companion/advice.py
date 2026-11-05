@@ -302,7 +302,7 @@ def leave_now_text(c: Connection, tz: tzinfo | None) -> str:
 def advise(
     s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, usual_planned_arrival: datetime | None
 ) -> tuple[AdviceRecord, list[AlertEvent]]:
-    """`answer` is a healthy board from the occurrence's origin. The earlier first train must
+    """`answer` is a healthy answer from the occurrence's origin. The earlier first train must
     pass `check_good` (which also enforces catching it with the buffer, so advice ends by itself
     at the escape train's departure minus buffer). Without the usual's planned arrival only
     lateness is not judged: an absent or unrideable journey is still bad."""

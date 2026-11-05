@@ -11,7 +11,6 @@ from lifecycle_fixtures import (
     RIDE,
     ans,
     at,
-    board,
     conn,
     ctx,
     journey,
@@ -19,6 +18,7 @@ from lifecycle_fixtures import (
     numbers,
     occ,
     poll,
+    poll_answers,
 )
 from location_fixtures import USUAL, event, locate
 
@@ -206,7 +206,7 @@ def test_repeat_origin_reports_keep_poll_in_flight_and_lock():  # rule 21
     s = locate(occ(journey([L1, L2])), "08:00", event("AAA", "enter", "08:00"), USUAL, LATER).state
     assert s.lock is not None and s.lock.source is LockSource.STATION
     gen, lock = s.generation, s.lock
-    b = board(s, ans("AAA", conn(L1X, L2), LATER, when="08:01"))  # a poll starts at 08:01
+    b = poll_answers(s, ans("AAA", conn(L1X, L2), LATER, when="08:01"))  # a poll starts at 08:01
     for when in ("08:01", "08:02"):  # periodic platform reports while waiting
         s = locate(s, when, event("AAA", "report", when), LATER, USUAL).state
         assert s.generation == gen and s.lock == lock

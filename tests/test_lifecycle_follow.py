@@ -20,7 +20,6 @@ from lifecycle_fixtures import (
     T_UT,
     ans,
     at,
-    board,
     conn,
     ctx,
     cut_at_ut,
@@ -30,15 +29,16 @@ from lifecycle_fixtures import (
     numbers,
     occ,
     poll,
+    poll_answers,
     usual_locked,
     with_track,
 )
 
 from train_commute_companion.lifecycle import (
-    Board,
     LegProgress,
     LockSource,
     OccurrenceState,
+    PollAnswers,
     Transition,
     keep_stated,
     on_poll,
@@ -246,7 +246,7 @@ def test_retained_onward_leg_cancelled_alerts_without_relocking():  # spec 10.1 
 
 def test_stale_generation_poll_is_discarded():  # spec safety fixture
     s = usual_locked()
-    stale = Board((ans("AAA", conn(L1X, L2), LATER),), (), s.generation - 1)
+    stale = PollAnswers((ans("AAA", conn(L1X, L2), LATER),), (), s.generation - 1)
     t = on_poll(s, ctx(at("07:50")), stale)
     assert t.state is s and t.events == ()
 
@@ -311,7 +311,7 @@ def test_raising_transfer_min_turns_transfer_at_risk_next_poll():
     s = occ(journey([L1, L2], RIDE))  # 10 min at UT
     answers = (ans("AAA", conn(L1, L2)),)
     assert poll(s, ctx(at("08:20")), *answers).events == ()
-    in_flight = board(s, *answers)
+    in_flight = poll_answers(s, *answers)
     edited = replace(s, generation=s.generation + 1, settings_revision=2)  # settings edit
     c = ctx(at("08:20"), ut_min=9)
     assert on_poll(edited, c, in_flight).state is edited  # computed under the old settings

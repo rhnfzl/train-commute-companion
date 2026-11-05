@@ -33,9 +33,9 @@ from train_commute_companion.health import (
     offline,
 )
 from train_commute_companion.lifecycle import (
-    Board,
     Choose,
     OccurrenceState,
+    PollAnswers,
     UserAction,
     apply_action,
     is_resolved,
@@ -790,12 +790,12 @@ class Runtime:
         elif advice_error is not None:
             log.warning("advice search for %s failed (%s)", k, advice_error)
         self._auth(error, k, now)
-        board = Board(answers, (PollRecord(now, error is None, error),), gen)
-        t = on_poll(s, ctx, board)
+        poll = PollAnswers(answers, (PollRecord(now, error is None, error),), gen)
+        t = on_poll(s, ctx, poll)
         st, events = t.state, list(t.events)
         current = s.generation == gen
         if current:  # a choice since the poll started makes the answer stale
-            st, events = self._judge_poll(k, s.lock is None, st, events, ctx, board)
+            st, events = self._judge_poll(k, s.lock is None, st, events, ctx, poll)
         self._apply({k: (st, events)}, polled=current and bool(answers))
 
     def _judge_poll(
@@ -805,9 +805,9 @@ class Runtime:
         st: OccurrenceState,
         events: list[AlertEvent],
         ctx: Ctx,
-        board: Board,
+        poll: PollAnswers,
     ) -> tuple[OccurrenceState, list[AlertEvent]]:
-        answers = board.answers
+        answers = poll.answers
         # the whole poll's evidence for the watchdog, the auto lock and advice (6.2)
         merged = origin_answer(answers, ctx)
         if merged is not None and unlocked:
@@ -815,7 +815,7 @@ class Runtime:
         tick = on_tick(st, ctx, merged)
         st, events = tick.state, [*events, *tick.events]
         if st.lock is not None and not st.all_good_evaluated:
-            good = all_good(st, board, ctx)  # judged once, at the first poll with a lock
+            good = all_good(st, poll, ctx)  # judged once, at the first poll with a lock
             st = replace(st, all_good_evaluated=True)
             events += [good] if good else []
         if merged is not None:

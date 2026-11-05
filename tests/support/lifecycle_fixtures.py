@@ -9,11 +9,11 @@ from lookahead_fixtures import NEXT_TUE, NOW, OUT, P, confirmed, ledger
 
 from train_commute_companion.health import PollRecord
 from train_commute_companion.lifecycle import (
-    Board,
     Commitment,
     Journey,
     LockSource,
     OccurrenceState,
+    PollAnswers,
     Transition,
     journey_of,
     on_location,
@@ -82,12 +82,12 @@ def ans(origin: str, *conns: Connection, when: str = "08:00") -> ProviderAnswer:
     return ProviderAnswer(q, conns, q.at)
 
 
-def board(s: OccurrenceState, *answers: ProviderAnswer) -> Board:
-    return Board(answers, (PollRecord(at("08:00"), True, None),), s.generation)
+def poll_answers(s: OccurrenceState, *answers: ProviderAnswer) -> PollAnswers:
+    return PollAnswers(answers, (PollRecord(at("08:00"), True, None),), s.generation)
 
 
 def poll(s: OccurrenceState, c: Ctx, *answers: ProviderAnswer) -> Transition:
-    return on_poll(s, c, board(s, *answers))
+    return on_poll(s, c, poll_answers(s, *answers))
 
 
 def journey(

@@ -2,7 +2,7 @@ from dataclasses import replace
 from datetime import timedelta
 
 from builders import make_connection, make_leg
-from lifecycle_fixtures import L1, L2, R2, at, board, ctx, journey, occ
+from lifecycle_fixtures import L1, L2, R2, at, ctx, journey, occ, poll_answers
 
 from train_commute_companion.classify import classify_leg
 from train_commute_companion.lifecycle import OccurrenceState
@@ -168,21 +168,21 @@ def test_repeated_missing_and_retained_events_sent_once():
 # all_good
 
 
-def good_board(s: OccurrenceState, *legs, polled="08:00"):
+def good_poll(s: OccurrenceState, *legs, polled="08:00"):
     q = Query("AAA", "RTD", at("08:00"))
     from builders import make_connection
 
     a = ProviderAnswer(q, (make_connection(legs),), q.at)
-    return replace(board(s), answers=(a,))
+    return replace(poll_answers(s), answers=(a,))
 
 
 def test_all_good_once_when_all_reported_and_ok():  # spec fixture
     s = occ(LOCK)
-    e = all_good(s, good_board(s, L1, L2), ctx(at("08:02")))
+    e = all_good(s, good_poll(s, L1, L2), ctx(at("08:02")))
     assert e is not None and e.kind is EventKind.ALL_GOOD and e.severity is Severity.SILENT
     assert e.text.startswith("Office A: your 08:12 to RTD is on time per NS, change at UT")
     assert (
-        all_good(replace(s, all_good_evaluated=True), good_board(s, L1, L2), ctx(at("08:02")))
+        all_good(replace(s, all_good_evaluated=True), good_poll(s, L1, L2), ctx(at("08:02")))
         is None
     )
 
@@ -190,19 +190,19 @@ def test_all_good_once_when_all_reported_and_ok():  # spec fixture
 def test_no_all_good_when_one_leg_stale_or_planned_or_transfer_at_risk():
     s = occ(LOCK)
     c = ctx(at("08:02"))
-    assert all_good(s, good_board(s, L1, L2), ctx(at("08:30"))) is None  # board stale
-    assert all_good(s, good_board(s, L1), c) is None  # a locked leg absent
+    assert all_good(s, good_poll(s, L1, L2), ctx(at("08:30"))) is None  # board stale
+    assert all_good(s, good_poll(s, L1), c) is None  # a locked leg absent
     planned = make_leg("UT", "RTD", "08:50", "09:24", number="5678", provenance=Provenance.PLANNED)
-    assert all_good(s, good_board(s, L1, planned), c) is None
+    assert all_good(s, good_poll(s, L1, planned), c) is None
     late = make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_arr=5)  # margin 5 < 4 + 2
-    assert all_good(s, good_board(s, late, L2), c) is None
+    assert all_good(s, good_poll(s, late, L2), c) is None
     slow = make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_dep=4, delay_arr=4)
-    assert all_good(s, good_board(s, slow, L2), c) is None  # delayed is not ok
+    assert all_good(s, good_poll(s, slow, L2), c) is None  # delayed is not ok
 
 
 def test_no_all_good_later_when_data_turns_good():
     s = occ(LOCK, all_good_evaluated=True)  # the first lock found it not proven
-    assert all_good(s, good_board(s, L1, L2), ctx(at("08:02"))) is None
+    assert all_good(s, good_poll(s, L1, L2), ctx(at("08:02"))) is None
 
 
 def test_all_good_judges_a_leg_on_the_newest_answer_that_shows_it():
@@ -214,14 +214,14 @@ def test_all_good_judges_a_leg_on_the_newest_answer_that_shows_it():
     old = ProviderAnswer(q, (make_connection([L1, L2]),), at("08:00"))
     new = ProviderAnswer(q, (make_connection([late, L2]),), at("08:01"))
     for answers in ((old, new), (new, old)):
-        assert all_good(s, replace(board(s), answers=answers), ctx(at("08:02"))) is None
+        assert all_good(s, replace(poll_answers(s), answers=answers), ctx(at("08:02"))) is None
 
 
 def test_all_good_withholds_on_stale_answer_even_with_fresh_poll():
     s = occ(LOCK)
     q = Query("AAA", "RTD", at("08:00"))
     old = ProviderAnswer(q, (make_connection([L1, L2]),), at("08:00"))
-    b = replace(board(s), answers=(old,))
+    b = replace(poll_answers(s), answers=(old,))
     assert all_good(s, b, ctx(at("08:02"))) is not None
     assert all_good(s, b, ctx(at("08:11"))) is None  # poll health may be fresh, the answer is not
 
@@ -232,7 +232,7 @@ def test_all_good_not_rescued_by_older_answer_when_newest_is_uncertain():
     amb = replace(L1, train=replace(L1.train, train_number="other"))
     old = ProviderAnswer(q, (make_connection([L1, L2]),), at("08:00"))
     new = ProviderAnswer(q, (make_connection([L1, L2]), make_connection([amb, L2])), at("08:01"))
-    assert all_good(s, replace(board(s), answers=(old, new)), ctx(at("08:02"))) is None
+    assert all_good(s, replace(poll_answers(s), answers=(old, new)), ctx(at("08:02"))) is None
 
 
 def test_changed_cut_short_endpoint_is_news_again():  # 7.5: the key states the endpoint
@@ -262,7 +262,7 @@ def test_no_all_good_when_newest_answer_omits_a_locked_leg():  # rule 20
     s = occ(LOCK)
     old = answer_at("08:00", make_connection([L1, L2]))
     new = answer_at("08:01", make_connection([L1]))
-    assert all_good(s, replace(board(s), answers=(old, new)), ctx(at("08:02"))) is None
+    assert all_good(s, replace(poll_answers(s), answers=(old, new)), ctx(at("08:02"))) is None
 
 
 def test_no_all_good_when_answers_disagree_on_identity():  # 6.1 across answers
@@ -271,7 +271,7 @@ def test_no_all_good_when_answers_disagree_on_identity():  # 6.1 across answers
     a = answer_at("08:01", make_connection([L1, L2]))
     b = answer_at("08:00", make_connection([other, L2]))
     for answers in ((a, b), (b, a)):
-        assert all_good(s, replace(board(s), answers=answers), ctx(at("08:02"))) is None
+        assert all_good(s, replace(poll_answers(s), answers=answers), ctx(at("08:02"))) is None
 
 
 def test_no_all_good_when_any_copy_is_cancelled_whatever_the_order():
@@ -280,21 +280,21 @@ def test_no_all_good_when_any_copy_is_cancelled_whatever_the_order():
     one = answer_at("08:01", make_connection([L1, L2]), make_connection([cancelled, L2]))
     two = answer_at("08:01", make_connection([cancelled, L2]), make_connection([L1, L2]))
     for a in (one, two):
-        assert all_good(s, replace(board(s), answers=(a,)), ctx(at("08:02"))) is None
+        assert all_good(s, replace(poll_answers(s), answers=(a,)), ctx(at("08:02"))) is None
 
 
 def test_no_all_good_after_failed_polls_since_the_last_success():  # 7.11, rule 20
     from train_commute_companion.health import PollRecord
 
     s = occ(LOCK)
-    b = good_board(s, L1, L2)
+    b = good_poll(s, L1, L2)
     ok = PollRecord(at("08:00"), True, None)
     for err in ("provider", "auth", "timeout"):
         failed = (ok, PollRecord(at("08:01"), False, err))  # type: ignore[arg-type]
-        assert all_good(s, replace(b, polls=failed), ctx(at("08:02"))) is None
+        assert all_good(s, replace(b, records=failed), ctx(at("08:02"))) is None
     two = (ok, PollRecord(at("08:01"), False, "provider"), PollRecord(at("08:02"), False, "parse"))
-    assert all_good(s, replace(b, polls=two), ctx(at("08:02"))) is None
-    assert all_good(s, replace(b, polls=(ok,)), ctx(at("08:02"))) is not None
+    assert all_good(s, replace(b, records=two), ctx(at("08:02"))) is None
+    assert all_good(s, replace(b, records=(ok,)), ctx(at("08:02"))) is not None
 
 
 def test_relock_does_not_inherit_another_trains_announced_delay():  # 7.5, finding 5
@@ -338,13 +338,13 @@ def test_retained_warning_replacement_time_moves_by_news_steps():  # 7.5, findin
 
 def test_no_all_good_when_any_copy_says_the_change_is_not_possible():  # rule 20, finding 2
     s = occ(LOCK)
-    assert all_good(s, good_board(s, L1, L2), ctx(at("08:02"))) is not None
+    assert all_good(s, good_poll(s, L1, L2), ctx(at("08:02"))) is not None
     for flag in ({"change_possible": False}, {"reachable": False}):
         bad = replace(L1, **flag)
         one = answer_at("08:01", make_connection([L1, L2]), make_connection([bad, L2]))
         two = answer_at("08:01", make_connection([bad, L2]), make_connection([L1, L2]))
         for a in (one, two):
-            assert all_good(s, replace(board(s), answers=(a,)), ctx(at("08:02"))) is None
+            assert all_good(s, replace(poll_answers(s), answers=(a,)), ctx(at("08:02"))) is None
 
 
 def test_all_good_judges_every_copy_at_the_newest_fetch():  # rule 20, 7.12: in any order
@@ -354,7 +354,7 @@ def test_all_good_judges_every_copy_at_the_newest_fetch():  # rule 20, 7.12: in 
     planned = replace(L1, stops=(replace(L1.stops[0], departure=dep), *L1.stops[1:]))
     for x, y in ((L1, planned), (planned, L1)):
         a = answer_at("08:01", make_connection([x, L2]), make_connection([y, L2]))
-        assert all_good(s, replace(board(s), answers=(a,)), c) is None
+        assert all_good(s, replace(poll_answers(s), answers=(a,)), c) is None
 
     def on(track):
         board_stop = replace(L1.stops[0], planned_track="5", actual_track=track)
@@ -362,7 +362,7 @@ def test_all_good_judges_every_copy_at_the_newest_fetch():  # rule 20, 7.12: in 
 
     for x, y in ((on("5"), on("7")), (on("7"), on("5"))):
         a = answer_at("08:01", make_connection([x, L2]), make_connection([y, L2]))
-        e = all_good(s, replace(board(s), answers=(a,)), c)
+        e = all_good(s, replace(poll_answers(s), answers=(a,)), c)
         assert e is not None and e.text.endswith("platform 7.")
 
 

@@ -21,9 +21,9 @@ from train_commute_companion.delivery import (
 from train_commute_companion.health import WatchedLeg
 from train_commute_companion.lifecycle import (
     DELAY_NEWS,
-    Board,
     LegProgress,
     OccurrenceState,
+    PollAnswers,
     left_note,
     legacy_facts,
     merged_pool,
@@ -178,7 +178,9 @@ def _current_body(
                 return left_note(s, ctx, pool, j, i).body
         return None
     if e.kind is EventKind.ALL_GOOD:  # with the platform the latest answers give (7.9)
-        g = all_good(replace(s, all_good_evaluated=False), Board(answers, (), s.generation), ctx)
+        g = all_good(
+            replace(s, all_good_evaluated=False), PollAnswers(answers, (), s.generation), ctx
+        )
         return None if g is None else g.body
     return None
 
@@ -340,8 +342,8 @@ class LiveLedger:
             return False
         if s.lock.legs[0].train != e.train:  # it named the journey a relock replaced
             return False
-        board = Board(answers, (), s.generation)
-        return all_good(replace(s, all_good_evaluated=False), board, ctx) is not None
+        poll = PollAnswers(answers, (), s.generation)
+        return all_good(replace(s, all_good_evaluated=False), poll, ctx) is not None
 
     def _advice_holds(self, e: AlertEvent, s: OccurrenceState) -> bool:
         ctx, answers = self._ctx(s), self._memory.boards.get(okey(s.key), ())

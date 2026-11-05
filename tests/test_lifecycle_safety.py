@@ -384,20 +384,20 @@ def test_dst_fold_queries_and_onward_time_use_instants():  # 7.13
     out = make_leg("UT", "RTD", "02:20", "02:50", number="5678", day=night, fold_dep=1, fold_arr=1)
     s = occ(journey([inc, out], RIDE))
     now = fold("01:50", 0)
-    t = on_poll(s, ctx(now), board_at(s, now, conn(inc, out)))
+    t = on_poll(s, ctx(now), poll_answers_at(s, now, conn(inc, out)))
     assert t.state.lock is not None
     onward = t.state.lock.legs[0].onward_from
     assert onward is not None
     assert onward.astimezone(UTC) == fold("02:05", 1).astimezone(UTC) + timedelta(minutes=4)
 
 
-def board_at(s, now, *conns):
+def poll_answers_at(s, now, *conns):
     from train_commute_companion.health import PollRecord
-    from train_commute_companion.lifecycle import Board
+    from train_commute_companion.lifecycle import PollAnswers
     from train_commute_companion.providers.base import ProviderAnswer
 
     q = Query("AAA", "RTD", now)
-    return Board((ProviderAnswer(q, conns, now),), (PollRecord(now, True, None),), s.generation)
+    return PollAnswers((ProviderAnswer(q, conns, now),), (PollRecord(now, True, None),), s.generation)
 
 
 def test_late_acceptance_stops_at_the_150_minute_limit():  # rules 6, 7
@@ -447,7 +447,7 @@ def test_missing_recovery_answer_does_not_freeze_the_alighting_stop():  # 7.4
 
 def test_newer_cancellation_in_the_second_dst_hour_beats_the_first():  # 7.13
     from train_commute_companion.health import PollRecord
-    from train_commute_companion.lifecycle import Board
+    from train_commute_companion.lifecycle import PollAnswers
     from train_commute_companion.providers.base import ProviderAnswer
 
     night = date(2026, 10, 24)
@@ -460,7 +460,7 @@ def test_newer_cancellation_in_the_second_dst_hour_beats_the_first():  # 7.13
 
     s = occ(journey([runs]))
     now = fold("02:31", 1)
-    b = Board((answer(conn(runs), 0), answer(conn(gone), 1)), (PollRecord(now, True, None),), 1)
+    b = PollAnswers((answer(conn(runs), 0), answer(conn(gone), 1)), (PollRecord(now, True, None),), 1)
     t = on_poll(s, ctx(now, DIRECT), b)
     assert (EventKind.CANCELLED, Severity.LOUD) in kinds(t)
 
