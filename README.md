@@ -57,8 +57,8 @@ tcc check-profile profiles.yaml
 ```bash
 uv run --extra app pytest -q        # core and app tests (the extra installs the MCP SDK)
 uv run --extra app mypy src app/tcc_app
-# the published floors: Python 3.12 and httpx 0.27
-uv run --isolated --no-project --python 3.12 --with '.[app]' --with httpx==0.27.0 --with pytest --with pytest-asyncio pytest -q tests tests_app
+# the published floors: Python 3.12, httpx 0.27, PyYAML 6.0.1 and mcp 2.3
+uv run --isolated --no-project --python 3.12 --with '.[app]' --with httpx==0.27.0 --with PyYAML==6.0.1 --with mcp==2.3.0 --with pytest --with pytest-asyncio pytest -q tests tests_app
 uv run ruff check src tests tests_ha tests_app custom_components app
 
 # Home Assistant integration: Python 3.14.2+, in its own environment
