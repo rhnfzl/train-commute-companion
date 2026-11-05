@@ -25,8 +25,6 @@ from train_commute_companion.delivery import (
     pending_journey_warnings,
 )
 from train_commute_companion.health import (
-    PollFailure,
-    PollRecord,
     WatchedLeg,
     blindness,
     board_health,
@@ -111,7 +109,13 @@ from train_commute_companion.revisions import (
     signature_for,
 )
 from train_commute_companion.schedule import schedules_active
-from train_commute_companion.state import BaselineHistory, LookAheadLedger, OccurrenceState
+from train_commute_companion.state import (
+    BaselineHistory,
+    LookAheadLedger,
+    OccurrenceState,
+    PollFailure,
+    PollRecord,
+)
 from train_commute_companion.state_writer import StateWriter
 from train_commute_companion.store import PersistedState, StorageError, Store
 from train_commute_companion.view import RuntimeView, runtime_view

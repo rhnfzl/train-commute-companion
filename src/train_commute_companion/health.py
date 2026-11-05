@@ -3,24 +3,14 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Literal
 
 from train_commute_companion.calendar import to_utc
 from train_commute_companion.model import Observation, Provenance, TrainId
+from train_commute_companion.state import PollRecord
 
 FRESH_FOR = timedelta(minutes=5)
 ZONE = timedelta(minutes=30)
 FAILED_POLLS = 2
-
-
-PollFailure = Literal["auth", "rate", "provider", "parse", "timeout"]
-
-
-@dataclass(frozen=True, slots=True)
-class PollRecord:
-    at: datetime
-    ok: bool
-    error: PollFailure | None
 
 
 @dataclass(frozen=True, slots=True)

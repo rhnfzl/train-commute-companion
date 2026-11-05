@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from train_commute_companion.calendar import to_utc
-from train_commute_companion.health import PollFailure
 from train_commute_companion.providers.base import AuthError, RateLimited, ServerError
+from train_commute_companion.state import PollFailure
 
 POLL_EVERY_S = 120
 BACKOFF_MIN = (2, 4, 8)

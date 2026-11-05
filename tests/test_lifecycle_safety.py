@@ -391,9 +391,9 @@ def test_dst_fold_queries_and_onward_time_use_instants():  # 7.13
 
 
 def poll_answers_at(s, now, *conns):
-    from train_commute_companion.health import PollRecord
     from train_commute_companion.lifecycle import PollAnswers
     from train_commute_companion.providers.base import ProviderAnswer
+    from train_commute_companion.state import PollRecord
 
     q = Query("AAA", "RTD", now)
     return PollAnswers((ProviderAnswer(q, conns, now),), (PollRecord(now, True, None),), s.generation)
@@ -445,9 +445,9 @@ def test_missing_recovery_answer_does_not_freeze_the_alighting_stop():  # 7.4
 
 
 def test_newer_cancellation_in_the_second_dst_hour_beats_the_first():  # 7.13
-    from train_commute_companion.health import PollRecord
     from train_commute_companion.lifecycle import PollAnswers
     from train_commute_companion.providers.base import ProviderAnswer
+    from train_commute_companion.state import PollRecord
 
     night = date(2026, 10, 24)
     runs = make_leg("AAA", "RTD", "03:10", "03:50", number="1111", day=night)

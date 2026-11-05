@@ -17,7 +17,6 @@ from train_commute_companion.classify import (
     pair_transfer,
     served,
 )
-from train_commute_companion.health import PollRecord
 from train_commute_companion.location import STALE_LOCATION, LocationEvent
 from train_commute_companion.match import (
     matches_pattern,
@@ -71,6 +70,7 @@ from train_commute_companion.state import (
     LegProgress,
     LockSource,
     OccurrenceState,
+    PollRecord,
 )
 from train_commute_companion.transfer import check_transfer, transfer_minimum
 from train_commute_companion.unclear import disagreement, newest_copies, train_key

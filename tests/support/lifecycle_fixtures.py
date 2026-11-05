@@ -7,7 +7,6 @@ from datetime import date, datetime, time
 from builders import AMS, make_connection, make_leg
 from lookahead_fixtures import NEXT_TUE, NOW, OUT, P, confirmed, ledger
 
-from train_commute_companion.health import PollRecord
 from train_commute_companion.lifecycle import (
     PollAnswers,
     Transition,
@@ -41,6 +40,7 @@ from train_commute_companion.state import (
     Journey,
     LockSource,
     OccurrenceState,
+    PollRecord,
 )
 from train_commute_companion.store import PersistedState
 

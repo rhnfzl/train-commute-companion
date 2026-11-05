@@ -5,9 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
-from train_commute_companion.health import PollRecord
 from train_commute_companion.model import (
     AdviceRecord,
     DirectionState,
@@ -17,6 +16,15 @@ from train_commute_companion.model import (
     Signature,
     TrainId,
 )
+
+PollFailure = Literal["auth", "rate", "provider", "parse", "timeout"]
+
+
+@dataclass(frozen=True, slots=True)
+class PollRecord:
+    at: datetime
+    ok: bool
+    error: PollFailure | None
 
 
 class LockSource(StrEnum):

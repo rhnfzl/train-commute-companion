@@ -286,7 +286,7 @@ def test_no_all_good_when_any_copy_is_cancelled_whatever_the_order():
 
 
 def test_no_all_good_after_failed_polls_since_the_last_success():  # 7.11, rule 20
-    from train_commute_companion.health import PollRecord
+    from train_commute_companion.state import PollRecord
 
     s = occ(LOCK)
     b = good_poll(s, L1, L2)

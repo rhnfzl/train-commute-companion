@@ -3,13 +3,13 @@ from datetime import date, datetime, timedelta
 from builders import AMS
 
 from train_commute_companion.health import (
-    PollRecord,
     WatchedLeg,
     blindness,
     board_health,
     offline,
 )
 from train_commute_companion.model import Observation, Provenance, TrainId
+from train_commute_companion.state import PollRecord
 
 NOW = datetime(2026, 10, 27, 8, 0, tzinfo=AMS)
 REPORTED, PLANNED, MISSING = Provenance.REPORTED, Provenance.PLANNED, Provenance.MISSING
