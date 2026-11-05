@@ -171,14 +171,14 @@ def _assess_waiting(
     ride = ridden_journey(s, ctx, answer)
     # not seen in a healthy answer: the journey the user waits for is not there, so waiting
     # means the first later good train, like after a cancellation (7.6, rule 2)
-    broken = ride is None or is_unrideable(ride, answer, dict(prof.transfer_min))
-    cur = None if ride is None else current_connection(evidence(answer), ride)
+    if ride is None:
+        return None, True, True
+    broken = is_unrideable(ride, answer, dict(prof.transfer_min))
+    cur = current_connection(evidence(answer), ride)
     # a current copy ending before the destination has no arrival there (broken says so)
     ride_arr = (
         _arrival(cur)
-        if cur is not None
-        and ride is not None
-        and cur.legs[-1].alight.code == ride.legs[-1].alight.code
+        if cur is not None and cur.legs[-1].alight.code == ride.legs[-1].alight.code
         else None
     )
     limit = timedelta(minutes=prof.alerts.earlier_train_threshold_min)
@@ -342,7 +342,7 @@ def _withdraw(
         return record, []
     kind = classify_leg(leg, leg.alight.code).kind
     dep = leg.board.departure
-    t = dep.value if dep and dep.value else None
+    t = dep.value if dep else None
     if kind in (LegKind.CANCELLED, LegKind.CUT_SHORT) or t is None:
         return record, []
     if t.astimezone(UTC) < catch.not_before.astimezone(UTC):

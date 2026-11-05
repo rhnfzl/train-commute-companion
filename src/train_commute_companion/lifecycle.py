@@ -1072,7 +1072,7 @@ def _onward(
     """Expected arrival at the alighting stop plus the transfer minimum: the earliest onward
     departure, for every kind of break (7.4). UTC arithmetic keeps the DST fold (7.13)."""
     stop = next((st for st in cl.leg.stops[1:] if st.code == x.alight_stop and served(st)), None)
-    arr = None if stop is None or stop.arrival is None else stop.arrival
+    arr = None if stop is None else stop.arrival
     t = None if arr is None else arr.value or arr.planned
     if t is None:
         return None
@@ -1257,7 +1257,7 @@ def _check_cut_short(
         new = _journey(w.lock, legs[: i + 1], (), LockSource.RESTORE)
         note = make_event(w.ctx, cause.kind, cause.severity, f"{cause.text}.", cause.train)
         return _Proposal(Transition(_write(w.s, new), (note,)))
-    if (nxt is None and end == dest) or (nxt is not None and nxt.board_station == end):
+    if end == dest or (nxt is not None and nxt.board_station == end):
         return None
     original = nxt if nxt is not None and nxt.board_station == x.intended_alight else None
     asked_from = before.onward_from if before.alight_stop == end else None
