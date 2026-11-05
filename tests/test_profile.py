@@ -478,6 +478,7 @@ def with_field(line: str) -> tuple[str, str]:
             "must be two times",
         ),
         (with_field("transfer_min: 5"), "transfer_min", "must be a mapping"),
+        (with_field("transfer_min: {UT: 0}"), "transfer_min.UT", "of at least 1, got 0"),
         (with_field("alerts: 5"), "alerts", "must be a mapping"),
         (with_field("alerts: {quiet_hours: 5}"), "alerts.quiet_hours", "must be two times"),
         (
