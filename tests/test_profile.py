@@ -443,3 +443,72 @@ def test_station_radius_must_be_positive(bad):
     _, errors = parse_profiles(with_radius(LOCATED, bad), STATIONS)
     assert [e.path for e in errors] == ["profiles[0].location.station_radius_m"]
     assert errors[0].message == "must be a whole number of metres above 0"
+
+
+OUTBOUND = 'outbound: {first_train: "08:12", buffer_min: 10}'
+DAYS = "days: [tue, wed]"
+
+
+def with_field(line: str) -> tuple[str, str]:
+    return DAYS, f"{DAYS}\n    {line}"
+
+
+@pytest.mark.parametrize(
+    "edit, path, message",
+    [
+        (with_field("colour: red"), "colour", "unknown field 'colour'"),
+        ((DAYS, "days: tue"), "days", "must be a list such as [tue, wed]"),
+        ((DAYS, "days: [tue, funday]"), "days[1]", "not a weekday: 'funday'"),
+        ((DAYS, "days: [tue, 3]"), "days[1]", "not a weekday: 3"),
+        ((DAYS, "days: []"), "days", "would never run"),
+        ((DAYS, "days: []\n    extra_dates: 5"), "extra_dates", "must be a list"),
+        (('name: "office_a"', 'name: "!!!"'), "name", "missing or empty name"),
+        (('name: "office_a"', "name: 5"), "name", "missing or empty name"),
+        (with_field("skip_public_holidays: 5"), "skip_public_holidays", "must be true or false"),
+        (('home_station: "AAA"', "home_station: 5"), "home_station", "not a station code"),
+        ((OUTBOUND, "outbound: 5"), "outbound", "missing or not a mapping"),
+        (
+            (OUTBOUND, 'outbound: {first_train: "08:12", transfers: UT, buffer_min: 10}'),
+            "outbound.transfers",
+            "must be a list of station codes",
+        ),
+        (
+            (OUTBOUND, 'outbound: {first_train: "08:12", window: "x", buffer_min: 10}'),
+            "outbound.window",
+            "must be two times",
+        ),
+        (with_field("transfer_min: 5"), "transfer_min", "must be a mapping"),
+        (with_field("alerts: 5"), "alerts", "must be a mapping"),
+        (with_field("alerts: {quiet_hours: 5}"), "alerts.quiet_hours", "must be two times"),
+        (
+            with_field('alerts: {quiet_hours: ["x", "07:12"]}'),
+            "alerts.quiet_hours[0]",
+            "not a valid time",
+        ),
+        (with_field("location: 5"), "location", "must be a mapping or null"),
+        (with_field("location: {source: pigeon}"), "location.source", "must be one of"),
+        (with_field("location: {source: ha, entity: 5}"), "location.entity", "must be text"),
+        (with_field("location: {source: ha}"), "location.entity", "source ha needs an entity"),
+        (
+            with_field("location: {source: ha, entity: person.someone, zones: 5}"),
+            "location.zones",
+            "must map names",
+        ),
+    ],
+)
+def test_a_bad_field_is_named_and_refuses_the_profile(edit, path, message):
+    profiles, errs = parse_profiles(one(edit), None)
+    assert profiles == [] and [e.path for e in errs] == [f"profiles[0].{path}"]
+    assert message in errs[0].message
+
+
+def test_check_lines_warns_on_alert_times_in_the_clock_change_hour():
+    text = one(
+        with_field('alerts: {latest_acceptable_arrival: "02:30", quiet_hours: ["02:15", "07:12"]}')
+    )
+    _, lines = check_lines(text, None, TODAY)
+    warned = [x for x in lines if x.startswith("warning:")]
+    assert [x.split(":")[1].strip() for x in warned] == [
+        "office_a.alerts.latest_acceptable_arrival",
+        "office_a.alerts.quiet_hours[0]",
+    ]
