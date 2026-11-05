@@ -25,6 +25,7 @@ from harness import (
     write_profiles,
 )
 from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER
+from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
@@ -208,7 +209,7 @@ async def test_key_rejected_starts_reauth_and_new_key_reloads(hass):
 # --- options flow ---
 
 
-def add_entry(hass, **options):
+def add_entry(hass: HomeAssistant, **options: object) -> MockConfigEntry:
     write_profiles(hass, PROFILE)
     entry = MockConfigEntry(
         domain=DOMAIN,

@@ -29,6 +29,7 @@ from harness import (
     write_profiles,
 )
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.core import ServiceCall
 from homeassistant.helpers import issue_registry as ir
 from runtime_rig import usual_on
 from webhook_receiver import Receiver
@@ -220,7 +221,7 @@ async def reload_file(h: Harness) -> None:
     await h.hass.async_block_till_done()
 
 
-def refusals(h: Harness) -> list:
+def refusals(h: Harness) -> list[ServiceCall]:
     return [c for c in h.pushes if "profile change refused" in c.data["message"]]
 
 

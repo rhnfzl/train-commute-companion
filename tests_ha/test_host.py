@@ -3,6 +3,7 @@ import logging
 import shutil
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -37,7 +38,9 @@ async def crash_poll() -> None:
     raise Crash
 
 
-def builder(tmp_path: Path, *, crash: bool = False, closed: list[bool] | None = None):
+def builder(
+    tmp_path: Path, *, crash: bool = False, closed: list[bool] | None = None
+) -> Callable[[], Parts]:
     path = tmp_path / "profiles.yaml"
     shutil.copy(PROFILES / "tue_wed_and_thu.yaml", path)
 

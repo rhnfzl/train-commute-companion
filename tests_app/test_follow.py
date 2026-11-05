@@ -196,8 +196,10 @@ async def test_fixes_across_the_autumn_repeat_hour_keep_their_order(app):
     assert spied(app) == [("UT", "enter")]
 
 
-def location_update(kind: str, hhmm: str, lat: object, lon: object, **extra: object) -> dict:
-    body: dict = {"message_id": 1, "chat": {"id": CHAT}, "date": int(at("08:20").timestamp()),
+def location_update(
+    kind: str, hhmm: str, lat: object, lon: object, **extra: object
+) -> dict[str, object]:
+    body: dict[str, object] = {"message_id": 1, "chat": {"id": CHAT}, "date": int(at("08:20").timestamp()),
                   "location": {"latitude": lat, "longitude": lon, **extra}}  # fmt: skip
     if kind == "edited_message":  # live location: each move edits the first message
         body["edit_date"] = int(at(hhmm).timestamp())

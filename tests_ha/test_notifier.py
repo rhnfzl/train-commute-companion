@@ -7,13 +7,19 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import ClientError
 from harness import fake_phone
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
+    MockUser,
     async_capture_events,
     async_mock_service,
+)
+from pytest_homeassistant_custom_component.typing import (
+    MockHAClientWebSocket,
+    WebSocketGenerator,
 )
 
 from custom_components.train_commute_companion import notifier as notifier_mod
@@ -214,7 +220,7 @@ PHONE = {
 
 
 @pytest.fixture
-async def phone(hass, hass_admin_user):
+async def phone(hass: HomeAssistant, hass_admin_user: MockUser) -> MockConfigEntry:
     assert await async_setup_component(hass, "http", {})
     assert await async_setup_component(hass, "mobile_app", {})
     entry = MockConfigEntry(
@@ -262,7 +268,9 @@ async def test_real_relay_timeout_backs_off(hass, aioclient_mock, phone):
     assert aioclient_mock.call_count == 1  # the second failed fast, no relay call
 
 
-async def open_channel(hass, hass_ws_client, confirm=True):
+async def open_channel(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, confirm: bool = True
+) -> MockHAClientWebSocket:
     ws = await hass_ws_client(hass)
     await ws.send_json(
         {
@@ -436,7 +444,12 @@ async def test_colliding_phone_names_use_the_phone_ha_targets(
     assert [str(c[1]) for c in aioclient_mock.mock_calls] == [RELAY + "/b"]
 
 
-async def pending_local_push(hass, hass_ws_client, phone, monkeypatch):
+async def pending_local_push(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    phone: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[HaNotifier, asyncio.Task[bool]]:
     """A send whose local push went out and waits for a confirmation that never comes."""
     monkeypatch.setattr(
         "homeassistant.components.mobile_app.push_notification.PUSH_CONFIRM_TIMEOUT", 0.05

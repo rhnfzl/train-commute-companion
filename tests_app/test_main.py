@@ -28,7 +28,7 @@ from tcc_app.main import App, Settings, main, serve, setup_logging
 from tcc_app.web import ask_readout, health_report, mcp_socket_path, start_readout
 from webhook_receiver import Receiver
 
-from train_commute_companion.model import EventKind, Leaving
+from train_commute_companion.model import EventKind, Leaving, WebhookCopy
 from train_commute_companion.store import JsonFileStore
 from train_commute_companion.webhook_send import WebhookPoster
 
@@ -326,7 +326,7 @@ async def test_build_adds_a_poster_only_when_webhooks_are_set(tmp_path, tg):
     assert app.bot._webhook_test is not None
 
 
-def stored_copies(tmp_path: Path) -> tuple:
+def stored_copies(tmp_path: Path) -> tuple[WebhookCopy, ...]:
     return JsonFileStore(tmp_path / "tcc-state.json").load().webhook_copies
 
 

@@ -21,6 +21,7 @@ from train_commute_companion.model import (
     NotTravelling,
     OccurrenceKey,
 )
+from train_commute_companion.runtime import Runtime
 from train_commute_companion.view import DirectionInfo, OccurrenceView, RuntimeView
 
 pytestmark = pytest.mark.usefixtures("tcc_freezer")
@@ -237,7 +238,7 @@ async def test_attributes_are_json_primitives(hass):
     h = await setup_tcc(hass, PROFILE)
     await drive(h, "08:20")
 
-    def retain(rt):
+    def retain(rt: Runtime) -> None:
         s = only_occurrence(rt)
         kept = journey([make_leg("AAA", "UT", "08:12", "08:40", number="1234")], (LegState.DONE,))
         seam.seed_state(

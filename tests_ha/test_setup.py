@@ -3,6 +3,7 @@ import logging
 import os
 import threading
 import time as wall
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, time, timedelta
 from unittest.mock import AsyncMock, Mock
@@ -19,6 +20,7 @@ from harness import (
     PROFILES,
     SECRET,
     URL,
+    Harness,
     drive,
     open_webhooks,
     prepare,
@@ -32,6 +34,7 @@ from harness import (
 )
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import (
@@ -48,6 +51,7 @@ from custom_components.train_commute_companion.coordinator import TccCoordinator
 from train_commute_companion import store as core_store
 from train_commute_companion.lookahead_probe import BaselineHistory, BaselineVersion
 from train_commute_companion.model import EventKind, Signature, SignatureLeg
+from train_commute_companion.runtime import Runtime
 from train_commute_companion.store import JsonFileStore, StorageError
 
 pytestmark = pytest.mark.usefixtures("tcc_freezer")
@@ -417,10 +421,16 @@ async def test_blocked_runtime_reloads_and_is_retired(hass):
     assert old._thread is None
 
 
-def pause_old_thread(old_thread, gate, entered, fn, then=None):
+def pause_old_thread(
+    old_thread: threading.Thread | None,
+    gate: threading.Event,
+    entered: threading.Event,
+    fn: Callable[..., object],
+    then: Callable[..., object] | None = None,
+) -> Callable[..., object]:
     """`fn`, but on the old runtime thread it waits for `gate` first, then calls `then` if given."""
 
-    def wrapped(*args):
+    def wrapped(*args: object) -> object:
         if threading.current_thread() is old_thread:
             entered.set()
             gate.wait(30)
@@ -431,7 +441,9 @@ def pause_old_thread(old_thread, gate, entered, fn, then=None):
     return wrapped
 
 
-async def start_old_storage_call(hass, h, call):
+async def start_old_storage_call(
+    hass: HomeAssistant, h: Harness, call: Callable[[Runtime], object]
+) -> tuple[asyncio.Task[object], threading.Event]:
     """Runs `call` on the old runtime, to be paused inside storage. Returns its task and an event
     set once any other thread reads the state file."""
     harness.PATCH.setattr(host_mod, "JOIN_TIMEOUT_S", 0.2)

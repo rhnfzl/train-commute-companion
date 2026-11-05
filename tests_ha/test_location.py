@@ -9,6 +9,7 @@ from harness import (
     PROFILE,
     PROFILES,
     STATIONS,
+    Harness,
     drive,
     profiles_path,
     rebound,
@@ -65,7 +66,7 @@ def spy_on_location(rt: Runtime, calls: list[tuple[str | None, LocationKind]]) -
     rt.location = spy
 
 
-async def start_tracker(h):
+async def start_tracker(h: Harness) -> None:
     """Seeds from the person state now: the tracker restarts, and a spy records what it sends."""
     await h.hass.async_block_till_done()  # events of the setup are not under test
     h.calls = calls = []
@@ -418,7 +419,9 @@ async def switch_away_and_back(h) -> None:
     await h.entry.runtime_data.coordinator.async_refresh()
 
 
-def hold_trips(h, monkeypatch):
+def hold_trips(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> tuple[threading.Event, asyncio.Event]:
     """The first NS request waits on `release` (set on the runtime loop); `hit` marks it."""
     hit, release = threading.Event(), asyncio.Event()
     real = h.provider.trips

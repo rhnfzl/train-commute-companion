@@ -28,7 +28,7 @@ from custom_components.train_commute_companion import host as host_mod
 from custom_components.train_commute_companion import notifier as notifier_mod
 from custom_components.train_commute_companion.const import DOMAIN
 from custom_components.train_commute_companion.host import RuntimeHost
-from train_commute_companion.model import Connection
+from train_commute_companion.model import Connection, WebhookCopy
 from train_commute_companion.providers.base import (
     PlannedWorks,
     ProviderAnswer,
@@ -285,7 +285,7 @@ async def submit(hass, r, urls="", secret="", token=""):
     return r
 
 
-def stored_copies(hass, entry) -> tuple:
+def stored_copies(hass: HomeAssistant, entry: MockConfigEntry) -> tuple[WebhookCopy, ...]:
     return JsonFileStore(state_path(hass, entry)).load().webhook_copies
 
 

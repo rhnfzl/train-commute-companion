@@ -223,7 +223,7 @@ async def test_bad_requests_get_a_fixed_error_and_never_stall_the_loop(
     assert await _exchange(sock, b"") == b""  # sends nothing: closed on the timeout
     assert time.monotonic() - t0 < 4  # the patched budget, not the 5 s default
 
-    def boom(req: object) -> dict:
+    def boom(req: object) -> dict[str, object]:
         raise RuntimeError("boom-detail")
 
     current = boom

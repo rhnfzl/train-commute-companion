@@ -312,7 +312,7 @@ def directions(*names: str) -> tuple[DirectionInfo, ...]:
 def leg_view(
     dep="08:12", delay=None, platform=None, state=LegKind.OK, board="AAA", alight="UT",
     reported=True, arr=None, planned_arr=None, progress=LegState.PENDING,
-):  # fmt: skip
+) -> LegView:  # fmt: skip
     t = at(dep)
     return LegView(
         "1234",
