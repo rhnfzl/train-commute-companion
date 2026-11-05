@@ -204,11 +204,11 @@ class _Draft:
     def add_entry(self, key: str, entry: str) -> None:
         self.per_date[key] = (*self.per_date.get(key, ()), entry)
 
-    def own(self, sd: date, key: str, entry: str) -> None:
+    def add_owned_entry(self, sd: date, key: str, entry: str) -> None:
         self.add_entry(key, entry)
         self.owned.setdefault(sd, []).append((key, len(self.per_date[key]) - 1))
 
-    def tell(self, sd: date, fact: LookAheadFact) -> None:
+    def add_fact(self, sd: date, fact: LookAheadFact) -> None:
         self.facts.setdefault(sd, []).append(fact)
 
     def retire(self, w: BaselineVersion, text: str) -> None:
@@ -225,7 +225,7 @@ class _Draft:
             if rest and o.look_ahead is not None:
                 self.carried.append(_Bundle(o.look_ahead[2], rest, o.id, o.expires_at))
         if not untold:
-            self.tell(
+            self.add_fact(
                 w.effective_from,
                 LookAheadFact(cancel_key(w.version), text, loud=False, warning=False),
             )
@@ -345,7 +345,7 @@ def _adopt(
     tag = adopt_key(adopted.version)
     draft.add_entry(day_key(expected[0], None), tag)
     when = f"{expected[0]:%A} {expected[0].day} {expected[0]:%b}"
-    draft.tell(
+    draft.add_fact(
         expected[0],
         LookAheadFact(
             tag,
@@ -405,18 +405,18 @@ def _probe_facts(
                     continue  # already told at this severity
                 fact += "|loud"  # rule 4: told silent, now tomorrow: once more, loud
             else:
-                draft.own(sd, key, f"warn:{r.fingerprint}")
+                draft.add_owned_entry(sd, key, f"warn:{r.fingerprint}")
             if loud:
-                draft.own(sd, key, f"loud:{r.fingerprint}")
-            draft.tell(sd, LookAheadFact(fact, _warn_text(r, p, exp), loud, r.works))
+                draft.add_owned_entry(sd, key, f"loud:{r.fingerprint}")
+            draft.add_fact(sd, LookAheadFact(fact, _warn_text(r, p, exp), loud, r.works))
             if probed_end(r) is None:
                 unsure.add(sd)
         elif last is not None and last.startswith("warn:"):
-            draft.own(sd, key, f"restored:{r.fingerprint}")
+            draft.add_owned_entry(sd, key, f"restored:{r.fingerprint}")
             if adopted is not None and last == f"warn:{r.fingerprint}":
                 continue  # the warned change is what this run adopted: told by the adoption
             what = _leg_name(r, p)
-            draft.tell(
+            draft.add_fact(
                 sd,
                 LookAheadFact(
                     f"{key}|restored", f"your {what} is back to normal", loud=False, warning=False
@@ -428,7 +428,7 @@ def _probe_facts(
 
 
 @dataclass(frozen=True, slots=True)
-class _Writer:
+class _MessageBuilder:
     """Builds the stored messages of one finished judgment."""
 
     p: Profile
@@ -494,7 +494,9 @@ class _Writer:
         return max([base_end, *(e for e in ends if e is not None)])
 
 
-def _fact_messages(draft: _Draft, w: _Writer, adopted: BaselineVersion | None) -> list[AlertEvent]:
+def _fact_messages(
+    draft: _Draft, w: _MessageBuilder, adopted: BaselineVersion | None
+) -> list[AlertEvent]:
     """One message per direction and date, no cap, with what a retire left after them."""
     events: list[AlertEvent] = []
     for b in [*(_Bundle(sd, fs) for sd, fs in sorted(draft.facts.items())), *draft.carried]:
@@ -524,7 +526,7 @@ def _fact_messages(draft: _Draft, w: _Writer, adopted: BaselineVersion | None) -
     return events
 
 
-def _unclear_messages(draft: _Draft, w: _Writer) -> list[AlertEvent]:
+def _unclear_messages(draft: _Draft, w: _MessageBuilder) -> list[AlertEvent]:
     """Rule 23: copies of one train in one answer that disagree, once per train, date and
     values; its own loud message, gated only by its ledger mark."""
     events: list[AlertEvent] = []
@@ -555,7 +557,7 @@ def _unclear_messages(draft: _Draft, w: _Writer) -> list[AlertEvent]:
 
 
 def _refusal_messages(
-    draft: _Draft, w: _Writer, refusals: Sequence[str], today: date
+    draft: _Draft, w: _MessageBuilder, refusals: Sequence[str], today: date
 ) -> list[AlertEvent]:
     """A blocked adoption is told while it lasts."""
     events: list[AlertEvent] = []
@@ -621,7 +623,7 @@ def run_lookahead(
     final = draft.history()
     unsure = _probe_facts(draft, p, d, results, final, adopted, today)
 
-    w = _Writer(p, d, revision, now, final, results, unsure)
+    w = _MessageBuilder(p, d, revision, now, final, results, unsure)
     events = [
         *_fact_messages(draft, w, adopted),
         *_unclear_messages(draft, w),
