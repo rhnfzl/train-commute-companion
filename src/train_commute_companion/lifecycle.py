@@ -399,7 +399,12 @@ def keep_stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
     return Transition(replace(s, alert_keys=keys) if keys != s.alert_keys else s, tuple(out))
 
 
-def _event_key(ctx: Ctx, kind: EventKind, train: TrainId | None, facts: str) -> str:
+def _on_prefix(j: Journey) -> str:
+    """A retained journey's warnings open with this, so it says which train it is about."""
+    return f"if you are on the {hhmm(j.legs[0].train.planned_departure)}: "
+
+
+def _event_key(ctx: Ctx, kind: EventKind, train: TrainId | None, key_facts: str) -> str:
     ident = "" if train is None else f":{train_ident(train)}"
     return f"{kind.value}:{ctx.schedule.key.service_date.isoformat()}{ident}:{facts}"
 
@@ -1519,7 +1524,7 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
     events += more
     seen: dict[str, tuple[LegProgress, set[str], str]] = {}
     for j in ((s.lock,) if live and s.lock else ()) + s.retained:
-        on = "" if j is s.lock else f"if you are on the {hhmm(j.legs[0].train.planned_departure)}: "
+        on = "" if j is s.lock else _on_prefix(j)
         for x in j.legs:
             if not _observed(x, ctx.now):
                 continue
@@ -1546,7 +1551,7 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
         # rule 7: a retained remainder gets the locked-journey checks but is never relocked, so
         # it keeps its observed progress and what the checks say, with the next good connection
         first = r.legs[0].train
-        on = f"if you are on the {hhmm(first.planned_departure)}: "
+        on = _on_prefix(r)
         alone = replace(s, lock=r, retained=(), cancellation_history=())
         t = _follow(alone, ctx, pool, asked, relock=False)
         retained.append(present(t.state.lock))
@@ -1638,7 +1643,7 @@ def _accept_all(
         events += es
     retained = []
     for r in s.retained:
-        on = f"if you are on the {hhmm(r.legs[0].train.planned_departure)}: "
+        on = _on_prefix(r)
         r, es = _accept_journey(ctx, r, pool, on)
         retained.append(r)
         events += es
@@ -1915,7 +1920,7 @@ def _journey_end(
     now = to_utc(ctx.now)
     last = j.legs[-1]
     first = j.legs[0].train
-    on = f"if you are on the {hhmm(first.planned_departure)}: " if retained else ""
+    on = _on_prefix(j) if retained else ""
     train = first if retained else None
     limit = to_utc(j.planned_final_arrival) + FOLLOW_LIMIT
     if last.state is LegState.DONE:
