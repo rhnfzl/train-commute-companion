@@ -160,7 +160,7 @@ async def test_runtime_crash_ends_serve_with_1(tmp_path, tg):
     ticks = []
 
     async def boom():
-        await asyncio.sleep(0.05)  # the watchdog is running by now
+        await until(lambda: ticks)
         raise RuntimeError("start failed")
 
     async def tick():
