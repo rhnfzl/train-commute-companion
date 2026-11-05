@@ -364,6 +364,19 @@ async def test_source_change_during_pending_work_drops_it(hass, text):
     assert await spied(h) == []
 
 
+@pytest.mark.parametrize("text", [TELEGRAM, OFF, OTHER], ids=["telegram", "disabled", "replaced"])
+async def test_source_change_during_a_send_drops_the_rest_of_the_fix(hass, text, monkeypatch):
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *HOME)
+    await start_tracker(h)
+    hit, release = hold_trips(h, monkeypatch)
+    set_person(hass, 52.1, 5.1)  # a leave of home, held in its NS request, then an enter of UT
+    assert await hass.async_add_executor_job(hit.wait, 30)
+    await reload_profiles(h, text)
+    await h.host.run(lambda rt: release.set())
+    assert await spied(h) == [("home", "leave")]
+
+
 def evidence(rt: Runtime) -> list[str]:
     return [z for s in rt.state.occurrences.values() for z in s.zone_reports]
 

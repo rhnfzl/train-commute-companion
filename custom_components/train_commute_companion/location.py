@@ -93,7 +93,7 @@ class LocationTracker:
         # profile id -> (entity, source epoch): the entity lower case like HA's ids, the epoch
         # from the same coordinator view; a change of either is a new source
         self._tracked: dict[str, tuple[str, int]] = {}
-        # profile id -> token of its current source; work queued under an older token is dropped
+        # profile id -> token of its current source; a send under an older token is dropped
         self._gen: dict[str, object] = {}
         self._unsub_state: CALLBACK_TYPE | None = None
         self._unsub_data: CALLBACK_TYPE | None = None
@@ -185,10 +185,10 @@ class LocationTracker:
         *,
         seed: bool = False,
     ) -> None:
-        """`gen` is the source token at the change: a switch, disable or new entity since then
-        drops the work, so evidence of an old source never reaches the core. `epoch` is the
-        core's location epoch when the fix arrived: work queued behind the lock while the source
-        changed (a switch back included) is dropped here and again by the core."""
+        """`epoch` is the core's location epoch when the fix arrived: work queued behind the lock
+        while the source changed (a switch back included) is dropped here and again by the core.
+        A new token always comes with a new epoch, so only the sends of a fix, which outlast the
+        check, read `gen`: the rest of a fix's events are not dispatched for an old source."""
         async with self._locks.setdefault(pid, asyncio.Lock()):
             try:
                 await self._apply_fix(pid, gen, epoch, pos, at, acc, seed)
@@ -207,8 +207,6 @@ class LocationTracker:
         acc: float | None,
         seed: bool,
     ) -> None:
-        if self._gen.get(pid) is not gen:  # the source changed while this waited for the lock
-            return
         data = self._coordinator.data
         profile = next((p for p in data.profiles if p.id == pid), None)
         if profile is None or profile.location is None:
