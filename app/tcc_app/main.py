@@ -73,18 +73,6 @@ def _lookahead_at(env: Mapping[str, str]) -> time:
         raise ValueError("TCC_LOOKAHEAD_AT must be HH:MM") from None
 
 
-def _health_token(env: Mapping[str, str]) -> str | None:
-    token = _optional(env, "TCC_HEALTH_TOKEN")
-    # headers are parsed as stripped Latin-1, so anything else could never match
-    if token is not None and not (
-        len(token) >= 16 and token.isascii() and token.isprintable() and " " not in token
-    ):
-        raise ValueError(
-            "TCC_HEALTH_TOKEN must be at least 16 characters of printable ASCII without spaces"
-        )
-    return token
-
-
 @dataclass(frozen=True, slots=True)
 class Settings:
     ns_key: str
@@ -107,7 +95,7 @@ class Settings:
         bot_token = _required(env, "TELEGRAM_BOT_TOKEN")
         chat_id = _chat_id(env)
         lookahead_at = _lookahead_at(env)
-        health_token = _health_token(env)
+        health_token = _optional(env, "TCC_HEALTH_TOKEN")
         try:
             webhook_urls = parse_urls(env.get("TCC_WEBHOOK_URLS", ""))
         except ValueError as e:
@@ -119,6 +107,7 @@ class Settings:
         owntracks_secret = _optional(env, "OWNTRACKS_SECRET")
         for name, value, check in (
             ("OWNTRACKS_SECRET", owntracks_secret, check_token),
+            ("TCC_HEALTH_TOKEN", health_token, check_token),
             ("TCC_WEBHOOK_SECRET", webhook_secret, check_secret),
             ("TCC_WEBHOOK_TOKEN", webhook_token, check_token),
         ):
