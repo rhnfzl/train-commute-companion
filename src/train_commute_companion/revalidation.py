@@ -218,9 +218,9 @@ class LiveLedger:
         """Rule 5(b): the stored facts of a look-ahead message that still hold: a per-date fact
         while it is the latest one the ledger records for its leg (a `...|unclear:<fp>` fact
         holds while `unclear:<fp>` is the latest unclear mark of its key); an adoption or its
-        withdrawal always (judged by `baseline_version`). None when no facts were stored for it
-        (stored before facts were kept). Reads the stored facts, never o.fact_key: ";" also
-        joins the legs inside a whole-journey fingerprint."""
+        withdrawal always (judged by `baseline_version`). None when its ledger holds no facts for
+        it, as for a message stored before facts were kept: they cannot be rebuilt on load, since
+        ";" also joins the legs inside a whole-journey fingerprint, so never reads o.fact_key."""
         assert o.look_ahead is not None
         led = self._state.lookahead.get(direction_key(o.look_ahead[0], o.look_ahead[1]))
         if led is None or not (fs := led.facts.get(o.id)):
@@ -250,9 +250,9 @@ class LiveLedger:
         facts still holds. An adoption or its withdrawal keeps the whole message."""
         live = self._live_facts(o)
         if live is None or any(f.adopts or f.cancels for f in live):
-            return True  # stored before facts were kept, or an adoption: judged as before
-        # o.expires_at (the dated journey end) drops it in revalidate; without one (stored before
-        # it was kept, or no baseline) the end is unknown: kept until two days after its date
+            return True  # no facts to judge, or an adoption: the whole message holds
+        # o.expires_at (the dated journey end) drops it in revalidate; without one (no baseline,
+        # or a message stored before it was kept) the end is unknown: kept until two days after
         today = self._now().astimezone(TZ).date()
         if o.expires_at is None and day + timedelta(days=2) <= today:
             return False
