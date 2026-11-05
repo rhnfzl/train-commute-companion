@@ -37,11 +37,11 @@ class TccButton(TccEntity, ButtonEntity):
     async def async_press(self) -> None:
         pid, name, d = self.profile_id, self.profile_name, self.direction
         if self.key == "leaving":
-            await do_leaving(self.data, pid, name, None, d)
+            await do_leaving(self.data, pid, name, direction=d)
         elif self.key == "not_travelling":
-            await do_not_travelling(self.data, pid, name, None, d, False)
+            await do_not_travelling(self.data, pid, name, direction=d)
         elif self.key == "not_travelling_today":
-            await do_not_travelling(self.data, pid, name, None, None, True)
+            await do_not_travelling(self.data, pid, name, whole_day=True)
         else:
             await self._choose_next()
 
@@ -65,9 +65,9 @@ class TccButton(TccEntity, ButtonEntity):
             self.data,
             self.profile_id,
             train.planned_departure.astimezone(TZ).time(),
-            train.train_number,
-            occ.key.service_date,
-            self.direction,
+            train_number=train.train_number,
+            service_date=occ.key.service_date,
+            direction=self.direction,
         )
 
 

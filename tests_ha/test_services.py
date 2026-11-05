@@ -14,6 +14,7 @@ from custom_components.train_commute_companion import services
 from custom_components.train_commute_companion.const import DOMAIN
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.model import Direction, DirectionState, OccurrenceKey
+from train_commute_companion.providers.base import ProviderError
 from train_commute_companion.runtime import fresh_state
 
 pytestmark = pytest.mark.usefixtures("tcc_freezer")
@@ -170,6 +171,14 @@ async def test_choose_next_locks_the_shown_connection_not_an_earlier_broken_one(
     s = await h.host.run(lambda rt: only_occurrence(rt))
     assert [x.train.planned_departure for x in s.lock.legs] == [at("08:44"), at("09:16")]
     assert not refused(h)
+
+
+async def test_ns_failure_is_no_invalid_input(hass):
+    h = await setup_tcc(hass, PROFILE)
+    h.provider.error = lambda q: ProviderError("down")
+    with pytest.raises(HomeAssistantError, match="NS did not answer") as e:
+        await call(hass, "choose", profile="office_a", departure="08:44")
+    assert not isinstance(e.value, ServiceValidationError)
 
 
 async def test_choose_raises_with_the_refusal_when_no_connection_passes(hass):  # 7.12 r1

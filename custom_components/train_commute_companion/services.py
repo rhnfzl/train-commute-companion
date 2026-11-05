@@ -10,8 +10,8 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 
-from train_commute_companion.messages import no_journey_text
-from train_commute_companion.model import Direction, NotTravelling
+from train_commute_companion.messages import RefusalKind, Refused, no_journey_text
+from train_commute_companion.model import Direction
 from train_commute_companion.runtime import Runtime
 
 from .const import DOMAIN
@@ -75,11 +75,12 @@ async def do_choose(
     data: TccData,
     profile_id: str,
     departure: time,
-    train_number: str | None,
-    service_date: date | None,
-    direction: Direction | None,
+    *,
+    train_number: str | None = None,
+    service_date: date | None = None,
+    direction: Direction | None = None,
 ) -> None:
-    reason = await _call_runtime(
+    refused = await _call_runtime(
         data,
         lambda rt: rt.choose_at(
             profile_id,
@@ -89,64 +90,82 @@ async def do_choose(
             direction=direction,
         ),
     )
-    await _refresh_or_refuse(data, reason)
+    await _refresh_or_refuse(data, refused)
 
 
-async def _refresh_or_refuse(data: TccData, reason: str | None) -> None:
+async def _refresh_or_refuse(
+    data: TccData, refused: Refused | None, name: str | None = None
+) -> None:
+    """A try-again is no invalid input. `name`: no journey is told by the profile as configured,
+    not in the core's display form."""
     await data.coordinator.async_request_refresh()
-    if reason is not None:
-        raise ServiceValidationError(reason)
-
-
-def _refused_as(name: str, reason: str | None) -> str | None:
-    """These two refusals name the profile as configured, not in the core's display form."""
-    return None if reason is None else no_journey_text(name)
+    if refused is None:
+        return
+    if refused.kind is RefusalKind.RETRY:
+        raise HomeAssistantError(refused.text)
+    if name is not None and refused.kind is RefusalKind.NO_JOURNEY:
+        raise ServiceValidationError(no_journey_text(name))
+    raise ServiceValidationError(refused.text)
 
 
 async def do_leaving(
     data: TccData,
     profile_id: str,
     name: str,
-    service_date: date | None,
-    direction: Direction | None,
+    *,
+    service_date: date | None = None,
+    direction: Direction | None = None,
 ) -> None:
-    reason = await _call_runtime(data, lambda rt: rt.leaving(profile_id, service_date, direction))
-    await _refresh_or_refuse(data, _refused_as(name, reason))
+    refused = await _call_runtime(data, lambda rt: rt.leaving(profile_id, service_date, direction))
+    await _refresh_or_refuse(data, refused, name)
 
 
 async def do_not_travelling(
     data: TccData,
     profile_id: str,
     name: str,
-    service_date: date | None,
-    direction: Direction | None,
-    whole_day: bool,
+    *,
+    service_date: date | None = None,
+    direction: Direction | None = None,
+    whole_day: bool = False,
 ) -> None:
-    reason = await _call_runtime(
-        data, lambda rt: rt.act(profile_id, NotTravelling(service_date, whole_day), direction)
+    refused = await _call_runtime(
+        data, lambda rt: rt.not_travelling(profile_id, service_date, direction, whole_day=whole_day)
     )
-    await _refresh_or_refuse(data, _refused_as(name, reason))
+    await _refresh_or_refuse(data, refused, name)
 
 
 async def _handle_choose(call: ServiceCall) -> None:
     d = call.data
     data, pid, _ = resolve_profile(call.hass, d["profile"])
     await do_choose(
-        data, pid, d["departure"], d.get("train_number"), d.get("service_date"), d.get("direction")
+        data,
+        pid,
+        d["departure"],
+        train_number=d.get("train_number"),
+        service_date=d.get("service_date"),
+        direction=d.get("direction"),
     )
 
 
 async def _handle_leaving(call: ServiceCall) -> None:
     d = call.data
     data, pid, name = resolve_profile(call.hass, d["profile"])
-    await do_leaving(data, pid, name, d.get("service_date"), d.get("direction"))
+    await do_leaving(
+        data, pid, name, service_date=d.get("service_date"), direction=d.get("direction")
+    )
 
 
 async def _handle_not_travelling(call: ServiceCall) -> None:
     d = call.data
     data, pid, name = resolve_profile(call.hass, d["profile"])
     await do_not_travelling(
-        data, pid, name, d.get("service_date"), d.get("direction"), d["whole_day"]
+        data,
+        pid,
+        name,
+        service_date=d.get("service_date"),
+        direction=d.get("direction"),
+        whole_day=d["whole_day"],
     )
 
 

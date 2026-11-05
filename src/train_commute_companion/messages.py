@@ -1,12 +1,28 @@
 """Alert text shared by more than one caller (7.9, 11.1). Pure: every fact comes in as an argument."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass
+from enum import Enum, auto
 
 from train_commute_companion.calendar import hhmm
 from train_commute_companion.model import Leg
 
 ATTRIBUTION = "Data: NS"
 CHECK_APP = "check the NS app"
+
+
+class RefusalKind(Enum):
+    NO_JOURNEY = auto()  # no journey is followed to act on
+    INVALID = auto()  # the journey is there, what was asked of it cannot be done
+    RETRY = auto()  # NS or a concurrent change got in the way: the same action may land next time
+
+
+@dataclass(frozen=True, slots=True)
+class Refused:
+    """Why a user action was not written: `text` for the user, `kind` for what a shell does."""
+
+    text: str
+    kind: RefusalKind = RefusalKind.INVALID
 
 
 def _when(leg: Leg) -> str:
@@ -31,6 +47,10 @@ def all_good_text(legs: Sequence[Leg]) -> str:
 
 def no_journey_text(name: str) -> str:
     return f"no journey of {name} is being followed now"
+
+
+def no_journey(name: str) -> Refused:
+    return Refused(no_journey_text(name), RefusalKind.NO_JOURNEY)
 
 
 def data_unclear_text(label: str, station: str, copies: Sequence[str]) -> str:

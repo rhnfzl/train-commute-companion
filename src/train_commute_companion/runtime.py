@@ -58,7 +58,7 @@ from train_commute_companion.lookahead import forget_pending, rebase_on_edit, re
 from train_commute_companion.lookahead_probe import service_date
 from train_commute_companion.lookahead_run import apply_run, lookahead_done, probe_direction
 from train_commute_companion.match import usual_connection
-from train_commute_companion.messages import CHECK_APP, no_journey_text
+from train_commute_companion.messages import CHECK_APP, RefusalKind, Refused, no_journey
 from train_commute_companion.model import (
     LIVE_PREFIX,
     SENT_PREFIX,
@@ -249,6 +249,9 @@ def _survivors(
 
 
 class Runtime:
+    """What its public methods return: a user action (`act`, `leaving`, `not_travelling`,
+    `choose_at`) None when written, else its `Refused`; a query (`stations`) None for no answer."""
+
     def __init__(
         self,
         *,
@@ -868,12 +871,11 @@ class Runtime:
 
     async def act(
         self, profile_id: str, action: UserAction, direction: Direction | None = None
-    ) -> str | None:
+    ) -> Refused | None:
         """`choose`, `leaving` and `not travelling` through the serialised writer (7.13).
         `direction`: only that direction's occurrences are targeted (both share a date).
-        None when written; else why not, as `choose_at`: nothing was targeted, an unknown
-        profile or no occurrence to act on. A removed profile still running on an occurrence
-        is known (rule 10)."""
+        Refused when nothing was targeted: an unknown profile or no occurrence to act on. A
+        removed profile still running on an occurrence is known (rule 10)."""
         now = self._clock.now()
         self._create_occurrences(now)
         mine = [
@@ -883,7 +885,7 @@ class Runtime:
         target = target_occurrence(mine, action)
         p = None if target is None else self._profile_for(target)
         if target is None or p is None:
-            return no_journey_text(display_name(self._shown_name(profile_id)))
+            return no_journey(display_name(self._shown_name(profile_id)))
         keys = [target.key]
         if isinstance(action, NotTravelling) and action.whole_day:
             keys = list(whole_day_keys(p, target.key))  # its own route revision's day_offset
@@ -907,9 +909,20 @@ class Runtime:
 
     async def leaving(
         self, profile_id: str, service_date: date | None = None, direction: Direction | None = None
-    ) -> str | None:
+    ) -> Refused | None:
         """`act` with a `Leaving` tapped now, by the runtime's own clock."""
         return await self.act(profile_id, Leaving(service_date, self._clock.now()), direction)
+
+    async def not_travelling(
+        self,
+        profile_id: str,
+        service_date: date | None = None,
+        direction: Direction | None = None,
+        *,
+        whole_day: bool = False,
+    ) -> Refused | None:
+        """`act` with a `NotTravelling`."""
+        return await self.act(profile_id, NotTravelling(service_date, whole_day), direction)
 
     def _shown_name(self, profile_id: str) -> str:
         """The name `view` shows for the profile: a removed one keeps its newest occurrence's."""
@@ -929,10 +942,10 @@ class Runtime:
         train_number: str | None = None,
         service_date: date | None = None,
         direction: Direction | None = None,
-    ) -> str | None:
+    ) -> Refused | None:
         """A train named by its clock time (shells): the core finds the occurrence, the station
-        and the connection, with one live request under the shared budget (rule 14). None when
-        the choice was written; else why not (a refusal is also pushed, loudly)."""
+        and the connection, with one live request under the shared budget (rule 14). A refusal
+        of the choice itself is also pushed, loudly."""
         now = self._clock.now()
         self._create_occurrences(now)
         cands = sorted(
@@ -947,28 +960,28 @@ class Runtime:
         named = find_profile(self._writer.st.config, profile_id) or next(
             (p for s in cands if (p := self._profile_for(s)) is not None), None
         )
-        gone = no_journey_text(display_name(named.name if named else profile_id))
-        target = choice_target(cands, departure, train_number, service_date, now, self._writer.st)
-        if target is None:
-            return gone
-        if isinstance(target, str):
+        gone = no_journey(display_name(named.name if named else profile_id))
+        target = choice_target(
+            cands, departure, train_number, service_date, now, self._writer.st, gone
+        )
+        if isinstance(target, Refused):
             return target
         occ = target.occ
         k = okey(occ.key)
         # rule 21: what the choice is judged on must still hold when it is written
         mark = (occ.generation, occ.route_revision, occ.baseline_version)
         answers = await self._fetch_choice(target, k)
-        if isinstance(answers, str):
+        if isinstance(answers, Refused):
             return answers
         ranked = named_connections(answers[0], target, departure, train_number)
-        if isinstance(ranked, str):
+        if isinstance(ranked, Refused):
             return ranked
         # rule 21: a reload during the request may have removed or archived the occurrence
         now_occ = self._writer.st.occurrences.get(k)
         if now_occ is None or is_resolved(now_occ):
             return gone
         if (now_occ.generation, now_occ.route_revision, now_occ.baseline_version) != mark:
-            return "your journey changed while NS answered; try again"
+            return Refused("your journey changed while NS answered; try again", RefusalKind.RETRY)
         choices = [Choose(occ.key.service_date, c, answers) for c in ranked]
         d = occ.key.direction
         why = [self._choice_refusal(profile_id, d, c, gone) for c in choices]
@@ -976,10 +989,10 @@ class Runtime:
         i = next((n for n, r in enumerate(why) if r is None), 0)
         return why[i] if await self.act(profile_id, choices[i], d) is None else gone
 
-    async def _fetch_choice(self, t: ChoiceTarget, k: str) -> tuple[ProviderAnswer, ...] | str:
+    async def _fetch_choice(self, t: ChoiceTarget, k: str) -> tuple[ProviderAnswer, ...] | Refused:
         """The answer naming the train first, then what judges the change to it: from a transfer
         station, a fresh observation of the kept incoming leg, never an older poll's answer
-        (rule 1). One deadline for every request: the shell waits 120 s in all. A string: why not."""
+        (rule 1). One deadline for every request: the shell waits 120 s in all."""
         ctx = t.ctx
         end = ctx.schedule.window_end
         deadline = to_utc(self._clock.now()) + POLL_DEADLINE
@@ -994,13 +1007,13 @@ class Runtime:
             self._track_key_rejection(got if isinstance(got, str) else None, k, self._clock.now())
             if isinstance(got, str):
                 await self._deliver()
-                return f"NS did not answer ({got}); try again"
+                return Refused(f"NS did not answer ({got}); try again", RefusalKind.RETRY)
             out = (*got, *out)
         return out
 
     def _choice_refusal(
-        self, profile_id: str, d: Direction, choice: Choose, gone: str
-    ) -> str | None:
+        self, profile_id: str, d: Direction, choice: Choose, gone: Refused
+    ) -> Refused | None:
         """The check `act` applies, ridden prefix included, as a dry run (rule 1)."""
         mine = [
             s for s in self._writer.st.occurrences.values()
@@ -1011,7 +1024,7 @@ class Runtime:
         if t is None or ctx is None:
             return gone
         events = apply_action(t, ctx, choice).events
-        return next((e.text for e in events if e.kind is EventKind.CHOOSE_REFUSED), None)
+        return next((Refused(e.text) for e in events if e.kind is EventKind.CHOOSE_REFUSED), None)
 
     async def report_location(
         self,

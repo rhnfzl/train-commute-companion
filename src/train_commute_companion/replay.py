@@ -16,7 +16,7 @@ import yaml
 from train_commute_companion.calendar import TZ, hhmm, resolve_local
 from train_commute_companion.location import LOCATION_KINDS, LocationEvent
 from train_commute_companion.messages import ATTRIBUTION
-from train_commute_companion.model import AlertEvent, Connection, NotTravelling
+from train_commute_companion.model import AlertEvent, Connection
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
 from train_commute_companion.providers.ns import map_trips
 from train_commute_companion.runtime import Runtime
@@ -272,6 +272,6 @@ async def apply_event(rt: Runtime, e: dict[str, Any], now: datetime) -> None:
     elif e.get("action") == "leaving":
         await rt.leaving(pid)
     elif e.get("action") == "not_travelling":
-        await rt.act(pid, NotTravelling(None, bool(e.get("whole_day", False))))
+        await rt.not_travelling(pid, whole_day=bool(e.get("whole_day", False)))
     else:
         raise ReplayError(f"unknown event {e!r}: use action leaving|not_travelling or location")

@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from train_commute_companion.location import Fix, number
-from train_commute_companion.model import Direction, NotTravelling, display_name
+from train_commute_companion.messages import Refused
+from train_commute_companion.model import Direction, display_name
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.webhook import WebhookTestResult
 
@@ -343,19 +344,21 @@ class Bot:
         self, pid: str, name: str, at: time, train: str | None,
         day: date | None, direction: Direction | None,
     ) -> None:  # fmt: skip
-        reason = await self._call_runtime(self._rt.choose_at(pid, at, train, day, direction))
-        await self._reply(f"Locked the {at:%H:%M} for {name}." if reason is None else reason)
+        refused = await self._call_runtime(self._rt.choose_at(pid, at, train, day, direction))
+        await self._reply(f"Locked the {at:%H:%M} for {name}." if refused is None else refused.text)
 
     async def _leaving(self, pid: str, day: date | None, direction: Direction | None) -> None:
-        reason = await self._call_runtime(self._rt.leaving(pid, day, direction))
-        await self._reply("Marked as leaving now." if reason is None else _nothing(reason))
+        refused = await self._call_runtime(self._rt.leaving(pid, day, direction))
+        await self._reply("Marked as leaving now." if refused is None else _nothing(refused))
 
     async def _skip(
         self, pid: str, day: date | None, direction: Direction | None, whole: bool
     ) -> None:
-        reason = await self._call_runtime(self._rt.act(pid, NotTravelling(day, whole), direction))
-        if reason is not None:
-            await self._reply(_nothing(reason))
+        refused = await self._call_runtime(
+            self._rt.not_travelling(pid, day, direction, whole_day=whole)
+        )
+        if refused is not None:
+            await self._reply(_nothing(refused))
         elif whole:
             await self._reply("Not travelling today: alerts for both directions stop.")
         else:
@@ -400,8 +403,8 @@ class Bot:
         await self._api.call("sendMessage", {"chat_id": self._chat, "text": text, **params})
 
 
-def _nothing(reason: str) -> str:
-    return f"Nothing to act on: {reason}."
+def _nothing(refused: Refused) -> str:
+    return f"Nothing to act on: {refused.text}."
 
 
 def _obj(v: Any) -> dict[str, Any]:
