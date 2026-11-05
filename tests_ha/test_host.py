@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from custom_components.train_commute_companion.host import Parts, RuntimeHost
+from custom_components.train_commute_companion.host import Parts, RuntimeHost, RuntimeNotRunning
 from train_commute_companion.calendar import TZ
 from train_commute_companion.model import NotTravelling
 from train_commute_companion.replay import MemoryStore, PrintNotifier, ReplayProvider
@@ -121,6 +121,22 @@ async def test_real_crash_then_stop_leaves_no_task_or_thread(hass, tmp_path):
     await host.stop()
     assert closed == [True]
     assert no_runtime_thread()
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+async def test_run_after_the_loop_crashed_finds_no_runtime(hass, tmp_path):
+    host = RuntimeHost(builder(tmp_path), retired=threading.Event(), autorun=False)
+    await host.start()
+
+    def crash() -> None:
+        raise SystemExit  # the one kind of error a loop lets out of run_forever
+
+    host._loop.call_soon_threadsafe(crash)
+    await asyncio.to_thread(host._thread.join, 10)
+    assert host._loop.is_closed()
+    with pytest.raises(RuntimeNotRunning):
+        await host.run(lambda rt: None)
+    await host.stop()
 
 
 async def test_build_error_surfaces_from_start(hass):

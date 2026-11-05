@@ -109,7 +109,13 @@ class RuntimeHost:
             r = fn(parts.runtime)
             return cast(T, await r) if inspect.isawaitable(r) else r
 
-        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(call(), loop))
+        coro = call()
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError:  # the loop closed behind a crash that retired nothing
+            coro.close()
+            raise RuntimeNotRunning("the runtime is not running") from None
+        return await asyncio.wrap_future(future)
 
     @property
     def alive(self) -> bool:
