@@ -22,8 +22,13 @@ from train_commute_companion.lifecycle import (
     merged_pool,
     origin_answer,
 )
-from train_commute_companion.lookahead import entry_mark, render_message
-from train_commute_companion.lookahead_probe import split_fact_key
+from train_commute_companion.lookahead import render_message
+from train_commute_companion.lookahead_probe import (
+    UNCLEAR_MARK,
+    WORKS_MARKS,
+    latest_mark,
+    split_fact_key,
+)
 from train_commute_companion.model import (
     DELAY_NEWS,
     LIVE_PREFIX,
@@ -256,11 +261,7 @@ class LiveLedger:
                 live.append(f)
                 continue
             key, rest = dated
-            entries = [entry_mark(x) for x in led.per_date.get(key, ())]
-            last = next(
-                (x for x in reversed(entries) if x.startswith(("warn:", "unclear:", "restored:"))),
-                "",
-            )
+            last = latest_mark(led.per_date.get(key, ()), (*WORKS_MARKS, UNCLEAR_MARK))[0] or ""
             if (
                 last.startswith("restored:")
                 if rest == "restored"

@@ -97,6 +97,8 @@ class ProbeResult:
 
 
 WHOLE_JOURNEY = "j"  # a day key's leg part for the journey probe
+WORKS_MARKS = ("warn:", "restored:")  # the marks that say whether a date has works
+UNCLEAR_MARK = "unclear:"
 
 
 def day_key(sd: date, leg_index: int | None) -> str:
@@ -113,6 +115,33 @@ def split_day_key(key: str) -> tuple[date, str]:
     """A ledger key's date and its leg part, as `day_key` or `unclear_day_key` wrote them."""
     day, _, leg = key.partition("|")
     return date.fromisoformat(day), leg
+
+
+def seed_mark(version: int) -> str:
+    """The entry on the date that seeded a baseline version."""
+    return f"seed:{version}"
+
+
+def owned_mark(mark: str, owner: str) -> str:
+    """A per-date mark with the id of the obligation that carries it."""
+    return f"{mark}#{owner}"
+
+
+def entry_mark(entry: str) -> str:
+    return entry.partition("#")[0]  # no fingerprint holds "#"
+
+
+def entry_owner(entry: str) -> str:
+    return entry.partition("#")[2]  # "" for an unowned mark: never a pending fact
+
+
+def latest_mark(
+    entries: Iterable[str], prefixes: tuple[str, ...]
+) -> tuple[str | None, tuple[str, ...]]:
+    """The latest of a date's marks with one of `prefixes`, and the marks after it."""
+    marks = [entry_mark(x) for x in entries]
+    at = next((i for i in reversed(range(len(marks))) if marks[i].startswith(prefixes)), None)
+    return (None, ()) if at is None else (marks[at], tuple(marks[at + 1 :]))
 
 
 def adopt_key(version: int) -> str:

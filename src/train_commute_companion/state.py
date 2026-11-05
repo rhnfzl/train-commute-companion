@@ -153,7 +153,7 @@ class LookAheadFact(NamedTuple):
 @dataclass(frozen=True, slots=True)
 class LookAheadLedger:
     # "<service date>|<leg index or j>" -> entries; a warn/loud/restored mark ends in
-    # "#<id of the obligation that carries it>", read with entry_mark/_owner
+    # "#<id of the obligation that carries it>", read with lookahead_probe.entry_mark/entry_owner
     per_date: Mapping[str, tuple[str, ...]]
     pending: tuple[Obligation, ...]
     last_run: datetime | None  # last successful run (look-ahead health only)

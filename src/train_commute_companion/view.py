@@ -27,7 +27,12 @@ from train_commute_companion.location import (
     seed_zone,
     station_zones,
 )
-from train_commute_companion.lookahead_probe import WHOLE_JOURNEY, split_day_key
+from train_commute_companion.lookahead_probe import (
+    WHOLE_JOURNEY,
+    WORKS_MARKS,
+    latest_mark,
+    split_day_key,
+)
 from train_commute_companion.model import (
     LIVE_PREFIX,
     AdviceRecord,
@@ -282,8 +287,8 @@ def works_ahead(ledger: LookAheadLedger, today: date) -> tuple[WorksDay, ...]:
     """Dates whose latest works mark is a warning, from `today` on (7.10)."""
     out = []
     for key, entries in ledger.per_date.items():
-        marks = [e for e in entries if e.startswith(("warn:", "restored:"))]
-        if not marks or not marks[-1].startswith("warn:"):
+        last, _ = latest_mark(entries, WORKS_MARKS)
+        if last is None or not last.startswith("warn:"):
             continue
         day, leg = split_day_key(key)
         if day >= today:

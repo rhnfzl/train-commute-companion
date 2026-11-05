@@ -9,6 +9,8 @@ from train_commute_companion.lookahead_probe import (
     DUR_TOL_MIN,
     MISSING_REASON,
     REPLACEMENT_HINT,
+    UNCLEAR_MARK,
+    WORKS_MARKS,
     ProbeReason,
     ProbeResult,
     adopt_key,
@@ -18,9 +20,14 @@ from train_commute_companion.lookahead_probe import (
     cancel_key,
     dated_end,
     day_key,
+    entry_mark,
+    entry_owner,
     journey_stations,
+    latest_mark,
+    owned_mark,
     probe_dates,
     probed_end,
+    seed_mark,
     service_date,
     signature_differs,
     signature_minutes,
@@ -134,17 +141,9 @@ def overlaps_next(
     return bool(find_overlaps([p, *others], start, first))
 
 
-def entry_mark(entry: str) -> str:
-    return entry.partition("#")[0]  # no fingerprint holds "#"
-
-
 def _seed_day(per_date: Mapping[str, tuple[str, ...]], version: int) -> date | None:
-    tag = f"seed:{version}"
+    tag = seed_mark(version)
     return next((split_day_key(k)[0] for k, v in per_date.items() if tag in v), None)
-
-
-def _owner(entry: str) -> str:
-    return entry.partition("#")[2]  # "" for an unowned mark: never a pending fact
 
 
 def render_message(p: Profile, sd: date, fs: Sequence[LookAheadFact]) -> tuple[EventKind, str]:
@@ -172,8 +171,8 @@ def carried_ids(old: LookAheadLedger, new: LookAheadLedger) -> dict[str, str]:
     out = {}
     for k, v in old.per_date.items():
         for a, b in zip(v, new.per_date.get(k, ()), strict=False):
-            if _owner(a) and _owner(b) and _owner(a) != _owner(b):
-                out[_owner(a)] = _owner(b)
+            if entry_owner(a) and entry_owner(b) and entry_owner(a) != entry_owner(b):
+                out[entry_owner(a)] = entry_owner(b)
     return out
 
 
@@ -235,11 +234,11 @@ class _Draft:
     def stamp_owned(self, sd: date, owner: str) -> None:
         for k, i in self.owned.get(sd, ()):
             v = self.per_date[k]
-            self.per_date[k] = (*v[:i], f"{v[i]}#{owner}", *v[i + 1 :])
+            self.per_date[k] = (*v[:i], owned_mark(v[i], owner), *v[i + 1 :])
 
     def move_marks(self, was: str, owner: str) -> None:
         self.per_date = {
-            k: tuple(f"{entry_mark(x)}#{owner}" if _owner(x) == was else x for x in v)
+            k: tuple(owned_mark(entry_mark(x), owner) if entry_owner(x) == was else x for x in v)
             for k, v in self.per_date.items()
         }
 
@@ -262,7 +261,7 @@ def _seed_or_confirm(
         ):
             v = BaselineVersion(draft.history()._next(), sig, today, False)
             draft.versions.append(v)
-            draft.add_entry(day_key(sd, None), f"seed:{v.version}")
+            draft.add_entry(day_key(sd, None), seed_mark(v.version))
         elif sig == prov.signature and _seed_day(draft.per_date, prov.version) != sd:
             draft.versions[draft.versions.index(prov)] = replace(prov, confirmed=True)
             break
@@ -371,15 +370,6 @@ def _changed(r: ProbeResult, exp: Signature | None) -> bool:
     )
 
 
-def _last_mark(entries: tuple[str, ...]) -> tuple[str | None, tuple[str, ...]]:
-    """The latest warning or restoration and the entries after it."""
-    at = next(
-        (i for i in reversed(range(len(entries))) if entries[i].startswith(("warn:", "restored:"))),
-        None,
-    )
-    return (None, ()) if at is None else (entries[at], entries[at + 1 :])
-
-
 def _probe_facts(
     draft: _Draft,
     p: Profile,
@@ -398,7 +388,7 @@ def _probe_facts(
         base = final.in_force(sd)
         conf = base if base is not None and base.confirmed and baseline_usable(p, d, base) else None
         exp = _expected(conf, r.leg_index) if conf is not None else None
-        last, since = _last_mark(tuple(entry_mark(x) for x in draft.per_date.get(key, ())))
+        last, since = latest_mark(draft.per_date.get(key, ()), WORKS_MARKS)
         if r.works or _changed(r, exp):
             loud = sd == today + timedelta(days=1)
             fact = f"{key}|warn:{r.fingerprint}"
@@ -540,9 +530,8 @@ def _unclear_messages(draft: _Draft, w: _MessageBuilder) -> list[AlertEvent]:
                 continue
             told.add((sd, tk))
             key = unclear_day_key(sd, tk)
-            mark = f"unclear:{u.fingerprint}"
-            marks = [entry_mark(x) for x in draft.per_date.get(key, ()) if x.startswith("unclear:")]
-            if marks and marks[-1] == mark:
+            mark = f"{UNCLEAR_MARK}{u.fingerprint}"
+            if latest_mark(draft.per_date.get(key, ()), (UNCLEAR_MARK,))[0] == mark:
                 continue
             fact = f"{key}|{mark}"
             text = f"{display_name(w.p.name)}, {sd:%A} {sd.day} {sd:%b}: " + data_unclear_text(
@@ -554,7 +543,7 @@ def _unclear_messages(draft: _Draft, w: _MessageBuilder) -> list[AlertEvent]:
             draft.pending.append(ob)
             events.append(event)
             draft.bundled[ob.id] = (LookAheadFact(fact, text, loud=True, warning=False),)
-            draft.add_entry(key, f"{mark}#{ob.id}")
+            draft.add_entry(key, owned_mark(mark, ob.id))
     return events
 
 
@@ -689,5 +678,5 @@ def forget_pending(ledger: LookAheadLedger) -> LookAheadLedger:
     fact that was never delivered. Only marks owned by a dropped message go; a mark of a
     delivered one stays."""
     drop = {o.id for o in ledger.pending}
-    per_date = {k: tuple(x for x in v if _owner(x) not in drop) for k, v in ledger.per_date.items()}
+    per_date = {k: tuple(x for x in v if entry_owner(x) not in drop) for k, v in ledger.per_date.items()}
     return replace(ledger, per_date=per_date)
