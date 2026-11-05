@@ -34,7 +34,6 @@ from train_commute_companion.ledger import (
     OBSERVED,
     LiveLedger,
     PollMemory,
-    alert_facts,
 )
 from train_commute_companion.lifecycle import (
     Choose,
@@ -78,6 +77,7 @@ from train_commute_companion.model import (
     Provenance,
     Severity,
     TrainId,
+    alert_facts,
     direction_key,
     display_name,
     okey,

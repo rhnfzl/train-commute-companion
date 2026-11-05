@@ -26,7 +26,6 @@ from train_commute_companion.match import (
 )
 from train_commute_companion.messages import data_unclear_text
 from train_commute_companion.model import (
-    DELAY_NEWS,
     FOLLOW_LIMIT,
     AlertEvent,
     AlertFacts,
@@ -50,6 +49,7 @@ from train_commute_companion.model import (
     ToldDelay,
     TrainId,
     TransferState,
+    alert_facts,
     display_name,
     present,
     train_ident,
@@ -306,7 +306,7 @@ def keep_stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
     keys = dict(s.alert_keys)
     out = []
     for e in events:
-        f = e.facts or AlertFacts()
+        f = alert_facts(e)
         if f.moved_slot:
             # per boarding segment: a train back on its planned platform is news only once a
             # change was announced for it (1 -> 5 -> 1 says so, an unchanged 1 says nothing)
@@ -362,30 +362,6 @@ def make_event(
         key=_event_key(ctx, kind, train, text if key_facts is None else key_facts),
         created_at=ctx.now,
         facts=stated or AlertFacts(),
-    )
-
-
-def legacy_facts(e: AlertEvent) -> AlertFacts:
-    """What an alert held in a state file from before facts were kept states, read from its key
-    and text: the only place that reads them back, so those alerts keep rules 5(a) and 5(b)."""
-    told: tuple[ToldDelay, ...] = ()
-    base, sep, vals = e.key.rpartition("|stated+")
-    if sep and e.kind in DELAY_NEWS:
-        base = EventKind.DELAYED.value + base[len(e.kind.value) :]
-        said = vals.split(",")
-        slots = [base + t for t in ("#d", "#a")] if len(said) == 2 else [base]
-        told = tuple(ToldDelay(x, v) for x, v in zip(slots, said, strict=True))
-    part = next((x for x in e.key.split("|")[1:] if "@" in x and not x.startswith("stated")), "")
-    i = e.text.find(" (service date ")
-    head, note = (e.text, "") if i < 0 else (e.text[:i], e.text[i:])
-    j = head.find(" Next good connection:")
-    return AlertFacts(
-        told=told,
-        on="retained" if ":retained:" in e.key else "",
-        named=tuple(x for x in part.split(":retained:")[0].split(",") if x),
-        next_clause="" if j < 0 else head[j:],
-        unclear=e.key.rpartition(":")[2] if e.kind is EventKind.DATA_UNCLEAR else "",
-        twin_note=note,
     )
 
 
@@ -1495,7 +1471,7 @@ def on_poll(s: OccurrenceState, ctx: Ctx, poll: PollAnswers) -> Transition:
             text = f"{display_name(e.profile_name)}: {on}{e.body}"
             tail = f":retained:{train_ident(first)}"
             key = e.key + tail
-            f = e.facts or AlertFacts()
+            f = alert_facts(e)
             facts = replace(f, on=on, moved_slot=f.moved_slot and f.moved_slot + tail)
             events.append(replace(e, text=text, key=key, facts=facts))
     s = replace(s, retained=tuple(retained))

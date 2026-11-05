@@ -18,7 +18,6 @@ from train_commute_companion.health import WatchedLeg
 from train_commute_companion.lifecycle import (
     PollAnswers,
     left_note,
-    legacy_facts,
     merged_pool,
     origin_answer,
 )
@@ -32,7 +31,6 @@ from train_commute_companion.lookahead_probe import (
 from train_commute_companion.model import (
     DELAY_NEWS,
     AlertEvent,
-    AlertFacts,
     Ctx,
     Direction,
     EventKind,
@@ -41,6 +39,7 @@ from train_commute_companion.model import (
     OccurrenceKey,
     Severity,
     TrainId,
+    alert_facts,
     direction_key,
     display_name,
     okey,
@@ -116,10 +115,6 @@ def zone_report_stops_silent(s: OccurrenceState, zones: Collection[str]) -> bool
     """Rule 6 / 8.4: a report in the alighting-station or destination zone ends repeat silent
     messages for the journey. Use as the silent branch of `LiveLedger.fact_holds`."""
     return any(z in s.zone_reports for z in zones)
-
-
-def alert_facts(e: AlertEvent) -> AlertFacts:
-    return legacy_facts(e) if e.facts is None else e.facts
 
 
 def states_current(e: AlertEvent, keys: Mapping[str, str]) -> bool:
