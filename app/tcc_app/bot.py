@@ -53,7 +53,7 @@ HELP = (
 )
 
 
-@dataclass
+@dataclass(slots=True)
 class ShellState:
     offset: int = 0
     bot_id: str | None = None  # the bot whose update ids `offset` counts

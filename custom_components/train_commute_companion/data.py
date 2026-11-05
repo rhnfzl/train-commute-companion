@@ -10,7 +10,7 @@ from .host import RuntimeHost
 from .location import LocationTracker
 
 
-@dataclass
+@dataclass(slots=True)
 class TccData:
     host: RuntimeHost
     coordinator: TccCoordinator

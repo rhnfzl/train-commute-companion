@@ -28,7 +28,7 @@ class RuntimeNotRunning(RuntimeError):
     """`Host.run` found no runtime to ask; a RuntimeError from the call itself is another matter."""
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Parts:
     runtime: Runtime
     clock: Clock

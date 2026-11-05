@@ -51,7 +51,7 @@ class Fix:
     regions: frozenset[str] = frozenset()
 
 
-@dataclass
+@dataclass(slots=True)
 class _Memory:
     """One profile's last fix under one source epoch; times in UTC."""
 
