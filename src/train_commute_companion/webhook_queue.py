@@ -26,8 +26,8 @@ MAX_COPIES = 200
 class CopyQueue:
     """The one live record of owed webhook copies, written with every save and never rebuilt from
     the running state (rule 22: a failed write resets that). `held`: copies of alerts held in
-    memory, judged with the held ledger. `copied`: obligations whose copy was made since the last
-    delivery write landed (a failed write resets their `webhook_copied`)."""
+    memory, judged with the held ledger. `copied`: obligations whose copy was made since the
+    last delivery write landed (a failed write resets their `webhook_copied`)."""
 
     def __init__(
         self,
