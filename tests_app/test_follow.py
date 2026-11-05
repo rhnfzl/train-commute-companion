@@ -56,6 +56,25 @@ async def test_report_throttled_to_one_per_zone_per_2_min(app):
     assert spied(app) == [("UT", "enter"), ("UT", "report")]
 
 
+async def _unanswered(*args, **kw):
+    return False
+
+
+async def _failing(*args, **kw):
+    raise RuntimeError("inner failure")
+
+
+@pytest.mark.parametrize("dispatch", [_unanswered, _failing])
+async def test_an_enter_that_never_got_through_starts_no_report_timer(app, dispatch):
+    await feed(app, *FAR, "08:29")
+    working = app.rt.location
+    app.rt.location = dispatch
+    await feed(app, *UT, "08:30")
+    app.rt.location = working
+    await feed(app, 52.10001, 5.1, "08:30:30")
+    assert spied(app) == [("UT", "report")]  # the core hears the user is here after all
+
+
 async def test_first_fix_inside_a_zone_only_seeds_and_starts_the_report_timer(app):
     await feed(app, *UT, "08:30")
     await feed(app, *UT, "08:31")
@@ -100,7 +119,7 @@ async def test_queued_fix_from_before_a_switch_back_is_dropped(app):
     async def hold(*args, **kw):
         held.set()
         await release.wait()
-        await orig(*args, **kw)
+        return await orig(*args, **kw)
 
     app.rt.location = hold
     app.clock.t = at("08:24")

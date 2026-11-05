@@ -45,7 +45,7 @@ Station zones are not set up by hand. The companion takes each station's positio
 
 ## What it does
 
-Entering a zone, leaving one, and updates from inside one are sent as they happen. Updates from one zone are sent at most once every 2 minutes, because each one costs a live NS request. The first position after the endpoint starts (or after the profile's location settings change) only tells the companion where you are; it sends nothing. A position older than the last one used, more than 10 minutes old, more than 2 minutes in the future, or less accurate than the station radius is ignored. Other OwnTracks messages (region transitions, waypoints, last will) are answered and ignored.
+Entering a zone, leaving one, and updates from inside one are sent as they happen. Updates from one zone are sent at most once every 2 minutes, because each one costs a live NS request. An update NS could not answer does not start those 2 minutes, so the next position is sent at once. The first position after the endpoint starts (or after the profile's location settings change) only tells the companion where you are; it sends nothing. A position older than the last one used, more than 10 minutes old, more than 2 minutes in the future, or less accurate than the station radius is ignored. Other OwnTracks messages (region transitions, waypoints, last will) are answered and ignored.
 
 A "left home" that comes only after your usual train left does not change your train, because a phone often reports late. If you really missed it, arriving at the station picks the next good train.
 

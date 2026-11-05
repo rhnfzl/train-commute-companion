@@ -18,6 +18,7 @@ from train_commute_companion.location import (
     resolve_zone,
     seed_zone,
     station_zones,
+    undelivered,
 )
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.view import running_stations
@@ -120,6 +121,11 @@ class Follower:
             return
         mem.last_at = at
         mem.track, events = next_zone(mem.track, zone, at)
-        for name, kind in events:
-            event = LocationEvent(name, kind, fix.at)
-            await self._rt.location(pid, event, loc, epoch)
+        try:
+            for name, kind in events:
+                event = LocationEvent(name, kind, fix.at)
+                if not await self._rt.location(pid, event, loc, epoch):
+                    mem.track = undelivered(mem.track)
+        except Exception:
+            mem.track = undelivered(mem.track)
+            raise
