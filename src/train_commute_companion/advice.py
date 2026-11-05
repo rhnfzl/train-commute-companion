@@ -259,22 +259,33 @@ def _candidates(
             **kw,
         )
         ride_arr = None if rep is None else _arrival(rep)
+    if not bad:
+        return []
+    need = timedelta(minutes=prof.alerts.earlier_train_min_saving_min)
+    return _savings(answer, wait_from, ride_arr, need, kw)
+
+
+def _savings(
+    answer: ProviderAnswer,
+    wait_from: datetime,
+    ride_arr: datetime | None,
+    need: timedelta,
+    kw: GoodKwargs,
+) -> list[tuple[timedelta, Connection]]:
     found: list[tuple[timedelta, Connection]] = []
-    if bad:
-        need = timedelta(minutes=prof.alerts.earlier_train_min_saving_min)
-        seen_in, done = evidence(answer), set()
-        for c in answer.connections:  # newest answer first: its copy of a journey is kept
-            if (trains := _trains(c)) in done:
-                continue
-            done.add(trains)
-            cur = current_connection(seen_in, c)  # saving and text use current times
-            arr = _arrival(cur)
-            if arr is None or _departure(cur) >= wait_from:
-                continue
-            saving = (ride_arr or _FAR) - arr  # no baseline: soonest arrival wins
-            if saving < need or not check_good(c, answer, **kw).ok:
-                continue
-            found.append((saving, cur))
+    seen_in, done = evidence(answer), set()
+    for c in answer.connections:  # newest answer first: its copy of a journey is kept
+        if (trains := _trains(c)) in done:
+            continue
+        done.add(trains)
+        cur = current_connection(seen_in, c)  # saving and text use current times
+        arr = _arrival(cur)
+        if arr is None or _departure(cur) >= wait_from:
+            continue
+        saving = (ride_arr or _FAR) - arr  # no baseline: soonest arrival wins
+        if saving < need or not check_good(c, answer, **kw).ok:
+            continue
+        found.append((saving, cur))
     return found
 
 
@@ -298,8 +309,6 @@ def advise(
     record = s.advice or AdviceRecord(None, None, False, delivered=False)
     if not _advice_applies(s, ctx):
         return record, []
-    prof, d = ctx.profile, ctx.direction
-    catch = catch_from_state(s, prof.journey(d).buffer_min, ctx.now)
     cands = _candidates(s, ctx, answer, usual_planned_arrival)
     # largest saving; a tie goes to the earlier train
     best = min(cands, key=lambda x: (-x[0], _departure(x[1])), default=None)
@@ -319,7 +328,15 @@ def advise(
         return record, []
     if not record.delivered:  # never told: nothing to withdraw, its LEAVE_NOW is not sent
         return replace(record, withdrawn=True), []
-    # withdraw once: usual journey is back, the advised train still runs and is catchable
+    return _withdraw(s, ctx, answer, record, advised)
+
+
+def _withdraw(
+    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, record: AdviceRecord, advised: TrainId
+) -> tuple[AdviceRecord, list[AlertEvent]]:
+    """Once: the usual journey is back, the advised train still runs and is catchable."""
+    prof, d = ctx.profile, ctx.direction
+    catch = catch_from_state(s, prof.journey(d).buffer_min, ctx.now)
     leg, seen = find_leg(answer, advised, prof.origin(d))
     if leg is None or seen is not Observation.SEEN:
         return record, []

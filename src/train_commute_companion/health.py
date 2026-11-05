@@ -55,6 +55,18 @@ def board_health(records: Sequence[PollRecord], now: datetime) -> BoardHealth:
     return BoardHealth(fresh, last_ok, failures, auth)
 
 
+def _leg_blind(leg: WatchedLeg, departure: datetime, now: datetime) -> str | None:
+    if leg.observation is not Observation.SEEN:
+        return f"the train is {leg.observation.value} in the answer"
+    if now < departure and leg.dep_provenance is not Provenance.REPORTED:
+        return "no reported departure time"
+    if leg.riding_or_watched and leg.arr_provenance is not Provenance.REPORTED:
+        return "no reported arrival time"
+    if leg.last_seen_at is None or now - to_utc(leg.last_seen_at) >= FRESH_FOR:
+        return "the train is not in a fresh answer"
+    return None
+
+
 def blindness(legs: Sequence[WatchedLeg], health: BoardHealth, now: datetime) -> tuple[bool, str]:
     now = to_utc(now)
     board_reason = None
@@ -67,16 +79,7 @@ def blindness(legs: Sequence[WatchedLeg], health: BoardHealth, now: datetime) ->
         departure = to_utc(leg.departure)
         if not (leg.riding_or_watched or timedelta(0) <= departure - now <= ZONE):
             continue
-        reason = board_reason
-        if reason is None:
-            if leg.observation is not Observation.SEEN:
-                reason = f"the train is {leg.observation.value} in the answer"
-            elif now < departure and leg.dep_provenance is not Provenance.REPORTED:
-                reason = "no reported departure time"
-            elif leg.riding_or_watched and leg.arr_provenance is not Provenance.REPORTED:
-                reason = "no reported arrival time"
-            elif leg.last_seen_at is None or now - to_utc(leg.last_seen_at) >= FRESH_FOR:
-                reason = "the train is not in a fresh answer"
+        reason = board_reason or _leg_blind(leg, departure, now)
         if reason:
             return True, reason
     return False, ""

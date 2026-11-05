@@ -7,7 +7,14 @@ from datetime import date, datetime, timedelta
 from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.classify import classify_leg, current_run, find_leg
 from train_commute_companion.health import FRESH_FOR, board_health
-from train_commute_companion.lifecycle import Board, Journey, OccurrenceState, announced, make_event
+from train_commute_companion.lifecycle import (
+    Board,
+    Journey,
+    LegProgress,
+    OccurrenceState,
+    announced,
+    make_event,
+)
 from train_commute_companion.messages import all_good_text
 from train_commute_companion.model import (
     AlertEvent,
@@ -222,6 +229,58 @@ def _copies(
     ]
 
 
+def _leg_proven(
+    x: LegProgress,
+    newest: ProviderAnswer,
+    merged: ProviderAnswer,
+    answers: Sequence[ProviderAnswer],
+) -> ClassifiedLeg | None:
+    """The locked leg as a classified ok leg, or None when any answer leaves doubt."""
+    found, obs = find_leg(newest, x.train, x.board_station)
+    if found is None or obs is not Observation.SEEN:
+        return None
+    if find_leg(merged, x.train, x.board_station)[1] is not Observation.SEEN:
+        return None
+    if _contrary(answers, x.train, x.board_station, x.alight_stop):
+        return None
+    if any(g.leg.alternative_transport for g in _copies(answers, x.train, x.board_station, None)):
+        return None  # 6.3: a train any answer shows as other transport is never "on time"
+    # the worst of every copy at the newest fetch, in any order: timing and platform (7.12)
+    run = current_run(answers, found.train, x.board_station, x.alight_stop)
+    g = present(run)[1].leg  # find_leg saw the train in `newest`
+    end = next((i for i, st in enumerate(g.stops) if i and st.code == x.alight_stop), None)
+    if end is None:
+        return None
+    cut = replace(g, stops=g.stops[: end + 1])
+    c = replace(classify_leg(cut, x.alight_stop), observation=Observation.SEEN)
+    times = (c.leg.board.departure, c.leg.alight.arrival)
+    if c.kind is not LegKind.OK or any(
+        t is None or t.provenance is not Provenance.REPORTED for t in times
+    ):
+        return None
+    return c
+
+
+def _changes_proven(
+    seen: Sequence[ClassifiedLeg],
+    legs: Sequence[LegProgress],
+    answers: Sequence[ProviderAnswer],
+    transfer_min: Mapping[str, int],
+) -> bool:
+    for a, b, x, y in zip(seen, seen[1:], legs, legs[1:], strict=False):
+        # every copy that changes here, whatever order the answers list them in (6.1): a copy
+        # saying the change is not possible or not reachable is evidence against all_good
+        ins = [a, *_copies(answers, x.train, x.board_station, x.alight_stop)]
+        outs = [b, *_copies(answers, y.train, y.board_station, None)]
+        if any(
+            check_transfer(i, o, x.alight_stop, transfer_min).state is not TransferState.OK
+            for i in ins
+            for o in outs
+        ):
+            return False
+    return True
+
+
 def all_good(s: OccurrenceState, board: Board, ctx: Ctx) -> AlertEvent | None:
     """Evaluated once, at the first lock (Q4, OQ3 = A). The caller sets `all_good_evaluated`.
     Rule 20: the newest answer is fresh and contains every locked leg, seen, ok and with
@@ -241,43 +300,11 @@ def all_good(s: OccurrenceState, board: Board, ctx: Ctx) -> AlertEvent | None:
     )
     seen: list[ClassifiedLeg] = []
     for x in s.lock.legs:
-        found, obs = find_leg(newest, x.train, x.board_station)
-        if found is None or obs is not Observation.SEEN:
-            return None
-        if find_leg(merged, x.train, x.board_station)[1] is not Observation.SEEN:
-            return None
-        if _contrary(board.answers, x.train, x.board_station, x.alight_stop):
-            return None
-        if any(
-            g.leg.alternative_transport
-            for g in _copies(board.answers, x.train, x.board_station, None)
-        ):
-            return None  # 6.3: a train any answer shows as other transport is never "on time"
-        # the worst of every copy at the newest fetch, in any order: timing and platform (7.12)
-        run = current_run(board.answers, found.train, x.board_station, x.alight_stop)
-        g = present(run)[1].leg  # find_leg saw the train in `newest`
-        end = next((i for i, st in enumerate(g.stops) if i and st.code == x.alight_stop), None)
-        if end is None:
-            return None
-        cut = replace(g, stops=g.stops[: end + 1])
-        c = replace(classify_leg(cut, x.alight_stop), observation=Observation.SEEN)
-        times = (c.leg.board.departure, c.leg.alight.arrival)
-        if c.kind is not LegKind.OK or any(
-            t is None or t.provenance is not Provenance.REPORTED for t in times
-        ):
+        c = _leg_proven(x, newest, merged, board.answers)
+        if c is None:
             return None
         seen.append(c)
-    for a, b, x, y in zip(seen, seen[1:], s.lock.legs, s.lock.legs[1:], strict=False):
-        # every copy that changes here, whatever order the answers list them in (6.1): a copy
-        # saying the change is not possible or not reachable is evidence against all_good
-        ins = [a, *_copies(board.answers, x.train, x.board_station, x.alight_stop)]
-        outs = [b, *_copies(board.answers, y.train, y.board_station, None)]
-        if any(
-            check_transfer(i, o, x.alight_stop, ctx.profile.transfer_min).state
-            is not TransferState.OK
-            for i in ins
-            for o in outs
-        ):
-            return None
+    if not _changes_proven(seen, s.lock.legs, board.answers, ctx.profile.transfer_min):
+        return None
     legs = [c.leg for c in seen]
     return make_event(ctx, EventKind.ALL_GOOD, Severity.SILENT, all_good_text(legs), legs[0].train)

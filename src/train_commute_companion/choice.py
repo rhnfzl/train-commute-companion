@@ -24,6 +24,17 @@ class ChoiceTarget:
     when: datetime
 
 
+def _where_and_when(s: OccurrenceState, ctx: Ctx) -> tuple[str, datetime, datetime]:
+    """The station a new choice boards at and the UTC span its departure must fall in."""
+    n = 0 if s.lock is None else first_open(s.lock)
+    if s.lock and n:
+        # an onward train continues the kept incoming leg: dated from it, not the window
+        lo = to_utc(s.lock.legs[n - 1].train.planned_departure)
+        return s.lock.legs[n - 1].alight_stop, lo, lo + timedelta(days=1)
+    w = ctx.schedule
+    return ctx.profile.origin(ctx.direction), to_utc(w.window_start), to_utc(w.window_end)
+
+
 def choice_target(
     cands: Sequence[OccurrenceState],
     departure: time,
@@ -67,17 +78,7 @@ def choice_target(
     ctx = None if found is None else ctx_of(found)
     if found is None or ctx is None:
         return None
-    w = ctx.schedule
-    n = 0 if found.lock is None else first_open(found.lock)
-    lock = found.lock
-    if lock and n:
-        # an onward train continues the kept incoming leg: dated from it, not the window
-        station = lock.legs[n - 1].alight_stop
-        lo = to_utc(lock.legs[n - 1].train.planned_departure)
-        hi = lo + timedelta(days=1)
-    else:
-        station = ctx.profile.origin(ctx.direction)
-        lo, hi = to_utc(w.window_start), to_utc(w.window_end)
+    station, lo, hi = _where_and_when(found, ctx)
     first = lo.astimezone(TZ).date()
     inside = sorted(
         (

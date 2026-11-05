@@ -41,6 +41,7 @@ from train_commute_companion.model import (
     AlertEvent,
     AlertFacts,
     Ctx,
+    Direction,
     EventKind,
     LegState,
     Obligation,
@@ -149,6 +150,34 @@ def _broken(s: OccurrenceState, t: TrainId | None) -> bool:
     )
 
 
+def _current_body(
+    e: AlertEvent,
+    train: TrainId,
+    s: OccurrenceState,
+    ctx: Ctx,
+    answers: tuple[ProviderAnswer, ...],
+) -> str | None:
+    if e.kind is EventKind.LEAVE_NOW:
+        origin = origin_answer(answers, ctx)
+        c = (
+            None
+            if origin is None
+            else still_advised(s, ctx, origin, train, usual_arrival(s, ctx, origin))
+        )
+        return None if c is None else leave_now_text(c, ctx.now.tzinfo)
+    if e.kind is EventKind.NEXT_CONNECTION:
+        pool = merged_pool(answers)
+        for j in (*((s.lock,) if s.lock else ()), *s.retained):
+            i = next((i for i, x in enumerate(j.legs) if x.train == train), None)
+            if i is not None:
+                return left_note(s, ctx, pool, j, i).body
+        return None
+    if e.kind is EventKind.ALL_GOOD:  # with the platform the latest answers give (7.9)
+        g = all_good(replace(s, all_good_evaluated=False), Board(answers, (), s.generation), ctx)
+        return None if g is None else g.body
+    return None
+
+
 class LiveLedger:
     """The delivery ledger view (7.12 rule 5): judges a message on the state and on what the
     runtime remembers of the latest polls. `written` reads the running state and `judged` the
@@ -181,22 +210,9 @@ class LiveLedger:
 
     def fact_holds(self, o: Obligation) -> bool:
         if o.look_ahead is not None:
-            pid, d, day = o.look_ahead
-            then = find_profile(self._state.config_snapshots.get(o.route_revision), pid)
-            now = find_profile(self._state.config, pid)
-            if now is None or (then is not None and not same_route(then, now)):
-                return False
-            if (
-                then is None
-                and self._state.config
-                and o.route_revision != self._state.config.revision
-            ):
-                return False
-            hist = self._state.baselines.get(direction_key(pid, d), BaselineHistory())
-            versions = {v.version for v in hist.versions}
-            if o.baseline_version is not None and o.baseline_version not in versions:
-                return False
-            return self._look_ahead_holds(o, day)
+            return self._look_ahead_route_holds(o, o.look_ahead) and self._look_ahead_holds(
+                o, o.look_ahead[2]
+            )
         if o.occurrence is None:
             return True
         s = self._occurrence(o.occurrence)
@@ -209,6 +225,18 @@ class LiveLedger:
             zone = (p.location.zones if p.location else {}).get(role, role)
             return not zone_report_stops_silent(s, {p.destination(d), zone})
         return True
+
+    def _look_ahead_route_holds(self, o: Obligation, key: tuple[str, Direction, date]) -> bool:
+        pid, d, _ = key
+        then = find_profile(self._state.config_snapshots.get(o.route_revision), pid)
+        now = find_profile(self._state.config, pid)
+        if now is None or (then is not None and not same_route(then, now)):
+            return False
+        if then is None and self._state.config and o.route_revision != self._state.config.revision:
+            return False
+        hist = self._state.baselines.get(direction_key(pid, d), BaselineHistory())
+        versions = {v.version for v in hist.versions}
+        return o.baseline_version is None or o.baseline_version in versions
 
     def _stored_facts(self, o: Obligation) -> tuple[LookAheadFact, ...]:
         pid, d, _ = present(o.look_ahead)
@@ -290,32 +318,41 @@ class LiveLedger:
             return any(x.train == e.train and x.state is LegState.MISSED for x in legs)
         if e.kind is EventKind.NEXT_CONNECTION:  # "if you are not on it": while it is unfinished
             return unfinished
-        ctx, answers = self._ctx(s), mem.boards.get(k, ())
-        if e.kind is EventKind.ALL_GOOD:  # still proven now, on the same terms as the first time
-            if ctx is None or not answers or k in mem.blind or s.lock is None:
-                return False
-            if s.lock.legs[0].train != e.train:  # it named the journey a relock replaced
-                return False
-            board = Board(answers, (), s.generation)
-            return all_good(replace(s, all_good_evaluated=False), board, ctx) is not None
+        if e.kind is EventKind.ALL_GOOD:
+            return self._all_good_holds(e, s)
         if e.kind in (EventKind.LEAVE_NOW, EventKind.EARLIER_TRAIN_WITHDRAWN):
-            a, origin = s.advice, None if ctx is None else origin_answer(answers, ctx)
-            if a is None or ctx is None or origin is None:
-                return False
-            if e.kind is EventKind.LEAVE_NOW:
-                ref = usual_arrival(s, ctx, origin)
-                return (
-                    e.train is not None
-                    and a.advised_train == e.train
-                    and not a.withdrawn
-                    and still_advised(s, ctx, origin, e.train, ref) is not None
-                )
-            return a.withdrawn and not waiting_is_bad(s, ctx, origin, usual_arrival(s, ctx, origin))
+            return self._advice_holds(e, s)
         if e.kind is EventKind.DATA_UNCLEAR:  # while its values are the latest told for its train
             told = None if e.train is None else s.alert_keys.get(f"unclear#{train_key(e.train)}")
             return told == alert_facts(e).unclear
         # the answer to a command the user gave is true as said; a new kind must say what holds it
         return e.kind is EventKind.CHOOSE_REFUSED
+
+    def _all_good_holds(self, e: AlertEvent, s: OccurrenceState) -> bool:
+        """Still proven now, on the same terms as the first time."""
+        k = okey(s.key)
+        ctx, answers = self._ctx(s), self._memory.boards.get(k, ())
+        if ctx is None or not answers or k in self._memory.blind or s.lock is None:
+            return False
+        if s.lock.legs[0].train != e.train:  # it named the journey a relock replaced
+            return False
+        board = Board(answers, (), s.generation)
+        return all_good(replace(s, all_good_evaluated=False), board, ctx) is not None
+
+    def _advice_holds(self, e: AlertEvent, s: OccurrenceState) -> bool:
+        ctx, answers = self._ctx(s), self._memory.boards.get(okey(s.key), ())
+        a, origin = s.advice, None if ctx is None else origin_answer(answers, ctx)
+        if a is None or ctx is None or origin is None:
+            return False
+        if e.kind is EventKind.LEAVE_NOW:
+            ref = usual_arrival(s, ctx, origin)
+            return (
+                e.train is not None
+                and a.advised_train == e.train
+                and not a.withdrawn
+                and still_advised(s, ctx, origin, e.train, ref) is not None
+            )
+        return a.withdrawn and not waiting_is_bad(s, ctx, origin, usual_arrival(s, ctx, origin))
 
     def newer_covers(self, o: Obligation) -> bool:
         return any(covers(x, o) for x in self._state.obligations)
@@ -357,31 +394,10 @@ class LiveLedger:
         s = None if o.occurrence is None else self._state.occurrences.get(okey(o.occurrence))
         if s is None or e.train is None:
             return e
-        k = okey(s.key)
-        ctx, answers = self._ctx(s), self._memory.boards.get(k, ())
+        ctx, answers = self._ctx(s), self._memory.boards.get(okey(s.key), ())
         if ctx is None or not answers:
             return e
-        body = None
-        if e.kind is EventKind.LEAVE_NOW:
-            origin = origin_answer(answers, ctx)
-            c = (
-                None
-                if origin is None
-                else still_advised(s, ctx, origin, e.train, usual_arrival(s, ctx, origin))
-            )
-            body = None if c is None else leave_now_text(c, ctx.now.tzinfo)
-        elif e.kind is EventKind.NEXT_CONNECTION:
-            pool = merged_pool(answers)
-            for j in (*((s.lock,) if s.lock else ()), *s.retained):
-                i = next((i for i, x in enumerate(j.legs) if x.train == e.train), None)
-                if i is not None:
-                    body = left_note(s, ctx, pool, j, i).body
-                    break
-        elif e.kind is EventKind.ALL_GOOD:  # with the platform the latest answers give (7.9)
-            g = all_good(
-                replace(s, all_good_evaluated=False), Board(answers, (), s.generation), ctx
-            )
-            body = None if g is None else g.body
+        body = _current_body(e, e.train, s, ctx, answers)
         if body is None:
             return e
         return replace(e, text=f"{display_name(e.profile_name)}: {body}{alert_facts(e).twin_note}")

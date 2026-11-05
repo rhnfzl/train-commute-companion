@@ -65,6 +65,17 @@ class GoodKwargs(TypedDict):
     profile_min: Mapping[str, int]
 
 
+def _leg_problem(x: ClassifiedLeg) -> str | None:
+    if x.kind in (LegKind.CANCELLED, LegKind.CUT_SHORT):
+        return f"leg {x.kind.value}"
+    if x.observation is not Observation.SEEN:
+        return f"leg {x.observation.value}"
+    # rule 20: a planned or missing time at either end of a leg is at risk, never good
+    if not (is_reported(x.leg.board.departure) and is_reported(x.leg.alight.arrival)):
+        return "leg has a planned or missing time"
+    return None
+
+
 def check_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) -> GoodCheck:
     """`done_transfers` counts transfers made before `kept_incoming` boarded; the transfer from
     `kept_incoming` into the first new leg is counted here. Every leg is identified in `answer`
@@ -96,13 +107,8 @@ def check_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) 
         for i, leg in enumerate(c.legs)
     ]
     for x in cls:
-        if x.kind in (LegKind.CANCELLED, LegKind.CUT_SHORT):
-            return bad(f"leg {x.kind.value}")
-        if x.observation is not Observation.SEEN:
-            return bad(f"leg {x.observation.value}")
-        # rule 20: a planned or missing time at either end of a leg is at risk, never good
-        if not (is_reported(x.leg.board.departure) and is_reported(x.leg.alight.arrival)):
-            return bad("leg has a planned or missing time")
+        if (problem := _leg_problem(x)) is not None:
+            return bad(problem)
     first = present(present(cls[0].leg.board.departure).value)  # is_reported() above
     if first.astimezone(UTC) < kw["catch"].not_before.astimezone(UTC):
         return bad("first leg cannot be caught")

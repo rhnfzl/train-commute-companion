@@ -2,7 +2,7 @@
 to the state as stored by then, with the owed webhook copies following its messages (rules 5, 18)."""
 
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 
@@ -23,7 +23,7 @@ from train_commute_companion.lookahead import (
     run_lookahead,
     service_date,
 )
-from train_commute_companion.model import Direction, Profile, direction_key, present
+from train_commute_companion.model import Direction, Obligation, Profile, direction_key, present
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
 from train_commute_companion.store import PersistedState
 from train_commute_companion.webhook_queue import CopyQueue
@@ -131,21 +131,14 @@ def lookahead_done(st: PersistedState, since: datetime) -> bool:
     )
 
 
-def _copies_through(
+def _carry_copies(
     queue: CopyQueue,
-    p: Profile,
-    d: Direction,
+    was: Mapping[str, Obligation],
     stored: LookAheadLedger,
-    current: BaselineHistory,
-    new_hist: BaselineHistory,
     new_ledger: LookAheadLedger,
-) -> LookAheadLedger:
-    """A look-ahead run as owed webhook copies see it (rules 5, 18): a copy carried by
-    `retire` follows its message, a copy whose bundled adoption was withdrawn after its
-    phone send keeps its other facts, and every owed copy keeps the facts it is judged on.
-    A copy changed here is judged on what the write tried (the held view) until it lands:
-    a failed write must not drop it against the state before this run (rule 22)."""
-    was = {o.id: o for o in stored.pending}
+) -> dict[str, Obligation]:
+    """The new ledger's pending messages, each carried one marked as copied when its copy
+    goes on under the new message or has already ended."""
     pending = {o.id: o for o in new_ledger.pending}
     for old, new in carried_ids(stored, new_ledger).items():
         if old not in was or new not in pending:
@@ -157,6 +150,19 @@ def _copies_through(
             pending[new] = n
         elif was[old].webhook_copied or old in queue.copied:  # it ended: no second one
             pending[new] = n
+    return pending
+
+
+def _rewrite_withdrawn(
+    queue: CopyQueue,
+    p: Profile,
+    d: Direction,
+    was: Mapping[str, Obligation],
+    stored: LookAheadLedger,
+    current: BaselineHistory,
+    new_hist: BaselineHistory,
+) -> dict[str, tuple[LookAheadFact, ...]]:
+    """Owed copies whose bundled adoption this run withdrew keep their other facts."""
     rewritten: dict[str, tuple[LookAheadFact, ...]] = {}
     gone = {v.version for v in current.versions} - {v.version for v in new_hist.versions}
     for c in list(queue.copies.values()):
@@ -180,6 +186,26 @@ def _copies_through(
         )
         queue.rewrite(c, o)
         rewritten[o.id] = rest
+    return rewritten
+
+
+def _copies_through(
+    queue: CopyQueue,
+    p: Profile,
+    d: Direction,
+    stored: LookAheadLedger,
+    current: BaselineHistory,
+    new_hist: BaselineHistory,
+    new_ledger: LookAheadLedger,
+) -> LookAheadLedger:
+    """A look-ahead run as owed webhook copies see it (rules 5, 18): a copy carried by
+    `retire` follows its message, a copy whose bundled adoption was withdrawn after its
+    phone send keeps its other facts, and every owed copy keeps the facts it is judged on.
+    A copy changed here is judged on what the write tried (the held view) until it lands:
+    a failed write must not drop it against the state before this run (rule 22)."""
+    was = {o.id: o for o in stored.pending}
+    pending = _carry_copies(queue, was, stored, new_ledger)
+    rewritten = _rewrite_withdrawn(queue, p, d, was, stored, current, new_hist)
     owed = {c.obligation.id for c in queue.copies.values()}
     carry = {i: f for i, f in stored.facts.items() if i in owed}
     return replace(
