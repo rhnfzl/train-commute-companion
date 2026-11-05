@@ -1,4 +1,4 @@
-"""Planned-works look-ahead and timetable baselines (7.10, 7.12 rules 18, 19, 21, Q2). Pure."""
+"""Planned-works look-ahead and timetable baselines (7.10, 7.12 rules 18, 19, 21). Pure."""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -317,7 +317,7 @@ def _adopt(
     others: Sequence[Profile],
     bases: Mapping[tuple[str, Direction], BaselineHistory],
 ) -> tuple[BaselineVersion | None, str | None]:
-    """Unanimous adoption of the whole signature, after confirmation only (Q2): the version
+    """Unanimous adoption of the whole signature, after confirmation only: the version
     adopted, or the refusal that blocked it."""
     if agreed is None or not any(v.confirmed for v in draft.versions):
         return None, None
@@ -526,7 +526,7 @@ def _fact_messages(draft: _Draft, w: _Writer, adopted: BaselineVersion | None) -
 
 def _unclear_messages(draft: _Draft, w: _Writer) -> list[AlertEvent]:
     """Rule 23: copies of one train in one answer that disagree, once per train, date and
-    values; its own loud message, gated only by its ledger mark (owner decision 7)."""
+    values; its own loud message, gated only by its ledger mark."""
     events: list[AlertEvent] = []
     told: set[tuple[date, str]] = set()
     for r in w.results:
@@ -647,7 +647,7 @@ def rebase_on_edit(
     old: Profile, new: Profile, d: Direction, history: BaselineHistory, today: date
 ) -> BaselineHistory:
     """Rule 10: a change of stations, transfers, first train or day offset re-seeds the
-    direction's baseline, except setting `first_train` to the baseline in force (Q2)."""
+    direction's baseline, except setting `first_train` to the baseline in force."""
     a, b = old.journey(d), new.journey(d)
     same_route = (old.origin(d), old.destination(d), a.transfers, a.day_offset) == (
         new.origin(d),

@@ -101,7 +101,7 @@ async def post_copy(
     """One try of a webhook copy, judged as its phone obligation is (rule 5). None: finished
     (every URL accepted, or dropped). Otherwise the copy to keep; the give-up clock starts
     only with a real request, and `started` gets the copy with its first try before that
-    request goes out, so a try cut off by shutdown still counts (owner decision Q1)."""
+    request goes out, so a try cut off by shutdown still counts."""
     verdict = revalidate(c.obligation, view, now)
     if verdict == "drop":
         return None

@@ -815,7 +815,7 @@ class Runtime:
         tick = on_tick(st, ctx, merged)
         st, events = tick.state, [*events, *tick.events]
         if st.lock is not None and not st.all_good_evaluated:
-            good = all_good(st, board, ctx)  # Q4: judged once, at the first poll with a lock
+            good = all_good(st, board, ctx)  # judged once, at the first poll with a lock
             st = replace(st, all_good_evaluated=True)
             events += [good] if good else []
         if merged is not None:

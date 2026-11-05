@@ -378,7 +378,7 @@ class TccOptionsFlow(_TestPushMixin, OptionsFlowWithReload):
         if errors:
             return self._webhooks_form(user_input, errors)
         if urls and (list(urls), secret, token) != saved:
-            # owner decision Q2(b): nothing is saved unless every URL accepted both test sends
+            # nothing is saved unless every URL accepted both test sends
             # making the client loads the CA bundle, a blocking call on hass.loop
             client = await self.hass.async_add_executor_job(host_mod.make_webhook_client)
             async with client:

@@ -152,7 +152,7 @@ async def send_webhook_tests(
     *,
     token: str = "",
 ) -> tuple[WebhookTestResult, ...]:
-    """Setup test sends (owner decision Q2(b)): a signed loud and a signed silent test to every
+    """Setup test sends: a signed loud and a signed silent test to every
     URL, concurrently. Never stored, never retried, and apart from any `WebhookPoster`'s rest
     and `failing`."""
     _install_log_filter()

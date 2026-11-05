@@ -125,7 +125,7 @@ def _platformed(field: str, s: Stop) -> bool:
 
 
 def _bound(copies: Sequence[Leg], keys: list[list[str]], targets: list[str]) -> str | None:
-    """The furthest stop where the user gets off, picked by route order (owner decision 6)."""
+    """The furthest stop where the user gets off, picked by route order."""
     listed = [[x for x in k if x in targets] for k in keys]
     if not any(listed):
         return None

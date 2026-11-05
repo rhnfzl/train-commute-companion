@@ -104,7 +104,7 @@ def sync_entities(
         if new := [make for uid, make in want.items() if uid not in added]:
             added.update(uid for uid in want if uid not in added)
             async_add_entities([make() for make in new])
-        # a view read before the runtime has a config would otherwise delete every entity (HA-17)
+        # a view read before the runtime has a config would otherwise delete every entity
         if not view.started or not view.directions:
             return
         # not from the registry: a removed device already took its entries (5.4)

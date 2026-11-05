@@ -17,7 +17,7 @@ from train_commute_companion.webhook import event_id, url_id
 
 log = logging.getLogger(__name__)
 
-# webhooks: a copy is given up GIVE_UP after its first try (owner decision Q1); at most
+# webhooks: a copy is given up GIVE_UP after its first try; at most
 # MAX_COPIES are owed (one try a minute cannot keep up with faster alerts)
 GIVE_UP = timedelta(hours=2)
 MAX_COPIES = 200
@@ -86,7 +86,7 @@ class CopyQueue:
         # gets them after it, also once its own copy was accepted or a restart came between
         for c in [c for c in self.copies.values() if covers(o, c.obligation)]:
             self.drop(c.id)
-        if len(self.copies) >= MAX_COPIES:  # overload: a never-tried copy goes first (Q1)
+        if len(self.copies) >= MAX_COPIES:  # overload: a never-tried copy goes first
             pool = [c for c in self.copies.values() if c.first_try is None]
             old = min(
                 pool or self.copies.values(), key=lambda c: to_utc(c.obligation.event.created_at)
@@ -173,7 +173,7 @@ class CopyQueue:
     async def _post_copies(self, port: WebhookPort) -> None:
         """After the phone sends: each owed copy once. Never tried first, oldest first, then
         least recently tried first, so a failing URL's one try per rest goes to every copy in
-        turn. The give-up check comes before every wait (owner decision Q1)."""
+        turn. The give-up check comes before every wait."""
         for c in sorted(
             self.copies.values(),
             key=lambda c: (

@@ -335,7 +335,7 @@ def map_station_positions(payload: object) -> dict[str, tuple[float, float]]:
 BASE_URL = "https://gateway.apiportal.ns.nl/reisinformatie-api/api"
 
 
-# Hard cap per request (7.1); the runtime's per-poll deadline (plan Task 18) wraps whole polls.
+# Hard cap per request (7.1); the runtime's per-poll deadline wraps whole polls.
 REQUEST_DEADLINE_S = 90.0
 
 

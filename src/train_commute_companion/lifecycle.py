@@ -1911,7 +1911,7 @@ def _journey_end(
     s: OccurrenceState, ctx: Ctx, j: Journey, *, retained: bool
 ) -> tuple[AlertEvent, ...] | None:
     """None while `j` is followed; else the events of its end: silent with arrival evidence,
-    else one loud `stopped_following` naming it (OQ4 = A)."""
+    else one loud `stopped_following` naming it."""
     now = to_utc(ctx.now)
     last = j.legs[-1]
     first = j.legs[0].train
