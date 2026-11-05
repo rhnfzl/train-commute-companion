@@ -1174,7 +1174,9 @@ class Runtime:
             qs = location_queries(s, ctx, event)  # the locked trains, from where they leave
             more = await self._fetch_all(qs, True, None) if qs else ()
             now = self._clock.now()
-            self._auth(got if isinstance(got, str) else None, k, now)
+            # a rejected key on either request is reported; a healthy first answer clears an outage
+            error = "auth" if more == "auth" else got if isinstance(got, str) else None
+            self._auth(error, k, now)
             # re-read after the request: an occurrence skipped, archived or edited meanwhile is
             # never written back from the old copy (rule 21)
             s = self._writer.st.occurrences.get(k)

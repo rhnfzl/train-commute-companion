@@ -2124,6 +2124,21 @@ async def test_a_failing_occurrence_does_not_starve_the_others(tmp_path, caplog)
     assert "poll of p1|outbound|2026-10-26 failed" in caplog.text
 
 
+async def test_a_rejected_key_on_the_locked_train_query_is_reported(tmp_path):
+    rig = await started(tmp_path, "07:56")
+    assert rig.occ().lock is not None
+    calls: list[Query] = []
+
+    def second_rejected(q: Query) -> Exception | None:
+        calls.append(q)
+        return AuthError() if len(calls) == 2 else None
+
+    rig.provider.error = second_rejected
+    await rig.rt.location("p1", LocationEvent("AAA", "enter", rig.clock.now()))
+    assert len(calls) == 2  # the origin answer, then the locked train's
+    assert EventKind.KEY_REJECTED in kinds(rig.rt.events_log)
+
+
 async def test_reload_forgets_what_was_seen_of_an_occurrence_it_drops(tmp_path):
     rig = Rig(tmp_path)
     rig.provider.world = []
