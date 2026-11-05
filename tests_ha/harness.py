@@ -21,7 +21,7 @@ from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
     async_mock_service,
 )
-from runtime_rig import FakeClock, Provider, at
+from runtime_rig import FakeClock, Provider, StationsProvider, at
 from webhook_receiver import Receiver
 
 from custom_components.train_commute_companion import host as host_mod
@@ -29,12 +29,7 @@ from custom_components.train_commute_companion import notifier as notifier_mod
 from custom_components.train_commute_companion.const import DOMAIN
 from custom_components.train_commute_companion.host import RuntimeHost
 from train_commute_companion.model import Connection, WebhookCopy
-from train_commute_companion.providers.base import (
-    PlannedWorks,
-    ProviderAnswer,
-    Query,
-)
-from train_commute_companion.replay import ReplayClock, ReplayProvider
+from train_commute_companion.replay import ReplayClock
 from train_commute_companion.store import JsonFileStore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,25 +51,6 @@ class HaProvider(Provider):
 
     async def stations(self) -> frozenset[str]:
         return STATIONS
-
-
-class ReplayStations:
-    """A replay's provider with the station list a real one has: `require_stations` would refuse
-    the first configuration against the replay provider's empty list."""
-
-    positions: dict[str, tuple[float, float]]
-
-    def __init__(self, inner: ReplayProvider, codes: frozenset[str]) -> None:
-        self.inner, self.codes, self.positions = inner, codes, {}
-
-    async def trips(self, q: Query) -> ProviderAnswer:
-        return await self.inner.trips(q)
-
-    async def planned_works(self) -> PlannedWorks:
-        return await self.inner.planned_works()
-
-    async def stations(self) -> frozenset[str]:
-        return self.codes
 
 
 def fake_phone(
@@ -148,7 +124,7 @@ def prepare(
     now: str,
     world: Sequence[Connection],
     *,
-    replay: tuple[ReplayClock, ReplayStations] | None = None,
+    replay: tuple[ReplayClock, StationsProvider] | None = None,
     options: Mapping[str, Any] | None = None,
 ) -> tuple[MockConfigEntry, FakeClock, HaProvider, list[ServiceCall]]:
     """Everything `setup_tcc` does before setting the entry up. `replay` swaps in a replay's

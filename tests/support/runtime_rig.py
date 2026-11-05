@@ -2,7 +2,7 @@
 
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -25,6 +25,7 @@ from train_commute_companion.providers.base import (
     ProviderAnswer,
     Query,
 )
+from train_commute_companion.providers.base import Provider as ProviderPort
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.serde import dumps
 from train_commute_companion.store import VERSION, PersistedState, StorageError, read_state
@@ -150,6 +151,27 @@ class Provider:
 
     async def stations(self) -> frozenset[str]:
         return frozenset()
+
+
+class StationsProvider:
+    """`inner` with a station list: a real provider has one and `require_stations` wants it."""
+
+    def __init__(
+        self,
+        inner: ProviderPort,
+        codes: frozenset[str],
+        positions: Mapping[str, tuple[float, float]] = {},
+    ) -> None:
+        self.inner, self.codes, self.positions = inner, codes, dict(positions)
+
+    async def trips(self, q: Query) -> ProviderAnswer:
+        return await self.inner.trips(q)
+
+    async def planned_works(self) -> PlannedWorks:
+        return await self.inner.planned_works()
+
+    async def stations(self) -> frozenset[str]:
+        return self.codes
 
 
 USUAL = make_connection([L1, L2])

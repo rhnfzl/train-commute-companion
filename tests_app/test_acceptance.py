@@ -16,7 +16,6 @@ from app_rig import (
     TOKEN,
     URL,
     FakeTelegram,
-    StationsProvider,
     TickClock,
     build_from_replay,
     drive_replay,
@@ -28,7 +27,7 @@ from app_rig import (
 from app_rig import SECRET as HOOK_SECRET
 from builders import AMS, ONE_TRANSFER, only_occurrence
 from owntracks_rig import FAR, SECRET, UT, basic, located_app, post
-from runtime_rig import PROFILES_DIR, Provider, at, bump_mtime, usual_on
+from runtime_rig import PROFILES_DIR, Provider, StationsProvider, at, bump_mtime, usual_on
 from tcc_app import bot as bot_mod
 from tcc_app.commands import render_webhook_tests
 from tcc_app.main import App, Settings, build, health_report, start_web

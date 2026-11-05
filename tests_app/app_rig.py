@@ -6,14 +6,14 @@ import json
 import re
 import socket
 import threading
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
 
 import httpx
 from builders import ONE_TRANSFER
-from runtime_rig import PROFILE, FakeClock, at
+from runtime_rig import PROFILE, FakeClock, StationsProvider, at
 from runtime_rig import Provider as FakeProvider
 from tcc_app import bot as bot_mod
 from tcc_app.bot import ShellState, save_state
@@ -35,7 +35,6 @@ from train_commute_companion.model import (
     TransferState,
 )
 from train_commute_companion.profile import parse_profiles
-from train_commute_companion.providers.base import PlannedWorks, Provider, ProviderAnswer, Query
 from train_commute_companion.replay import Replay, apply_event, load_replay
 from train_commute_companion.view import (
     DirectionInfo,
@@ -142,27 +141,6 @@ class TickClock(FakeClock):
     async def sleep(self, seconds: float) -> None:
         await super().sleep(seconds)
         await asyncio.sleep(0.01)
-
-
-class StationsProvider:
-    """`inner` with a station list: `build` requires one before a configuration applies."""
-
-    def __init__(
-        self,
-        inner: Provider,
-        codes: frozenset[str],
-        positions: Mapping[str, tuple[float, float]] = {},
-    ) -> None:
-        self.inner, self.codes, self.positions = inner, codes, dict(positions)
-
-    async def trips(self, q: Query) -> ProviderAnswer:
-        return await self.inner.trips(q)
-
-    async def planned_works(self) -> PlannedWorks:
-        return await self.inner.planned_works()
-
-    async def stations(self) -> frozenset[str]:
-        return self.codes
 
 
 def make_app(tmp_path: Path, tg: FakeTelegram, clock: TickClock, provider=None,

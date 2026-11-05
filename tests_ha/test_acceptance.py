@@ -20,7 +20,6 @@ from harness import (
     SECRET,
     STATIONS,
     Harness,
-    ReplayStations,
     drive,
     jump,
     prepare,
@@ -31,7 +30,7 @@ from harness import (
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import ServiceCall
 from homeassistant.helpers import issue_registry as ir
-from runtime_rig import usual_on
+from runtime_rig import StationsProvider, usual_on
 from webhook_receiver import Receiver
 
 from custom_components.train_commute_companion import validate
@@ -96,7 +95,7 @@ async def setup_from_replay(
         text,
         "00:00",
         (),
-        replay=(rp.clock, ReplayStations(rp.provider, codes(text))),
+        replay=(rp.clock, StationsProvider(rp.provider, codes(text))),
         options=options,
     )
     assert await hass.config_entries.async_setup(entry.entry_id)

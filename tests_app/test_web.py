@@ -11,8 +11,8 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from app_rig import CODES, StationsProvider, TickClock, make_app, occ, view
-from runtime_rig import Provider, at, every_day
+from app_rig import CODES, TickClock, make_app, occ, view
+from runtime_rig import Provider, StationsProvider, at, every_day
 from tcc_app import commands, web
 from tcc_app.web import (
     BODY_LIMIT,

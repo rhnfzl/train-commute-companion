@@ -4,9 +4,9 @@ import asyncio
 import base64
 from pathlib import Path
 
-from app_rig import CHAT, CODES, TOKEN, StationsProvider, TickClock
+from app_rig import CHAT, CODES, TOKEN, TickClock
 from builders import ONE_TRANSFER
-from runtime_rig import PROFILES_DIR, Provider, at
+from runtime_rig import PROFILES_DIR, Provider, StationsProvider, at
 from tcc_app.main import App, Settings, build
 
 SECRET = "test-owntracks-secret-0001"
