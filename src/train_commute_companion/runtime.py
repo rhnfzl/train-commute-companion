@@ -389,7 +389,6 @@ class Runtime:
             self._writer.st,
             self._memory.boards,
             now,
-            lambda s: self._ctx(s, now),
             started=self._started,
             refusal=self._refusal,
             store_ok=self._writer.store_ok,
@@ -1071,9 +1070,7 @@ class Runtime:
             (p for s in cands if (p := self._profile_for(s)) is not None), None
         )
         gone = no_journey_text(display_name(named.name if named else profile_id))
-        target = choice_target(
-            cands, departure, train_number, service_date, now, lambda s: self._ctx(s, now)
-        )
+        target = choice_target(cands, departure, train_number, service_date, now, self._writer.st)
         if target is None:
             return gone
         if isinstance(target, str):

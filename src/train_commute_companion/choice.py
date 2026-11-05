@@ -1,7 +1,7 @@
 """A train named by its clock time (shells, 7.13): what it names and which connections of an answer
 match it. Pure: time and data are arguments, the runtime fetches and applies the choice."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 
@@ -9,7 +9,9 @@ from train_commute_companion.calendar import TZ, floor_to_minute, resolve_local,
 from train_commute_companion.lifecycle import first_open, target_occurrence
 from train_commute_companion.model import Connection, Ctx, Leaving, LegState
 from train_commute_companion.providers.base import ProviderAnswer
+from train_commute_companion.revisions import occurrence_ctx
 from train_commute_companion.state import LegProgress, OccurrenceState
+from train_commute_companion.store import PersistedState
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +39,7 @@ def choice_target(
     train_number: str | None,
     service_date: date | None,
     now: datetime,
-    ctx_of: Callable[[OccurrenceState], Ctx | None],
+    st: PersistedState,
 ) -> ChoiceTarget | str | None:
     """Where and when the named train leaves. A string is why it cannot; None: no occurrence."""
 
@@ -62,7 +64,7 @@ def choice_target(
     )
     if hit is not None:
         occ, x = hit
-        ctx = ctx_of(occ)
+        ctx = occurrence_ctx(st, occ, now)
         if ctx is None:
             return None
         return ChoiceTarget(occ, ctx, x.board_station, x.train.planned_departure)
@@ -71,7 +73,7 @@ def choice_target(
         (s for s in cands if s.lock and 0 < first_open(s.lock) < len(s.lock.legs)),
         None,
     ) or target_occurrence(cands, Leaving(service_date, now))
-    ctx = None if found is None else ctx_of(found)
+    ctx = None if found is None else occurrence_ctx(st, found, now)
     if found is None or ctx is None:
         return None
     station, lo, hi = _where_and_when(found, ctx)

@@ -2,7 +2,7 @@
 follows, built by pure functions, so a shell never reaches into runtime state."""
 
 import copy
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from itertools import pairwise
@@ -49,7 +49,7 @@ from train_commute_companion.model import (
     direction_key,
 )
 from train_commute_companion.providers.base import ProviderAnswer
-from train_commute_companion.revisions import find_profile, profile_for
+from train_commute_companion.revisions import find_profile, occurrence_ctx, profile_for
 from train_commute_companion.state import (
     BaselineHistory,
     Commitment,
@@ -317,7 +317,6 @@ def runtime_view(
     st: PersistedState,
     boards: Mapping[str, Sequence[ProviderAnswer]],
     now: datetime,
-    ctx_of: Callable[[OccurrenceState], Ctx | None],
     *,
     started: bool,
     refusal: str | None,
@@ -332,7 +331,7 @@ def runtime_view(
     cfg = st.config
     occurrences = []
     for k, s in sorted(st.occurrences.items()):
-        ctx = ctx_of(s)
+        ctx = occurrence_ctx(st, s, now)
         if ctx is not None:
             occurrences.append(occurrence_view(s, ctx, boards.get(k, ())))
     # rule 10: a removed profile still runs on its occurrences, so its entities stay
