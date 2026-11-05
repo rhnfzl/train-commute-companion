@@ -184,12 +184,16 @@ async def test_readout_round_trip_on_a_private_socket(sock):
     await server.wait_closed()
 
 
+def is_handler(task: asyncio.Task) -> bool:
+    return task.get_coro().__name__ == "handle"
+
+
 async def _exchange(sock, data: bytes, read: bool = True) -> bytes:
     reader, writer = await asyncio.open_unix_connection(sock)
     writer.write(data)
     await writer.drain()
     try:
-        return await asyncio.wait_for(reader.read(), 0.5) if read else b""
+        return await asyncio.wait_for(reader.read(), 30) if read else b""
     finally:
         writer.close()
 
@@ -216,7 +220,7 @@ async def test_bad_requests_get_a_fixed_error_and_never_stall_the_loop(
 
     t0 = time.monotonic()
     assert await _exchange(sock, b"") == b""  # sends nothing: closed on the timeout
-    assert time.monotonic() - t0 < 0.5
+    assert time.monotonic() - t0 < 4  # the patched budget, not the 5 s default
 
     def boom(req: object) -> dict:
         raise RuntimeError("boom-detail")
@@ -237,14 +241,18 @@ async def test_bad_requests_get_a_fixed_error_and_never_stall_the_loop(
     current[0] = lambda req: {"x": "a" * 900_000}
     raw = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    known = asyncio.all_tasks()
     raw.connect(str(sock))
     raw.sendall(b"{}\n")
     before = turns[0]
-    await asyncio.sleep(0.3)  # never read in this time; the server's 0.05 s budget ran out
+    while not (handlers := [t for t in asyncio.all_tasks() - known if is_handler(t)]):
+        await asyncio.sleep(0)
+    await asyncio.wait_for(asyncio.wait(handlers), 30)  # never read: the 0.05 s budget ran out
     assert turns[0] > before  # the loop kept turning throughout
-    raw.settimeout(0.5)
+    raw.setblocking(False)
     got = b""
-    while chunk := raw.recv(65536):  # only what the kernel already held, then EOF
+    # only what the kernel already held, then EOF
+    while chunk := await asyncio.wait_for(asyncio.get_running_loop().sock_recv(raw, 65536), 30):
         got += chunk
     raw.close()
     assert len(got) < 900_000  # aborted: the rest of the reply was dropped, not sent

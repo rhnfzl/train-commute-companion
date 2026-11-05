@@ -3,6 +3,8 @@ decisions Q1 and Q2): a real WebhookPoster on a MockTransport client, the runtim
 tests/test_runtime.py, receivers that verify every delivery with the documented recipe."""
 
 import asyncio
+import heapq
+import itertools
 import json
 import logging
 import re
@@ -1508,13 +1510,13 @@ async def test_restart_keeps_the_rest_and_the_outage(tmp_path, caplog):  # rule 
 
 
 async def test_run_forever_posts_the_copy_between_steps_without_a_wait(tmp_path):
-    # production's SystemClock.sleep is a real asyncio.sleep, so the background pass runs
-    # while the loops wait; here time runs 200x faster, as real sleeps on a real loop clock,
-    # and no driver awaits webhooks_idle()
+    # production's SystemClock.sleep gives the loop away, so the background pass runs while the
+    # loops wait; here time moves only once all four loops wait and no pass runs, and nothing
+    # but the poll that made the copy starts the pass
     rig = await wstarted(tmp_path, sync=False)
     rig.clock.set("07:52")
     rig.provider.world = [make_connection([L1X, L2]), LATER]
-    loop, start, t0, fast = asyncio.get_running_loop(), 0.0, rig.clock.t, 200
+    loop, order, sleepers = asyncio.get_running_loop(), itertools.count(), []
     polls: list[int] = []  # the receiver's post count at the start of every poll step
     poll = rig.rt.poll_once
 
@@ -1525,14 +1527,29 @@ async def test_run_forever_posts_the_copy_between_steps_without_a_wait(tmp_path)
         await poll()
 
     async def sleep(seconds: float) -> None:
-        await asyncio.sleep(seconds / fast)
+        wake = loop.create_future()
+        due = rig.clock.t + timedelta(seconds=seconds)
+        heapq.heappush(sleepers, (due, next(order), wake))
+        await wake
 
-    rig.clock.now = lambda: t0 + timedelta(seconds=(loop.time() - start) * fast)  # type: ignore[method-assign]
-    rig.clock.sleep = sleep  # type: ignore[method-assign]
-    rig.rt.poll_once = counted  # type: ignore[method-assign]
-    start = loop.time()
-    with pytest.raises(asyncio.CancelledError):
-        await rig.rt.run_forever(started=True)
+    async def move_time() -> None:
+        while True:
+            await asyncio.sleep(0)
+            await rig.rt.webhooks_idle()
+            if len(sleepers) == 4:  # poll, file watch, daily look-ahead, watchdog
+                due, _, wake = heapq.heappop(sleepers)
+                rig.clock.t = max(rig.clock.t, due)
+                wake.set_result(None)
+
+    rig.clock.sleep = sleep
+    rig.rt.poll_once = counted
+    mover = asyncio.create_task(move_time())
+    try:
+        async with asyncio.timeout(30):  # fails, not hangs, if a loop never comes back
+            with pytest.raises(asyncio.CancelledError):
+                await rig.rt.run_forever(started=True)
+    finally:
+        mover.cancel()
     (phone,) = [e for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
     assert rig.end.of(EventKind.CANCELLED) == [json.loads(body(phone))]
     assert polls == [0, 1, 1]  # posted after the poll that made it, before the next one

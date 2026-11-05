@@ -282,7 +282,8 @@ async def test_local_push_unconfirmed_and_fallback_failing_is_false(
     monkeypatch.setattr(
         "homeassistant.components.mobile_app.push_notification.PUSH_CONFIRM_TIMEOUT", 0.05
     )
-    monkeypatch.setattr(notifier_mod, "LOCAL_PUSH_SETTLE_S", 0.5)
+    # an upper bound only: the fallback ending the wait is what the test passes on, however slow
+    monkeypatch.setattr(notifier_mod, "LOCAL_PUSH_SETTLE_S", 30)
     aioclient_mock.post(RELAY, status=500, json={})
     await open_channel(hass, hass_ws_client)
     assert not await send_from_thread(hass, loud_event())
@@ -290,7 +291,7 @@ async def test_local_push_unconfirmed_and_fallback_failing_is_false(
 
 
 async def test_local_push_confirmed_is_true(hass, hass_ws_client, phone, monkeypatch):
-    monkeypatch.setattr(notifier_mod, "LOCAL_PUSH_SETTLE_S", 0.3)
+    monkeypatch.setattr(notifier_mod, "LOCAL_PUSH_SETTLE_S", 30)  # the confirmation ends the wait
     ws = await open_channel(hass, hass_ws_client)
     task = hass.async_create_task(send_from_thread(hass, loud_event()))
     msg = await ws.receive_json()
