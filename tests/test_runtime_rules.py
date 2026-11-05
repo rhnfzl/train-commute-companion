@@ -820,7 +820,7 @@ def test_origin_answer_keeps_distinct_connections_sharing_an_onward_train():
     from lifecycle_fixtures import ans, conn
     from lifecycle_fixtures import ctx as follow_ctx
 
-    from train_commute_companion.lifecycle import Pool
+    from train_commute_companion.providers.base import Pool
 
     older = ans("AAA", conn(L1, R2), when="07:50")  # the 08:12 and the 08:25 share the 09:05
     newer = ans("AAA", LATER, when="07:52")

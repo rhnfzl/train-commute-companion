@@ -627,7 +627,7 @@ def test_auto_lock_sees_a_cancellation_in_another_answer_of_the_poll():  # 6.2, 
 
 
 def test_auto_lock_left_note_reads_the_newest_copy():  # 6.2, rule 7
-    from train_commute_companion.lifecycle import Pool
+    from train_commute_companion.providers.base import Pool
 
     older = make_leg("AAA", "RTD", "08:12", "09:24", number="1234", stops=["BBB", "UT"])
     newer = make_leg(

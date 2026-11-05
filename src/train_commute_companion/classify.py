@@ -18,7 +18,7 @@ from train_commute_companion.model import (
     TimeObs,
     TrainId,
 )
-from train_commute_companion.providers.base import ProviderAnswer
+from train_commute_companion.providers.base import Pool, ProviderAnswer
 
 DELAYED_AT_MIN = 3
 
@@ -102,9 +102,10 @@ def find_leg(
 
 
 def evidence(answer: ProviderAnswer) -> tuple[ProviderAnswer, ...]:
-    # a lifecycle pool keeps one poll's answers apart
-    answers: tuple[ProviderAnswer, ...] = getattr(answer, "answers", ())
-    return answers or (answer,)
+    # a pool keeps one poll's answers apart
+    if isinstance(answer, Pool) and answer.answers:
+        return answer.answers
+    return (answer,)
 
 
 def _newest_first(answers: Sequence[ProviderAnswer]) -> list[ProviderAnswer]:

@@ -318,7 +318,7 @@ def test_pair_transfer_conflicting_changes_at_one_fetch_take_the_worst(caplog):
 
 
 def test_find_leg_judges_identity_over_every_answer_of_the_pool():
-    from train_commute_companion.lifecycle import Pool
+    from train_commute_companion.providers.base import Pool
 
     c = make_connection([R1300, r6666()])
     origin = ProviderAnswer(Query("AAA", "RTD", fetched(NEWER)), (c,), fetched(NEWER))

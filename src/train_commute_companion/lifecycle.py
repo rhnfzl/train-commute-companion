@@ -57,7 +57,7 @@ from train_commute_companion.model import (
     present,
     train_ident,
 )
-from train_commute_companion.providers.base import ProviderAnswer, Query
+from train_commute_companion.providers.base import Pool, ProviderAnswer, Query
 from train_commute_companion.replacement import (
     Catchability,
     GoodCheck,
@@ -641,7 +641,7 @@ def _missed_head(s: OccurrenceState, source: Journey | None) -> tuple[LegProgres
 def _choice_check(
     s: OccurrenceState,
     ctx: Ctx,
-    pool: "Pool",
+    pool: Pool,
     c: Connection,
     source: Journey | None,
     head: Sequence[LegProgress],
@@ -753,14 +753,6 @@ class Board:
     answers: tuple[ProviderAnswer, ...]  # healthy answers only: a failed request raised
     polls: tuple[PollRecord, ...]
     started_generation: int
-
-
-@dataclass(frozen=True, slots=True)
-class Pool(ProviderAnswer):
-    """All answers of one poll merged for ranking, plus each answer apart: per-leg evidence
-    keeps the answer and the time it was observed in (rule 6, rule 20)."""
-
-    answers: tuple[ProviderAnswer, ...] = ()
 
 
 def first_open(j: Journey) -> int:

@@ -46,6 +46,14 @@ class ProviderAnswer:
 
 
 @dataclass(frozen=True, slots=True)
+class Pool(ProviderAnswer):
+    """All answers of one poll merged for ranking, plus each answer apart: per-leg evidence
+    keeps the answer and the time it was observed in (rule 6, rule 20)."""
+
+    answers: tuple[ProviderAnswer, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class PlannedWork:
     start: datetime
     end: datetime

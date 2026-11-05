@@ -279,7 +279,7 @@ def test_replacement_transport_in_the_newer_copy_is_never_good():
 
 
 def test_identity_is_judged_over_transfer_answers_too():
-    from train_commute_companion.lifecycle import Pool
+    from train_commute_companion.providers.base import Pool
 
     c = two_legs()
     early = kw(board_station="AAA", catch=Catchability(dt("2026-10-27 08:00")))
