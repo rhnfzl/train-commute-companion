@@ -54,7 +54,7 @@ _SILENT = frozenset(
 Delays = tuple[int | None, int | None]  # (departure, arrival) delay a message last stated
 
 
-def segment(leg: Leg) -> str:
+def segment_key(leg: Leg) -> str:
     """A leg's identity for delay history: the train, by planned departure, over its stops."""
     return f"{train_ident(leg.train)}/{leg.board.code}/{leg.alight.code}"
 
@@ -68,8 +68,8 @@ def next_stated_delays(
     prev = last or {}
     out = {}
     for c in classified:
-        was = prev.get(segment(c.leg), (None, None))
-        out[segment(c.leg)] = (
+        was = prev.get(segment_key(c.leg), (None, None))
+        out[segment_key(c.leg)] = (
             next_stated_delay(was[0], c.dep_delay_min),
             next_stated_delay(was[1], c.arr_delay_min),
         )
@@ -115,7 +115,7 @@ def alert_key(
             )
         )
         for c in key_legs(classified, replacement)
-        for d in [delays.get(segment(c.leg), none)]
+        for d in [delays.get(segment_key(c.leg), none)]
     ]
     n = len(classified)
     return "|".join(

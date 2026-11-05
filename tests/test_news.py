@@ -21,7 +21,7 @@ from train_commute_companion.news import (
     key_legs,
     next_stated_delay,
     next_stated_delays,
-    segment,
+    segment_key,
     severity,
     unsent,
 )
@@ -305,7 +305,7 @@ def test_relock_does_not_inherit_another_trains_announced_delay():  # 7.5, findi
     _, said = keyed(old)
     new5 = make_leg("AAA", "UT", "08:25", "08:53", number="1300", delay_dep=5)
     k5, said5 = keyed(new5, last=said)
-    assert said5[segment(new5)][0] == 5  # its own announced facts, not the old +6
+    assert said5[segment_key(new5)][0] == 5  # its own announced facts, not the old +6
     new8 = make_leg("AAA", "UT", "08:25", "08:53", number="1300", delay_dep=8)
     assert key(new8, last=said5) != k5  # +5 to +8 is a full step for this train
 

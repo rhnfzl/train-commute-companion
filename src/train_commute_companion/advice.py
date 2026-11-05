@@ -83,7 +83,7 @@ def is_unrideable(c: Connection, answer: ProviderAnswer, profile_min: dict[str, 
     )
 
 
-def _segment(answer: ProviderAnswer, x: LegProgress) -> Leg | None:
+def _locked_leg_copy(answer: ProviderAnswer, x: LegProgress) -> Leg | None:
     """The locked train over its stored stops, from a copy in the answer that reaches the
     stored alighting stop. A copy cut where its own connection changes earlier says nothing
     about the rest, so with no copy reaching that stop the segment is unavailable."""
@@ -105,7 +105,7 @@ def ridden_journey(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Conn
     a lock spread over connections still counts and a fragment ending early is not its
     arrival; None when a leg's whole segment is not seen."""
     if s.lock is not None:
-        found = [_segment(answer, x) for x in s.lock.legs]
+        found = [_locked_leg_copy(answer, x) for x in s.lock.legs]
         legs = tuple(g for g in found if g is not None)
         return Connection(legs, "", None) if len(legs) == len(found) else None
     j = ctx.profile.journey(ctx.direction)

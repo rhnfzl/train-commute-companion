@@ -790,7 +790,7 @@ def _late_onward(x: LegProgress, nxt: LegProgress | None) -> datetime | None:
     return t if t.astimezone(UTC) > nxt.train.planned_departure.astimezone(UTC) else None
 
 
-def _since(fresh: datetime | None, asked: datetime | None) -> datetime | None:
+def _proof_after(fresh: datetime | None, asked: datetime | None) -> datetime | None:
     """Only an answer asked from the station at or after this proves there is no connection;
     the time the last poll asked for counts, so a drifting delay does not keep it quiet."""
     if fresh is None or asked is None:
@@ -988,13 +988,13 @@ class Cause(NamedTuple):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Relock:
-    """Replace `legs[j:]` by the next good connection from `station` (7.4). `over_cap` is the
-    actual route of the boarded train legs[j - 1], followed when nothing good fits (6.3).
+    """Replace `legs[first_replaced:]` by the next good connection from `station` (7.4). `over_cap`
+    is the actual route of the boarded train before them, followed when nothing good fits (6.3).
     `since`: only an answer asked from `station` at or after it proves there is no connection.
     `history`: the train being replaced, remembered so it can be restored (rule 8)."""
 
     legs: Sequence[LegProgress]
-    j: int
+    first_replaced: int
     station: str
     kept: ClassifiedLeg | None
     cause: Cause
@@ -1006,7 +1006,7 @@ class Relock:
 
 def _follow_over_cap(s: OccurrenceState, ctx: Ctx, cut: Relock, over_cap: Connection) -> Transition:
     """No good connection within the usual changes: follow what NS shows, and say so."""
-    legs, j = cut.legs, cut.j
+    legs, j = cut.legs, cut.first_replaced
     p, d = ctx.profile, ctx.direction
     kind, sev, text, train = cut.cause
     end = over_cap.legs[0].alight.code
@@ -1028,7 +1028,7 @@ def _relock(
 ) -> Transition:
     """A kept leg legs[j - 1] that is not in the answers cannot have its change checked (rule 1):
     the cause is still reported, and nothing is relocked on it."""
-    legs, j, station, kept = cut.legs, cut.j, cut.station, cut.kept
+    legs, j, station, kept = cut.legs, cut.first_replaced, cut.station, cut.kept
     history = cut.history
     lock = present(s.lock)
     p, d = ctx.profile, ctx.direction
@@ -1177,16 +1177,21 @@ class _Proposal(NamedTuple):
     ridden: bool = False  # the broken train may carry the user: warn, never move
 
 
-def _over(w: _Watch, legs: Sequence[LegProgress], j: int) -> Connection | None:
-    """The actual route of the boarded kept leg legs[j - 1], if NS reroutes it."""
-    boarded = j > 0 and _may_be_on(legs[j - 1], w.ctx.now)
-    on_it = w.rc is not None and boarded and w.rc.legs[0].train == legs[j - 1].train
+def _boarded_reroute(
+    w: _Watch, legs: Sequence[LegProgress], first_replaced: int
+) -> Connection | None:
+    """The actual route of the boarded kept leg just before `first_replaced`, if NS reroutes it."""
+    before = first_replaced - 1
+    boarded = first_replaced > 0 and _may_be_on(legs[before], w.ctx.now)
+    on_it = w.rc is not None and boarded and w.rc.legs[0].train == legs[before].train
     return w.rc if on_it else None
 
 
-def _since_change(w: _Watch, legs: Sequence[LegProgress], j: int) -> datetime | None:
-    return _since(
-        _late_onward(legs[j - 1], legs[j]), _late_onward(w.lock.legs[j - 1], w.lock.legs[j])
+def _since_change(w: _Watch, legs: Sequence[LegProgress], first_replaced: int) -> datetime | None:
+    before = first_replaced - 1
+    return _proof_after(
+        _late_onward(legs[before], legs[first_replaced]),
+        _late_onward(w.lock.legs[before], w.lock.legs[first_replaced]),
     )
 
 
@@ -1204,7 +1209,7 @@ def _check_cancelled(
         w.asked,
         Relock(
             legs=legs,
-            j=i,
+            first_replaced=i,
             station=x.board_station,
             kept=w.obs[i - 1] if i else None,
             cause=Cause(EventKind.CANCELLED, Severity.LOUD, text, x.train),
@@ -1273,13 +1278,13 @@ def _check_cut_short(
         w.asked,
         Relock(
             legs=legs,
-            j=i + 1,
+            first_replaced=i + 1,
             station=end,
             kept=cl,
             cause=cause,
             history=original,
-            over_cap=_over(w, legs, i + 1),
-            since=_since(x.onward_from, asked_from),
+            over_cap=_boarded_reroute(w, legs, i + 1),
+            since=_proof_after(x.onward_from, asked_from),
         ),
     )
     return _Proposal(t)
@@ -1310,11 +1315,11 @@ def _check_transfer(
             w.asked,
             Relock(
                 legs=legs,
-                j=i + 1,
+                first_replaced=i + 1,
                 station=x.alight_stop,
                 kept=cl,
                 cause=Cause(EventKind.TRANSFER_BROKEN, Severity.LOUD, text, nxt.train),
-                over_cap=_over(w, legs, i + 1),
+                over_cap=_boarded_reroute(w, legs, i + 1),
                 since=_since_change(w, legs, i + 1),
             ),
         )
@@ -1336,7 +1341,12 @@ def _check_route_change(
     cause = Cause(EventKind.ROUTE_CHANGED, Severity.LOUD, text, x.train)
     if boarded:  # `_follow` moved its stop to where NS changes: relock what follows from there
         cut = Relock(
-            legs=legs, j=k + 1, station=x.alight_stop, kept=w.obs[k], cause=cause, over_cap=rc
+            legs=legs,
+            first_replaced=k + 1,
+            station=x.alight_stop,
+            kept=w.obs[k],
+            cause=cause,
+            over_cap=rc,
         )
         return _Proposal(_relock(w.s, ctx, w.pool, w.asked, cut))
     kept = w.obs[k - 1] if k else None
@@ -1346,7 +1356,7 @@ def _check_route_change(
         new = _journey(w.lock, legs[:k], rc.legs, LockSource.RELOCK)
         note = make_event(ctx, cause.kind, cause.severity, f"{text}, following it.", x.train)
         return _Proposal(Transition(_write(w.s, new), (note,)))
-    cut = Relock(legs=legs, j=k, station=x.board_station, kept=kept, cause=cause)
+    cut = Relock(legs=legs, first_replaced=k, station=x.board_station, kept=kept, cause=cause)
     return _Proposal(_relock(w.s, ctx, w.pool, w.asked, cut))
 
 
@@ -1812,7 +1822,12 @@ def _missed(s: OccurrenceState, ctx: Ctx, event: LocationEvent, pool: Pool) -> T
         kept = observe(pool, legs[i - 1])[0]
     asked = tuple(a.query for a in pool.answers)
     cut = Relock(
-        legs=legs, j=i, station=x.board_station, kept=kept, cause=cause, source=LockSource.MISSED
+        legs=legs,
+        first_replaced=i,
+        station=x.board_station,
+        kept=kept,
+        cause=cause,
+        source=LockSource.MISSED,
     )
     return _relock(s, ctx, pool, asked, cut)
 
