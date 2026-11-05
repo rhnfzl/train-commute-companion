@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from train_commute_companion.calendar import hhmm
 from train_commute_companion.model import Leg
 
+ATTRIBUTION = "Data: NS"
 CHECK_APP = "check the NS app"
 
 

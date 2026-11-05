@@ -12,12 +12,12 @@ from typing import Any
 
 import httpx
 
+from train_commute_companion.messages import ATTRIBUTION
 from train_commute_companion.model import AlertEvent, Severity
 from train_commute_companion.notify import event_fields
 
 SCHEMA_VERSION = 1
 MIN_SECRET_LEN = 16
-ATTRIBUTION = "Data: NS"
 PROBE_LOUD = "Train Commute Companion: webhook test, loud."
 PROBE_SILENT = "Train Commute Companion: webhook test, silent."
 _SECRET_RULE = "must be at least 16 characters, or whsec_ and base64 of at least 16 bytes"

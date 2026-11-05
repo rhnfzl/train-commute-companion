@@ -19,6 +19,9 @@ def floor_to_minute(t: datetime) -> datetime:
     return t.astimezone(UTC).replace(second=0, microsecond=0)
 
 
+MINUTES_PER_DAY = 1440
+
+
 def minute_of_day(t: time) -> int:
     return t.hour * 60 + t.minute
 

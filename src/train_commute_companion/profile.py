@@ -8,7 +8,7 @@ from typing import Any, cast, get_args
 
 import yaml
 
-from train_commute_companion.calendar import TZ, is_commute_day, minute_of_day
+from train_commute_companion.calendar import MINUTES_PER_DAY, TZ, is_commute_day, minute_of_day
 from train_commute_companion.model import (
     AlertSettings,
     Config,
@@ -98,7 +98,7 @@ class _ProfileErrors:
 
 
 def _shift(t: time, minutes: int) -> time:
-    total = (t.hour * 60 + t.minute + minutes) % 1440
+    total = (t.hour * 60 + t.minute + minutes) % MINUTES_PER_DAY
     return time(total // 60, total % 60)
 
 
@@ -160,9 +160,12 @@ def _journey(
     elif w is not None:
         c.err(f"{name}.window", 'must be two times, for example ["07:12", "10:12"]')
     if first and window and buf is not None:
-        before = (minute_of_day(first) - minute_of_day(window[0])) % 1440
-        after = (minute_of_day(window[1]) - minute_of_day(first)) % 1440
-        if before + after != (minute_of_day(window[1]) - minute_of_day(window[0])) % 1440:
+        before = (minute_of_day(first) - minute_of_day(window[0])) % MINUTES_PER_DAY
+        after = (minute_of_day(window[1]) - minute_of_day(first)) % MINUTES_PER_DAY
+        if (
+            before + after
+            != (minute_of_day(window[1]) - minute_of_day(window[0])) % MINUTES_PER_DAY
+        ):
             c.err(f"{name}.window", "window does not contain first_train")
         elif after == 0:  # windows are half-open, so the end itself is outside
             c.err(

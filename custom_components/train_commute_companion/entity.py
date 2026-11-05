@@ -9,10 +9,11 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from train_commute_companion.health import FAILED_POLLS
+from train_commute_companion.messages import ATTRIBUTION
 from train_commute_companion.model import Direction
 from train_commute_companion.view import OccurrenceView, RuntimeView
 
-from .const import ATTRIBUTION, DOMAIN
+from .const import DOMAIN
 from .coordinator import TccCoordinator
 
 

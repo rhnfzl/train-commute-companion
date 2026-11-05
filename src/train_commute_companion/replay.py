@@ -15,13 +15,12 @@ import yaml
 
 from train_commute_companion.calendar import TZ, hhmm, resolve_local
 from train_commute_companion.location import LOCATION_KINDS, LocationEvent
+from train_commute_companion.messages import ATTRIBUTION
 from train_commute_companion.model import Connection, NotTravelling
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
 from train_commute_companion.providers.ns import map_trips
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.store import PersistedState
-
-ATTRIBUTION = "Data: NS"
 
 
 class ReplayError(Exception):

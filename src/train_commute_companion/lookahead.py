@@ -6,7 +6,13 @@ from datetime import UTC, date, datetime, time, timedelta
 from itertools import pairwise
 from typing import NamedTuple
 
-from train_commute_companion.calendar import TZ, is_commute_day, minute_of_day, resolve_local
+from train_commute_companion.calendar import (
+    MINUTES_PER_DAY,
+    TZ,
+    is_commute_day,
+    minute_of_day,
+    resolve_local,
+)
 from train_commute_companion.classify import classify_leg, current_connection, merge_arrivals
 from train_commute_companion.match import matches_pattern, planned_departure, usual_connection
 from train_commute_companion.messages import data_unclear_text
@@ -227,7 +233,7 @@ def signature_text(s: Signature) -> str:
 
 
 def _abs_min(x: SignatureLeg) -> int:
-    return x.day_offset * 1440 + minute_of_day(x.departure)
+    return x.day_offset * MINUTES_PER_DAY + minute_of_day(x.departure)
 
 
 def _duration(s: Signature) -> int:

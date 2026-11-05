@@ -3,7 +3,13 @@
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, time, timedelta
 
-from train_commute_companion.calendar import TZ, is_commute_day, minute_of_day, resolve_local
+from train_commute_companion.calendar import (
+    MINUTES_PER_DAY,
+    TZ,
+    is_commute_day,
+    minute_of_day,
+    resolve_local,
+)
 from train_commute_companion.model import (
     Config,
     DatedSchedule,
@@ -31,8 +37,12 @@ def dated_schedule(
     service_date = commute_day + timedelta(days=j.day_offset)
     eff = effective_first_train(j, baseline_first_train)
     # clock differences, so an adoption moves the window by the same amount
-    before = timedelta(minutes=(minute_of_day(j.first_train) - minute_of_day(j.window[0])) % 1440)
-    after = timedelta(minutes=(minute_of_day(j.window[1]) - minute_of_day(j.first_train)) % 1440)
+    before = timedelta(
+        minutes=(minute_of_day(j.first_train) - minute_of_day(j.window[0])) % MINUTES_PER_DAY
+    )
+    after = timedelta(
+        minutes=(minute_of_day(j.window[1]) - minute_of_day(j.first_train)) % MINUTES_PER_DAY
+    )
     first = datetime.combine(service_date, eff)
     return DatedSchedule(
         OccurrenceKey(p.id, d, service_date),
