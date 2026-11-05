@@ -76,6 +76,12 @@ async def test_429_with_a_digit_int_rejects_has_no_retry_after():
     assert e.value.retry_after is None
 
 
+async def test_429_with_more_digits_than_int_takes_has_no_retry_after():
+    with pytest.raises(RateLimited) as e:
+        await provider(status(429, {"Retry-After": "9" * 5000})).stations()
+    assert e.value.retry_after is None
+
+
 async def test_5xx_is_provider_error():
     with pytest.raises(ProviderError):
         await provider(status(503)).trips(Q)
