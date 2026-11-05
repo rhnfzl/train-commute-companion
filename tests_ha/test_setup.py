@@ -202,10 +202,7 @@ async def test_moved_prompt_repair(hass):
     hist = BaselineHistory((BaselineVersion(1, sig, date(2026, 11, 3), True),))
 
     def seed(baselines):
-        def go(rt):
-            seam.seed_state(rt, baselines=baselines)
-
-        return go
+        return lambda rt: seam.seed_state(rt, baselines=baselines)
 
     await h.host.run(seed({"p1|outbound": hist}))
     await h.entry.runtime_data.coordinator.async_refresh()

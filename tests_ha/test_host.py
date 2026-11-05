@@ -33,6 +33,10 @@ class Crash(BaseException):
     """Not an Exception, so the runtime's per-step guard does not catch it."""
 
 
+async def crash_poll() -> None:
+    raise Crash
+
+
 def builder(tmp_path: Path, *, crash: bool = False, closed: list[bool] | None = None):
     path = tmp_path / "profiles.yaml"
     shutil.copy(PROFILES / "tue_wed_and_thu.yaml", path)
@@ -49,11 +53,7 @@ def builder(tmp_path: Path, *, crash: bool = False, closed: list[bool] | None = 
             require_stations=False,
         )
         if crash:
-
-            async def boom() -> None:
-                raise Crash
-
-            rt.poll_once = boom
+            rt.poll_once = crash_poll
 
         async def close() -> None:
             if closed is not None:

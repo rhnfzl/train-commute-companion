@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import threading
 
 import harness
@@ -17,9 +16,11 @@ from harness import (
     tick,
     write_profiles,
 )
+from runtime_rig import bump_mtime
 
 from custom_components.train_commute_companion.const import REFRESH_S
 from custom_components.train_commute_companion.location import zones_for
+from train_commute_companion.location import LocationKind
 from train_commute_companion.providers.base import ProviderError
 from train_commute_companion.runtime import Runtime
 
@@ -54,22 +55,23 @@ def set_home_zone(hass):
     hass.states.async_set("zone.home", "0", {"latitude": 52.01, "longitude": 5.01, "radius": 100})
 
 
+def spy_on_location(rt: Runtime, calls: list[tuple[str | None, LocationKind]]) -> None:
+    orig = rt.location
+
+    async def spy(profile_id, event, *rest, **kw):
+        calls.append((event.zone, event.kind))
+        return await orig(profile_id, event, *rest, **kw)
+
+    rt.location = spy
+
+
 async def start_tracker(h):
     """Seeds from the person state now: the tracker restarts, and a spy records what it sends."""
     await h.hass.async_block_till_done()  # events of the setup are not under test
     h.calls = calls = []
     h.provider.positions = dict(POSITIONS)
 
-    def install(rt: Runtime) -> None:
-        orig = rt.location
-
-        async def spy(profile_id, event, *rest, **kw):
-            calls.append((event.zone, event.kind))
-            return await orig(profile_id, event, *rest, **kw)
-
-        rt.location = spy
-
-    await h.host.run(install)
+    await h.host.run(lambda rt: spy_on_location(rt, calls))
     tracker = h.entry.runtime_data.tracker
     await tracker.stop()
     tracker.start()
@@ -109,10 +111,10 @@ async def test_station_zone_report_after_departure_is_missed_first_train(hass): 
 
 async def test_station_list_down_at_restart_recovers_station_zones(hass):  # 8, 7.11
     h = await setup_tcc(hass, VIA_UT, now="08:00")
-    down = [True]
+    down = True
 
     async def stations():  # as the NS provider: positions come with the station list
-        if down[0]:
+        if down:
             raise ProviderError("station endpoint down")
         h.provider.positions = dict(POSITIONS)
         return STATIONS
@@ -125,7 +127,7 @@ async def test_station_list_down_at_restart_recovers_station_zones(hass):  # 8, 
     set_person(hass, 52.0, 5.0)  # at AAA, but no station zone exists yet
     set_person(hass, *FAR)
     assert await spied(h) == []
-    down[0] = False
+    down = False
     await drive(h, "08:02")
     await h.host.run(lambda rt: rt.check_file())  # the 10 s file watch, with the file unchanged
     set_person(hass, 52.0, 5.0)
@@ -406,16 +408,12 @@ async def test_mixed_case_entity_is_tracked(hass):
     assert await spied(h) == [("UT", "enter")]
 
 
-_MTIME = [2_000_000_000 * 10**9]
-
-
 async def switch_away_and_back(h) -> None:
     """TELEGRAM then VIA_UT again, both read by the runtime before the coordinator refreshes
     once: the tracker never sees the telegram source, only a new epoch."""
     for text in (TELEGRAM, VIA_UT):
         write_profiles(h.hass, text)
-        _MTIME[0] += 10**9  # two writes in one tick are both seen by the file watch
-        os.utime(profiles_path(h.hass), ns=(_MTIME[0], _MTIME[0]))
+        bump_mtime(profiles_path(h.hass))
         await h.host.run(lambda rt: rt.check_file())
     await h.entry.runtime_data.coordinator.async_refresh()
 

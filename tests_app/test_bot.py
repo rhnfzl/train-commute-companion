@@ -340,22 +340,24 @@ async def test_help_sends_the_test_pair_until_confirmed(app):
     assert app.texts() == [bot_mod.HELP]
 
 
+def nth_send_fails(n: int) -> Callable[[str], httpx.Response | None]:
+    sends = 0
+
+    def fail(method: str) -> httpx.Response | None:
+        nonlocal sends
+        if method != "sendMessage":
+            return None
+        sends += 1
+        return error(500, "Internal Server Error") if sends == n else None
+
+    return fail
+
+
 async def test_confirmation_needs_both_sends_and_the_current_button(app, tmp_path):
-    tg, sends = app.tg, []
-
-    def nth_send_fails(n: int) -> Callable[[str], httpx.Response | None]:
-        def fail(method: str) -> httpx.Response | None:
-            if method != "sendMessage":
-                return None
-            sends.append(method)
-            return error(500, "Internal Server Error") if len(sends) == n else None
-
-        return fail
-
+    tg = app.tg
     tg.fail = nth_send_fails(1)  # the loud one fails: no silent message, no button
     await app.bot.handle(app.msg("/test"))
     assert tg.sent == [] and tg.calls == ["sendMessage"]
-    sends.clear()
     tg.fail = nth_send_fails(2)  # the silent one fails: its button is never valid
     await app.bot.handle(app.msg("/test", uid=2))
     assert app.texts() == [bot_mod.LOUD_TEST]

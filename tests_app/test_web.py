@@ -202,17 +202,18 @@ async def test_bad_requests_get_a_fixed_error_and_never_stall_the_loop(
     sock, monkeypatch, caplog
 ):  # RF 4
     monkeypatch.setattr(web, "MCP_TIMEOUT_S", 0.05)
-    turns = [0]
+    turns = 0
 
     async def count() -> None:
+        nonlocal turns
         while True:
-            turns[0] += 1
+            turns += 1
             await asyncio.sleep(0)
 
     counter = asyncio.create_task(count())
     real = functools.partial(commands.answer, view(occ()), True)
-    current = [real]
-    server = await start_readout(sock, lambda req: current[0](req))
+    current = real
+    server = await start_readout(sock, lambda req: current(req))
     assert server is not None
 
     assert json.loads(await _exchange(sock, b"not json\n")) == {"error": "Bad request."}
@@ -225,7 +226,7 @@ async def test_bad_requests_get_a_fixed_error_and_never_stall_the_loop(
     def boom(req: object) -> dict:
         raise RuntimeError("boom-detail")
 
-    current[0] = boom
+    current = boom
     with caplog.at_level(logging.ERROR, logger="tcc_app.web"):
         reply = await _exchange(sock, b'{"tool": "get_status", "profile": "p1"}\n')
     assert json.loads(reply) == {"error": "Internal error; see the app log."}
@@ -234,22 +235,22 @@ async def test_bad_requests_get_a_fixed_error_and_never_stall_the_loop(
     assert len(errors) == 1 and "RuntimeError" in errors[0].getMessage()
     assert errors[0].exc_info is None
 
-    current[0] = lambda req: {"x": "a" * MCP_REPLY_MAX}
+    current = lambda req: {"x": "a" * MCP_REPLY_MAX}
     assert json.loads(await _exchange(sock, b"{}\n")) == {"error": "Reply too large."}
 
     # a client that asks for a 900 KB reply and never reads it is aborted on the timeout
-    current[0] = lambda req: {"x": "a" * 900_000}
+    current = lambda req: {"x": "a" * 900_000}
     raw = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
     known = asyncio.all_tasks()
     raw.connect(str(sock))
     raw.sendall(b"{}\n")
-    before = turns[0]
+    before = turns
     async with asyncio.timeout(30):  # fail, not spin, if the handler never shows
         while not (handlers := [t for t in asyncio.all_tasks() - known if is_handler(t)]):
             await asyncio.sleep(0)
     await asyncio.wait_for(asyncio.wait(handlers), 30)  # never read: the 0.05 s budget ran out
-    assert turns[0] > before  # the loop kept turning throughout
+    assert turns > before  # the loop kept turning throughout
     raw.setblocking(False)
     got = b""
     # only what the kernel already held, then EOF
@@ -258,7 +259,7 @@ async def test_bad_requests_get_a_fixed_error_and_never_stall_the_loop(
     raw.close()
     assert len(got) < 900_000  # aborted: the rest of the reply was dropped, not sent
 
-    current[0] = real
+    current = real
     reply = await ask_readout(sock, {"tool": "get_status", "profile": "p1"})
     assert reply["text"].endswith("Data: NS")
     counter.cancel()

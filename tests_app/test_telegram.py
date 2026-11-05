@@ -114,13 +114,13 @@ async def test_failure_is_not_delivered_and_backs_off(tg, clock, failure, wait_s
 
 
 async def test_backoff_holds_across_the_autumn_repeat_hour(tg):
-    t = [datetime(2026, 10, 25, 2, 59, 30, tzinfo=AMS)]
-    assert t[0].astimezone(UTC).hour == 0
-    n = TelegramNotifier(TelegramApi(TOKEN, tg.client()), CHAT, lambda: t[0])
+    t = datetime(2026, 10, 25, 2, 59, 30, tzinfo=AMS)
+    assert t.astimezone(UTC).hour == 0
+    n = TelegramNotifier(TelegramApi(TOKEN, tg.client()), CHAT, lambda: t)
     tg.fail = lambda m: httpx.ConnectError("boom")
     assert not await n.send(event())
-    t[0] = datetime(2026, 10, 25, 2, 0, 40, fold=1, tzinfo=AMS)  # 70 s later
-    assert t[0].astimezone(UTC) == datetime(2026, 10, 25, 1, 0, 40, tzinfo=UTC)
+    t = datetime(2026, 10, 25, 2, 0, 40, fold=1, tzinfo=AMS)  # 70 s later
+    assert t.astimezone(UTC) == datetime(2026, 10, 25, 1, 0, 40, tzinfo=UTC)
     tg.fail = lambda m: None
     assert await n.send(event())
 
@@ -239,19 +239,21 @@ async def test_failing_telegram_backs_off_and_delivers_later(tmp_path, tg):  # R
     assert rig.rt.view().undelivered == 0
 
 
+class Raising:
+    """A sender that raises on key "a" and records the rest."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send(self, e: AlertEvent) -> bool:
+        if e.key == "a":
+            raise RuntimeError("shell bug")
+        self.sent.append(e.key)
+        return True
+
+
 async def test_raising_sender_does_not_block_later_alerts(tmp_path):  # plan-1 DEFER 11
     rig = Rig(tmp_path)
-
-    class Raising:
-        def __init__(self) -> None:
-            self.sent: list[str] = []
-
-        async def send(self, e: AlertEvent) -> bool:
-            if e.key == "a":
-                raise RuntimeError("shell bug")
-            self.sent.append(e.key)
-            return True
-
     rig.notifier = raising = Raising()  # type: ignore[assignment]
     rig.rt = rig.new()
     now = rig.clock.now()
