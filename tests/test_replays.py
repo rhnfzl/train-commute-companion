@@ -26,6 +26,7 @@ def expected(path: Path) -> str:
         "cancelled_second_leg",
         "two_profiles_different_days",
         "two_profiles_same_day",
+        "scripted_events",
     ],
 )
 def test_owner_replay(name, capsys):
@@ -72,3 +73,21 @@ def test_a_malformed_replay_file_is_refused_without_a_traceback(tmp_path, capsys
     f.write_text(spec)
     assert main(["replay", str(f)]) == 1
     assert capsys.readouterr().out.startswith("replay: ")
+
+
+@pytest.mark.parametrize(
+    "event, why",
+    [
+        ('{at: "07:50", location: RTD, kind: teleport}', "location kind 'teleport'"),
+        ('{at: "07:50", action: dance}', "unknown event"),
+    ],
+)
+def test_a_bad_scripted_event_is_refused_without_a_traceback(tmp_path, capsys, event, why):
+    f = tmp_path / "r.yaml"
+    f.write_text(
+        f'profile: {REPLAYS}/profiles/direct.yaml\nnow: "2026-10-27 07:50"\nuntil: "07:55"\n'
+        f"events:\n  - {event}\n"
+    )
+    assert main(["replay", str(f)]) == 1
+    out = capsys.readouterr().out
+    assert out.startswith("replay: ") and why in out

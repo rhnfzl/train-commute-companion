@@ -1,0 +1,11 @@
+# Each event changes the output: without it this file's .out gains or loses alerts.
+profile: profiles/direct.yaml
+now: "2026-10-27 07:50"
+until: "17:40"
+queries:
+  - {at: "07:50", query: "AAA>RTD", answer_file: answers/direct_on_time.yaml}
+  - {at: "08:10", query: "AAA>RTD", answer_file: answers/direct_first_cancelled.yaml}
+events:
+  - {at: "07:52", action: leaving}
+  - {at: "09:24", location: RTD}
+  - {at: "16:52", action: not_travelling}
