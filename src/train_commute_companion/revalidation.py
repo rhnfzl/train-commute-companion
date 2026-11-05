@@ -18,6 +18,7 @@ from train_commute_companion.delivery import (
     JOURNEY_WARNINGS,
     zone_report_stops_silent,
 )
+from train_commute_companion.health import WatchedLeg
 from train_commute_companion.lifecycle import (
     DELAY_NEWS,
     Board,
@@ -87,6 +88,15 @@ class PollMemory:
     boards: dict[str, tuple[ProviderAnswer, ...]] = field(default_factory=dict)
     blind: dict[str, datetime] = field(default_factory=dict)  # start of its blindness outage
     offline: set[str] = field(default_factory=set)
+    # before a lock: the usual train as the last healthy answer showed it
+    before: dict[str, tuple[WatchedLeg, ...]] = field(default_factory=dict)
+    # per train: what the last healthy poll showed of it (rule 13)
+    seen: dict[str, dict[TrainId, WatchedLeg]] = field(default_factory=dict)
+
+    def forget(self, k: str) -> None:
+        for held in (self.boards, self.blind, self.before, self.seen):
+            held.pop(k, None)
+        self.offline.discard(k)
 
 
 def _in_quiet(window: tuple[time, time] | None, now: datetime) -> bool:

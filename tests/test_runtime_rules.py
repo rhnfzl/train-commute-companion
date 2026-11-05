@@ -2092,3 +2092,23 @@ async def test_occurrence_data_unclear_holds_only_while_its_values_are_the_lates
     (second,) = await poll("07:56", moved)
     assert second.id != first.id and view.fact_holds(second)
     assert not view.fact_holds(first)  # also when no newer obligation is left to cover it
+
+
+# --- a dropped occurrence's poll memory ---
+
+
+async def test_reload_forgets_what_was_seen_of_an_occurrence_it_drops(tmp_path):
+    rig = Rig(tmp_path)
+    rig.provider.world = []
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    assert rig.occ().lock is None
+    k = "p1|outbound|2026-10-27"
+    seam.poll_memory(rig.rt).blind[k] = rig.clock.now()  # told "cannot see" under the old route
+    rig.write(text=PROFILE.replace("NAME", "office_a").replace('"08:12"', '"08:05"'))
+    await rig.rt.reload()
+    assert rig.occ() is None
+    rig.provider.world = every_day("08:05")
+    await rig.rt.poll_once()
+    await rig.rt.watchdog_once()
+    assert EventKind.CAN_SEE_TRAIN_AGAIN not in kinds(rig.rt.events_log)

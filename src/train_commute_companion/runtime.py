@@ -334,10 +334,6 @@ class Runtime:
         self._auth_outage = False
         self._auth_told: set[str] = set()
         self._memory = PollMemory()
-        # per occurrence before a lock: the usual train as the last healthy answer showed it
-        self._before: dict[str, tuple[WatchedLeg, ...]] = {}
-        # per occurrence and train: what the last healthy poll showed of it (rule 13)
-        self._seen: dict[str, dict[TrainId, WatchedLeg]] = {}
         self._sending = asyncio.Lock()
         self.requests = 0  # NS publishes no quota (7.1): counted and logged
         # set while start() reconciles: messages stored before it wait for the fresh poll
@@ -514,11 +510,7 @@ class Runtime:
             if closed and may_archive(
                 s, now, pending_journey_warnings(self._writer.st.obligations, s.key)
             ):
-                self._seen.pop(k, None)
-                self._before.pop(k, None)
-                self._memory.boards.pop(k, None)
-                self._memory.blind.pop(k, None)
-                self._memory.offline.discard(k)
+                self._memory.forget(k)
                 continue
             occs[k] = s
         # snapshots are pruned on write
@@ -833,14 +825,14 @@ class Runtime:
         current copy, so the watchdog judges it on the same terms as a locked leg, never on
         invented timing."""
         p, d, first = ctx.profile, ctx.direction, ctx.schedule.first_departure
-        old = self._before.get(k, ())
+        old = self._memory.before.get(k, ())
         c = usual_connection(merged, p.origin(d), first, p.journey(d).transfers, ctx.signature)
         none = Provenance.MISSING
         if c is None:
             train = TrainId(ctx.schedule.key.service_date, "", first)
             seen = old[0].last_seen_at if old else None
             missing = WatchedLeg(train, first, False, Observation.MISSING, none, none, seen)
-            self._before[k] = (missing,)
+            self._memory.before[k] = (missing,)
             return
         out = []
         for i, g in enumerate(c.legs):
@@ -854,11 +846,11 @@ class Runtime:
                 seen = old[i].last_seen_at if i < len(old) else None
             at = first if i == 0 else g.train.planned_departure
             out.append(WatchedLeg(g.train, at, False, ob, dep, dep, seen))
-        self._before[k] = tuple(out)
+        self._memory.before[k] = tuple(out)
 
     def _remember(self, k: str, s: OccurrenceState, answers: Sequence[ProviderAnswer]) -> None:
         pool = merged_pool(answers)
-        seen = self._seen.setdefault(k, {})
+        seen = self._memory.seen.setdefault(k, {})
         for j in (*((s.lock,) if s.lock else ()), *s.retained):
             for x in j.legs:
                 leg, ob = find_leg(pool, x.train, x.board_station)
@@ -887,7 +879,7 @@ class Runtime:
     # --- the watchdog (rule 12) ---
 
     def _watched(self, k: str, s: OccurrenceState, ctx: Ctx, now: datetime) -> list[WatchedLeg]:
-        seen = self._seen.get(k, {})
+        seen = self._memory.seen.get(k, {})
         out = []
         main = (s.lock,) if s.lock and s.direction_state is not DirectionState.DONE else ()
         for j in (*main, *s.retained):
@@ -910,8 +902,8 @@ class Runtime:
                     Provenance.REPORTED, Provenance.REPORTED, None,
                 )  # fmt: skip
                 out.append(replace(base, riding_or_watched=riding))
-        if s.lock is None and not s.retained and k in self._before:  # before a lock (rule 13)
-            head, *onward = self._before[k]  # any usual leg (rule 13)
+        if s.lock is None and not s.retained and k in self._memory.before:  # before a lock (rule 13)
+            head, *onward = self._memory.before[k]  # any usual leg (rule 13)
             out += [replace(head, departure=ctx.schedule.first_departure), *onward]
         elif s.lock is None and not s.retained:  # never answered yet: by board age only
             first = ctx.schedule.first_departure
@@ -1279,8 +1271,9 @@ class Runtime:
                 rev = new.revision
             elif s.lock is not None or s.retained or is_resolved(s):
                 rev = s.route_revision  # locked or riding: runs on its route revision (rule 10)
-            else:
-                continue  # not locked yet: created again from the new route when its window opens
+            else:  # not locked yet: created again from the new route when its window opens
+                self._memory.forget(k)  # what was seen of the old route is no evidence for it
+                continue
             moved = replace(s, route_revision=rev, settings_revision=new.revision)
             if effective_profile(snaps, new, moved) != self._profile_for(s):
                 moved = replace(moved, generation=s.generation + 1)  # in-flight results are stale
