@@ -254,7 +254,7 @@ _MTIME = [2_000_000_000 * 10**9]
 
 
 def bump_mtime(path: Path) -> None:
-    """A strictly increasing mtime, so two writes in one tick are both seen by check_file."""
+    """A strictly increasing mtime, so two writes in one tick are both seen by reload_if_changed."""
     _MTIME[0] += 10**9
     os.utime(path, ns=(_MTIME[0], _MTIME[0]))
 

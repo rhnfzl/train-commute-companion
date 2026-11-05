@@ -232,13 +232,13 @@ async def test_yaml_reload_valid_invalid_overlap(tmp_path, tg):
     first, before = app.rt.config.revision, len(tg.sent)
     path.write_text((PROFILES_DIR / "office_a_edited.yaml").read_text())
     bump_mtime(path)
-    await app.rt.check_file()
+    await app.rt.reload_if_changed()
     assert app.rt.config.revision == first + 1 and len(tg.sent) == before
     good = app.rt.config.revision
     for i, name in enumerate(("bad_starter.yaml", "both_on_wed.yaml"), 1):
         path.write_text((PROFILES_DIR / name).read_text())
         bump_mtime(path)
-        await app.rt.check_file()
+        await app.rt.reload_if_changed()
         assert app.rt.config.revision == good, name  # the last valid configuration keeps running
         assert len(refusals(tg)) == i and not silent(refusals(tg)[-1]), name
         await app.bot.handle(msg(app, "/status", i))

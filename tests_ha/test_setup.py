@@ -83,7 +83,7 @@ async def test_setup_and_unload_leave_no_runtime_thread(hass):
 async def test_unload_leaves_no_runtime_executor_thread(hass):
     h = await setup_tcc(hass, PROFILE)
     write_profiles(hass, PROFILE)
-    await h.host.run(lambda rt: rt.check_file())  # the file reads start the loop's executor
+    await h.host.run(lambda rt: rt.reload_if_changed())  # the file reads start the loop's executor
     # a worker still busy when the loop stops: close() alone would leave it running
     await h.host.run(
         lambda _: asyncio.get_running_loop().run_in_executor(None, wall.sleep, 0.2) and None
@@ -183,14 +183,14 @@ async def test_refused_edit_raises_repair_and_loud_push_then_clears(hass):
     h = await setup_tcc(hass, PROFILE)
     coordinator = h.entry.runtime_data.coordinator
     write_profiles(hass, OVERLAP)
-    await h.host.run(lambda rt: rt.check_file())
+    await h.host.run(lambda rt: rt.reload_if_changed())
     await coordinator.async_refresh()
     issue = ir.async_get(hass).async_get_issue(DOMAIN, "profile_refused")
     assert issue is not None and issue.severity is ir.IssueSeverity.ERROR
     assert issue.translation_placeholders["reason"]
     assert "profile change refused" in h.pushes[-1].data["message"] and loud(h.pushes[-1])
     write_profiles(hass, PROFILE)
-    await h.host.run(lambda rt: rt.check_file())
+    await h.host.run(lambda rt: rt.reload_if_changed())
     await coordinator.async_refresh()
     assert ir.async_get(hass).async_get_issue(DOMAIN, "profile_refused") is None
 
@@ -245,7 +245,7 @@ async def test_undelivered_alert_raises_notify_failing_repair(hass):
     coordinator = h.entry.runtime_data.coordinator
     hass.services.async_remove("notify", NOTIFY)
     write_profiles(hass, OVERLAP)
-    await h.host.run(lambda rt: rt.check_file())
+    await h.host.run(lambda rt: rt.reload_if_changed())
     await coordinator.async_refresh()
     issue = ir.async_get(hass).async_get_issue(DOMAIN, "notify_failing")
     assert issue is not None and issue.translation_placeholders == {"service": NOTIFY}
@@ -267,7 +267,7 @@ async def test_vanished_phone_target_raises_notify_failing(hass, upgrade):
     if not upgrade:  # the phone is gone: HA no longer maps the service to a mobile_app entry
         harness.PATCH.setattr(notifier_mod, "mobile_target", lambda hass, service: None)
     write_profiles(hass, OVERLAP)
-    await h.host.run(lambda rt: rt.check_file())
+    await h.host.run(lambda rt: rt.reload_if_changed())
     await tick(hass, REFRESH_S + 1)
     assert ir.async_get(hass).async_get_issue(DOMAIN, "notify_failing") is not None
     assert not stray and len(h.pushes) == before
@@ -377,7 +377,7 @@ async def test_monitoring_runs_without_manual_refresh(hass):
     h = await setup_tcc(hass, PROFILE)
     hass.services.async_remove("notify", NOTIFY)
     write_profiles(hass, OVERLAP)
-    await h.host.run(lambda rt: rt.check_file())
+    await h.host.run(lambda rt: rt.reload_if_changed())
     await tick(hass, REFRESH_S + 1)
     assert ir.async_get(hass).async_get_issue(DOMAIN, "notify_failing") is not None
 

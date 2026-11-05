@@ -17,7 +17,7 @@ async def switch(app: App, *names: str) -> None:
     for name in names:
         path.write_text((PROFILES_DIR / f"{name}.yaml").read_text())
         bump_mtime(path)
-        await app.rt.check_file()
+        await app.rt.reload_if_changed()
 
 
 async def test_first_fix_seeds_then_enter_and_leave_reach_the_core(app):

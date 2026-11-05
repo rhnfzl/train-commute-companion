@@ -215,7 +215,7 @@ async def test_adoption_carried_into_the_next_day_through_ha(hass):
 
 
 async def reload_file(h: Harness) -> None:
-    await h.host.run(lambda rt: rt.check_file())
+    await h.host.run(lambda rt: rt.reload_if_changed())
     await h.entry.runtime_data.coordinator.async_refresh()
     await h.hass.async_block_till_done()
 

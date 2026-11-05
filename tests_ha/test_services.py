@@ -198,7 +198,7 @@ async def test_actions_reach_a_removed_profile_that_still_runs(hass):
     await drive(h, "08:20")
     assert state(hass, "sensor.office_a_outbound_status") == "riding"
     write_profiles(hass, B_ONLY)
-    await h.host.run(lambda rt: rt.check_file())
+    await h.host.run(lambda rt: rt.reload_if_changed())
     await h.entry.runtime_data.coordinator.async_refresh()
     await hass.async_block_till_done()
     for eid in ("button.office_a_outbound_leaving", "button.office_a_not_travelling_today"):

@@ -130,7 +130,7 @@ async def test_station_list_down_at_restart_recovers_station_zones(hass):  # 8, 
     assert await spied(h) == []
     down = False
     await drive(h, "08:02")
-    await h.host.run(lambda rt: rt.check_file())  # the 10 s file watch, with the file unchanged
+    await h.host.run(lambda rt: rt.reload_if_changed())  # the 10 s file watch, with the file unchanged
     set_person(hass, 52.0, 5.0)
     assert await spied(h) == [("AAA", "enter")]
 
@@ -268,12 +268,12 @@ async def test_running_old_route_and_removed_profile_keep_tracking(hass):
     set_person(hass, *FAR)
     await drive(h, "08:00")
     write_profiles(hass, DIRECT)  # UT is no longer a transfer, but the occurrence rides via it
-    await h.host.run(lambda rt: rt.check_file())
+    await h.host.run(lambda rt: rt.reload_if_changed())
     await h.entry.runtime_data.coordinator.async_refresh()
     set_person(hass, 52.1, 5.1)
     assert await spied(h) == [("UT", "enter")]
     write_profiles(hass, B_ONLY)  # p1 is removed but still runs
-    await h.host.run(lambda rt: rt.check_file())
+    await h.host.run(lambda rt: rt.reload_if_changed())
     await h.entry.runtime_data.coordinator.async_refresh()
     assert "p1" not in {
         p.id for p in h.entry.runtime_data.coordinator.data.profiles if p.id != "p1"
@@ -344,7 +344,7 @@ async def test_unload_with_a_location_event_in_flight_is_clean(hass, caplog):
 
 async def reload_profiles(h, text):
     write_profiles(h.hass, text)
-    await h.host.run(lambda rt: rt.check_file())
+    await h.host.run(lambda rt: rt.reload_if_changed())
     await h.entry.runtime_data.coordinator.async_refresh()
 
 
@@ -425,7 +425,7 @@ async def switch_away_and_back(h) -> None:
     for text in (TELEGRAM, VIA_UT):
         write_profiles(h.hass, text)
         bump_mtime(profiles_path(h.hass))
-        await h.host.run(lambda rt: rt.check_file())
+        await h.host.run(lambda rt: rt.reload_if_changed())
     await h.entry.runtime_data.coordinator.async_refresh()
 
 

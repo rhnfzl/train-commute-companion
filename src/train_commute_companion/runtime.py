@@ -1289,7 +1289,7 @@ class Runtime:
             baselines=baselines, lookahead=ledgers,
         )  # fmt: skip
 
-    async def check_file(self) -> None:
+    async def reload_if_changed(self) -> None:
         """The file watch: reload when the file's mtime changes (or it disappears)."""
         try:
             mtime: int | None = (await asyncio.to_thread(self._path.stat)).st_mtime_ns
@@ -1437,7 +1437,7 @@ class Runtime:
                 await self.start()
             await _run_together(
                 every(c, POLL_EVERY_S, self.poll_once),
-                every(c, FILE_EVERY_S, self.check_file),
+                every(c, FILE_EVERY_S, self.reload_if_changed),
                 daily(),
             )
 

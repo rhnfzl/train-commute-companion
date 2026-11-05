@@ -54,7 +54,7 @@ def attr(hass, eid, name):
 
 
 async def reload_file(h) -> None:
-    await h.host.run(lambda rt: rt.check_file())
+    await h.host.run(lambda rt: rt.reload_if_changed())
     await h.entry.runtime_data.coordinator.async_refresh()
     await h.hass.async_block_till_done()
 

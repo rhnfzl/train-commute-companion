@@ -548,7 +548,7 @@ async def test_two_profiles_on_one_train_get_two_posts(tmp_path):  # Review Focu
     p2_only = PROFILE.split('  - id: "p2"')[1].replace("days: [sat]", "days: [tue]")
     rig.write(text='profiles:\n  - id: "p2"' + p2_only)
     rig.clock.jump(1)
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
     rig.clock.set("07:52")
     await rig.rt.poll_once()
     rig.notifier.fails = lambda e: True
@@ -964,7 +964,7 @@ async def test_rename_keeps_the_snapshot_an_owed_copy_needs(tmp_path):  # rule 5
     assert not rig.rt.state.lookahead["p1|outbound"].pending  # finished on the phone
     rig.write("office_x")
     rig.clock.jump(1)
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
     assert rig.rt.config.revision == 2
     await rig.restart()
     assert c.obligation.route_revision in rig.store.load().config_snapshots

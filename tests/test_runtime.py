@@ -473,11 +473,11 @@ async def test_failed_reload_write_keeps_the_last_written_configuration(tmp_path
         )
     )
     rig.clock.jump(1)
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
     assert rig.rt.config.revision == 1 and rig.store.load().config.revision == 1
     assert kinds(rig.notifier.attempts).count(EventKind.STORAGE_FAILED) == 1
     rig.store.fail = False
-    await rig.rt.check_file()  # tried again although the file did not change
+    await rig.rt.reload_if_changed()  # tried again although the file did not change
     assert rig.rt.config.revision == 2 and rig.store.load().config.revision == 2
 
 
@@ -497,7 +497,7 @@ async def test_failed_reload_write_keeps_following_the_written_journey(tmp_path,
     rig.store.fail = True
     rig.write(text=_EDITS[edit])
     rig.clock.jump(1)
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
     rig.clock.set("07:50")
     await rig.rt.poll_once()
     assert rig.rt.config.revision == 1 and rig.occ() is not None
@@ -514,7 +514,7 @@ async def test_failed_reload_write_keeps_following_the_written_journey(tmp_path,
     cancelled = [e for e in rig.notifier.attempts if e.kind is EventKind.CANCELLED]
     assert len(cancelled) == 1 and cancelled[0].text.startswith("Office A")
     rig.store.fail = False
-    await rig.rt.check_file()  # once the store is back the edit is applied
+    await rig.rt.reload_if_changed()  # once the store is back the edit is applied
     assert rig.rt.config.revision == 2 and rig.store.load().config.revision == 2
 
 
@@ -555,7 +555,7 @@ async def test_unwritten_relock_is_recomputed_after_a_reload_written_first(tmp_p
     rig.store.fail = False
     rig.write("office_c")
     rig.clock.jump(1)
-    await rig.rt.check_file()  # an edit to the same occurrence is the first write to land
+    await rig.rt.reload_if_changed()  # an edit to the same occurrence is the first write to land
     assert rig.rt.refusal is None and rig.rt.config.profiles[0].name == "office_c"
     assert rig.occ().lock.legs[0].train == USUAL.legs[0].train
     rig.clock.set("07:54")
@@ -619,7 +619,7 @@ async def test_held_alarm_survives_a_recovery_written_through_a_rename(tmp_path)
     rig.store.fail = False
     rig.write("office_c")
     rig.clock.jump(1)
-    await rig.rt.check_file()  # storage is back through the rename
+    await rig.rt.reload_if_changed()  # storage is back through the rename
     saved = rig.store.load()
     assert saved.config.revision == 2
     held = [o for o in saved.obligations if o.event.kind is EventKind.CANCELLED]
@@ -703,7 +703,7 @@ async def _three_lookahead_days(rig: Rig, fail_third: bool) -> None:
         rig.store.fail = False
     rig.write(text=_EDITS["departure"])
     rig.clock.jump(1)
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
 
 
 async def test_route_edit_drops_an_unwritten_lookahead_result(tmp_path):
@@ -729,14 +729,14 @@ async def test_poll_written_first_after_a_failed_rename_writes_no_lone_revision(
     rig.store.fail = True
     rig.write("office_c")
     rig.clock.jump(1)
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
     rig.store.fail = False
     rig.clock.set("07:52")
     await rig.rt.poll_once()  # the first write to land is the poll's, on the written config
     saved = rig.store.load()
     assert saved.config.revision == 1
     _consistent(saved)
-    await rig.rt.check_file()  # the file watch tries the edit again, as one write
+    await rig.rt.reload_if_changed()  # the file watch tries the edit again, as one write
     saved = rig.store.load()
     assert saved.config.revision == 2 and saved.config.profiles[0].name == "office_c"
     _consistent(saved)
@@ -747,13 +747,13 @@ async def test_profile_removed_after_a_failed_rename_keeps_its_journey_followed(
     rig.store.fail = True
     rig.write("office_c")
     rig.clock.jump(1)
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
     rig.store.fail = False
     rig.clock.set("07:52")
     await rig.rt.poll_once()
     rig.write(text='profiles:\n  - id: "p2"' + PROFILE.split('  - id: "p2"')[1])
     rig.clock.jump(1)
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
     assert [p.id for p in rig.rt.config.profiles] == ["p2"]
     for hhmm in ("07:56", "07:58"):
         n = len(rig.provider.calls)
@@ -784,7 +784,7 @@ async def test_invalid_edit_keeps_last_config_and_profile_refused(tmp_path):
     rig = await started(tmp_path)
     cfg = rig.rt.config
     rig.write(text="profiles: [\n")
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
     assert rig.rt.config is cfg
     assert kinds(rig.rt.events_log)[-1] is EventKind.PROFILE_REFUSED
     assert rig.occ().lock is not None
@@ -981,7 +981,7 @@ async def test_concurrent_delivery_passes_send_each_alert_once(tmp_path):
 
     rig.notifier.send = slow  # type: ignore[method-assign]
     before = kinds(rig.notifier.attempts).count(EventKind.CANCELLED)
-    await asyncio.gather(rig.rt.watchdog_once(), rig.rt.watchdog_once(), rig.rt.check_file())
+    await asyncio.gather(rig.rt.watchdog_once(), rig.rt.watchdog_once(), rig.rt.reload_if_changed())
     assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == before + 1
 
 
@@ -1054,11 +1054,11 @@ async def test_refusal_set_on_bad_file_and_cleared_on_fix(tmp_path):
     rig = await started(tmp_path)
     assert rig.rt.refusal is None
     rig.write(text=OVERLAP.replace("NAME", "office_a"))
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
     assert rig.rt.refusal is not None
     assert "office_a" in rig.rt.refusal and "office_b" in rig.rt.refusal
     rig.write("office_c")
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
     assert rig.rt.refusal is None
 
 
@@ -1074,7 +1074,7 @@ async def test_refusal_names_the_station_list_wait(tmp_path):
     rig.provider.stations = down  # type: ignore[method-assign]
     await rt.start()
     rig.write("office_x")
-    await rt.check_file()
+    await rt.reload_if_changed()
     assert rt.refusal is not None and "station list is unavailable" in rt.refusal
 
 
@@ -1095,13 +1095,13 @@ async def test_station_list_down_at_restart_is_retried_while_the_file_is_unchang
     rig.provider.stations = stations  # type: ignore[method-assign]
     await rt.start()
     assert rt.known_stations is None and len(calls) == 1
-    await rt.check_file()  # not due yet: at most once per poll interval
+    await rt.reload_if_changed()  # not due yet: at most once per poll interval
     assert len(calls) == 1
     rig.clock.jump(2)
-    await rt.check_file()  # station zones come from this list (8, 7.11)
+    await rt.reload_if_changed()  # station zones come from this list (8, 7.11)
     assert rt.known_stations == frozenset({"AAA", "UT", "RTD"}) and got == [rt.known_stations]
     rig.clock.jump(2)
-    await rt.check_file()
+    await rt.reload_if_changed()
     assert len(calls) == 2 and rt.refusal is None
 
 
@@ -1125,11 +1125,11 @@ async def test_first_start_with_one_bad_profile_and_no_station_list_applies_noth
     text = refused[0].text
     assert text.index("profiles[1]") < text.index("station list is unavailable")
     rig.clock.jump(1)
-    await rt.check_file()  # still waiting: told once per wait
+    await rt.reload_if_changed()  # still waiting: told once per wait
     assert rt.config is None and kinds(rt.events_log).count(EventKind.PROFILE_REFUSED) == 1
     up = True
     rig.clock.jump(2)
-    await rt.check_file()
+    await rt.reload_if_changed()
     assert rt.known_stations == frozenset({"AAA", "UT", "RTD"})
     assert rt.config is not None and [p.id for p in rt.config.profiles] == ["p1"]
     assert rt.refusal is not None and "profiles[1]" in rt.refusal
@@ -1218,7 +1218,7 @@ async def test_station_list_auth_error_sets_key_rejected(tmp_path):
 
     rig.provider.stations = ok  # type: ignore[method-assign]
     rig.clock.jump(4)  # the rejection's 2-min cooldown, plus one poll interval off live (rule 14)
-    await rig.rt.check_file()  # the wait for the list retries once per poll interval
+    await rig.rt.reload_if_changed()  # the wait for the list retries once per poll interval
     assert rig.rt.key_rejected is False
 
 
@@ -1285,7 +1285,7 @@ async def test_location_source_changed_during_request_is_not_written(tmp_path, a
     task = asyncio.create_task(rig.rt.location("p1", event, source))
     await asked.wait()
     rig.write(text=(PROFILES_DIR / f"{after}.yaml").read_text())
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
     release.set()
     await task
     assert only_occurrence(rig.rt).zone_reports == {}
@@ -1315,7 +1315,7 @@ async def _switch_away_and_back(rig) -> None:
     for name in ("located_via_ut_telegram", "located_via_ut"):  # B, then A again
         rig.write(text=(PROFILES_DIR / f"{name}.yaml").read_text())
         bump_mtime(rig.path)
-        await rig.rt.check_file()
+        await rig.rt.reload_if_changed()
 
 
 async def test_location_source_switched_away_and_back_during_request_is_not_written(tmp_path):
@@ -1358,7 +1358,7 @@ async def test_location_epoch_bumps_only_on_location_changes(tmp_path):
     for name, want in steps:
         rig.write(text=(PROFILES_DIR / f"{name}.yaml").read_text())
         bump_mtime(rig.path)
-        await rig.rt.check_file()
+        await rig.rt.reload_if_changed()
         assert not refused(rig.rt), name
         assert rig.rt.view().location_epochs.get("p1", 0) == first + want, name
 
@@ -1732,7 +1732,7 @@ async def test_profile_file_reads_run_off_the_loop(tmp_path):
     ThreadSpyPath.threads.clear()
     rig.write("office_c")
     bump_mtime(rig.path)
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
     assert {p.name for p in rig.rt.config.profiles} == {"office_c", "office_b"}
     assert len(ThreadSpyPath.threads) == 2  # the stat and the read
     assert threading.get_ident() not in ThreadSpyPath.threads

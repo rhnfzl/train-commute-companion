@@ -1204,10 +1204,10 @@ async def test_no_station_list_runs_the_saved_configuration_and_waits_on_edits(t
     assert rt.config is not None and rig.occ() is not None and rig.occ().lock is not None
     assert EventKind.PROFILE_REFUSED not in kinds(rt.events_log)  # nothing unchecked to refuse
     rig.write("office_x")
-    await rt.check_file()
+    await rt.reload_if_changed()
     assert rt.config.profiles[0].name == "office_a"
     assert kinds(rt.events_log).count(EventKind.PROFILE_REFUSED) == 1
-    await rt.check_file()  # retried only once per poll interval: no second request or warning
+    await rt.reload_if_changed()  # retried only once per poll interval: no second request or warning
     assert kinds(rt.events_log).count(EventKind.PROFILE_REFUSED) == 1
 
     async def up() -> frozenset[str]:
@@ -1215,7 +1215,7 @@ async def test_no_station_list_runs_the_saved_configuration_and_waits_on_edits(t
 
     rig.provider.stations = up  # type: ignore[method-assign]
     rig.clock.jump(2)
-    await rt.check_file()
+    await rt.reload_if_changed()
     assert rt.config.profiles[0].name == "office_x" and saved == [frozenset({"AAA", "UT", "RTD"})]
 
 
@@ -1638,7 +1638,7 @@ async def test_held_works_warning_survives_a_recovery_written_through_a_rename(t
     rig.store.fail = False
     rig.write("office_c")
     rig.clock.jump(1)
-    await rig.rt.check_file()  # storage is back through a name-only edit
+    await rig.rt.reload_if_changed()  # storage is back through a name-only edit
     assert rig.store.load().config.revision == 2
     rig.notifier.fails = lambda e: False
     rig.notifier.attempts.clear()
@@ -1954,7 +1954,7 @@ async def two_on_one_train(tmp_path) -> Rig:
     p2_only = PROFILE.split('  - id: "p2"')[1].replace("days: [sat]", "days: [tue]")
     rig.write(text='profiles:\n  - id: "p2"' + p2_only)
     rig.clock.jump(1)
-    await rig.rt.check_file()
+    await rig.rt.reload_if_changed()
     rig.clock.set("07:52")
     await rig.rt.poll_once()
     rig.notifier.fails = lambda e: True
