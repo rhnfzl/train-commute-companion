@@ -24,9 +24,9 @@ from lifecycle_fixtures import (
     with_track,
 )
 
+from train_commute_companion.ledger import states_current
 from train_commute_companion.lifecycle import legacy_facts
 from train_commute_companion.model import AlertEvent, EventKind, Leg, Severity, train_ident
-from train_commute_companion.revalidation import states_current
 from train_commute_companion.serde import dumps, loads
 
 DAY = "2026-10-27"

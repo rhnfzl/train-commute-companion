@@ -1,7 +1,7 @@
 """What a held message is judged on right before it goes (7.12 rule 5): the stored state and the
 latest healthy answers, read through an explicit view. Pure apart from reading them."""
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 
@@ -13,7 +13,7 @@ from train_commute_companion.advice import (
 )
 from train_commute_companion.calendar import TZ, hhmm
 from train_commute_companion.classify import current_run, find_leg
-from train_commute_companion.delivery import JOURNEY_WARNINGS, covers, zone_report_stops_silent
+from train_commute_companion.delivery import JOURNEY_WARNINGS, covers
 from train_commute_companion.health import WatchedLeg
 from train_commute_companion.lifecycle import (
     LegProgress,
@@ -100,6 +100,12 @@ def _in_quiet(window: tuple[time, time] | None, now: datetime) -> bool:
         return False
     t, (a, b) = now.astimezone(TZ).time(), window
     return a <= t < b if a <= b else (t >= a or t < b)
+
+
+def zone_report_stops_silent(s: OccurrenceState, zones: Collection[str]) -> bool:
+    """Rule 6 / 8.4: a report in the alighting-station or destination zone ends repeat silent
+    messages for the journey. Use as the silent branch of `LiveLedger.fact_holds`."""
+    return any(z in s.zone_reports for z in zones)
 
 
 def alert_facts(e: AlertEvent) -> AlertFacts:

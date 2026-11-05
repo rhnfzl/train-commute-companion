@@ -1,12 +1,11 @@
 """Durable delivery obligations: revalidated right before sending (7.12 rule 5)."""
 
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import datetime
 from typing import Literal, Protocol
 
 from train_commute_companion.calendar import to_utc
-from train_commute_companion.lifecycle import OccurrenceState
 from train_commute_companion.model import (
     DELAY_NEWS,
     AlertEvent,
@@ -87,14 +86,8 @@ def revalidate(o: Obligation, ledger: Ledger, now: datetime) -> Literal["send", 
 
 
 def pending_journey_warnings(obligations: Sequence[Obligation], key: OccurrenceKey) -> int:
-    """What callers pass to `lifecycle.ends`: undelivered journey warnings of this occurrence."""
+    """What callers pass to `lifecycle.may_archive`: undelivered journey warnings of this occurrence."""
     return sum(1 for o in obligations if o.occurrence == key and o.event.kind in JOURNEY_WARNINGS)
-
-
-def zone_report_stops_silent(s: OccurrenceState, zones: Collection[str]) -> bool:
-    """Rule 6 / 8.4: a report in the alighting-station or destination zone ends repeat silent
-    messages for the journey. Use as the silent branch of `Ledger.fact_holds`."""
-    return any(z in s.zone_reports for z in zones)
 
 
 async def deliver(

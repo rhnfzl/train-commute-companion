@@ -9,8 +9,8 @@ from train_commute_companion.delivery import (
     pending_journey_warnings,
     post_copy,
     revalidate,
-    zone_report_stops_silent,
 )
+from train_commute_companion.ledger import zone_report_stops_silent
 from train_commute_companion.model import (
     AlertEvent,
     Direction,

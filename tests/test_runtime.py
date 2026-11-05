@@ -23,6 +23,7 @@ from runtime_rig import (
 )
 
 from train_commute_companion.budget import RequestBudget
+from train_commute_companion.ledger import leg_now
 from train_commute_companion.lifecycle import Choose, LockSource, origin_answer
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead_probe import BaselineHistory
@@ -47,7 +48,6 @@ from train_commute_companion.providers.base import (
     RateLimited,
     ServerError,
 )
-from train_commute_companion.revalidation import leg_now
 from train_commute_companion.revisions import occurrence_ctx
 from train_commute_companion.runtime import Runtime, fresh_state
 from train_commute_companion.store import PersistedState, StorageError

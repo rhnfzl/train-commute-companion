@@ -38,7 +38,7 @@ from lifecycle_fixtures import (
     usual_locked,
 )
 
-from train_commute_companion.delivery import zone_report_stops_silent
+from train_commute_companion.ledger import zone_report_stops_silent
 from train_commute_companion.lifecycle import (
     Choose,
     LockSource,
