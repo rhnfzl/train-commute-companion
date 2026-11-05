@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+import pytest
 from builders import make_leg
 from lifecycle_fixtures import (
     L1,
@@ -30,6 +31,7 @@ from train_commute_companion.location import (
     number,
     resolve_zone,
     seed_zone,
+    send_zone_events,
     without_current_report,
 )
 from train_commute_companion.model import EventKind, LegState, Severity
@@ -233,3 +235,21 @@ def test_late_leave_after_the_auto_train_left_keeps_the_lock():
     t = locate(t.state, "08:16", event("AAA", "enter", "08:16"), LATER)
     assert t.state.lock is not None and t.state.lock.source is LockSource.STATION
     assert numbers(t.state) == ["1300", "6666"]
+
+
+async def test_send_zone_events_marks_undelivered_and_a_raise_ends_the_rest():
+    sent, lifted = [], []
+
+    async def send(e):
+        sent.append(e.kind)
+        if e.kind == "report":
+            raise RuntimeError
+        return e.kind != "leave"
+
+    at_ = at("08:00")
+    await send_zone_events([("a", "leave"), ("b", "enter")], at_, send, lambda: lifted.append(1))
+    assert sent == ["leave", "enter"] and lifted == [1]
+    with pytest.raises(RuntimeError):
+        events = [("a", "report"), ("b", "enter")]
+        await send_zone_events(events, at_, send, lambda: lifted.append(2))
+    assert sent == ["leave", "enter", "report"] and lifted == [1, 2]

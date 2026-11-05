@@ -26,6 +26,7 @@ from train_commute_companion.location import (
     number,
     resolve_zone,
     seed_zone,
+    send_zone_events,
     station_zones,
     without_current_report,
 )
@@ -217,20 +218,19 @@ class LocationTracker:
             return
         track = self._tracks.get(pid, ZoneTrack())  # never seeded: no zone to leave
         self._tracks[pid], changes = next_zone(track, zone, at)
-        try:
-            for name, kind in changes:
-                if self._gen.get(pid) is not gen:  # checked with no await before the dispatch
-                    return
-                event = LocationEvent(name, kind, at)
-                if not await self._send(pid, event, source, epoch):
-                    self._lift_timer(pid)
-        except Exception:
-            self._lift_timer(pid)
-            raise
+        await send_zone_events(
+            changes,
+            at,
+            lambda e: self._send(pid, gen, e, source, epoch),
+            lambda: self._lift_timer(pid),
+        )
 
     async def _send(
-        self, pid: str, event: LocationEvent, source: LocationSettings, epoch: int
+        self, pid: str, gen: object, event: LocationEvent, source: LocationSettings, epoch: int
     ) -> bool:
+        if self._gen.get(pid) is not gen:  # checked with no await before the dispatch
+            return True  # an old source is owed nothing, so its timer stays as it is
+
         def send(rt: Runtime) -> Coroutine[Any, Any, bool]:
             # the core rechecks the source after its own request, before any write
             return rt.report_location(pid, event, source, epoch=epoch)

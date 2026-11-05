@@ -12,12 +12,12 @@ from train_commute_companion.calendar import TZ
 from train_commute_companion.location import (
     PLACE_ROLES,
     STALE_LOCATION,
-    LocationEvent,
     Zone,
     ZoneTrack,
     next_zone,
     resolve_zone,
     seed_zone,
+    send_zone_events,
     station_zones,
     without_current_report,
 )
@@ -129,11 +129,10 @@ class Follower:
             return
         mem.last_at = at
         mem.track, events = next_zone(mem.track, zone, at)
-        try:
-            for name, kind in events:
-                event = LocationEvent(name, kind, fix.at)
-                if not await self._rt.report_location(pid, event, loc, epoch):
-                    mem.track = without_current_report(mem.track)
-        except Exception:
+
+        def undelivered() -> None:
             mem.track = without_current_report(mem.track)
-            raise
+
+        await send_zone_events(
+            events, fix.at, lambda e: self._rt.report_location(pid, e, loc, epoch), undelivered
+        )

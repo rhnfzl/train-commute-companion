@@ -1,7 +1,7 @@
 """Location zones and events (7.2, 8). Location only adds: it never silences an alert. Pure."""
 
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal, get_args
@@ -115,3 +115,20 @@ def without_current_report(track: ZoneTrack) -> ZoneTrack:
     """`track` when its fix never reached the core, or reached it while NS gave no answer: the
     next fix in its zone reports at once."""
     return ZoneTrack(track.zone, {z: t for z, t in track.reported.items() if z != track.zone})
+
+
+async def send_zone_events(
+    events: Iterable[tuple[str, LocationKind]],
+    at: datetime,
+    send: Callable[[LocationEvent], Awaitable[bool]],
+    undelivered: Callable[[], None],
+) -> None:
+    """A fix's events in order. A send that fails, goes unanswered or raises calls `undelivered`,
+    where the shell takes the timer back with `without_current_report`; a raise ends the rest."""
+    try:
+        for name, kind in events:
+            if not await send(LocationEvent(name, kind, at)):
+                undelivered()
+    except Exception:
+        undelivered()
+        raise
