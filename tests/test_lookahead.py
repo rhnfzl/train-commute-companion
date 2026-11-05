@@ -31,16 +31,16 @@ from train_commute_companion.lookahead import (
     LookAheadLedger,
     ProbeReason,
     ProbeResult,
-    _overlaps,
-    _probed_end,
     adopt_key,
     cancel_key,
     carried_ids,
     day_key,
     evaluate,
     forget_pending,
+    overlaps_next,
     probe_dates,
     probe_queries,
+    probed_end,
     rebase_on_edit,
     reset_on_edit,
     run_lookahead,
@@ -432,9 +432,9 @@ def test_adoption_overlap_across_an_overnight_adoption_boundary():  # rule 19
     out = BaselineHistory((_ver("01:20", date(2026, 10, 1)),))
     back = BaselineHistory((_ver("22:30", date(2026, 10, 1)), _ver("22:15", TUE, 2)))
     bases = {("n1", Direction.RETURN): back}
-    # Monday's return under its old version still closes Tue 00:50, past Tue's new 00:45 start
-    assert _overlaps(p, OUT, _ver("01:00", TUE).signature, TUE, out, (), bases)
-    assert not _overlaps(p, OUT, _ver("01:05", TUE).signature, TUE, out, (), bases)
+    # Monday's return under its old version still closes Tue 00:50, past Tue's new 00:49 start
+    assert overlaps_next(p, OUT, _ver("01:04", TUE).signature, TUE, out, (), bases)
+    assert not overlaps_next(p, OUT, _ver("01:05", TUE).signature, TUE, out, (), bases)
 
 
 def test_adoption_overlap_uses_the_service_date_of_a_day_offset_return():  # rule 19
@@ -447,8 +447,8 @@ def test_adoption_overlap_uses_the_service_date_of_a_day_offset_return():  # rul
         return {("n1", Direction.RETURN): back}
 
     # Monday's return runs on Tuesday, so the return version in force on Tuesday applies
-    assert not _overlaps(p, OUT, agreed, TUE, out, (), bases(TUE))  # ends 07:10
-    assert _overlaps(p, OUT, agreed, TUE, out, (), bases(WED))  # still ends 07:20
+    assert not overlaps_next(p, OUT, agreed, TUE, out, (), bases(TUE))  # ends 07:10
+    assert overlaps_next(p, OUT, agreed, TUE, out, (), bases(WED))  # still ends 07:20
 
 
 def _mixed_answers(day: date, l1, l2, l2_alone):
@@ -744,7 +744,7 @@ def test_probe_snapshot_of_copies_is_the_same_in_any_order():  # fingerprint, ba
             ans("AAA", "RTD", *(make_connection([a, x]) for x in pair)),
         ]
         rs = evaluate(P, OUT, TUE, answers, CLEAR, None)
-        seen.add(tuple((r.fingerprint, _probed_end(r)) for r in rs))
+        seen.add(tuple((r.fingerprint, probed_end(r)) for r in rs))
     assert len(seen) == 1
     ((*_, (fp, end)),) = seen
     assert fp.endswith("/58") and end == datetime(2026, 10, 27, 12, 14, tzinfo=AMS)

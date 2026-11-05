@@ -57,7 +57,7 @@ def _trains(c: Connection) -> tuple[TrainId, ...]:
     return tuple(x.train for x in c.legs)
 
 
-def _unrideable(c: Connection, answer: ProviderAnswer, profile_min: dict[str, int]) -> bool:
+def is_unrideable(c: Connection, answer: ProviderAnswer, profile_min: dict[str, int]) -> bool:
     """A leg is cancelled or cut short, or a transfer is broken: waiting does not get you there.
     Each leg is judged as the newest evidence shows it, against `c`'s own alighting stop (6.2)."""
     cur = current_connection(evidence(answer), c)
@@ -99,7 +99,7 @@ def _segment(answer: ProviderAnswer, x: LegProgress) -> Leg | None:
     return None
 
 
-def _ridden(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Connection | None:
+def ridden_journey(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Connection | None:
     """The connection the user would ride by waiting: the locked one, else the usual one.
     The lock is rebuilt leg by leg against its stored boarding and alighting stops (6.1), so
     a lock spread over connections still counts and a fragment ending early is not its
@@ -168,10 +168,10 @@ def _assess_waiting(
     """(the journey ridden by waiting as its current copy, broken, bad) (7.6). Lateness needs
     the usual's planned arrival; a journey that is not there or not rideable is bad without one."""
     prof = ctx.profile
-    ride = _ridden(s, ctx, answer)
+    ride = ridden_journey(s, ctx, answer)
     # not seen in a healthy answer: the journey the user waits for is not there, so waiting
     # means the first later good train, like after a cancellation (7.6, rule 2)
-    broken = ride is None or _unrideable(ride, answer, dict(prof.transfer_min))
+    broken = ride is None or is_unrideable(ride, answer, dict(prof.transfer_min))
     cur = None if ride is None else current_connection(evidence(answer), ride)
     # a current copy ending before the destination has no arrival there (broken says so)
     ride_arr = (

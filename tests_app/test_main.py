@@ -5,6 +5,7 @@ from datetime import time
 from pathlib import Path
 
 import pytest
+import runtime_seam as seam
 from app_rig import (
     CHAT,
     CODES,
@@ -316,9 +317,11 @@ HOOKS = {"webhook_urls": (URL,), "webhook_secret": SECRET}
 async def test_build_adds_a_poster_only_when_webhooks_are_set(tmp_path, tg):
     clock = TickClock(at("07:50"))
     app = make_app(tmp_path, tg, clock)
-    assert app.webhooks is None and app.rt._queue.port is None and app.bot._webhook_test is None
+    assert (
+        app.webhooks is None and seam.queue(app.rt).port is None and app.bot._webhook_test is None
+    )
     app = make_app(tmp_path, tg, clock, webhook_token=WTOKEN, **HOOKS)
-    assert isinstance(app.webhooks, WebhookPoster) and app.rt._queue.port is app.webhooks
+    assert isinstance(app.webhooks, WebhookPoster) and seam.queue(app.rt).port is app.webhooks
     assert app.webhooks.urls == (URL,) and app.webhooks._token == WTOKEN
     assert app.bot._webhook_test is not None
 
@@ -329,8 +332,8 @@ def stored_copies(tmp_path: Path) -> tuple:
 
 async def warn(app: App, n: int) -> None:
     """A loud application warning, delivered by the watchdog pass, the webhook pass awaited."""
-    clock = app.rt._clock
-    app.rt._app_warning(EventKind.KEY_REJECTED, f"alert {n}.", clock.now(), str(n))
+    clock = seam.clock(app.rt)
+    seam.app_warning(app.rt, EventKind.KEY_REJECTED, f"alert {n}.", clock.now(), str(n))
     await app.rt.watchdog_once()
     await app.rt.webhooks_idle()
 

@@ -3,13 +3,14 @@ adoption and `all_good` run through a real config entry, the host thread and the
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
 import harness
 import pytest
+import runtime_seam as seam
 from builders import AMS
 from harness import (
     HOOKS,
@@ -189,9 +190,7 @@ async def test_adoption_carried_into_the_next_day_through_ha(hass):
     h.provider.world = [usual_on(d, "08:15") for d in days]
 
     def seed(rt):
-        rt._writer.st = replace(
-            rt.state, baselines={"p1|outbound": baseline(time(8, 12), date(2026, 10, 1))}
-        )
+        seam.seed_state(rt, baselines={"p1|outbound": baseline(time(8, 12), date(2026, 10, 1))})
 
     await h.host.run(seed)
     await jump(h, "2026-10-26 05:55")

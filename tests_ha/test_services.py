@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import date
 
 import pytest
+import runtime_seam as seam
 from builders import ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from harness import PROFILE, PROFILES, drive, setup_tcc, write_profiles
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -10,7 +11,7 @@ from runtime_rig import at
 from custom_components.train_commute_companion.const import DOMAIN
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.model import Direction, DirectionState, OccurrenceKey
-from train_commute_companion.runtime import _fresh_state
+from train_commute_companion.runtime import fresh_state
 
 pytestmark = pytest.mark.usefixtures("tcc_freezer")
 
@@ -124,8 +125,8 @@ async def test_not_travelling_with_date_and_direction_touches_only_that_directio
 
     def seed(rt):  # as the core test does: both of Tuesday's directions unresolved at once
         st = rt.state
-        fresh = _fresh_state(key, rt.config.revision, None)
-        rt._writer.st = replace(st, occurrences={**st.occurrences, "p1|return|2026-10-27": fresh})
+        fresh = fresh_state(key, rt.config.revision, None)
+        seam.seed_state(rt, occurrences={**st.occurrences, "p1|return|2026-10-27": fresh})
 
     await h.host.run(seed)
     await call(

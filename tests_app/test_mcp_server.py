@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import runtime_seam as seam
 
 mcp = pytest.importorskip("mcp")  # only this module; the 10.4 gate never skips
 
@@ -133,7 +134,7 @@ async def test_no_secret_or_url_in_any_tool_output(tmp_path, tg, sock):  # Revie
     await app.rt.webhooks_idle()
     assert any("cancelled" in m["text"] for m in tg.sent)
     await every_tool()
-    app.rt._store.save = store_fails
+    seam.store(app.rt).save = store_fails
     await app.rt.poll_once()
     assert not app.rt.view().store_ok
     await every_tool()

@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 import pytest
+import runtime_seam as seam
 from builders import AMS, make_connection, make_leg, on_track
 from lifecycle_fixtures import L1, L1X, L2, LATER
 from runtime_rig import (
@@ -212,7 +213,9 @@ def cancelled_ob(rig: WRig) -> Obligation:
 
 
 def copies(rig: Rig, kind: EventKind | None = None) -> list[WebhookCopy]:
-    return [c for c in rig.rt._queue.copies.values() if kind in (None, c.obligation.event.kind)]
+    return [
+        c for c in seam.queue(rig.rt).copies.values() if kind in (None, c.obligation.event.kind)
+    ]
 
 
 def stored_copies(rig: Rig) -> tuple[WebhookCopy, ...]:
@@ -230,7 +233,7 @@ async def tick(rig: Rig, seconds: float = 61) -> None:
 
 def alert(rig: Rig, n: object) -> None:
     """A loud application warning, delivered by the next pass."""
-    rig.rt._app_warning(EventKind.KEY_REJECTED, f"alert {n}.", rig.clock.now(), str(n))
+    seam.app_warning(rig.rt, EventKind.KEY_REJECTED, f"alert {n}.", rig.clock.now(), str(n))
 
 
 # --- delivery to the phone and every URL ---
@@ -246,7 +249,7 @@ async def test_alert_goes_to_phone_and_every_url_signed(tmp_path):
         assert ep.ids(EventKind.CANCELLED) == [event_id(o.id)]
         assert ep.bad == 0
     assert not any(x.id == o.id for x in rig.rt.state.obligations)
-    assert rig.rt._queue.copies == {} and stored_copies(rig) == ()
+    assert seam.queue(rig.rt).copies == {} and stored_copies(rig) == ()
 
 
 async def test_phone_alone_counts_as_delivered(tmp_path):
@@ -289,7 +292,7 @@ async def test_dead_webhook_never_changes_delivery_and_backs_off(tmp_path, caplo
     assert kinds(rig.rt.events_log).count(EventKind.KEY_REJECTED) == 5
     assert len(rig.end.requests) == 1 and rig.poster.failing
     tried = [c.obligation.event.text for c in copies(rig) if c.first_try is not None]
-    assert len(rig.rt._queue.copies) == 5 and tried == ["App: alert 0."]
+    assert len(seam.queue(rig.rt).copies) == 5 and tried == ["App: alert 0."]
     (w,) = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert w.getMessage() == f"webhook to {HOST} failed (ReadTimeout); next try after 60 s"
     rig.clock.t = rig.end.times[0] + timedelta(seconds=61)
@@ -303,7 +306,7 @@ async def test_dead_webhook_never_changes_delivery_and_backs_off(tmp_path, caplo
     order = [p["text"] for _, p in rig.end.accepted]
     assert order == [f"App: alert {i}." for i in (2, 3, 4, 0, 1)]
     assert len(logged(caplog, logging.INFO, "works again")) == 1
-    assert not rig.poster.failing and rig.rt._queue.copies == {}
+    assert not rig.poster.failing and seam.queue(rig.rt).copies == {}
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
 
 
@@ -330,14 +333,14 @@ async def test_continuous_outage_shares_tries_and_bounds_the_queue(tmp_path, cap
             last_seen[c.id] = now
             if c.first_try is not None:
                 first.setdefault(c.id, c.first_try)
-        longest = max(longest, len(rig.rt._queue.copies))
+        longest = max(longest, len(seam.queue(rig.rt).copies))
         await rig.clock.sleep(30)
     for i, t in made.items():
         assert first[i] - t <= timedelta(seconds=61) * (ahead[i] + 1)
         assert last_seen[i] - first[i] < GIVE_UP + timedelta(seconds=30)
     assert longest <= 14
     gave = logged(caplog, logging.WARNING, "gave up a webhook copy after 2 h")
-    assert len(gave) == len(made) - len(rig.rt._queue.copies) > 0
+    assert len(gave) == len(made) - len(seam.queue(rig.rt).copies) > 0
     times = rig.end.times
     assert all(b - a >= timedelta(seconds=60) for a, b in pairwise(times))
 
@@ -348,12 +351,12 @@ async def test_alerts_faster_than_the_rest_hit_the_cap(tmp_path, caplog):
     rig.end.status = 503
     dropped = gave = 0
     for step in range(6 * 120):  # a new alert every 30 s for 6 h
-        before = dict(rig.rt._queue.copies)
+        before = dict(seam.queue(rig.rt).copies)
         if step == 360:
             await rig.restart()
         alert(rig, step)
         await rig.rt.watchdog_once()
-        now, after = rig.clock.now(), rig.rt._queue.copies
+        now, after = rig.clock.now(), seam.queue(rig.rt).copies
         assert len(after) <= MAX_COPIES
         assert len(json.loads(rig.store.text)["webhook_copies"]) <= MAX_COPIES
         never = [c for c in before.values() if c.first_try is None]
@@ -388,7 +391,7 @@ async def test_give_up_holds_through_observation_waits(tmp_path, kind, wait, cap
         "p1", "office_a", OUT, DAY, None, EventKind[kind], Severity.SILENT, L1.train,
         "Office A: seeded.", f"{kind}:seeded", t0,
     )  # fmt: skip
-    o = replace(rig.rt._obligation(e, rig.occ(), t0), webhook_copied=True)  # sent by phone
+    o = replace(seam.obligation(rig.rt, e, rig.occ(), t0), webhook_copied=True)  # sent by phone
     st = loads(PersistedState, rig.store.text)
     rig.store.text = dumps(
         replace(st, webhook_copies=(WebhookCopy(event_id(o.id), o, (), t0, t0),))
@@ -400,7 +403,7 @@ async def test_give_up_holds_through_observation_waits(tmp_path, kind, wait, cap
         rig.clock.t = t0 + GIVE_UP - timedelta(minutes=1)
         await rig.restart()
         assert (
-            event_id(o.id) in rig.rt._queue.copies and rig.rt._memory.boards == {}
+            event_id(o.id) in seam.queue(rig.rt).copies and seam.memory(rig.rt).boards == {}
         )  # waits to observe
         rig.clock.t = t0 + GIVE_UP + timedelta(seconds=30)
         await rig.rt.watchdog_once()
@@ -408,7 +411,7 @@ async def test_give_up_holds_through_observation_waits(tmp_path, kind, wait, cap
         rig.clock.t = t0 + GIVE_UP + timedelta(seconds=30)
         await rig.restart()  # ends inside the reconcile wait of start()
     cid = event_id(o.id)  # (the stale board's own cannot-see alert gets a copy of its own)
-    assert cid not in rig.rt._queue.copies and cid not in {x.id for x in stored_copies(rig)}
+    assert cid not in seam.queue(rig.rt).copies and cid not in {x.id for x in stored_copies(rig)}
     assert cid not in [r.headers["webhook-id"] for r in rig.end.requests]
     assert len(logged(caplog, logging.WARNING, "gave up a webhook copy after 2 h")) == 1
 
@@ -521,9 +524,9 @@ async def test_quiet_hours_hold_the_copy_and_the_give_up_counts_from_the_first_t
         "Office A: seeded.", "delayed:seeded", rig.clock.now(),
     )  # fmt: skip
     rt = rig.rt
-    rt._writer.st = replace(
-        rt._writer.st,
-        obligations=(*rt._writer.st.obligations, rt._obligation(e, None, e.created_at)),
+    seam.seed_state(
+        rt,
+        obligations=(*rt.state.obligations, seam.obligation(rt, e, None, e.created_at)),
     )
     await rt.watchdog_once()
     while rig.clock.now() < at("07:10", WED):
@@ -572,23 +575,23 @@ async def test_copies_survive_failed_writes_and_held_phone_success(tmp_path):  #
     text = rig.store.text
     await cancel(rig)  # the cancellation is held in memory; the phone took it
     (c,) = copies(rig, EventKind.CANCELLED)
-    assert c.id in rig.rt._queue.held
-    assert not any(o.event.kind is EventKind.CANCELLED for o in rig.rt._writer.held.values())
+    assert c.id in seam.queue(rig.rt).held
+    assert not any(o.event.kind is EventKind.CANCELLED for o in seam.held(rig.rt).values())
     rig.end.status = 200
     await tick(rig)
     assert len(rig.end.of(EventKind.CANCELLED)) == 1 and copies(rig, EventKind.CANCELLED) == []
     alert(rig, "second")  # made and posted while every write fails
-    await rig.rt._deliver()  # (a watchdog's retried write would reset the unwritten alert)
+    await seam.deliver(rig.rt)  # (a watchdog's retried write would reset the unwritten alert)
     assert len(rig.end.of(EventKind.KEY_REJECTED)) == 1 and rig.store.text == text
     rig.end.status = 503
     alert(rig, "third")
-    await rig.rt._deliver()
+    await seam.deliver(rig.rt)
     assert [x.obligation.event.text for x in copies(rig, EventKind.KEY_REJECTED)] == [
         "App: alert third."
     ]
     rig.store.fail = False
     await rig.rt.watchdog_once()
-    assert stored_copies(rig) == tuple(rig.rt._queue.copies.values()) != ()
+    assert stored_copies(rig) == tuple(seam.queue(rig.rt).copies.values()) != ()
     phone = len(rig.notifier.attempts)
     await rig.restart()
     rig.end.status = 200
@@ -598,7 +601,7 @@ async def test_copies_survive_failed_writes_and_held_phone_success(tmp_path):  #
         "App: alert second.",
         "App: alert third.",
     ]
-    assert len(rig.notifier.attempts) == phone and rig.rt._queue.copies == {}
+    assert len(rig.notifier.attempts) == phone and seam.queue(rig.rt).copies == {}
 
 
 async def test_a_pass_cancelled_during_a_post_keeps_the_new_copy(tmp_path):  # rule 22
@@ -607,10 +610,10 @@ async def test_a_pass_cancelled_during_a_post_keeps_the_new_copy(tmp_path):  # r
     alert(rig, 1)
     task = asyncio.create_task(rig.rt.watchdog_once())
     await asyncio.wait_for(rig.end.entered.wait(), 2)
-    await rig.rt._queue.stop()  # shutdown cuts the POST off
+    await seam.queue(rig.rt).stop()  # shutdown cuts the POST off
     await task
     (c,) = stored_copies(rig)
-    assert c.obligation.event.text == "App: alert 1." and rig.rt._queue.copies == {c.id: c}
+    assert c.obligation.event.text == "App: alert 1." and seam.queue(rig.rt).copies == {c.id: c}
     assert c.first_try == rig.clock.now()  # the cut-off try counts (owner decision Q1)
     assert not loads(PersistedState, rig.store.text).obligations  # the phone took it
 
@@ -743,10 +746,8 @@ async def mixed_rig(tmp: Path, urls: tuple[str, ...] = (URL,), sync: bool = True
     a = make_leg("AAA", "UT", "08:12", "08:40", number="1000")
     b = make_leg("UT", "RTD", "08:46", "09:24", number="2000")
     v1 = BaselineVersion(1, signature_of(make_connection([a, b]), DAY), date(2026, 10, 1), True)
-    rig.rt._writer.st = replace(
-        rig.rt._writer.st, baselines={"p1|outbound": BaselineHistory((v1,))}
-    )
-    rig.rt._writer.save()
+    seam.seed_state(rig.rt, baselines={"p1|outbound": BaselineHistory((v1,))})
+    seam.save_state(rig.rt)
     return rig
 
 
@@ -764,7 +765,9 @@ async def withdraw(rig: WRig, times=CONTINUE) -> None:
     """The next look-ahead run, without its delivery pass: it withdraws the adoption."""
     rig.clock.jump(5)
     rig.provider.times = times
-    await rig.rt._lookahead_direction(rig.rt.config.profiles[0], OUT, PlannedWorks((), "complete"))
+    await seam.lookahead_direction(
+        rig.rt, rig.rt.config.profiles[0], OUT, PlannedWorks((), "complete")
+    )
 
 
 def wed_posts(ep: Endpoint) -> list[tuple[str, str]]:
@@ -792,10 +795,12 @@ async def test_withdrawn_adoption_keeps_the_owed_warning_copy(tmp_path, variant)
         assert not any(WARNING in t for t in told)  # no repeat on the phone
         assert any("ignore the earlier change" in t for t in told)  # the silent correction
     if variant == "works_continue":
-        c = rig.rt._queue.copies[cid]  # the same webhook-id, its warning without the adoption
+        c = seam.queue(rig.rt).copies[cid]  # the same webhook-id, its warning without the adoption
         assert WARNING in c.obligation.event.text and "NS moved your" not in c.obligation.event.text
     elif variant == "works_gone":
-        assert cid not in rig.rt._queue.copies  # its warning no longer holds: dropped at its try
+        assert (
+            cid not in seam.queue(rig.rt).copies
+        )  # its warning no longer holds: dropped at its try
     await rig.restart()
     rig.end.status = 200
     rig.notifier.fails = lambda e: False
@@ -821,7 +826,7 @@ async def test_rewrite_during_an_accepted_first_post_ends_the_copy(tmp_path, two
     first = asyncio.create_task(rig.rt.lookahead_once())
     await asyncio.wait_for(rig.end.entered.wait(), 2)
     o = bundle_of(rig)
-    c = rig.rt._queue.copies[event_id(o.id)]
+    c = seam.queue(rig.rt).copies[event_id(o.id)]
     t0 = rig.clock.now()
     assert c.first_try == t0 and c.last_try is None  # its first POST is in flight
     rig.clock.jump(5)
@@ -829,20 +834,22 @@ async def test_rewrite_during_an_accepted_first_post_ends_the_copy(tmp_path, two
     second = asyncio.create_task(rig.rt.lookahead_once())
     for _ in range(200):
         await asyncio.sleep(0)
-        if rig.rt._queue.copies.get(c.id) is not c:
+        if seam.queue(rig.rt).copies.get(c.id) is not c:
             break
-    assert "NS moved your" not in rig.rt._queue.copies[c.id].obligation.event.text  # rewritten
+    assert "NS moved your" not in seam.queue(rig.rt).copies[c.id].obligation.event.text  # rewritten
     rig.ends[HOST2].status = 503
     gate.set()
     await first
     await second
     if not two:
-        assert c.id not in rig.rt._queue.copies and c.id not in {x.id for x in stored_copies(rig)}
+        assert c.id not in seam.queue(rig.rt).copies and c.id not in {
+            x.id for x in stored_copies(rig)
+        }
         return
-    cur = rig.rt._queue.copies[c.id]
+    cur = seam.queue(rig.rt).copies[c.id]
     assert cur.done == (url_id(URL),) and cur.first_try == cur.last_try == t0
     assert "NS moved your" not in cur.obligation.event.text
-    assert stored_copies(rig) == tuple(rig.rt._queue.copies.values())
+    assert stored_copies(rig) == tuple(seam.queue(rig.rt).copies.values())
 
 
 @pytest.mark.parametrize("receivers", ["all_accepted", "one_of_two_accepted", "all_failed"])
@@ -856,7 +863,7 @@ async def test_retired_phone_pending_bundle_keeps_its_webhook_history(tmp_path, 
     await rig.rt.lookahead_once()
     o = bundle_of(rig)
     cid = event_id(o.id)
-    before = rig.rt._queue.copies.get(cid)
+    before = seam.queue(rig.rt).copies.get(cid)
     await withdraw(rig)  # retire carries the warning into a new message
     (n,) = [
         x
@@ -869,7 +876,7 @@ async def test_retired_phone_pending_bundle_keeps_its_webhook_history(tmp_path, 
         assert before is None and n.webhook_copied
         assert not any(c.obligation.id == n.id for c in copies(rig))
     else:
-        c = rig.rt._queue.copies[cid]  # the same copy: webhook-id, receipts and first try kept
+        c = seam.queue(rig.rt).copies[cid]  # the same copy: webhook-id, receipts and first try kept
         assert c.obligation.id == n.id and c.first_try == before.first_try
         assert c.done == before.done == ((url_id(URL),) if receivers != "all_failed" else ())
     rig.notifier.fails = lambda e: False
@@ -888,7 +895,7 @@ async def test_retired_phone_pending_bundle_keeps_its_webhook_history(tmp_path, 
     if receivers == "all_failed":
         rig.clock.t = before.first_try + GIVE_UP
         await rig.rt.watchdog_once()
-        assert cid not in rig.rt._queue.copies
+        assert cid not in seam.queue(rig.rt).copies
         assert len(logged(caplog, logging.WARNING, "gave up")) >= 1
 
 
@@ -940,7 +947,7 @@ async def test_start_without_webhooks_drops_saved_copies(tmp_path, caplog):  # R
     poster, rig.poster = rig.poster, None
     await rig.restart()
     assert len(logged(caplog, logging.INFO, "dropped 2 webhook copies: webhooks are off")) == 1
-    assert rig.rt._queue.copies == {} and stored_copies(rig) == ()
+    assert seam.queue(rig.rt).copies == {} and stored_copies(rig) == ()
     alert(rig, 3)
     await rig.rt.watchdog_once()
     assert kinds(rig.rt.events_log) == [EventKind.KEY_REJECTED]
@@ -999,7 +1006,7 @@ async def test_stalled_or_endless_answer_is_cut_at_the_deadline(tmp_path, monkey
     assert len(rig.rt.events_log) == 2 and len(rig.end.times) == 1  # resting
     rig.end.gate, rig.end.endless = None, True  # a 200 whose body never ends
     await asyncio.wait_for(tick(rig), 2)
-    assert len(rig.end.of(EventKind.KEY_REJECTED)) == 2 and rig.rt._queue.copies == {}
+    assert len(rig.end.of(EventKind.KEY_REJECTED)) == 2 and seam.queue(rig.rt).copies == {}
 
 
 @pytest.mark.parametrize(
@@ -1126,7 +1133,7 @@ async def test_webhook_test_sends_are_signed_marked_and_never_stored(tmp_path, c
     res = await send_webhook_tests(rig.client, [URL, URL2], SECRET, rig.clock.now, token=TOKEN)
     assert res[0].ok and rig.poster.failing and rig.poster.down == rest
     await rig.rt.watchdog_once()
-    assert stored_copies(rig) == () and rig.rt._queue.copies == {}
+    assert stored_copies(rig) == () and seam.queue(rig.rt).copies == {}
     mine = [
         r.getMessage() for r in caplog.records if r.name == "train_commute_companion.webhook_send"
     ]
@@ -1147,7 +1154,9 @@ async def test_without_webhooks_the_state_is_as_today(tmp_path):
     await plain.rt.start()
     await plain.rt.poll_once()
     await cancel(plain)
-    assert rig.rt._queue.copies == {} and not any(o.webhook_copied for o in rig.store.seen.values())
+    assert seam.queue(rig.rt).copies == {} and not any(
+        o.webhook_copied for o in rig.store.seen.values()
+    )
     assert stored_copies(rig) == ()
     assert kinds(rig.rt.events_log) == kinds(plain.rt.events_log)
     assert [e.text for e in rig.rt.events_log] == [e.text for e in plain.rt.events_log]
@@ -1174,7 +1183,7 @@ async def test_urgent_advice_reaches_the_phone_while_a_backlog_drains(tmp_path):
     rig.end.gate.set()
     await asyncio.wait_for(rig.rt.webhooks_idle(), 5)
     assert len(rig.end.of(EventKind.KEY_REJECTED)) == 100
-    assert len(rig.end.of(EventKind.LEAVE_NOW)) == 1 and rig.rt._queue.copies == {}
+    assert len(rig.end.of(EventKind.LEAVE_NOW)) == 1 and seam.queue(rig.rt).copies == {}
 
 
 @pytest.mark.parametrize("branch", ["rewritten", "carried"])
@@ -1189,17 +1198,19 @@ async def test_failed_look_ahead_write_keeps_the_changed_copy(tmp_path, branch):
     await rig.rt.lookahead_once()
     o = bundle_of(rig)
     cid = event_id(o.id)
-    assert cid in rig.rt._queue.copies
+    assert cid in seam.queue(rig.rt).copies
     rig.store.fail = True
     await withdraw(rig)  # the run's write fails
-    c = rig.rt._queue.copies[cid]
+    c = seam.queue(rig.rt).copies[cid]
     assert WARNING in c.obligation.event.text and "NS moved your" not in c.obligation.event.text
-    assert cid in rig.rt._queue.held  # judged on what the failed write tried, not the old state
+    assert (
+        cid in seam.queue(rig.rt).held
+    )  # judged on what the failed write tried, not the old state
     a.status = b.status = 200
     rig.notifier.fails = lambda e: False
     await tick(rig)  # judged on what the failed write tried: posted, never dropped
     got = [(i, t) for i, t in wed_posts(b) if WARNING in t]
-    assert got == [(cid, c.obligation.event.text)] and cid not in rig.rt._queue.copies
+    assert got == [(cid, c.obligation.event.text)] and cid not in seam.queue(rig.rt).copies
     rig.store.fail = False
     await tick(rig)
     assert [(i, t) for i, t in wed_posts(b) if WARNING in t] == got  # once
@@ -1208,11 +1219,15 @@ async def test_failed_look_ahead_write_keeps_the_changed_copy(tmp_path, branch):
 async def test_carried_bundle_keeps_an_acceptance_the_store_missed(tmp_path):  # rule 22
     rig = await mixed_rig(tmp_path)
     rig.notifier.fails = lambda e: True  # the bundle stays phone-pending
-    await rig.rt._lookahead_direction(rig.rt.config.profiles[0], OUT, PlannedWorks((), "complete"))
+    await seam.lookahead_direction(
+        rig.rt, rig.rt.config.profiles[0], OUT, PlannedWorks((), "complete")
+    )
     rig.store.fail = True
-    await rig.rt._deliver()  # the receiver takes the bundle; the delivery write fails
+    await seam.deliver(rig.rt)  # the receiver takes the bundle; the delivery write fails
     o = bundle_of(rig)
-    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)] and rig.rt._queue.copies == {}
+    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)] and seam.queue(
+        rig.rt
+    ).copies == {}
     rig.store.fail = False
     await withdraw(rig)  # retire carries the warning into a new message
     (n,) = [
@@ -1253,7 +1268,9 @@ async def test_background_write_keeps_the_mark_of_an_in_flight_phone_send(tmp_pa
     rig.end.gate.set()
     # the queued round takes the bundle and writes while the phone send waits
     await asyncio.wait_for(rig.rt.webhooks_idle(), 2)
-    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)] and rig.rt._queue.copies == {}
+    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)] and seam.queue(
+        rig.rt
+    ).copies == {}
     await withdraw(rig)  # retire carries the warning while the phone send is in flight
     phone.set()
     await run
@@ -1296,14 +1313,16 @@ async def test_background_write_keeps_the_mark_of_a_held_in_flight_phone_send(tm
     await asyncio.wait_for(entered.wait(), 2)  # the bundle is held, its copy made
     (o,) = [
         x
-        for x in rig.rt._writer.held.values()
+        for x in seam.held(rig.rt).values()
         if x.look_ahead == ("p1", OUT, WED) and "adopt:" in x.fact_key
     ]
     rig.store.fail = False
     rig.end.gate.set()
     # the queued round takes the bundle and its write lands while the phone send waits
     await asyncio.wait_for(rig.rt.webhooks_idle(), 2)
-    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)] and rig.rt._queue.copies == {}
+    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)] and seam.queue(
+        rig.rt
+    ).copies == {}
     assert rig.store.seen[o.id].webhook_copied  # written with its mark: a restart posts none
     await withdraw(rig)  # retire carries the warning while the phone send is in flight
     phone.set()
@@ -1328,12 +1347,12 @@ async def test_a_try_cut_off_by_shutdown_still_starts_the_two_hours(tmp_path, ca
     alert(rig, 1)
     task = asyncio.create_task(rig.rt.watchdog_once())
     await asyncio.wait_for(rig.end.entered.wait(), 2)
-    await rig.rt._queue.stop()  # shutdown during the first POST
+    await seam.queue(rig.rt).stop()  # shutdown during the first POST
     await task
     rig.end.gate = None
     rig.clock.set("22:01")
     await rig.restart()
-    assert rig.end.of(EventKind.KEY_REJECTED) == [] and rig.rt._queue.copies == {}
+    assert rig.end.of(EventKind.KEY_REJECTED) == [] and seam.queue(rig.rt).copies == {}
     assert len(rig.end.times) == 1
     assert len(logged(caplog, logging.WARNING, "gave up a webhook copy after 2 h")) == 1
 
@@ -1349,7 +1368,7 @@ async def test_a_try_cut_off_by_shutdown_rests_the_url_across_a_restart(tmp_path
     task = asyncio.create_task(rig.rt.watchdog_once())
     await asyncio.wait_for(rig.end.entered.wait(), 2)
     assert url_id(rig.poster.urls[0]) in stored_down(rig)  # before the cut
-    await rig.rt._queue.stop()  # shutdown during the POST
+    await seam.queue(rig.rt).stop()  # shutdown during the POST
     await task
     rig.end.gate = None
     rig.clock.jump(1 / 60)  # 20:00:01
@@ -1374,7 +1393,7 @@ async def test_a_cut_off_second_try_saves_its_rest(tmp_path):
     rig.clock.t = first + timedelta(seconds=60)  # 20:01:00, the rest just ended
     task = asyncio.create_task(rig.rt.watchdog_once())
     await asyncio.wait_for(rig.end.entered.wait(), 2)
-    await rig.rt._queue.stop()  # shutdown during the second POST
+    await seam.queue(rig.rt).stop()  # shutdown during the second POST
     await task
     rig.end.gate = None
     assert stored_down(rig) == {url_id(URL): first + timedelta(seconds=120)}

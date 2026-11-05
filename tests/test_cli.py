@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from lifecycle_fixtures import full_state
 
-from train_commute_companion.cli import _moved, main
+from train_commute_companion.cli import main, moved_lines
 from train_commute_companion.lookahead import BaselineHistory, BaselineVersion
 from train_commute_companion.model import Signature, SignatureLeg
 from train_commute_companion.serde import encode
@@ -128,4 +128,4 @@ def test_check_profile_reads_a_version_1_store(tmp_path):
         del s["advice"]["delivered"]  # saved before the field existed
     store = tmp_path / "state.json"
     store.write_text(json.dumps({"version": 1, "write_counter": 1, "state": raw}))
-    assert _moved(store, ()) == []
+    assert moved_lines(store, ()) == []

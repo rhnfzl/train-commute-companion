@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
+import runtime_seam as seam
 from app_rig import CHAT, TOKEN, FakeTelegram, error
 from builders import AMS
 from runtime_rig import DAY, FakeClock, Rig, at
@@ -227,9 +228,7 @@ async def test_failing_telegram_backs_off_and_delivers_later(tmp_path, tg):  # R
         hhmm = rig.clock.t.strftime("%H:%M")
         if hhmm in raised and rig.clock.t.second == 0:
             o = held(raised[hhmm], f"a{hhmm}", rig.clock.now())
-            rig.rt._writer.st = replace(
-                rig.rt._writer.st, obligations=(*rig.rt._writer.st.obligations, o)
-            )
+            seam.seed_state(rig.rt, obligations=(*rig.rt.state.obligations, o))
         await rig.rt.watchdog_once()
         await rig.clock.sleep(30)
     assert tg.calls.count("sendMessage") <= 61  # one per 60 s window, not one per alert per tick
@@ -257,10 +256,10 @@ async def test_raising_sender_does_not_block_later_alerts(tmp_path):  # plan-1 D
     rig.rt = rig.new()
     now = rig.clock.now()
     a, b = held(EventKind.KEY_REJECTED, "a", now), held(EventKind.PROFILE_REFUSED, "b", now)
-    rig.rt._writer.st = replace(rig.rt._writer.st, obligations=(a, b))
+    seam.seed_state(rig.rt, obligations=(a, b))
     await rig.rt.watchdog_once()
     assert raising.sent == ["b"]
-    assert [o.id for o in rig.rt._writer.st.obligations] == ["a"]
+    assert [o.id for o in rig.rt.state.obligations] == ["a"]
 
 
 async def test_token_never_in_errors_or_logs(tg, caplog):  # Review Focus 4

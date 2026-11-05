@@ -26,7 +26,7 @@ from lifecycle_fixtures import (
 
 from train_commute_companion.lifecycle import legacy_facts
 from train_commute_companion.model import AlertEvent, EventKind, Leg, Severity, train_ident
-from train_commute_companion.revalidation import _states_current
+from train_commute_companion.revalidation import states_current
 from train_commute_companion.serde import dumps, loads
 
 DAY = "2026-10-27"
@@ -109,8 +109,8 @@ def test_an_event_stored_before_facts_were_kept_still_loads():
     old = loads(AlertEvent, json.dumps(stored))
     assert old.facts is None and old.key == e.key
     # its stated delays are read from its key, so a stale one is still caught
-    assert _states_current(old, t.state.alert_keys) and not _states_current(old, {})
-    assert _states_current(e, t.state.alert_keys) and not _states_current(e, {})
+    assert states_current(old, t.state.alert_keys) and not states_current(old, {})
+    assert states_current(e, t.state.alert_keys) and not states_current(e, {})
 
 
 def test_a_held_all_clear_stored_before_facts_were_kept_is_stale_once_late_again():
@@ -119,9 +119,9 @@ def test_a_held_all_clear_stored_before_facts_were_kept_is_stale_once_late_again
     t = poll(late.state, c, ans("AAA", conn(_delayed_leg(0))))
     (back,) = [e for e in t.events if e.kind is EventKind.BACK_TO_NORMAL]
     old = replace(back, facts=None)
-    assert _states_current(old, t.state.alert_keys)
+    assert states_current(old, t.state.alert_keys)
     again = poll(t.state, c, ans("AAA", conn(_delayed_leg(7))))
-    assert not _states_current(old, again.state.alert_keys)
+    assert not states_current(old, again.state.alert_keys)
 
 
 def test_what_is_read_from_an_event_stored_before_facts_were_kept():

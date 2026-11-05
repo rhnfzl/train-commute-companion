@@ -103,7 +103,7 @@ def alert_facts(e: AlertEvent) -> AlertFacts:
     return legacy_facts(e) if e.facts is None else e.facts
 
 
-def _states_current(e: AlertEvent, keys: Mapping[str, str]) -> bool:
+def states_current(e: AlertEvent, keys: Mapping[str, str]) -> bool:
     """A delay message whose stated values are still the ones remembered (`_stated`)."""
     return all(keys.get(t.slot) == t.said for t in alert_facts(e).told)
 
@@ -265,7 +265,7 @@ class LiveLedger:
         legs = [x for j in (*((s.lock,) if s.lock else ()), *s.retained) for x in j.legs]
         unfinished = any(x.train == e.train and x.state not in _FINISHED_LEG_STATES for x in legs)
         if e.kind in DELAY_NEWS:  # the delay memory still says what the message stated
-            if not _states_current(e, s.alert_keys):
+            if not states_current(e, s.alert_keys):
                 return False
             if e.kind is EventKind.DELAYED:
                 return SENT_PREFIX + o.fact_key in s.alert_keys

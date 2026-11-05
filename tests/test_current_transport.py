@@ -6,7 +6,7 @@ from dataclasses import replace
 from builders import make_leg
 from lifecycle_fixtures import L1, at, board, conn, ctx, journey, numbers, occ, poll
 
-from train_commute_companion.advice import _ridden
+from train_commute_companion.advice import ridden_journey
 from train_commute_companion.lifecycle import auto_lock, merged_pool
 from train_commute_companion.match import route_changed, usual_connection
 from train_commute_companion.model import DirectionState
@@ -37,7 +37,7 @@ def test_usual_connection_skips_a_train_that_is_now_a_bus():
     p = pool()
     assert usual_connection(p, "AAA", at("08:12"), ("UT",), None) is A
     s = occ(None, direction_state=DirectionState.IDLE)
-    assert _ridden(s, ctx(at("07:50")), p) is A
+    assert ridden_journey(s, ctx(at("07:50")), p) is A
 
 
 def test_auto_lock_never_locks_a_bus_and_keeps_its_lock_across_a_restart():
@@ -97,7 +97,7 @@ def test_a_ridden_train_now_a_bus_is_kept_and_warned():
 
 
 def test_advice_reads_a_locked_train_now_a_bus_as_unrideable():
-    from train_commute_companion.advice import _unrideable
+    from train_commute_companion.advice import is_unrideable
 
-    assert _unrideable(B, pool(), {})
-    assert not _unrideable(A, pool(), {})
+    assert is_unrideable(B, pool(), {})
+    assert not is_unrideable(A, pool(), {})

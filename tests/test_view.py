@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import date, time, timedelta
 
+import runtime_seam as seam
 from builders import ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from runtime_rig import PROFILE, FakeClock, MemoryStore, Notifier, Provider, at
 
@@ -16,6 +17,7 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.profile import load_config
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
+from train_commute_companion.revisions import occurrence_ctx
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.view import Moved, WorksDay, moved, occurrence_view, works_ahead
 
@@ -48,16 +50,16 @@ class World:
         return self
 
     def set_occ(self, s) -> None:
-        st = self.rt._writer.st
+        st = self.rt.state
         k = next(k for k, v in st.occurrences.items() if v.key == s.key)
-        self.rt._writer.st = replace(st, occurrences={**st.occurrences, k: s})
+        seam.seed_state(self.rt, occurrences={**st.occurrences, k: s})
 
     def view_with(self, conns):
         """The occurrence's view over one answer holding `conns` instead of the polled ones."""
         s = only_occurrence(self.rt)
         q = Query("AAA", "RTD", self.clock.now())
         answer = ProviderAnswer(q, tuple(conns), self.clock.now())
-        return occurrence_view(s, self.rt._ctx(s, self.clock.now()), (answer,))
+        return occurrence_view(s, occurrence_ctx(self.rt.state, s, self.clock.now()), (answer,))
 
 
 async def locked(tmp, conns=ONE_TRANSFER) -> World:
@@ -135,7 +137,7 @@ async def test_view_next_good_follows_the_unfinished_leg(tmp_path):
 async def test_view_next_good_is_none_without_answers_or_kept_leg(tmp_path):
     w = await locked(tmp_path)
     s = only_occurrence(w.rt)
-    ctx = w.rt._ctx(s, w.clock.now())
+    ctx = occurrence_ctx(w.rt.state, s, w.clock.now())
     assert occurrence_view(s, ctx, ()).next_good is None
     assert [x.state for x in occurrence_view(s, ctx, ()).legs] == ["missing", "missing"]
     done = replace(s.lock.legs[0], state=LegState.DONE)
@@ -248,9 +250,9 @@ async def test_undelivered_counts_failed_obligations(tmp_path):
 
 async def test_view_location_epochs_is_a_copy(tmp_path):
     w = await World(tmp_path).start()
-    w.rt._loc_epoch["p1"] = 3
+    seam.location_epochs(w.rt)["p1"] = 3
     v = w.rt.view()
-    w.rt._loc_epoch["p1"] = 4
+    seam.location_epochs(w.rt)["p1"] = 4
     assert v.location_epochs == {"p1": 3}
 
 
@@ -294,7 +296,7 @@ async def test_next_good_skips_a_train_a_newer_answer_cancelled(tmp_path):
     first, nxt = ONE_TRANSFER
     gone = make_leg("AAA", "UT", "08:44", "09:08", number="1236", cancelled=True)
     s = only_occurrence(w.rt)
-    ctx = w.rt._ctx(s, w.clock.now())
+    ctx = occurrence_ctx(w.rt.state, s, w.clock.now())
     o = occurrence_view(s, ctx, answers_a_minute_apart(w, ONE_TRANSFER, ONE_TRANSFER))
     assert o.next_good is not None and o.next_good.legs[0].train.train_number == "1236"
     newer = (first, make_connection([gone, nxt.legs[1]]))
@@ -312,16 +314,16 @@ async def test_status_transfer_uses_its_own_change(tmp_path):
     s = only_occurrence(w.rt)
     o = occurrence_view(
         s,
-        w.rt._ctx(s, w.clock.now()),
+        occurrence_ctx(w.rt.state, s, w.clock.now()),
         answers_a_minute_apart(w, [], [make_connection([runs_on]), no_change]),
     )
     assert o.transfers[0].state is TransferState.BROKEN
 
 
 def test_the_alighting_platform_is_the_arrival_side_first():
-    from train_commute_companion.view import _alight_track
+    from train_commute_companion.view import alight_track
 
     s = make_leg("AAA", "UT", "08:12", "08:40").stops[1]
-    assert _alight_track(replace(s, planned_track="7", actual_arrival_track="6")) == "6"
-    assert _alight_track(replace(s, planned_track="7", planned_arrival_track="5")) == "5"
-    assert _alight_track(replace(s, planned_track="7")) == "7"
+    assert alight_track(replace(s, planned_track="7", actual_arrival_track="6")) == "6"
+    assert alight_track(replace(s, planned_track="7", planned_arrival_track="5")) == "5"
+    assert alight_track(replace(s, planned_track="7")) == "7"

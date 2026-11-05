@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock
 import harness
 import httpx
 import pytest
+import runtime_seam as seam
 from builders import make_leg, only_occurrence
 from harness import (
     HOOKS,
@@ -207,7 +208,7 @@ async def test_moved_prompt_repair(hass):
 
     def seed(baselines):
         def go(rt):
-            rt._writer.st = replace(rt.state, baselines=baselines)
+            seam.seed_state(rt, baselines=baselines)
 
         return go
 
@@ -401,7 +402,7 @@ async def test_blocked_runtime_reloads_and_is_retired(hass):
         entered.set()
         gate.wait(30)  # a synchronous call that never yields: drain cannot run either
         try:
-            rt._store.save(rt.state)
+            seam.store(rt).save(rt.state)
         except StorageError:
             return False
         return True
@@ -464,7 +465,7 @@ async def test_reload_while_the_old_runtime_is_inside_a_save(hass):
     harness.PATCH.setattr(os, "fsync", pause_old_thread(old._thread, gate, entered, os.fsync))
 
     def save(rt):
-        rt._store.save(rt.state)
+        seam.store(rt).save(rt.state)
         return True
 
     stuck, early = await start_old_storage_call(hass, h, save)
@@ -499,7 +500,7 @@ async def test_reload_while_the_old_runtime_is_inside_a_load(hass):
         "decode",
         pause_old_thread(old._thread, gate, entered, core_store.decode, unreadable),
     )
-    stuck, early = await start_old_storage_call(hass, h, lambda rt: rt._store.load())
+    stuck, early = await start_old_storage_call(hass, h, lambda rt: seam.store(rt).load())
     assert await hass.async_add_executor_job(entered.wait, 5)
     assert await hass.config_entries.async_reload(h.entry.entry_id)
     successor = hass.async_create_task(rebound(h))
@@ -585,7 +586,7 @@ async def test_webhook_rest_survives_unload_mid_post(hass):
     h, rx = await with_hooks(hass)
 
     def alert(rt) -> None:
-        rt._app_warning(EventKind.KEY_REJECTED, "alert 1.", rt._clock.now(), "1")
+        seam.app_warning(rt, EventKind.KEY_REJECTED, "alert 1.", rt.now(), "1")
 
     rx.gate = threading.Event()
     await h.host.run(alert)
@@ -617,7 +618,7 @@ async def test_without_webhook_options_no_client_is_made(hass):
     harness.PATCH.setattr(host_mod, "make_webhook_client", refuse)
     h = await setup_tcc(hass, PROFILE)
     assert h.entry.state is ConfigEntryState.LOADED and h.host.alive
-    assert await h.host.run(lambda rt: rt._queue.port) is None
+    assert await h.host.run(lambda rt: seam.queue(rt).port) is None
 
 
 async def test_options_turning_webhooks_off_drops_saved_copies(hass):  # Review Focus 13
@@ -630,7 +631,7 @@ async def test_options_turning_webhooks_off_drops_saved_copies(hass):  # Review 
     r = await submit(hass, await open_webhooks(hass, h.entry))  # no URLs: no test send
     assert r["type"] is FlowResultType.CREATE_ENTRY and len(rx.requests) == tried
     h = await rebound(h)
-    assert await h.host.run(lambda rt: rt._queue.port) is None
+    assert await h.host.run(lambda rt: seam.queue(rt).port) is None
     await drive(h, "08:08")
     assert stored_copies(hass, h.entry) == ()
     rx.status = 200

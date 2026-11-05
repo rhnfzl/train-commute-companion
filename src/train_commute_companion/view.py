@@ -155,7 +155,7 @@ def _reported(obs: TimeObs | None) -> datetime | None:
     return obs.value if obs is not None and obs.provenance is Provenance.REPORTED else None
 
 
-def _alight_track(s: Stop) -> str | None:
+def alight_track(s: Stop) -> str | None:
     """The platform the user gets off at: the arrival side's, else the departure side's."""
     return s.actual_arrival_track or s.planned_arrival_track or s.actual_track or s.planned_track
 
@@ -178,7 +178,7 @@ def _leg_view(x: LegProgress, cl: ClassifiedLeg | None, ob: Observation) -> LegV
         None if stop is None else stop.planned_arrival,
         None if stop is None else _reported(stop.arrival),
         board.actual_track or board.planned_track,
-        None if stop is None else _alight_track(stop),
+        None if stop is None else alight_track(stop),
         cl.dep_delay_min,
         cl.arr_delay_min,
         state,

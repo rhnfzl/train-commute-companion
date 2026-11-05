@@ -40,7 +40,7 @@ from train_commute_companion.lifecycle import (
     LockSource,
     OccurrenceState,
     Transition,
-    _stated,
+    keep_stated,
     on_poll,
     progress_of,
     queries_needed,
@@ -442,7 +442,7 @@ def test_departure_delay_moves_are_news_while_arrival_is_unchanged():
 
 def test_arrival_limit_is_compared_across_midnight():
     from train_commute_companion.classify import classify_leg
-    from train_commute_companion.lifecycle import _delayed
+    from train_commute_companion.lifecycle import delayed_event
 
     text = (
         PROFILES.replace("TRANSFERS", "[]")
@@ -457,7 +457,7 @@ def test_arrival_limit_is_compared_across_midnight():
             at("23:30"))  # fmt: skip
     for delay, loud in ((4, False), (15, True)):  # 23:54 is in time, 00:05 the next day is not
         leg = make_leg("AAA", "RTD", "23:20", "23:50", number="9", delay_arr=delay)
-        e = _delayed(c, progress_of(leg), classify_leg(leg, "RTD"), last=True)
+        e = delayed_event(c, progress_of(leg), classify_leg(leg, "RTD"), last=True)
         assert (e.severity is Severity.LOUD) is loud, (delay, e.text)
 
 
@@ -557,9 +557,9 @@ def test_reserved_characters_in_a_train_number_stay_out_of_the_event_key():
     (e,) = unclear(t)
     assert "~" not in e.key and "|" not in e.key and e.train == odd.train
     assert f"unclear#{train_key(odd.train)}" in t.state.alert_keys
-    # on-time following writes its own delay slots too, so check `_stated` on this event alone
+    # on-time following writes its own delay slots too, so check `keep_stated` on this event alone
     assert (
-        _stated(replace(t.state, alert_keys={}), (e,)).state.alert_keys == {}
+        keep_stated(replace(t.state, alert_keys={}), (e,)).state.alert_keys == {}
     )  # no synthetic slot
 
 

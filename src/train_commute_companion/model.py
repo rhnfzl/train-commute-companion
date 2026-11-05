@@ -228,7 +228,7 @@ class Signature:
 
 @dataclass(frozen=True, slots=True)
 class LiveDelay:
-    """A delay an alert would state, before `lifecycle._stated` judges it as news (7.5)."""
+    """A delay an alert would state, before `lifecycle.keep_stated` judges it as news (7.5)."""
 
     tag: str  # the delay's own memory slot: "d" departure, "a" arrival, "" the only one
     minutes: int | None  # None: NS reported none, which keeps the last stated one

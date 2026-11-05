@@ -22,7 +22,7 @@ from train_commute_companion.store import JsonFileStore, read_state
 from train_commute_companion.view import moved
 
 
-def _moved(path: Path, profiles: Sequence[Profile]) -> list[str]:
+def moved_lines(path: Path, profiles: Sequence[Profile]) -> list[str]:
     """Read-only: check-profile never moves a damaged store aside the way a running app does."""
     try:
         env = json.loads(path.read_text(encoding="utf-8"))
@@ -54,7 +54,7 @@ def check_profile(args: argparse.Namespace) -> int:
         print(line)
     profiles = cfg.profiles if cfg else ()
     if args.store:
-        for line in _moved(Path(args.store), profiles):
+        for line in moved_lines(Path(args.store), profiles):
             print(line)
     if known is None:  # 5.3: a file whose codes were not checked is never reported valid
         print(f"station codes not checked: {got}")
@@ -75,7 +75,7 @@ async def _ns_stations() -> frozenset[str] | str:
             return f"the NS station list is unavailable ({e}); pass --stations-file"
 
 
-def _station_list(cache: Path, fresh: frozenset[str] | None) -> frozenset[str] | None:
+def station_list(cache: Path, fresh: frozenset[str] | None) -> frozenset[str] | None:
     """The fresh NS list, saved as the validated copy; else the last saved copy (5.3)."""
     if fresh is not None:
         try:
@@ -121,10 +121,10 @@ async def _run(args: argparse.Namespace, key: str) -> int:
             notifier=_StdoutNotifier(),
             clock=SystemClock(),
             require_stations=True,  # never accept codes unchecked (5.3)
-            on_stations=lambda codes: _station_list(cache, codes),  # saves the fresh list
+            on_stations=lambda codes: station_list(cache, codes),  # saves the fresh list
         )
         # through the runtime's request budget (rule 14), so only once the runtime exists
-        known = _station_list(cache, await rt.stations())
+        known = station_list(cache, await rt.stations())
         if known is None:  # 5.2: the saved configuration still runs; edits wait for the list
             print(
                 f"warning: the NS station list is unavailable and {cache} holds no saved copy; "

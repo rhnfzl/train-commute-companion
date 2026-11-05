@@ -337,7 +337,7 @@ def _recovery(
 DELAY_NEWS = frozenset({EventKind.DELAYED, EventKind.NEARLY_ON_TIME, EventKind.BACK_TO_NORMAL})
 
 
-def _stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
+def keep_stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
     """A stated replacement time or delay in a key moves only by news (7.5): the delay last
     stated per fact is kept in `alert_keys`, so 09:05 to 09:08 is news again while 09:05 to
     09:06 is not. A delay brought back to on time becomes its recovery message."""
@@ -398,7 +398,7 @@ def make_event(
     """The key carries the facts the message states (7.5): `facts` when given, else the text,
     so a changed endpoint, replacement or revised arrival is news while a repeat is not.
     Pass `facts` when the text holds a live time that drifts without being news. `stated` holds
-    what later steps read of this alert; its live delays join the key in `_stated`."""
+    what later steps read of this alert; its live delays join the key in `keep_stated`."""
     name = display_name(ctx.profile.name)
     return AlertEvent(
         profile_id=ctx.profile.id,
@@ -516,7 +516,7 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
         locked, left = _advance_all(locked, ctx, pool, live=True)
         events += [e for e in left if e.train != first.train]
         t = _follow(locked, ctx, pool, (answer.query,))
-        return _stated(t.state, (*events, *t.events))
+        return keep_stated(t.state, (*events, *t.events))
     if not s.missing_sent:
         events.append(
             make_event(
@@ -996,7 +996,7 @@ def _relock(
         return Transition(_progress(s, legs), tuple(events))
     via = ", ".join(c.transfer_stations) or "a direct train"
     # the replacement by identity, not by its live time: a drifting estimate is not news (7.5)
-    # and its stated time by its delay, which `_stated` turns into 3-min news steps
+    # and its stated time by its delay, which `keep_stated` turns into 3-min news steps
     late = (_departure(c) - to_utc(c.legs[0].train.planned_departure)) // timedelta(minutes=1)
     named = tuple(train_ident(x.train) for x in c.legs)
     facts = f"{text}|" + ",".join(named)
@@ -1042,10 +1042,10 @@ def _limit_at(limit: time, planned: datetime) -> datetime:
     return min(options, key=lambda t: abs(to_utc(t) - to_utc(planned)))
 
 
-def _delayed(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg, *, last: bool) -> AlertEvent:
+def delayed_event(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg, *, last: bool) -> AlertEvent:
     """7.9 `delayed`: silent, loud when the last leg of the outbound journey arrives after
     `latest_acceptable_arrival` (compared as instants, 7.13). A broken change is its own loud
-    event. Departure and arrival delays are each stepped by `_stated`, so only a 3-min move of
+    event. Departure and arrival delays are each stepped by `keep_stated`, so only a 3-min move of
     either is news, and a fall back to on time becomes its recovery message (7.5)."""
     dep, arr_late = cl.dep_delay_min, cl.arr_delay_min
     stop = next((st for st in cl.leg.stops[1:] if st.code == x.alight_stop), None)
@@ -1085,7 +1085,7 @@ def _platform(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
     soon = _departs(x, cl) - to_utc(ctx.now) <= _PLATFORM_LOUD
     sev = Severity.LOUD if soon else Severity.SILENT
     planned = track == b.planned_track
-    if planned:  # `_stated` keeps it only after an announced change
+    if planned:  # `keep_stated` keeps it only after an announced change
         text = f"your {_name(x)} train leaves from platform {b.planned_track} again, as planned."
     else:
         text = f"your {_name(x)} train now leaves from platform {track} (was {b.planned_track})."
@@ -1230,14 +1230,14 @@ def _check_transfer(
     cl: ClassifiedLeg,
     ncl: ClassifiedLeg | None,
 ) -> tuple[list[AlertEvent], _Proposal | None]:
-    """The leg's delay and its change into the next leg. Every running leg reports: `_stated`
+    """The leg's delay and its change into the next leg. Every running leg reports: `keep_stated`
     keeps only news, including the fall back to on time."""
     x, ctx = legs[i], w.ctx
     nxt = legs[i + 1] if i + 1 < len(legs) else None
     late = cl.kind in _RUNNING_LEG_KINDS and x.state is not LegState.DONE
     if nxt is None or ncl is None or ncl.kind is LegKind.CANCELLED:
         # a cancelled next leg is the news, not this delay, and has its own turn as a cancellation
-        return ([_delayed(ctx, x, cl, last=nxt is None)] if late and ncl is None else []), None
+        return ([delayed_event(ctx, x, cl, last=nxt is None)] if late and ncl is None else []), None
     tc = check_transfer(cl, ncl, x.alight_stop, ctx.profile.transfer_min)
     if tc.state is TransferState.BROKEN:
         text = f"your change at {x.alight_stop} is broken: {tc.reason}"
@@ -1258,7 +1258,7 @@ def _check_transfer(
         )
         return [], _Proposal(t, ridden=nxt.state in _DEPARTED)
     # after the break check: a broken change is its own loud event
-    found = [_delayed(ctx, x, cl, last=False)] if late else []
+    found = [delayed_event(ctx, x, cl, last=False)] if late else []
     # at risk warns before a change; once the onward train left, only broken is news
     if tc.state is TransferState.AT_RISK and nxt.state not in _DEPARTED:
         found.append(_at_risk(ctx, x, nxt, tc.reason))
@@ -1499,7 +1499,7 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
             events.append(replace(e, text=text, key=key, facts=facts))
     s = replace(s, retained=tuple(retained))
     t = (_restore(s, ctx, pool) or _follow(s, ctx, pool, asked)) if live else Transition(s, ())
-    return _stated(_bumped(start, t.state), (*events, *t.events))
+    return keep_stated(_bumped(start, t.state), (*events, *t.events))
 
 
 # --- arrival acceptance, location, missed legs, termination (7.2, 7.7, 7.12 rules 6, 7) ---
@@ -1630,7 +1630,7 @@ def on_location(
     t = _locate(s, ctx, event, answer, watched)
     # rule 21: a lock, catchability or missed-leg change raises the generation; a repeat
     # report that changes none of them keeps polls in flight
-    return _stated(_bumped(start, t.state), t.events)
+    return keep_stated(_bumped(start, t.state), t.events)
 
 
 def _locate(

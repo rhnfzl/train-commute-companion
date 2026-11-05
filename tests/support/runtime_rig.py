@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
+import runtime_seam as seam
 from builders import AMS, make_connection, make_leg, planned_at_alight
 from lifecycle_fixtures import L1, L2
 
@@ -200,8 +201,8 @@ class Rig:
         return self.rt.state.occurrences.get(key)
 
     def occ_set(self, s, key: str = "p1|outbound|2026-10-27") -> None:
-        st = self.rt._writer.st
-        self.rt._writer.st = replace(st, occurrences={**st.occurrences, key: s})
+        st = self.rt.state
+        seam.seed_state(self.rt, occurrences={**st.occurrences, key: s})
 
     async def run_until(self, hhmm: str, poll: bool = True) -> None:
         """Polls every 2 min and runs the watchdog every 30 s up to `hhmm`."""
@@ -273,7 +274,7 @@ def cancelled_usual_world() -> list:
     ]  # fmt: skip
 
 
-def _world_with(day: date, l2: object) -> list:
+def world_with(day: date, l2: object) -> list:
     """Every usual journey, the outbound on `day` with `l2` as its second leg."""
     l1 = make_leg("AAA", "UT", "08:12", "08:40", number="1234", day=day)
     return [
@@ -285,7 +286,7 @@ def _world_with(day: date, l2: object) -> list:
 
 def cancelled_l2(day: date) -> list:
     l2x = make_leg("UT", "RTD", "08:50", "09:24", number="5678", day=day, cancelled=True)
-    return _world_with(day, l2x)
+    return world_with(day, l2x)
 
 
 def clean_world() -> list:

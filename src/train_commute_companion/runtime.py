@@ -145,7 +145,7 @@ def _reasons(errors: Sequence[ProfileProblem]) -> str:
     return "; ".join(f"{e.path}: {e.message}" for e in errors)
 
 
-def _fresh_state(key: OccurrenceKey, revision: int, baseline: int | None) -> OccurrenceState:
+def fresh_state(key: OccurrenceKey, revision: int, baseline: int | None) -> OccurrenceState:
     return OccurrenceState(
         key, 0, revision, revision, baseline, DirectionState.IDLE, None, (), False, None,
         False, None, False, (), False, False,
@@ -687,7 +687,7 @@ class Runtime:
                     direction_key(sch.key.profile_id, sch.key.direction)
                 )
                 v = hist.in_force(sch.key.service_date) if hist else None
-                fresh = _fresh_state(sch.key, cfg.revision, v.version if v else None)
+                fresh = fresh_state(sch.key, cfg.revision, v.version if v else None)
                 own = v.signature if v else None
                 occs[k] = replace(
                     fresh,
@@ -964,7 +964,7 @@ class Runtime:
         for key in keys:
             k = okey(key)
             s = self._writer.st.occurrences.get(k) or frozen(
-                self._writer.st, _fresh_state(key, revision, None)
+                self._writer.st, fresh_state(key, revision, None)
             )
             ctx = self._ctx(s, now)
             if ctx is not None:

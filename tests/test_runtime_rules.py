@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
+import runtime_seam as seam
 from builders import make_connection, make_leg, on_track, planned_at_alight
 from lifecycle_fixtures import FROM_UT, L1, L1X, L2, L2X, LATER, R2, RIDE, T_FULL, journey
 from runtime_rig import (
@@ -16,7 +17,6 @@ from runtime_rig import (
     USUAL,
     FakeClock,
     Rig,
-    _world_with,
     at,
     cancelled_l2,
     cancelled_usual_world,
@@ -30,6 +30,7 @@ from runtime_rig import (
     split_world,
     started,
     tracked,
+    world_with,
 )
 
 from train_commute_companion.lifecycle import origin_answer
@@ -57,6 +58,7 @@ from train_commute_companion.providers.base import (
     RateLimited,
     ServerError,
 )
+from train_commute_companion.revisions import occurrence_ctx
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.serde import dumps, loads
 from train_commute_companion.store import PersistedState
@@ -173,7 +175,7 @@ async def test_each_message_is_judged_on_the_clock_at_its_own_send(tmp_path):
 
     slow = app(EventKind.STORAGE_FAILED, "slow")
     advice = app(EventKind.LEAVE_NOW, "advice", now + timedelta(minutes=10))
-    rig.rt._writer.st = replace(rig.rt._writer.st, obligations=(slow, advice))
+    seam.seed_state(rig.rt, obligations=(slow, advice))
     plain = rig.notifier.send
 
     async def send(e: AlertEvent) -> bool:
@@ -384,11 +386,11 @@ async def test_older_success_keeps_a_newer_cooldown(tmp_path):
     rig.provider.error = error
     now = rig.clock.now()
     a, b = await asyncio.gather(
-        rig.rt._fetch(Query("AAA", "RTD", now), False, None),
-        rig.rt._fetch(Query("UT", "RTD", now), True, None),
+        seam.fetch(rig.rt, Query("AAA", "RTD", now), False, None),
+        seam.fetch(rig.rt, Query("UT", "RTD", now), True, None),
     )
     assert not isinstance(a, str) and b == "rate"
-    assert rig.rt._budget.cooldown_until is not None
+    assert seam.budget(rig.rt).cooldown_until is not None
 
 
 async def test_station_lookup_waits_on_the_shared_cooldown(tmp_path):
@@ -416,7 +418,7 @@ async def test_route_reseed_keeps_a_locked_occurrences_adopted_schedule(tmp_path
     await rig.rt.reload()  # a route edit that re-seeds the outbound baseline
     assert rig.rt.state.baselines["p1|outbound"].versions == ()
     s = rig.occ()
-    ctx = rig.rt._ctx(s, rig.clock.now())
+    ctx = occurrence_ctx(rig.rt.state, s, rig.clock.now())
     assert ctx is not None and ctx.schedule.first_departure == at("08:20")
 
 
@@ -491,15 +493,15 @@ async def test_data_unclear_through_the_runtime_survives_a_restart(tmp_path):
 
 
 def test_station_list_saved_and_reused(tmp_path):
-    from train_commute_companion.cli import _station_list
+    from train_commute_companion.cli import station_list
 
     cache = tmp_path / "s.stations.json"
-    assert _station_list(cache, None) is None  # nothing fetched, nothing saved: refuse
-    assert _station_list(cache, frozenset({"AAA", "UT"})) == {"AAA", "UT"}
+    assert station_list(cache, None) is None  # nothing fetched, nothing saved: refuse
+    assert station_list(cache, frozenset({"AAA", "UT"})) == {"AAA", "UT"}
     assert json.loads(cache.read_text()) == ["AAA", "UT"]
-    assert _station_list(cache, None) == {"AAA", "UT"}
+    assert station_list(cache, None) == {"AAA", "UT"}
     cache.write_text("[]")
-    assert _station_list(cache, None) is None
+    assert station_list(cache, None) is None
 
 
 # --- finding 15: replay times use the runtime's DST resolver ---
@@ -581,7 +583,7 @@ async def test_older_store_cancel_restore_restart_cancel_alerts_twice(tmp_path):
         s = rig.occ()
         keys = {k: v for k, v in s.alert_keys.items() if not k.startswith("live:")}
         rig.occ_set(replace(s, alert_keys=keys))
-        rig.rt._writer.save()
+        seam.save_state(rig.rt)
 
     for hhmm, world in (("07:52", [make_connection([L1X, L2]), LATER]), ("07:54", [USUAL, LATER])):
         rig.clock.set(hhmm)
@@ -974,9 +976,9 @@ async def test_skip_written_during_a_send_drops_the_next_message(tmp_path):
     rig.provider.world = escape_world()
     await rig.rt.start()
     rt = rig.rt
-    rt._app_warning(EventKind.KEY_REJECTED, "your NS key was rejected.", rig.clock.now())
-    st = rt._writer.st
-    rt._writer.st = replace(st, obligations=(st.obligations[-1], *st.obligations[:-1]))
+    seam.app_warning(rt, EventKind.KEY_REJECTED, "your NS key was rejected.", rig.clock.now())
+    st = rt.state
+    seam.seed_state(rt, obligations=(st.obligations[-1], *st.obligations[:-1]))
     inner = rig.notifier.send
     skip: list[asyncio.Future[bool]] = []
 
@@ -1100,7 +1102,7 @@ async def test_a_warning_stored_before_facts_were_kept_still_names_the_current_l
     await rig.rt.poll_once()
     st = rig.rt.state
     stored = tuple(replace(o, event=replace(o.event, facts=None)) for o in st.obligations)
-    rig.rt._writer.st = replace(st, obligations=stored)
+    seam.seed_state(rig.rt, obligations=stored)
     rig.notifier.fails = lambda e: False
     await rig.rt.watchdog_once()
     told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
@@ -1118,12 +1120,12 @@ async def test_older_store_occurrence_keeps_its_schedule_through_a_reseed(tmp_pa
     await rig.rt.start()
     s = rig.occ()
     rig.occ_set(replace(s, baseline_signature=None, baseline_frozen=False))  # an older store
-    rig.rt._writer.save()
+    seam.save_state(rig.rt)
     rt = await rig.restart()
     rig.write(text=PROFILE.replace("NAME", "office_a").replace('"08:12"', '"08:05"'))
     await rt.reload()  # a route edit that re-seeds the outbound baseline
     assert rt.state.baselines["p1|outbound"].versions == ()
-    ctx = rt._ctx(rig.occ(), rig.clock.now())
+    ctx = occurrence_ctx(rt.state, rig.occ(), rig.clock.now())
     assert ctx is not None and ctx.schedule.first_departure == at("08:20")
 
 
@@ -1133,8 +1135,8 @@ async def test_occurrence_started_without_a_baseline_never_takes_a_later_one(tmp
     assert s.baseline_frozen and s.baseline_signature is None
     hist = BaselineHistory((BaselineVersion(1, sig(time(8, 20), time(8, 50)), date(2026, 10, 1),
                             True),))  # fmt: skip
-    rig.rt._writer.st = replace(rig.rt._writer.st, baselines={"p1|outbound": hist})
-    ctx = rig.rt._ctx(rig.occ(), rig.clock.now())
+    seam.seed_state(rig.rt, baselines={"p1|outbound": hist})
+    ctx = occurrence_ctx(rig.rt.state, rig.occ(), rig.clock.now())
     assert ctx is not None and ctx.schedule.first_departure == at("08:12")
 
 
@@ -1243,7 +1245,7 @@ def test_run_starts_without_a_station_list(tmp_path, monkeypatch):
     monkeypatch.setenv("NS_API_KEY", "k")
     store = tmp_path / "state.json"
     assert cli.main(["run", str(tmp_path / "profiles.yaml"), "--store", str(store)]) == 0
-    assert len(ran) == 1 and ran[0]._require_stations and ran[0].known_stations is None
+    assert len(ran) == 1 and seam.requires_stations(ran[0]) and ran[0].known_stations is None
 
 
 async def test_held_back_to_normal_dropped_once_the_delay_returns(tmp_path):
@@ -1565,13 +1567,13 @@ async def test_lookahead_and_live_data_unclear_are_separate(tmp_path):
 def _set_facts(rig: Rig, kind: EventKind, facts: tuple) -> None:
     """Rewrites the held look-ahead message's stored facts (and its kind). A message with an
     adoption or its withdrawal is written without an expiry, as run_lookahead writes it."""
-    st = rig.rt._writer.st
+    st = rig.rt.state
     o = next(o for o in st.obligations if o.look_ahead is not None)
     led = st.lookahead["p1|outbound"]
     keeps = any(k.startswith(("adopt:", "cancel:")) for k, *_ in facts)
     ob = replace(o, event=replace(o.event, kind=kind), expires_at=None if keeps else o.expires_at)
-    rig.rt._writer.st = replace(
-        st,
+    seam.seed_state(
+        rig.rt,
         obligations=tuple(ob if x.id == o.id else x for x in st.obligations),
         lookahead={
             **st.lookahead,
@@ -1592,17 +1594,17 @@ async def test_undelivered_works_warning_is_dropped_after_its_date(tmp_path):
     assert _ahead(rig, EventKind.WORKS_AHEAD) == []
     assert not any(o.event.kind is EventKind.WORKS_AHEAD for o in rig.rt.state.obligations)
     # the drop leaves the ledger too, as any finished look-ahead message does
-    assert rig.rt._writer.st.lookahead["p1|outbound"].pending == ()
+    assert rig.rt.state.lookahead["p1|outbound"].pending == ()
 
 
 def _set_expiry(rig: Rig, expires: object) -> None:
     """Stamps the held look-ahead message with another dated journey end."""
-    st = rig.rt._writer.st
+    st = rig.rt.state
     o = next(o for o in st.obligations if o.look_ahead is not None)
     ob = replace(o, expires_at=expires)
     led = st.lookahead["p1|outbound"]
-    rig.rt._writer.st = replace(
-        st,
+    seam.seed_state(
+        rig.rt,
         obligations=tuple(ob if x.id == o.id else x for x in st.obligations),
         lookahead={
             **st.lookahead,
@@ -1611,7 +1613,7 @@ def _set_expiry(rig: Rig, expires: object) -> None:
             ),
         },
     )
-    rig.rt._writer.save()
+    seam.save_state(rig.rt)
 
 
 @pytest.mark.parametrize("restart", [False, True])
@@ -1656,7 +1658,7 @@ async def test_held_works_warning_dropped_once_its_dated_journey_ended(tmp_path)
     await rig.restart()
     await _back(rig)
     assert _ahead(rig, EventKind.WORKS_AHEAD) == []
-    assert rig.rt._writer.st.lookahead["p1|outbound"].pending == ()
+    assert rig.rt.state.lookahead["p1|outbound"].pending == ()
 
 
 async def _held_changed_journey(tmp_path, day: date, l1: object, l2: object) -> Rig:
@@ -1715,7 +1717,7 @@ async def test_held_works_warning_without_a_known_end_is_kept_the_next_day(tmp_p
 async def test_held_lookahead_profile_refused_after_its_date_is_still_sent(tmp_path):
     # an app warning is sent before fact_holds runs (rule 5a beats 5c)
     rig = await _held_warning(tmp_path, DAY + timedelta(days=1))
-    ((_, fs),) = rig.rt._writer.st.lookahead["p1|outbound"].facts.items()
+    ((_, fs),) = rig.rt.state.lookahead["p1|outbound"].facts.items()
     _set_facts(rig, EventKind.PROFILE_REFUSED, fs)  # a stale per-date fact: 5(b) would drop it
     rig.clock.t += timedelta(days=2)
     await _back(rig)
@@ -1733,13 +1735,11 @@ async def test_undelivered_works_warning_still_goes_out_on_its_own_date(tmp_path
 
 async def test_bundled_adoption_and_warning_after_its_date_is_still_sent(tmp_path):
     rig = await _held_warning(tmp_path, DAY + timedelta(days=1))
-    led = rig.rt._writer.st.lookahead["p1|outbound"]
+    led = rig.rt.state.lookahead["p1|outbound"]
     ((oid, fs),) = led.facts.items()
     adopt = LookAheadFact("adopt:2", "your usual train is now 08:22", False, False)
     _set_facts(rig, EventKind.WORKS_AHEAD, (adopt, *fs))
-    assert any(
-        k.startswith("adopt:") for k, *_ in rig.rt._writer.st.lookahead["p1|outbound"].facts[oid]
-    )
+    assert any(k.startswith("adopt:") for k, *_ in rig.rt.state.lookahead["p1|outbound"].facts[oid])
     assert any("|warn:" in k for k, *_ in fs)
     rig.clock.t += timedelta(days=2)
     await _back(rig)
@@ -1791,13 +1791,13 @@ async def test_held_whole_journey_warning_still_goes_out(tmp_path):
     tomorrow = DAY + timedelta(days=1)
     rig = Rig(tmp_path, "05:40")
     # leg 2: +4 min departure, +9 min duration: a whole-journey change, no leg broken
-    rig.provider.world = _world_with(
+    rig.provider.world = world_with(
         tomorrow, make_leg("UT", "RTD", "08:54", "09:37", number="5678", day=tomorrow)
     )
     rig.notifier.fails = lambda e: True
     await rig.rt.start()
     await rig.rt.lookahead_once()
-    fs = [k for v in rig.rt._writer.st.lookahead["p1|outbound"].facts.values() for k, *_ in v]
+    fs = [k for v in rig.rt.state.lookahead["p1|outbound"].facts.values() for k, *_ in v]
     assert fs and all("|j|warn:" in k and ";" in k for k in fs)
     rig.clock.t = at("06:30", tomorrow)
     await _back(rig)
@@ -1818,7 +1818,7 @@ async def _cancel_mid_pass(rig: Rig) -> None:
     """A delivery pass whose `key_rejected` send hangs, cancelled there as `docker stop` does;
     every other pending message is sent before it."""
     rt = rig.rt
-    rt._app_warning(EventKind.KEY_REJECTED, "your NS key was rejected.", rig.clock.now())
+    seam.app_warning(rt, EventKind.KEY_REJECTED, "your NS key was rejected.", rig.clock.now())
     inner, entered = rig.notifier.send, asyncio.Event()
 
     async def send(e: AlertEvent) -> bool:
@@ -1829,7 +1829,7 @@ async def _cancel_mid_pass(rig: Rig) -> None:
 
     rig.notifier.send = send  # type: ignore[method-assign]
     rig.notifier.fails = lambda e: False
-    task = asyncio.create_task(rt._deliver())
+    task = asyncio.create_task(seam.deliver(rt))
     await asyncio.wait_for(entered.wait(), 2)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -2072,11 +2072,11 @@ async def test_occurrence_data_unclear_holds_only_while_its_values_are_the_lates
         rig.clock.set(hhmm)
         rig.provider.world = world
         await rig.rt.poll_once()
-        return [o for o in rig.rt._writer.st.obligations if o.event.kind is EventKind.DATA_UNCLEAR]
+        return [o for o in rig.rt.state.obligations if o.event.kind is EventKind.DATA_UNCLEAR]
 
     await poll("07:52", [USUAL])
     (first,) = await poll("07:54", split)
-    view = rig.rt._ledger
+    view = seam.ledger(rig.rt)
     assert view.fact_holds(first)
     (second,) = await poll("07:56", moved)
     assert second.id != first.id and view.fact_holds(second)

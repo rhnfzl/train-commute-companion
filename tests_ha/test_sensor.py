@@ -3,6 +3,7 @@ from dataclasses import replace
 from datetime import date, datetime
 
 import pytest
+import runtime_seam as seam
 from builders import AMS, make_leg, only_occurrence
 from harness import PROFILE, PROFILES, drive, jump, rebound, setup_tcc, write_profiles
 from homeassistant.helpers import device_registry as dr
@@ -221,9 +222,7 @@ async def test_two_occurrences_of_one_direction_show_oldest_and_list_others(hass
             route_revision=rt.config.revision,
             settings_revision=rt.config.revision,
         )
-        rt._writer.st = replace(
-            rt.state, occurrences={**rt.state.occurrences, "p1|outbound|2026-10-26": old}
-        )
+        seam.seed_state(rt, occurrences={**rt.state.occurrences, "p1|outbound|2026-10-26": old})
 
     await h.host.run(seed)
     await h.entry.runtime_data.coordinator.async_refresh()
@@ -242,8 +241,8 @@ async def test_attributes_are_json_primitives(hass):
     def retain(rt):
         s = only_occurrence(rt)
         kept = journey([make_leg("AAA", "UT", "08:12", "08:40", number="1234")], (LegState.DONE,))
-        rt._writer.st = replace(
-            rt.state,
+        seam.seed_state(
+            rt,
             occurrences={
                 **rt.state.occurrences,
                 s.key.profile_id + "|outbound|2026-10-27": replace(s, retained=(kept,)),

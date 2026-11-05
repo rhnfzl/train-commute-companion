@@ -3,12 +3,12 @@ replays, reload, restart, adoption, every action and both location sources run t
 runtime, the Bot, the Follower and the TelegramNotifier against a fake Bot API."""
 
 import json
-from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+import runtime_seam as seam
 from app_rig import (
     CHAT,
     CODES,
@@ -58,7 +58,7 @@ def tap(data: str, uid: int = 1) -> dict[str, Any]:
 
 async def run_until(app: App, hhmm: str, step: int = 30) -> None:
     """The replay loop on the app's own clock: a poll on even minutes, the watchdog."""
-    clock = app.rt._clock  # type: ignore[attr-defined]
+    clock = seam.clock(app.rt)
     end = at(hhmm) if len(hhmm) == 5 else datetime.fromisoformat(hhmm).replace(tzinfo=AMS)
     while clock.now() < end:
         now = clock.now()
@@ -201,9 +201,7 @@ async def test_adoption_carried_into_the_next_day_through_telegram(tmp_path, tg)
     provider = Provider(clock, [usual_on(d, "08:15") for d in days])
     app = build_at(tmp_path, tg, clock, provider)
     await app.rt.start()
-    app.rt._writer.st = replace(
-        app.rt.state, baselines={"p1|outbound": baseline(time(8, 12), date(2026, 10, 1))}
-    )
+    seam.seed_state(app.rt, baselines={"p1|outbound": baseline(time(8, 12), date(2026, 10, 1))})
     clock.t = datetime(2026, 10, 26, 5, 55, tzinfo=AMS)
     await app.rt.lookahead_once()
     told = [m for m in tg.sent if "NS moved your 08:12 to 08:15" in m["text"]]

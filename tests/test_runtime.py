@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+import runtime_seam as seam
 from builders import ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from lifecycle_fixtures import L1, L1X, L2, L2X, LATER, conn, journey, occ
 from runtime_rig import (
@@ -47,7 +48,8 @@ from train_commute_companion.providers.base import (
     ServerError,
 )
 from train_commute_companion.revalidation import leg_now
-from train_commute_companion.runtime import Runtime, _fresh_state
+from train_commute_companion.revisions import occurrence_ctx
+from train_commute_companion.runtime import Runtime, fresh_state
 from train_commute_companion.store import PersistedState, StorageError
 
 # --- request budget ---
@@ -289,7 +291,7 @@ async def test_watchdog_uncertain_identity_still_fires(tmp_path):
     )
     got = blind(rig)
     assert len(got) == 1 and "uncertain" in got[0].text
-    last = rig.rt._seen["p1|outbound|2026-10-27"][L2.train].last_seen_at
+    last = seam.seen(rig.rt)["p1|outbound|2026-10-27"][L2.train].last_seen_at
     assert last is not None and last < at("08:30")  # not refreshed by the uncertain answer
 
 
@@ -304,8 +306,11 @@ async def test_leg_now_names_the_newest_platform(tmp_path):
     newer = ProviderAnswer(
         Query("UT", "RTD", at("08:50")), (make_connection([on_track(L2, "7")]),), at("07:59")
     )
-    rig.rt._memory.boards["p1|outbound|2026-10-27"] = (older, newer)
-    assert leg_now(rig.rt._memory.boards["p1|outbound|2026-10-27"], x) == ("08:50", " (platform 7)")
+    seam.memory(rig.rt).boards["p1|outbound|2026-10-27"] = (older, newer)
+    assert leg_now(seam.memory(rig.rt).boards["p1|outbound|2026-10-27"], x) == (
+        "08:50",
+        " (platform 7)",
+    )
 
 
 async def test_cut_short_leg_at_its_last_served_stop_is_seen(tmp_path):
@@ -385,8 +390,8 @@ async def test_watchdog_before_a_lock_reads_the_newest_usual_copy(tmp_path):
     older = ProviderAnswer(q, (make_connection([EARLY_L1, ONWARD]),), at("07:54"))
     newer = ProviderAnswer(q, (make_connection([planned, ONWARD]),), rig.clock.now())
     k = "p1|outbound|2026-10-27"
-    ctx = rig.rt._ctx(rig.occ(), rig.clock.now())
-    rig.rt._remember_usual(k, ctx, origin_answer((older, newer), ctx))
+    ctx = occurrence_ctx(rig.rt.state, rig.occ(), rig.clock.now())
+    seam.remember_usual(rig.rt, k, ctx, origin_answer((older, newer), ctx))
     await rig.rt.watchdog_once()
     got = blind(rig)
     assert len(got) == 1 and "no reported departure time" in got[0].text
@@ -1444,7 +1449,9 @@ async def test_choose_at_onward_train_after_done_first_leg_keeps_prefix(tmp_path
 async def test_choose_at_onward_train_fetches_board_when_none_yet(tmp_path):
     rig = await one_transfer(tmp_path)
     await rig.run_until("08:56")
-    rig.rt._memory.boards.clear()  # as after a restart: no poll answer holds the incoming leg yet
+    seam.memory(
+        rig.rt
+    ).boards.clear()  # as after a restart: no poll answer holds the incoming leg yet
     n = len(rig.provider.calls)
     assert await rig.rt.choose_at("p1", time(9, 16)) is None
     assert len(rig.provider.calls) > n + 1 and rig.provider.calls[-1].origin == "UT"
@@ -1599,7 +1606,7 @@ async def test_act_direction_picks_that_direction_on_a_shared_date(tmp_path):
     rig = await one_transfer(tmp_path)
     key = OccurrenceKey("p1", Direction.RETURN, DAY)
     rev = rig.rt.config.revision
-    rig.occ_set(_fresh_state(key, rev, None), "p1|return|2026-10-27")
+    rig.occ_set(fresh_state(key, rev, None), "p1|return|2026-10-27")
     assert await rig.rt.act("p1", NotTravelling(DAY, False), Direction.RETURN) is None
     assert rig.occ("p1|return|2026-10-27").not_travelling
     assert not rig.occ().not_travelling and rig.occ().lock is not None  # outbound keeps alerting

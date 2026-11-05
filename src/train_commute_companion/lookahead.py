@@ -285,7 +285,7 @@ def dated_end(p: Profile, d: Direction, sd: date, base: BaselineVersion | None) 
     return dep.astimezone(UTC) + timedelta(minutes=x.duration_min) + FOLLOW_LIMIT
 
 
-def _probed_end(r: ProbeResult) -> datetime | None:
+def probed_end(r: ProbeResult) -> datetime | None:
     """The affected journey's own last planned arrival plus the 150-min limit (7.12 rule 6):
     works can move it past the baseline's. None when the probe shows no arrival: unknown."""
     arr = None if r.connection is None else r.connection.legs[-1].alight.planned_arrival
@@ -718,7 +718,7 @@ def _expected(base: BaselineVersion, li: int | None) -> Signature:
     return base.signature if li is None else Signature((base.signature.legs[li],))
 
 
-def _overlaps(
+def overlaps_next(
     p: Profile,
     d: Direction,
     agreed: Signature,
@@ -939,7 +939,7 @@ def _adopt(
             f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} on another day;"
             " update your profile"
         )
-    if _overlaps(p, d, agreed, expected[0], current, others, bases):
+    if overlaps_next(p, d, agreed, expected[0], current, others, bases):
         return None, (
             f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)}, which overlaps"
             " another window; update your profile"
@@ -1012,7 +1012,7 @@ def _probe_facts(
             if loud:
                 draft.own(sd, key, f"loud:{r.fingerprint}")
             draft.tell(sd, LookAheadFact(fact, _warn_text(r, p, exp), loud, r.works))
-            if _probed_end(r) is None:
+            if probed_end(r) is None:
                 unsure.add(sd)
         elif last is not None and last.startswith("warn:"):
             draft.own(sd, key, f"restored:{r.fingerprint}")
@@ -1025,7 +1025,7 @@ def _probe_facts(
                     f"{key}|restored", f"your {what} is back to normal", loud=False, warning=False
                 ),
             )
-            if _probed_end(r) is None:
+            if probed_end(r) is None:
                 unsure.add(sd)
     return unsure
 
@@ -1093,7 +1093,7 @@ class _Writer:
         base_end = dated_end(self.p, self.d, sd, self.final.in_force(sd))
         if base_end is None or sd in self.unsure:
             return None
-        ends = [_probed_end(r) for r in self.results if r.service_date == sd]
+        ends = [probed_end(r) for r in self.results if r.service_date == sd]
         return max([base_end, *(e for e in ends if e is not None)])
 
 
@@ -1148,7 +1148,7 @@ def _unclear_messages(draft: _Draft, w: _Writer) -> list[AlertEvent]:
                 u.label, u.station, u.copies
             )
             event = w.dated_event(sd, EventKind.DATA_UNCLEAR, Severity.LOUD, text, fact)
-            expires = w.journey_end(sd) if _probed_end(r) is not None else None
+            expires = w.journey_end(sd) if probed_end(r) is not None else None
             ob = w.obligation(event, sd, w.in_force_version(sd), fact, expires)
             draft.pending.append(ob)
             events.append(event)
