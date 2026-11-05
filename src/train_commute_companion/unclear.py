@@ -22,7 +22,10 @@ _WORD = {
 # compare keys in text order; "plat0" is the first stop's platform, compared apart from a middle
 # stop's (same role only) and rendered as "plat"
 _ORDER = ("pdep", "dep", "parr", "arr", "canc", "plat0", "plat", "aplat")
+_RENDERED_FIELD = {"plat0": "plat"}
 _LEG = "leg"
+_Stated = dict[tuple[str, str], dict[int, tuple[Value, str]]]
+_Names = dict[str, tuple[bool, str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,7 +198,7 @@ def _render(
     copies: Sequence[Leg],
     found: dict[tuple[Item, ...], str],
     kept: list[tuple[Item, ...]],
-    names: dict[str, tuple[bool, str]],
+    names: _Names,
     station: str,
 ) -> Unclear:
     cats = [g.category for g in copies if not g.alternative_transport] or [
@@ -213,20 +216,15 @@ def _render(
     )
 
 
-def disagreement(copies: Sequence[Leg], alight: str, *also: str) -> Unclear | None:
-    """Where copies of one train differ on the user's own trip, up to the furthest of
-    `alight` and `also` (where the user gets off); None when they agree."""
-    if len(copies) < 2:
-        return None
-    ids = _station_ids(copies)
-    keys = [[ids.get(s.code, s.code) for s in g.stops] for g in copies]
-    targets = list(dict.fromkeys(ids.get(a, a) for a in (alight, *also)))
-    scope = _scope(copies, keys, _bound(copies, keys, targets))
+def _stated_values(
+    copies: Sequence[Leg], keys: list[list[str]], scope: _Scope
+) -> tuple[_Names, dict[str, datetime], _Stated]:
+    """What each copy states on the trip: the station names, each station's earliest time, and per
+    (station, field) the value of each copy that states it."""
     boards = {k[0] for k in keys}
-
-    names: dict[str, tuple[bool, str]] = {}  # a code-named stop names the station first
+    names: _Names = {}  # a code-named stop names the station first
     route: dict[str, datetime] = {}
-    stated: dict[tuple[str, str], dict[int, tuple[Value, str]]] = {}
+    stated: _Stated = {}
     for i, g in enumerate(copies):
         day = g.train.operating_date
         stated.setdefault((_LEG, "bus"), {})[i] = _flag(
@@ -253,23 +251,31 @@ def disagreement(copies: Sequence[Leg], alight: str, *also: str) -> Unclear | No
             for f in fields:
                 if _platformed(f, s):
                     stated.setdefault((x, f), {})[i] = _state(f, s, day)
+    return names, route, stated
+
+
+def _differing(stated: _Stated, route: dict[str, datetime]) -> list[tuple[str, str]]:
+    """The (station, field) pairs that copies state differently, in text order."""
 
     def order(k: tuple[str, str]) -> tuple[bool, datetime, str, int]:
         at = route.get(k[0], datetime.max.replace(tzinfo=UTC))
         field = _ORDER.index(k[1]) if k[0] != _LEG else ("bus", "canc").index(k[1])
         return k[0] != _LEG, at, k[0], field
 
-    differ = sorted(
+    return sorted(
         (k for k, by in stated.items() if len(by) >= 2 and len({v for v, _ in by.values()}) > 1),
         key=order,
     )
-    if not differ:
-        return None
-    station = next((k[0] for k in differ if k[0] != _LEG), keys[0][0])
+
+
+def _distinct_views(
+    n_copies: int, stated: _Stated, differ: list[tuple[str, str]], names: _Names, station: str
+) -> tuple[dict[tuple[Item, ...], str], list[tuple[Item, ...]]]:
+    """Each copy's differing values with their text, and the ones that are worth showing."""
     found: dict[tuple[Item, ...], str] = {}
-    for i in range(len(copies)):
+    for i in range(n_copies):
         mine = [(k, stated[k][i]) for k in differ if i in stated[k]]
-        canon = tuple((x, f.rstrip("0"), v) for (x, f), (v, _) in mine)
+        canon = tuple((x, _RENDERED_FIELD.get(f, f), v) for (x, f), (v, _) in mine)
         texts = [t if x in (_LEG, station) else f"at {names[x][1]} {t}" for (x, _), (_, t) in mine]
         if canon:
             found.setdefault(canon, ", ".join(texts))
@@ -277,6 +283,24 @@ def disagreement(copies: Sequence[Leg], alight: str, *also: str) -> Unclear | No
     kept = sorted(
         (c for c in found if not any(set(c) < set(o) for o in found)), key=lambda c: json.dumps(c)
     )
+    return found, kept
+
+
+def disagreement(copies: Sequence[Leg], alight: str, *also: str) -> Unclear | None:
+    """Where copies of one train differ on the user's own trip, up to the furthest of
+    `alight` and `also` (where the user gets off); None when they agree."""
+    if len(copies) < 2:
+        return None
+    ids = _station_ids(copies)
+    keys = [[ids.get(s.code, s.code) for s in g.stops] for g in copies]
+    targets = list(dict.fromkeys(ids.get(a, a) for a in (alight, *also)))
+    scope = _scope(copies, keys, _bound(copies, keys, targets))
+    names, route, stated = _stated_values(copies, keys, scope)
+    differ = _differing(stated, route)
+    if not differ:
+        return None
+    station = next((k[0] for k in differ if k[0] != _LEG), keys[0][0])
+    found, kept = _distinct_views(len(copies), stated, differ, names, station)
     if len(kept) < 2:
         return None
     return _render(copies, found, kept, names, station)
