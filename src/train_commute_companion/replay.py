@@ -16,7 +16,7 @@ import yaml
 from train_commute_companion.calendar import TZ, hhmm, resolve_local
 from train_commute_companion.location import LOCATION_KINDS, LocationEvent
 from train_commute_companion.messages import ATTRIBUTION
-from train_commute_companion.model import Connection, NotTravelling
+from train_commute_companion.model import AlertEvent, Connection, NotTravelling
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
 from train_commute_companion.providers.ns import map_trips
 from train_commute_companion.runtime import Runtime
@@ -72,8 +72,8 @@ class MemoryStore:
         self._s = s
 
 
-class PrintNotifier:
-    async def send(self, event: Any) -> bool:
+class SilentNotifier:
+    async def send(self, event: AlertEvent) -> bool:
         return True
 
 
@@ -242,7 +242,7 @@ async def replay_lines(path: Path) -> list[str]:
         profile_path=r.profile_path,
         store=MemoryStore(),
         provider=r.provider,
-        notifier=PrintNotifier(),
+        notifier=SilentNotifier(),
         clock=clock,
         require_stations=False,
     )

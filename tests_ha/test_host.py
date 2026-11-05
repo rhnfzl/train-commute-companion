@@ -13,7 +13,7 @@ from harness import PROFILES
 from custom_components.train_commute_companion.host import Parts, RuntimeHost, RuntimeNotRunning
 from train_commute_companion.calendar import TZ
 from train_commute_companion.model import NotTravelling
-from train_commute_companion.replay import MemoryStore, PrintNotifier, ReplayProvider
+from train_commute_companion.replay import MemoryStore, ReplayProvider, SilentNotifier
 from train_commute_companion.runtime import Runtime
 
 
@@ -51,7 +51,7 @@ def builder(
             profile_path=path,
             store=MemoryStore(),
             provider=provider,
-            notifier=PrintNotifier(),
+            notifier=SilentNotifier(),
             clock=clock,
             require_stations=False,
         )
