@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import signal
 import threading
 from datetime import time
 from pathlib import Path
@@ -23,11 +25,13 @@ from app_rig import (
 from builders import ONE_TRANSFER
 from runtime_rig import Provider, StationsProvider, at
 from tcc_app.bot import load_state
-from tcc_app.main import App, Settings, main, serve, setup_logging
+from tcc_app.main import PORT, App, Settings, main, serve, setup_logging
 from tcc_app.web import ask_readout, health_report, mcp_socket_path, start_readout
 from webhook_receiver import Receiver
 
 from train_commute_companion.model import EventKind, Leaving, WebhookCopy
+from train_commute_companion.providers.ns import NsProvider
+from train_commute_companion.runtime import SystemClock
 from train_commute_companion.store import JsonFileStore
 from train_commute_companion.webhook_send import WebhookPoster
 
@@ -119,6 +123,23 @@ def test_main_refuses_without_key(monkeypatch, capsys):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TOKEN)
     assert main() == 1
     assert "NS_API_KEY is not set; refusing to start" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+def test_a_stop_signal_ends_main_with_0(tmp_path, monkeypatch, signum):  # what a docker stop sends
+    for k, v in {**ENV, "TCC_STATE_DIR": str(tmp_path), "TCC_PROFILES": "p.yaml"}.items():
+        monkeypatch.setenv(k, v)
+    served = []
+
+    async def hang(app: App, port: int) -> int:
+        served.append((type(seam.clock(app.rt)), type(seam.provider(app.rt)), port))
+        os.kill(os.getpid(), signum)
+        await asyncio.Event().wait()
+        return 1
+
+    monkeypatch.setattr("tcc_app.main.serve", hang)
+    assert main() == 0
+    assert served == [(SystemClock, NsProvider, PORT)]
 
 
 def test_setup_logging_keeps_httpx_quiet():

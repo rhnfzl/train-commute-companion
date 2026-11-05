@@ -66,6 +66,10 @@ def clock(rt):
     return rt._clock
 
 
+def provider(rt):
+    return rt._provider
+
+
 def obligation(rt, event, s, now):
     return rt._obligation(event, s, now)
 
