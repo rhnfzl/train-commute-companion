@@ -39,7 +39,7 @@ B_ONLY = (PROFILES / "office_b_only.yaml").read_text()
 STATIONS = frozenset({"AAA", "BBB", "UT", "RTD"})
 NOTIFY = "mobile_app_phone"
 
-# set by the tcc_freezer fixture (conftest.py) for the modules built on this harness
+# set by the tcc_freezer fixture (conftest.py) for the modules built on this rig
 FREEZER: FrozenDateTimeFactory | None = None
 PATCH: pytest.MonkeyPatch | None = None
 
@@ -227,7 +227,7 @@ async def jump(h: Harness, when: str) -> None:
 
 
 async def rebound(h: Harness) -> Harness:
-    """The same harness on the reloaded entry's runtime, started and refreshed."""
+    """The same rig on the reloaded entry's runtime, started and refreshed."""
     assert h.entry.state is ConfigEntryState.LOADED
     n = replace(h, host=h.entry.runtime_data.host)
     await _start(n)

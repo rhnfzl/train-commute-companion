@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 
 import freezegun
-import harness
+import ha_rig
 import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.config_entries import ConfigEntryState
@@ -24,17 +24,17 @@ async def tcc_freezer(hass: HomeAssistant) -> AsyncIterator[FrozenDateTimeFactor
     read, so the runtime loop's sleeps and timeouts never fire; real_asyncio keeps them real. The
     core is ignored: patched `date` names break its serde type checks, and it reads no wall clock.
     Unloads every entry of the test at the end, so no runtime thread lingers."""
-    harness.PATCH = pytest.MonkeyPatch()
+    ha_rig.PATCH = pytest.MonkeyPatch()
     try:
         with freezegun.freeze_time(
             real_asyncio=True, ignore=["train_commute_companion"]
         ) as freezer:
-            harness.FREEZER = freezer
+            ha_rig.FREEZER = freezer
             yield freezer
         for entry in hass.config_entries.async_entries(DOMAIN):
             if entry.state in (ConfigEntryState.LOADED, ConfigEntryState.SETUP_RETRY):
                 await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
     finally:
-        harness.PATCH.undo()
-        harness.FREEZER = harness.PATCH = None
+        ha_rig.PATCH.undo()
+        ha_rig.FREEZER = ha_rig.PATCH = None

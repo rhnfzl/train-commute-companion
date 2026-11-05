@@ -5,7 +5,7 @@ from datetime import date, datetime
 import pytest
 import runtime_seam as seam
 from builders import AMS, make_leg, only_occurrence
-from harness import B_ONLY, PROFILE, PROFILES, drive, jump, rebound, setup_tcc, write_profiles
+from ha_rig import B_ONLY, PROFILE, PROFILES, drive, jump, rebound, setup_tcc, write_profiles
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from lifecycle_fixtures import journey, occ

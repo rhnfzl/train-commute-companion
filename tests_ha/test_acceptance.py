@@ -8,11 +8,11 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
-import harness
+import ha_rig
 import pytest
 import runtime_seam as seam
 from builders import AMS
-from harness import (
+from ha_rig import (
     HOOKS,
     PROFILE,
     PROFILES,
@@ -88,7 +88,7 @@ async def setup_from_replay(
     if receiver is not None:
         # bound before setup: the client is made at host start, and the runtime's start below
         # already delivers each replay's first alert
-        clients = harness.use_receiver(receiver)
+        clients = ha_rig.use_receiver(receiver)
         receiver.now = lambda: rp.clock.now().timestamp()
     entry, clock, provider, pushes = prepare(
         hass,
@@ -121,7 +121,7 @@ async def drive_replay(h: Harness, rp: Replay) -> None:
         await h.host.run(lambda rt: rt.watchdog_once())
         await h.host.run(lambda rt: rt.webhooks_idle())  # as a real sleep would let it finish
         await clock.sleep(30)
-        harness.FREEZER.move_to(clock.now())
+        ha_rig.FREEZER.move_to(clock.now())
         await coordinator.async_refresh()
     await h.hass.async_block_till_done()
 

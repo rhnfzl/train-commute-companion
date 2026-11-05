@@ -2,9 +2,9 @@ import asyncio
 import logging
 import threading
 
-import harness
+import ha_rig
 import pytest
-from harness import (
+from ha_rig import (
     B_ONLY,
     PROFILE,
     PROFILES,
@@ -166,16 +166,16 @@ async def test_updates_inside_one_zone_send_one_report_per_2_min(hass):
     set_person(hass, 52.1, 5.1)
     await start_tracker(h)
     for i in range(1, 11):
-        harness.FREEZER.tick(5)
+        ha_rig.FREEZER.tick(5)
         set_person(hass, 52.1 + i * 1e-5, 5.1)
     assert await spied(h) == []  # the seed started the report timer
-    harness.FREEZER.tick(120)
+    ha_rig.FREEZER.tick(120)
     set_person(hass, 52.1 + 11e-5, 5.1)
     assert await spied(h) == [("UT", "report")]
-    harness.FREEZER.tick(60)
+    ha_rig.FREEZER.tick(60)
     set_person(hass, 52.1 + 12e-5, 5.1)
     assert await spied(h) == [("UT", "report")]
-    harness.FREEZER.tick(60)
+    ha_rig.FREEZER.tick(60)
     set_person(hass, 52.1 + 13e-5, 5.1)
     assert await spied(h) == [("UT", "report")] * 2
 
@@ -185,10 +185,10 @@ async def test_an_enter_starts_the_report_timer(hass):
     set_person(hass, *FAR)
     await start_tracker(h)
     set_person(hass, 52.1, 5.1)
-    harness.FREEZER.tick(5)
+    ha_rig.FREEZER.tick(5)
     set_person(hass, 52.10001, 5.1)
     assert await spied(h) == [("UT", "enter")]
-    harness.FREEZER.tick(120)
+    ha_rig.FREEZER.tick(120)
     set_person(hass, 52.10002, 5.1)
     assert await spied(h) == [("UT", "enter"), ("UT", "report")]
 
@@ -199,7 +199,7 @@ async def test_a_fix_inside_the_report_timer_is_dropped_not_deferred(hass):
     await drive(h, "08:11")
     set_person(hass, 52.0, 5.0)  # in AAA's station zone, before the 08:12 leaves
     assert await spied(h) == [("AAA", "enter")]
-    harness.FREEZER.tick(90)  # after the departure, inside the timer the enter started
+    ha_rig.FREEZER.tick(90)  # after the departure, inside the timer the enter started
     set_person(hass, 52.00001, 5.0)
     set_person(hass, 52.00001, 5.0, battery_level=50)  # a still phone: no new fix
     await drive(h, "08:18")
@@ -225,7 +225,7 @@ async def test_a_failed_enter_starts_no_report_timer(hass):
     set_person(hass, 52.1, 5.1)
     await hass.async_block_till_done()
     await host.run(lambda rt: setattr(rt, "location", spy))
-    harness.FREEZER.tick(5)
+    ha_rig.FREEZER.tick(5)
     set_person(hass, 52.10001, 5.1)
     assert await spied(h) == [("UT", "report")]  # the core hears the user is here after all
 
@@ -244,7 +244,7 @@ async def test_an_enter_ns_did_not_answer_starts_no_report_timer(hass):
     set_person(hass, 52.0, 5.0)  # in AAA's zone
     assert await spied(h) == [("AAA", "enter")]
     h.provider.trips = answering
-    harness.FREEZER.tick(30)
+    ha_rig.FREEZER.tick(30)
     set_person(hass, 52.00001, 5.0)  # inside the 2 minutes, and it still reports
     await drive(h, "08:15")
     assert await spied(h) == [("AAA", "enter"), ("AAA", "report")]

@@ -8,12 +8,12 @@ from dataclasses import replace
 from datetime import date, time, timedelta
 from unittest.mock import AsyncMock, Mock
 
-import harness
+import ha_rig
 import httpx
 import pytest
 import runtime_seam as seam
 from builders import make_leg, only_occurrence
-from harness import (
+from ha_rig import (
     HOOKS,
     NOTIFY,
     PROFILE,
@@ -99,14 +99,14 @@ async def test_failed_setup_leaves_no_runtime_thread(hass):
     def broken(api_key, clock):
         raise ValueError("no provider")
 
-    harness.PATCH.setattr(host_mod, "make_provider", broken)
+    ha_rig.PATCH.setattr(host_mod, "make_provider", broken)
     assert not await hass.config_entries.async_setup(entry.entry_id)
     assert entry.state is ConfigEntryState.SETUP_RETRY
     assert no_runtime_thread()
     await hass.config_entries.async_remove(entry.entry_id)
 
     entry2, *_ = prepare(hass, PROFILE, "07:50", ())
-    harness.PATCH.setattr(
+    ha_rig.PATCH.setattr(
         TccCoordinator, "_async_update_data", AsyncMock(side_effect=RuntimeError("boom"))
     )
     assert not await hass.config_entries.async_setup(entry2.entry_id)
@@ -172,7 +172,7 @@ async def test_failed_store_write_is_storage_failed(hass):
     def fail(self, s):
         raise StorageError("disk full")
 
-    harness.PATCH.setattr(JsonFileStore, "save", fail)
+    ha_rig.PATCH.setattr(JsonFileStore, "save", fail)
     await drive(h, "08:06")
     failed = [c for c in h.pushes if "could not save state" in c.data["message"]]
     assert len(failed) == 1 and loud(failed[0])
@@ -249,7 +249,7 @@ async def test_undelivered_alert_raises_notify_failing_repair(hass):
     await coordinator.async_refresh()
     issue = ir.async_get(hass).async_get_issue(DOMAIN, "notify_failing")
     assert issue is not None and issue.translation_placeholders == {"service": NOTIFY}
-    back = harness.fake_phone(hass, harness.PATCH)
+    back = ha_rig.fake_phone(hass, ha_rig.PATCH)
     await h.host.run(lambda rt: rt.watchdog_once())
     await coordinator.async_refresh()
     assert any("profile change refused" in c.data["message"] for c in back)
@@ -261,11 +261,11 @@ async def test_vanished_phone_target_raises_notify_failing(hass, upgrade):
     # upgrade: the stored target is a user-made mobile_app service, never a phone
     stray = async_mock_service(hass, "notify", "mobile_app_fake")
     if upgrade:
-        harness.PATCH.setattr(harness, "NOTIFY", "mobile_app_fake")
+        ha_rig.PATCH.setattr(ha_rig, "NOTIFY", "mobile_app_fake")
     h = await setup_tcc(hass, PROFILE)
     before = len(h.pushes)
     if not upgrade:  # the phone is gone: HA no longer maps the service to a mobile_app entry
-        harness.PATCH.setattr(notifier_mod, "mobile_target", lambda hass, service: None)
+        ha_rig.PATCH.setattr(notifier_mod, "mobile_target", lambda hass, service: None)
     write_profiles(hass, OVERLAP)
     await h.host.run(lambda rt: rt.reload_if_changed())
     await tick(hass, REFRESH_S + 1)
@@ -277,8 +277,8 @@ async def test_dead_runtime_schedules_reload(hass):
     h = await setup_tcc(hass, PROFILE)
     coordinator = h.entry.runtime_data.coordinator
     reload = Mock()
-    harness.PATCH.setattr(hass.config_entries, "async_schedule_reload", reload)
-    harness.PATCH.setattr(host_mod.RuntimeHost, "alive", property(lambda self: False))
+    ha_rig.PATCH.setattr(hass.config_entries, "async_schedule_reload", reload)
+    ha_rig.PATCH.setattr(host_mod.RuntimeHost, "alive", property(lambda self: False))
     await coordinator.async_refresh()
     reload.assert_called_once_with(h.entry.entry_id)
     assert coordinator.last_update_success is False
@@ -288,17 +288,17 @@ async def test_runtime_not_answering_fails_refresh_then_reloads(hass):
     h = await setup_tcc(hass, PROFILE)
     coordinator = h.entry.runtime_data.coordinator
     reload = Mock()
-    harness.PATCH.setattr(hass.config_entries, "async_schedule_reload", reload)
+    ha_rig.PATCH.setattr(hass.config_entries, "async_schedule_reload", reload)
 
     async def never(fn):
         await asyncio.Event().wait()
 
-    harness.PATCH.setattr(h.host, "run", never)
+    ha_rig.PATCH.setattr(h.host, "run", never)
     for n in range(1, 6):
         refresh = hass.async_create_task(coordinator.async_refresh())
         await asyncio.sleep(0)
         # hass.loop reads the frozen clock, so its timeout fires only when the freezer moves
-        harness.FREEZER.tick(coordinator_mod.RUN_TIMEOUT_S + 1)
+        ha_rig.FREEZER.tick(coordinator_mod.RUN_TIMEOUT_S + 1)
         await refresh
         assert coordinator.last_update_success is False
         # keeps asking after the fourth, in case the first reload did not replace it
@@ -317,16 +317,16 @@ async def test_failed_platform_unload_keeps_host_and_tracker(hass):
     h = await setup_tcc(hass, PROFILE)
     tracker = h.entry.runtime_data.tracker
     restart = Mock(wraps=tracker.start)
-    harness.PATCH.setattr(tracker, "start", restart)
+    ha_rig.PATCH.setattr(tracker, "start", restart)
     unload = AsyncMock(return_value=False)
-    harness.PATCH.setattr(hass.config_entries, "async_unload_platforms", unload)
+    ha_rig.PATCH.setattr(hass.config_entries, "async_unload_platforms", unload)
     assert await async_unload_entry(hass, h.entry) is False
     assert h.host.alive and restart.call_count == 1 and tracker._unsub_data is not None
     unload.side_effect = RuntimeError("platform refused")
     with pytest.raises(RuntimeError):
         await async_unload_entry(hass, h.entry)
     assert h.host.alive and restart.call_count == 2 and tracker._unsub_data is not None
-    harness.PATCH.undo()  # the fixture's unload then works for real
+    ha_rig.PATCH.undo()  # the fixture's unload then works for real
 
 
 class YieldingClock:
@@ -344,8 +344,8 @@ class YieldingClock:
 
 async def test_autorun_setup_starts_and_unloads(hass):
     entry, clock, *_ = prepare(hass, PROFILE, "07:50", ())
-    harness.PATCH.setattr(host_mod, "AUTORUN", True)
-    harness.PATCH.setattr(host_mod, "make_clock", lambda: YieldingClock(clock.now()))
+    ha_rig.PATCH.setattr(host_mod, "AUTORUN", True)
+    ha_rig.PATCH.setattr(host_mod, "make_clock", lambda: YieldingClock(clock.now()))
     assert await hass.config_entries.async_setup(entry.entry_id)
     coordinator = entry.runtime_data.coordinator
     for _ in range(300):
@@ -382,15 +382,15 @@ async def test_monitoring_runs_without_manual_refresh(hass):
     assert ir.async_get(hass).async_get_issue(DOMAIN, "notify_failing") is not None
 
     reload = Mock()
-    harness.PATCH.setattr(hass.config_entries, "async_schedule_reload", reload)
-    harness.PATCH.setattr(host_mod.RuntimeHost, "alive", property(lambda self: False))
+    ha_rig.PATCH.setattr(hass.config_entries, "async_schedule_reload", reload)
+    ha_rig.PATCH.setattr(host_mod.RuntimeHost, "alive", property(lambda self: False))
     await tick(hass, REFRESH_S + 1)
     reload.assert_called_with(h.entry.entry_id)
 
 
 async def test_blocked_runtime_reloads_and_is_retired(hass):
     h = await setup_tcc(hass, PROFILE)
-    harness.PATCH.setattr(host_mod, "JOIN_TIMEOUT_S", 0.2)
+    ha_rig.PATCH.setattr(host_mod, "JOIN_TIMEOUT_S", 0.2)
     old = h.host
     gate, entered = threading.Event(), threading.Event()
 
@@ -446,7 +446,7 @@ async def start_old_storage_call(
 ) -> tuple[asyncio.Task[object], threading.Event]:
     """Runs `call` on the old runtime, to be paused inside storage. Returns its task and an event
     set once any other thread reads the state file."""
-    harness.PATCH.setattr(host_mod, "JOIN_TIMEOUT_S", 0.2)
+    ha_rig.PATCH.setattr(host_mod, "JOIN_TIMEOUT_S", 0.2)
     old_thread = h.host._thread
     early = threading.Event()
     real_load = JsonFileStore.load
@@ -456,7 +456,7 @@ async def start_old_storage_call(
             early.set()
         return real_load(self)
 
-    harness.PATCH.setattr(JsonFileStore, "load", watched_load)
+    ha_rig.PATCH.setattr(JsonFileStore, "load", watched_load)
     stuck = hass.async_create_task(h.host.run(call))
     return stuck, early
 
@@ -466,7 +466,7 @@ async def test_reload_while_the_old_runtime_is_inside_a_save(hass):
     old = h.host
     gate, entered = threading.Event(), threading.Event()
     # paused after the counter check and before the commit, the window a successor raced into
-    harness.PATCH.setattr(os, "fsync", pause_old_thread(old._thread, gate, entered, os.fsync))
+    ha_rig.PATCH.setattr(os, "fsync", pause_old_thread(old._thread, gate, entered, os.fsync))
 
     def save(rt):
         seam.store(rt).save(rt.state)
@@ -499,7 +499,7 @@ async def test_reload_while_the_old_runtime_is_inside_a_load(hass):
         raise ValueError("unreadable")
 
     # the old reader finds the file corrupt, then sleeps before moving it aside
-    harness.PATCH.setattr(
+    ha_rig.PATCH.setattr(
         core_store,
         "decode",
         pause_old_thread(old._thread, gate, entered, core_store.decode, unreadable),
@@ -525,7 +525,7 @@ async def test_reload_while_the_old_runtime_is_inside_a_load(hass):
 
 async def test_cancelled_setup_leaves_no_runtime_thread(hass):
     entry, *_ = prepare(hass, PROFILE, "07:50", ())
-    harness.PATCH.setattr(host_mod, "JOIN_TIMEOUT_S", 5)
+    ha_rig.PATCH.setattr(host_mod, "JOIN_TIMEOUT_S", 5)
     gate, entered = threading.Event(), threading.Event()
     real = host_mod.make_provider
 
@@ -534,7 +534,7 @@ async def test_cancelled_setup_leaves_no_runtime_thread(hass):
         gate.wait(10)
         return real(api_key, clock)
 
-    harness.PATCH.setattr(host_mod, "make_provider", slow)
+    ha_rig.PATCH.setattr(host_mod, "make_provider", slow)
     task = hass.async_create_task(async_setup_entry(hass, entry))
     assert await hass.async_add_executor_job(entered.wait, 5)
     task.cancel()
@@ -601,7 +601,7 @@ async def test_webhook_rest_survives_unload_mid_post(hass):
     assert await hass.config_entries.async_unload(h.entry.entry_id)  # retired, then cancelled
     rx.gate = None
     h.clock.jump(1 / 60)
-    harness.FREEZER.tick(1)
+    ha_rig.FREEZER.tick(1)
     assert await hass.config_entries.async_setup(h.entry.entry_id)
     await hass.async_block_till_done()
     h = await rebound(h)
@@ -609,7 +609,7 @@ async def test_webhook_rest_survives_unload_mid_post(hass):
     await posted(h)
     assert len(rx.requests) == before  # still resting
     h.clock.t = tried + timedelta(seconds=61)
-    harness.FREEZER.move_to(h.clock.t)
+    ha_rig.FREEZER.move_to(h.clock.t)
     await h.host.run(lambda rt: rt.watchdog_once())
     await posted(h)
     assert len(rx.requests) == before + 1
@@ -619,7 +619,7 @@ async def test_without_webhook_options_no_client_is_made(hass):
     def refuse() -> httpx.AsyncClient:
         raise AssertionError("no webhook client without webhook options")
 
-    harness.PATCH.setattr(host_mod, "make_webhook_client", refuse)
+    ha_rig.PATCH.setattr(host_mod, "make_webhook_client", refuse)
     h = await setup_tcc(hass, PROFILE)
     assert h.entry.state is ConfigEntryState.LOADED and h.host.alive
     assert await h.host.run(seam.webhook_port) is None

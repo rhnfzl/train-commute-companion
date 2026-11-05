@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
-from harness import (
+from ha_rig import (
     HOOKS,
     NOTIFY,
     PROFILE,

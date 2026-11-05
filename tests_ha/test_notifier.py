@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from aiohttp import ClientError
-from harness import fake_phone
+from ha_rig import fake_phone
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr

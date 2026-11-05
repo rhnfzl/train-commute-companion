@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from harness import PROFILES
+from ha_rig import PROFILES
 
 from custom_components.train_commute_companion.host import Parts, RuntimeHost, RuntimeNotRunning
 from train_commute_companion.calendar import TZ

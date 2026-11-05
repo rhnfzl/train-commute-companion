@@ -6,7 +6,7 @@ from datetime import date
 import pytest
 import runtime_seam as seam
 from builders import ONE_TRANSFER, make_connection, make_leg, only_occurrence
-from harness import B_ONLY, PROFILE, drive, setup_tcc, write_profiles
+from ha_rig import B_ONLY, PROFILE, drive, setup_tcc, write_profiles
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from runtime_rig import at
 
