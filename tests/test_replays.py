@@ -25,16 +25,13 @@ def expected(path: Path) -> str:
         "transfer_broken_by_delay",
         "cancelled_second_leg",
         "two_profiles_different_days",
+        "two_profiles_same_day",
     ],
 )
 def test_owner_replay(name, capsys):
     out = replay_output(REPLAYS / f"{name}.yaml", capsys)
     assert out == expected(REPLAYS / f"{name}.out")
     assert out.rstrip().endswith("Data: NS")
-
-
-def test_owner_replay_same_day_profiles_refused(capsys):
-    assert "refused" in replay_output(REPLAYS / "two_profiles_same_day.yaml", capsys)
 
 
 def test_replay_names_a_bad_file(tmp_path, capsys):
