@@ -25,6 +25,7 @@ from .const import (
     LOUD_STYLES,
     NOTIFY_BACKOFF_S,
     NOTIFY_TIMEOUT_S,
+    LoudStyle,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ _MEMORY_CAP = 1000
 
 
 def notify_payload(
-    severity: Severity, text: str, loud_style: str = DEFAULT_LOUD_STYLE
+    severity: Severity, text: str, loud_style: LoudStyle = DEFAULT_LOUD_STYLE
 ) -> dict[str, Any]:
     if severity is Severity.SILENT:
         return {
@@ -249,7 +250,7 @@ class HaNotifier:
         hass: HomeAssistant,
         entry_id: str,
         service: str,
-        loud_style: str = DEFAULT_LOUD_STYLE,
+        loud_style: LoudStyle = DEFAULT_LOUD_STYLE,
         retired: threading.Event | None = None,
     ) -> None:
         self.hass = hass

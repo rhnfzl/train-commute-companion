@@ -29,6 +29,7 @@ from .const import (
     DEFAULT_LOUD_STYLE,
     DOMAIN,
     PLATFORMS,
+    LoudStyle,
 )
 from .coordinator import TccCoordinator
 from .data import TccConfigEntry, TccData
@@ -67,7 +68,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         CONF_PROFILES_PATH, hass.config.path(DOMAIN, "profiles.yaml")
     )
     notify_service: str = entry.options[CONF_NOTIFY]
-    loud_style: str = entry.options.get(CONF_LOUD_STYLE, DEFAULT_LOUD_STYLE)
+    loud_style: LoudStyle = entry.options.get(CONF_LOUD_STYLE, DEFAULT_LOUD_STYLE)
     webhook_urls = tuple(entry.options.get(CONF_WEBHOOK_URLS, ()))
     webhook_secret: str = entry.options.get(CONF_WEBHOOK_SECRET, "")
     webhook_token: str = entry.options.get(CONF_WEBHOOK_TOKEN, "")

@@ -42,6 +42,7 @@ from .const import (
     DOMAIN,
     LOUD_STYLES,
 )
+    LoudStyle,
 from .notifier import async_push, notify_payload
 from .validate import check_path, validate_file
 
@@ -94,14 +95,14 @@ def notify_services(hass: HomeAssistant) -> list[str]:
     )
 
 
-async def send_tests(hass: HomeAssistant, service: str, loud_style: str) -> bool:
+async def send_tests(hass: HomeAssistant, service: str, loud_style: LoudStyle) -> bool:
     """Both test pushes, in the style the user picked; one failing is enough to refuse."""
     loud = await async_push(hass, service, notify_payload(Severity.LOUD, TEST_LOUD, loud_style))
     silent = await async_push(hass, service, notify_payload(Severity.SILENT, TEST_SILENT))
     return loud and silent
 
 
-def notify_schema(hass: HomeAssistant, service: str | None, style: str) -> vol.Schema:
+def notify_schema(hass: HomeAssistant, service: str | None, style: LoudStyle) -> vol.Schema:
     services = notify_services(hass)
     pick = {"default": service} if service in services else {}
     return vol.Schema(
@@ -125,7 +126,7 @@ class _TestPushMixin:
 
     hass: HomeAssistant
     _service: str = ""
-    _style: str = DEFAULT_LOUD_STYLE
+    _style: LoudStyle = DEFAULT_LOUD_STYLE
     _failed: Callable[[], ConfigFlowResult]  # the form to show again when a test push fails
     _back: str  # the step the menu's "pick another target" returns to
     async_show_menu: Callable[..., ConfigFlowResult]  # from the flow class it is mixed into

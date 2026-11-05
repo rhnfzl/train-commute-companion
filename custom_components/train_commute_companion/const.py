@@ -1,5 +1,7 @@
 """Constants of the Home Assistant shell."""
 
+from typing import Literal, get_args
+
 from homeassistant.const import Platform
 
 DOMAIN = "train_commute_companion"
@@ -16,6 +18,7 @@ NOTIFY_TIMEOUT_S = 20
 # HA's 10 s local-push confirm window, then its 10 s remote fallback, plus margin
 LOCAL_PUSH_SETTLE_S = 22
 NOTIFY_BACKOFF_S = 60
-LOUD_STYLES = ("time_sensitive", "critical")
-DEFAULT_LOUD_STYLE = "time_sensitive"
+LoudStyle = Literal["time_sensitive", "critical"]
+LOUD_STYLES: tuple[LoudStyle, ...] = get_args(LoudStyle)
+DEFAULT_LOUD_STYLE: LoudStyle = "time_sensitive"
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON]
