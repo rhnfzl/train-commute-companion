@@ -54,6 +54,23 @@ ha = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/train_commute_companion"]
 
+# a local build is not a clean checkout: never pack what .gitignore keeps out of the repo
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/private",
+    "/.venv*",
+    "/.env",
+    "/examples/config",
+    "/.superpowers",
+    "/.agent-harness",
+    "/.claude",
+    "/.desloppify",
+    "/tmp",
+    "/.mypy_cache",
+    "/.ruff_cache",
+    "/.pytest_cache",
+]
+
 [tool.ruff]
 line-length = 100
 
