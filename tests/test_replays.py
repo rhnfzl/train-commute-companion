@@ -64,6 +64,9 @@ HEAD = 'profile: p.yaml\nnow: "2026-10-27 07:50"\nuntil: "09:50"\n'
             HEAD + 'queries:\n  - {at: "08:00", query: q, answer_file: a.yaml}\n',
             "trips: [{day: 99999999999, legs: []}]\n",
         ),
+        ("[" * 5000, ""),
+        ("- " * 3000 + "a", ""),
+        (HEAD + 'queries:\n  - {at: "08:00", query: q, answer_file: a.yaml}\n', "[" * 5000),
     ],
 )
 def test_a_malformed_replay_file_is_refused_without_a_traceback(tmp_path, capsys, spec, answer):

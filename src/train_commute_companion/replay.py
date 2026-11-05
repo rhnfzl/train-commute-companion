@@ -177,8 +177,9 @@ def format_event(e: Any) -> str:
 def _read(path: Path) -> Any:
     try:
         return yaml.safe_load(path.read_text(encoding="utf-8"))
-    # ValueError: undecodable text, or an explicit tag such as !!int on text that is not one
-    except (OSError, ValueError, yaml.YAMLError) as e:
+    # ValueError: undecodable text, or an explicit tag such as !!int on text that is not one;
+    # RecursionError: nested deeper than the parser goes
+    except (OSError, ValueError, yaml.YAMLError, RecursionError) as e:
         raise ReplayError(f"cannot read {path.name}: {e}") from None
 
 
