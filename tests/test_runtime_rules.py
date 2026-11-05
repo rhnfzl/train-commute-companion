@@ -2094,7 +2094,34 @@ async def test_occurrence_data_unclear_holds_only_while_its_values_are_the_lates
     assert not view.fact_holds(first)  # also when no newer obligation is left to cover it
 
 
-# --- a dropped occurrence's poll memory ---
+# --- one failing occurrence, a rejected key on a later request, a dropped occurrence ---
+
+
+def seed_night_ride(rig: Rig) -> None:
+    """A ride still under way from the day before, which sorts before today's occurrence."""
+    from lifecycle_fixtures import occ
+
+    from train_commute_companion.model import LegState
+
+    mon = date(2026, 10, 26)
+    night = make_leg("AAA", "RTD", "23:50", "03:40", number="9999", day=mon)
+    ride = replace(journey([night], (LegState.RIDING,)), planned_final_arrival=at("08:40"))
+    cfg = rig.rt.config
+    old = replace(occ(ride), key=replace(occ(None).key, service_date=mon),
+                  route_revision=cfg.revision, settings_revision=cfg.revision)  # fmt: skip
+    rig.occ_set(old, "p1|outbound|2026-10-26")
+
+
+async def test_a_failing_occurrence_does_not_starve_the_others(tmp_path, caplog):
+    rig = await started(tmp_path)
+    seed_night_ride(rig)
+    before = rig.occ().poll_records
+    errors = iter([RuntimeError("not a provider error")])
+    rig.provider.error = lambda q: next(errors, None)
+    rig.clock.jump(2)
+    await rig.rt.poll_once()
+    assert rig.occ().poll_records != before
+    assert "poll of p1|outbound|2026-10-26 failed" in caplog.text
 
 
 async def test_reload_forgets_what_was_seen_of_an_occurrence_it_drops(tmp_path):

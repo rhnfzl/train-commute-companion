@@ -742,7 +742,10 @@ class Runtime:
     async def poll_once(self) -> None:
         self._create_occurrences(self._clock.now())
         for k in sorted(self._writer.st.occurrences):
-            await self._poll_occurrence(k)
+            try:
+                await self._poll_occurrence(k)
+            except Exception:  # one failing occurrence must not starve the others (rule 12)
+                log.exception("poll of %s failed", k)
         await self._deliver()
 
     async def _poll_occurrence(self, k: str) -> None:
