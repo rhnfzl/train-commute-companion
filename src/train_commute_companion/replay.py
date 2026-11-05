@@ -170,7 +170,7 @@ class ReplayProvider:
         return frozenset()
 
 
-def format_event(e: Any) -> str:
+def format_event(e: AlertEvent) -> str:
     return f"{hhmm(e.created_at)} {e.severity.name} {e.kind.value}: {e.text}"
 
 

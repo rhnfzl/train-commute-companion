@@ -6,6 +6,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import (
+    ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlowWithReload,
@@ -41,8 +42,8 @@ from .const import (
     DEFAULT_LOUD_STYLE,
     DOMAIN,
     LOUD_STYLES,
-)
     LoudStyle,
+)
 from .notifier import async_push, notify_payload
 from .validate import check_path, validate_file
 
@@ -169,7 +170,7 @@ class TccConfigFlow(_TestPushMixin, ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: Any) -> "TccOptionsFlow":
+    def async_get_options_flow(config_entry: ConfigEntry) -> "TccOptionsFlow":
         return TccOptionsFlow()
 
     async def async_step_user(

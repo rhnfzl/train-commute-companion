@@ -7,7 +7,14 @@ from collections.abc import Coroutine, Iterable, Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
+from homeassistant.core import (
+    CALLBACK_TYPE,
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    State,
+    callback,
+)
 from homeassistant.helpers.event import async_track_state_change_event
 
 from train_commute_companion.location import (
@@ -80,8 +87,8 @@ class LocationTracker:
         self._tracked: dict[str, tuple[str, int]] = {}
         # profile id -> token of its current source; work queued under an older token is dropped
         self._gen: dict[str, object] = {}
-        self._unsub_state: Any = None
-        self._unsub_data: Any = None
+        self._unsub_state: CALLBACK_TYPE | None = None
+        self._unsub_data: CALLBACK_TYPE | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._locks: dict[str, asyncio.Lock] = {}  # a lock queues FIFO: arrival order per profile
         self._tracks: dict[str, ZoneTrack] = {}
