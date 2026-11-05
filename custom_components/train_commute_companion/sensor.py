@@ -10,6 +10,7 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import StateType
 
 from train_commute_companion.model import (
     Connection,
@@ -19,7 +20,6 @@ from train_commute_companion.model import (
     Stop,
     TimeObs,
     direction_key,
-    present,
 )
 from train_commute_companion.view import (
     LegView,
@@ -33,8 +33,15 @@ from .coordinator import TccCoordinator
 from .data import TccConfigEntry
 from .entity import TccEntity, health_state, shown_and_others, sync_entities, unique_id
 
-type Fn = Callable[[RuntimeView, str, Direction | None, int | None], Any]
-type AttrsFn = Callable[[RuntimeView, str, Direction | None, int | None], dict[str, Any]]
+type Value = StateType | date | datetime
+type Attrs = dict[str, Any]
+# (state, attributes, device class): each reads one view for a profile, a direction or a leg
+type Spec[*Where] = tuple[
+    Callable[[RuntimeView, *Where], Value],
+    Callable[[RuntimeView, *Where], Attrs],
+    SensorDeviceClass | None,
+]
+type Bound = Spec[()]
 
 
 def _to_primitive(v: Any) -> Any:
@@ -52,14 +59,12 @@ def _train_label(leg: LegView) -> str:
     return f"{leg.planned_departure:%H:%M} {leg.board}-{leg.alight} {leg.train_number}"
 
 
-def _occ(view: RuntimeView, pid: str, d: Direction | None) -> OccurrenceView | None:
-    return shown_and_others(view, pid, present(d))[0]
+def _occ(view: RuntimeView, pid: str, d: Direction) -> OccurrenceView | None:
+    return shown_and_others(view, pid, d)[0]
 
 
-def _status_attrs(
-    view: RuntimeView, pid: str, d: Direction | None, n: int | None
-) -> dict[str, Any]:
-    occ, others = shown_and_others(view, pid, present(d))
+def _status_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
+    occ, others = shown_and_others(view, pid, d)
     if occ is None:
         return {
             "service_date": None,
@@ -89,9 +94,7 @@ def _leg_time(stop: Stop, obs: TimeObs | None, planned: datetime | None) -> date
     return obs.value if obs and obs.provenance is Provenance.REPORTED and obs.value else planned
 
 
-def _next_good_train(
-    view: RuntimeView, pid: str, d: Direction | None, n: int | None
-) -> Connection | None:
+def _next_good_train(view: RuntimeView, pid: str, d: Direction) -> Connection | None:
     occ = _occ(view, pid, d)
     return occ.next_good if occ else None
 
@@ -101,20 +104,18 @@ def _first_departure(leg: Leg) -> datetime | None:
     return _leg_time(b, b.departure, b.planned_departure)
 
 
-def _advised(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> datetime | None:
+def _advised(view: RuntimeView, pid: str, d: Direction) -> datetime | None:
     occ = _occ(view, pid, d)
     a = occ.advice if occ else None
     return a.advised_train.planned_departure if a and a.advised_train and not a.withdrawn else None
 
 
-def _works(view: RuntimeView, pid: str, d: Direction | None) -> tuple[WorksDay, ...]:
-    return view.works.get(direction_key(pid, present(d)), ())
+def _works(view: RuntimeView, pid: str, d: Direction) -> tuple[WorksDay, ...]:
+    return view.works.get(direction_key(pid, d), ())
 
 
-def _health_attrs(
-    view: RuntimeView, pid: str, d: Direction | None, n: int | None
-) -> dict[str, Any]:
-    out: dict[str, Any] = {"store_ok": view.store_ok, "requests": view.requests}
+def _health_attrs(view: RuntimeView, pid: str) -> Attrs:
+    out: Attrs = {"store_ok": view.store_ok, "requests": view.requests}
     out["lookahead_last_ok"] = {
         d.value: _to_primitive(view.lookahead_last_ok.get(direction_key(pid, d))) for d in Direction
     }
@@ -127,28 +128,23 @@ def _health_attrs(
     return out
 
 
-def _leg_state(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> str:
+def _leg_state(view: RuntimeView, pid: str, d: Direction, n: int) -> str:
     occ = _occ(view, pid, d)
-    n = present(n)
     return occ.legs[n - 1].state.value if occ and n <= len(occ.legs) else "none"
 
 
-def _leg_attrs(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> dict[str, Any]:
+def _leg_attrs(view: RuntimeView, pid: str, d: Direction, n: int) -> Attrs:
     occ = _occ(view, pid, d)
-    n = present(n)
     return _to_primitive(occ.legs[n - 1]) if occ and n <= len(occ.legs) else {}
 
 
-def _transfer(
-    view: RuntimeView, pid: str, d: Direction | None, n: int | None
-) -> TransferView | None:
+def _transfer(view: RuntimeView, pid: str, d: Direction, n: int) -> TransferView | None:
     occ = _occ(view, pid, d)
-    n = present(n)
     return occ.transfers[n - 1] if occ and n <= len(occ.transfers) else None
 
 
-def _next_attrs(view: RuntimeView, pid: str, d: Direction | None, n: int | None) -> dict[str, Any]:
-    conn = _next_good_train(view, pid, d, n)
+def _next_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
+    conn = _next_good_train(view, pid, d)
     if conn is None:
         return {}
     last = conn.legs[-1].alight
@@ -159,42 +155,29 @@ def _next_attrs(view: RuntimeView, pid: str, d: Direction | None, n: int | None)
     }
 
 
-# key -> (state, attributes, device class); the functions read one view and return plain values
-SPECS: dict[str, tuple[Fn, AttrsFn, SensorDeviceClass | None]] = {
+DIRECTION_SPECS: dict[str, Spec[str, Direction]] = {
     "status": (
-        lambda v, p, d, n: o.direction_state.value if (o := _occ(v, p, d)) else "none",
+        lambda v, p, d: o.direction_state.value if (o := _occ(v, p, d)) else "none",
         _status_attrs,
         None,
     ),
     "lock": (
-        lambda v, p, d, n: o.commitment.value if (o := _occ(v, p, d)) and o.commitment else "none",
-        lambda v, p, d, n: (
+        lambda v, p, d: o.commitment.value if (o := _occ(v, p, d)) and o.commitment else "none",
+        lambda v, p, d: (
             {"source": _to_primitive(o.lock_source), "trains": [_train_label(x) for x in o.legs]}
             if (o := _occ(v, p, d))
             else {}
         ),
         None,
     ),
-    "leg": (_leg_state, _leg_attrs, None),
-    "transfer": (
-        lambda v, p, d, n: t.state.value if (t := _transfer(v, p, d, n)) else "none",
-        lambda v, p, d, n: (
-            {"station": t.station, "margin_min": t.margin_min, "minimum": t.minimum}
-            if (t := _transfer(v, p, d, n))
-            else {}
-        ),
-        None,
-    ),
     "next_connection": (
-        lambda v, p, d, n: (
-            _first_departure(c.legs[0]) if (c := _next_good_train(v, p, d, n)) else None
-        ),
+        lambda v, p, d: _first_departure(c.legs[0]) if (c := _next_good_train(v, p, d)) else None,
         _next_attrs,
         SensorDeviceClass.TIMESTAMP,
     ),
     "advice": (
         _advised,
-        lambda v, p, d, n: (
+        lambda v, p, d: (
             {"sent_at": _to_primitive(o.advice.sent_at) if o.advice else None}
             if (o := _occ(v, p, d))
             else {}
@@ -202,8 +185,8 @@ SPECS: dict[str, tuple[Fn, AttrsFn, SensorDeviceClass | None]] = {
         SensorDeviceClass.TIMESTAMP,
     ),
     "works_ahead": (
-        lambda v, p, d, n: len(_works(v, p, d)),
-        lambda v, p, d, n: {
+        lambda v, p, d: len(_works(v, p, d)),
+        lambda v, p, d: {
             "dates": [
                 {
                     "date": w.service_date.isoformat(),
@@ -214,8 +197,23 @@ SPECS: dict[str, tuple[Fn, AttrsFn, SensorDeviceClass | None]] = {
         },
         None,
     ),
-    "health": (lambda v, p, d, n: health_state(v, p), _health_attrs, None),
 }
+LEG_SPEC: Spec[str, Direction, int] = (_leg_state, _leg_attrs, None)
+TRANSFER_SPEC: Spec[str, Direction, int] = (
+    lambda v, p, d, n: t.state.value if (t := _transfer(v, p, d, n)) else "none",
+    lambda v, p, d, n: (
+        {"station": t.station, "margin_min": t.margin_min, "minimum": t.minimum}
+        if (t := _transfer(v, p, d, n))
+        else {}
+    ),
+    None,
+)
+HEALTH_SPEC: Spec[str] = (health_state, _health_attrs, None)
+
+
+def _bind[*Where](spec: Spec[*Where], *where: *Where) -> Bound:
+    value_fn, attrs_fn, device_class = spec
+    return lambda v: value_fn(v, *where), lambda v: attrs_fn(v, *where), device_class
 
 
 class TccSensor(TccEntity, SensorEntity):
@@ -225,41 +223,43 @@ class TccSensor(TccEntity, SensorEntity):
         profile_id: str,
         profile_name: str,
         key: str,
+        spec: Bound,
         direction: Direction | None = None,
         n: int | None = None,
     ) -> None:
         super().__init__(coordinator, profile_id, profile_name, key, direction, n)
-        self._value_fn, self._attrs_fn, device_class = SPECS[key]
+        self._value_fn, self._attrs_fn, device_class = spec
         self._attr_device_class = device_class
         if key == "health":
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
-    def native_value(self) -> Any:
-        return self._value_fn(self.coordinator.data, self.profile_id, self.direction, self.n)
+    def native_value(self) -> Value:
+        return self._value_fn(self.coordinator.data)
 
     @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        return self._attrs_fn(self.coordinator.data, self.profile_id, self.direction, self.n)
+    def extra_state_attributes(self) -> Attrs:
+        return self._attrs_fn(self.coordinator.data)
 
 
 def wanted(coordinator: TccCoordinator, view: RuntimeView) -> dict[str, Callable[[], TccEntity]]:
     out: dict[str, Callable[[], TccEntity]] = {}
 
     def add(
-        pid: str, name: str, key: str, d: Direction | None = None, n: int | None = None
+        pid: str, name: str, key: str, spec: Bound, d: Direction | None = None, n: int | None = None
     ) -> None:
-        out[unique_id(pid, key, d, n)] = lambda: TccSensor(coordinator, pid, name, key, d, n)
+        out[unique_id(pid, key, d, n)] = lambda: TccSensor(coordinator, pid, name, key, spec, d, n)
 
     for i in view.directions:
         pid, name, d = i.profile_id, i.profile_name, i.direction
-        for key in ("status", "lock", "next_connection", "advice", "works_ahead"):
-            add(pid, name, key, d)
+        for key, spec in DIRECTION_SPECS.items():
+            add(pid, name, key, _bind(spec, pid, d), d)
         for n in range(1, i.max_transfers + 3):
-            add(pid, name, "leg", d, n)
+            add(pid, name, "leg", _bind(LEG_SPEC, pid, d, n), d, n)
         for n in range(1, i.max_transfers + 2):
-            add(pid, name, "transfer", d, n)
-        add(pid, name, "health")  # once per profile: the same ID from both directions
+            add(pid, name, "transfer", _bind(TRANSFER_SPEC, pid, d, n), d, n)
+        # once per profile: the same ID from both directions
+        add(pid, name, "health", _bind(HEALTH_SPEC, pid))
     return out
 
 
