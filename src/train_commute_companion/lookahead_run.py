@@ -67,11 +67,11 @@ async def probe_direction(
     return ProbedRun(start, config.revision, hist.latest, tuple(results))
 
 
-def applied_run(
+def apply_run(
     st: PersistedState, queue: CopyQueue, p: Profile, d: Direction, run: ProbedRun
 ) -> PersistedState | None:
-    """`st` (the state now, at write time) with the run; None when it is discarded (rule 21), and
-    then the owed copies in `queue` are left as they were."""
+    """`st` (the state now, at write time) with the run, its owed copies in `queue` following its
+    messages; None when it is discarded (rule 21), and then those copies are left as they were."""
     cfg = st.config
     if cfg is None:
         return None

@@ -4,18 +4,20 @@ A refactor of the runtime's internals changes this file, not the tests that read
 
 from dataclasses import replace
 
+from train_commute_companion.state_writer import Change
+
 
 def seed_state(rt, **changes) -> None:
     """Sets fields of the state as a restart would find them, past the runtime's transitions."""
-    rt._writer.st = replace(rt._writer.st, **changes)
+    rt._writer.propose(replace(rt._writer.st, **changes))
 
 
 def save_state(rt) -> None:
-    rt._writer.save()
+    rt._writer.commit(rt._writer.st, Change.RECOMPUTED)
 
 
 def held(rt):
-    return rt._writer.held
+    return rt._writer._held
 
 
 def owed_copies(rt):

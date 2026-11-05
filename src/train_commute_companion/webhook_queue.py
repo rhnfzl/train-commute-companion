@@ -75,8 +75,11 @@ class CopyQueue:
         self.held.discard(cid)
 
     def stage(self, o: Obligation, held: bool) -> bool:
-        """The webhook copy of an obligation handed to the phone; True when one was made.
-        `held`: an alert held in memory, its copy judged with the held ledger."""
+        """The webhook copy of an obligation handed to the phone; True when one was made (not
+        with webhooks off, nor twice for one alert). `held`: an alert held in memory, its copy
+        judged with the held ledger."""
+        if self.port is None or o.webhook_copied or o.id in self.copied:
+            return False
         self.copied.add(o.id)
         cid = event_id(o.id)
         if cid in self.copies:
@@ -96,6 +99,14 @@ class CopyQueue:
         if held:
             self.held.add(cid)
         return True
+
+    def marked(self, o: Obligation) -> Obligation:
+        """`o` as a write holds it: marked when its copy was made since the last delivery write."""
+        return replace(o, webhook_copied=True) if o.id in self.copied else o
+
+    def after_send(self, kept: Obligation) -> Obligation:
+        """An alert its send kept: its copy was made before the send, so the retry makes none."""
+        return kept if self.port is None else replace(kept, webhook_copied=True)
 
     def rewrite(self, c: WebhookCopy, o: Obligation) -> None:
         """The same copy (webhook-id, receipts, tries) now owing `o`, judged on what the write

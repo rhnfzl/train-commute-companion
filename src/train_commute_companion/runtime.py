@@ -56,7 +56,7 @@ from train_commute_companion.lifecycle import (
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import forget_pending, rebase_on_edit, reset_on_edit
 from train_commute_companion.lookahead_probe import service_date
-from train_commute_companion.lookahead_run import applied_run, lookahead_done, probe_direction
+from train_commute_companion.lookahead_run import apply_run, lookahead_done, probe_direction
 from train_commute_companion.match import usual_connection
 from train_commute_companion.messages import CHECK_APP, no_journey_text
 from train_commute_companion.model import (
@@ -111,7 +111,7 @@ from train_commute_companion.state import (
     PollFailure,
     PollRecord,
 )
-from train_commute_companion.state_writer import StateWriter
+from train_commute_companion.state_writer import Change, StateWriter
 from train_commute_companion.store import PersistedState, StorageError, Store
 from train_commute_companion.view import RuntimeView, runtime_view
 from train_commute_companion.webhook_queue import CopyQueue
@@ -406,14 +406,21 @@ class Runtime:
 
     def _app_warning(self, kind: EventKind, body: str, now: datetime, tag: str = "") -> None:
         o = self._app_obligation(kind, body, now, tag)
-        self._writer.st = replace(self._writer.st, obligations=(*self._writer.st.obligations, o))
+        st = self._writer.st
+        self._writer.propose(replace(st, obligations=(*st.obligations, o)))
 
     def _record(
-        self, s: OccurrenceState, events: Sequence[AlertEvent], now: datetime, polled: bool
+        self,
+        s: OccurrenceState,
+        events: Sequence[AlertEvent],
+        now: datetime,
+        polled: bool,
+        occs: Mapping[str, OccurrenceState],
     ) -> tuple[OccurrenceState, list[Obligation]]:
         """News (7.5) and escalation (rule 4) against the occurrence's delivery ledger.
         `polled`: the events are everything a healthy poll reports, so a reported fact it no
-        longer reports has ended and leaves the ledger (a recurrence is news again)."""
+        longer reports has ended and leaves the ledger (a recurrence is news again).
+        `occs`: the occurrences its alerts are told beside."""
         keys = dict(s.alert_keys)
         if polled:
             forget_ended(keys, events)
@@ -421,7 +428,7 @@ class Runtime:
         if not out:
             return (s if keys == s.alert_keys else replace(s, alert_keys=keys)), []
         twins = [
-            x for x in self._writer.st.occurrences.values()
+            x for x in occs.values()
             if x.key != s.key and x.key.profile_id == s.key.profile_id
             and x.key.direction is s.key.direction and not is_resolved(x)
         ]  # fmt: skip
@@ -438,37 +445,33 @@ class Runtime:
         self,
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]],
         polled: bool = False,
-        keep: bool = False,
-        stage: bool = True,
+        kind: Change = Change.RECOMPUTED,
     ) -> None:
         now = self._clock.now()
-        occs = dict(self._writer.st.occurrences)
-        obligations = list(self._writer.st.obligations)
+        st = self._writer.st
+        occs = dict(st.occurrences)
+        obligations = list(st.obligations)
         for k, (s, events) in changes.items():
             occs[k] = s  # twins see the occurrences written so far
-            self._writer.st = replace(self._writer.st, occurrences=occs)
-            s, new = self._record(s, events, now, polled)
+            s, new = self._record(s, events, now, polled, occs)
             occs[k] = s
             obligations += new
-        self._writer.st = replace(self._writer.st, occurrences=occs, obligations=tuple(obligations))
-        self._archive(now)
-        self._writer.save(keep, stage)
+        st = replace(st, occurrences=occs, obligations=tuple(obligations))
+        self._writer.commit(self._archived(st, now), kind)
 
-    def _archive(self, now: datetime) -> None:
+    def _archived(self, st: PersistedState, now: datetime) -> PersistedState:
         """Rule 6: an occurrence leaves the store once it ended and its pending journey warnings
         were delivered; it stays until its window closed so it is not created again."""
         occs = {}
-        for k, s in self._writer.st.occurrences.items():
-            ctx = self._ctx(s, now)
+        for k, s in st.occurrences.items():
+            ctx = occurrence_ctx(st, s, now)
             closed = ctx is None or to_utc(now) >= to_utc(ctx.schedule.window_end)
-            if closed and may_archive(
-                s, now, pending_journey_warnings(self._writer.st.obligations, s.key)
-            ):
+            if closed and may_archive(s, now, pending_journey_warnings(st.obligations, s.key)):
                 self._memory.forget(k)
                 continue
             occs[k] = s
         # snapshots are pruned on write
-        self._writer.st = replace(self._writer.st, occurrences=occs)
+        return replace(st, occurrences=occs)
 
     async def _deliver(self) -> None:
         """Every pending obligation, revalidated right before sending (rule 5). Merges by id,
@@ -510,35 +513,24 @@ class Runtime:
             and k not in self._memory.boards
         )
 
-    def _due(self, o: Obligation) -> bool:
-        w = self._writer
-        if o.id in w.gone:
-            return False  # finished while the store was down (rule 22)
-        mem = o.id in w.held or o.id in w.notes
-        if not mem and all(x.id != o.id for x in w.st.obligations):
-            return False  # removed by a change written while an earlier send awaited
-        return not self._waits(o)
-
     async def _deliver_pass(self) -> None:
         finished: set[str] = set()
         kept: dict[str, Obligation] = {}
         told: list[tuple[Obligation, bool]] = []  # finished LEAVE_NOW, sent (else dropped)
-        w, port = self._writer, self._queue.port
         copies = False  # the webhook copies changed
         try:
-            for o in (*w.st.obligations, *w.held.values(), *w.notes.values()):
-                if not self._due(o):
+            for o, held in self._writer.pending():
+                if self._waits(o):
                     continue
-                if port is not None and not o.webhook_copied and o.id not in self._queue.copied:
-                    copies |= self._queue.stage(o, o.id in w.held)
+                copies |= self._queue.stage(o, held)
                 # a fresh clock per message: a slow send must not leave the next one judged early
-                v = self._held_ledger if o.id in w.held else self._ledger
+                v = self._held_ledger if held else self._ledger
                 r, sent = await deliver(o, v, self._notifier, self._clock.now())
-                if r is not None and port is not None and not r.webhook_copied:
-                    r = replace(r, webhook_copied=True)
+                if r is not None:
+                    r = self._queue.after_send(r)
                 if r is None and o.event.kind is EventKind.LEAVE_NOW:
                     told.append((o, sent))
-                if w.settle(o, r, sent):
+                if self._writer.settle(o, r, sent):
                     continue
                 if r is None:
                     finished.add(o.id)
@@ -569,13 +561,8 @@ class Runtime:
             obligations = _survivors(st.obligations, finished, kept, marks)
             return replace(st, obligations=obligations, lookahead=ledgers)
 
-        self._writer.st = outcome(self._writer.st)
-        self._archive(self._clock.now())
-        w = self._writer
-        w.mark_finished(finished)
-        mem = set(w.held) | set(w.notes)  # read before a landed write empties `held`
-        if w.save(stage=False, op=outcome):
-            self._queue.delivery_written(mem)
+        st = self._archived(outcome(self._writer.st), self._clock.now())
+        self._writer.commit_delivery(st, outcome, finished)
 
     def _track_key_rejection(self, error: PollFailure | None, who: str, now: datetime) -> None:
         """`key_rejected` once per outage and again when each window opens while it lasts."""
@@ -614,9 +601,9 @@ class Runtime:
                     fresh,
                     baseline_signature=own,
                     baseline_frozen=True,
-                    alert_keys=self._writer.marks.get(k, {}),  # told while the store was down (r22)
+                    alert_keys=self._writer.marks_of(k),  # told while the store was down (r22)
                 )
-        self._writer.st = replace(self._writer.st, occurrences=occs)
+        self._writer.propose(replace(self._writer.st, occurrences=occs))
 
     async def poll_once(self) -> None:
         self._create_occurrences(self._clock.now())
@@ -869,11 +856,12 @@ class Runtime:
             if t.state != s or events:
                 changes[k] = (t.state, events)
         before = self._writer.st.occurrences
-        self._archive(now)  # a window closing is itself no change
+        # a window closing is itself no change
+        self._writer.propose(self._archived(self._writer.st, now))
         if changes:
-            self._apply(changes, stage=False)
+            self._apply(changes, kind=Change.TICK)
         elif self._writer.st.occurrences != before:
-            self._writer.save(stage=False)
+            self._writer.commit(self._writer.st, Change.TICK)
         await self._deliver()
 
     # --- user actions and location ---
@@ -913,7 +901,7 @@ class Runtime:
             if ctx is not None:
                 t = apply_action(s, ctx, action)
                 changes[k] = (t.state, t.events)
-        self._apply(changes, keep=True)  # nothing recomputes a user action (rule 22)
+        self._apply(changes, kind=Change.ACTION)
         await self._deliver()
         return None
 
@@ -1170,10 +1158,10 @@ class Runtime:
                 moved = replace(moved, generation=s.generation + 1)  # in-flight results are stale
             occs[k] = moved
         baselines, ledgers = _rebased(self._writer.st, old, new, today)
-        self._writer.st = replace(
+        self._writer.propose(replace(
             self._writer.st, config=new, config_snapshots=snaps, occurrences=occs,
             baselines=baselines, lookahead=ledgers,
-        )  # fmt: skip
+        ))  # fmt: skip
 
     async def reload_if_changed(self) -> None:
         """The file watch: reload when the file's mtime changes (or it disappears)."""
@@ -1239,10 +1227,9 @@ class Runtime:
             return got
 
         run = await probe_direction(self._writer.st, p, d, works, start, probe)
-        st = None if run is None else applied_run(self._writer.st, self._queue, p, d, run)
+        st = None if run is None else apply_run(self._writer.st, self._queue, p, d, run)
         if st is not None:
-            self._writer.st = st
-            self._writer.save(keep=True, stage=False)
+            self._writer.commit(st, Change.LOOKAHEAD)
 
     # --- start, reconcile and the loops ---
 
@@ -1264,10 +1251,11 @@ class Runtime:
             loaded = self._store.load()
         except StorageError as e:
             loaded, lost = None, str(e)
+        st = self._writer.st
         if loaded is not None:
-            self._writer.st = _restarted(loaded)
+            st = _restarted(loaded)
             self._queue.restore(loaded)
-        self._writer.begin(replace(self._writer.st, started_before=True))
+        self._writer.begin(replace(st, started_before=True))
         if lost is not None:  # rule 22: fresh state, loud, and a write clears "state lost"
             self._app_warning(EventKind.STORAGE_FAILED, f"saved state was lost ({lost}).", now)
         try:
