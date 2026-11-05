@@ -525,7 +525,7 @@ class Runtime:
         phone send or the loop that delivers (an alert's advice can expire)."""
         async with self._sending:
             await self._deliver_pass()
-        self._queue.soon()
+        self._queue.post_soon()
 
     def _storage_note(self) -> Obligation:
         return self._app_obligation(

@@ -47,7 +47,7 @@ class CopyQueue:
         self._post_task: asyncio.Task[None] | None = None  # the running webhook pass
         self._post_again = False
 
-    def written(self, st: PersistedState) -> PersistedState:
+    def with_copies(self, st: PersistedState) -> PersistedState:
         """`st` with the owed copies and each URL's rest, as every save writes them."""
         port = self.port
         down = {} if port is None else {url_id(u): t for u, t in port.down.items()}
@@ -136,7 +136,7 @@ class CopyQueue:
         else:
             self.copies[c.id] = merged
 
-    def soon(self) -> None:
+    def post_soon(self) -> None:
         """A webhook pass now, or one more round of the running one (copies made meanwhile)."""
         port = self.port
         if port is None:

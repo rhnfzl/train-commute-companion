@@ -25,7 +25,7 @@ class Outbox(Protocol):
 
     copied: set[str]
 
-    def written(self, st: PersistedState) -> PersistedState: ...
+    def with_copies(self, st: PersistedState) -> PersistedState: ...
 
 
 def _held_id(o: Obligation) -> tuple[str | None, str, Severity]:
@@ -213,7 +213,7 @@ class StateWriter:
                 if isinstance(x, _Delta):
                     x.supersede(mine)
         try:
-            write = _prune(self._outbox.written(self._compose(cand)))
+            write = _prune(self._outbox.with_copies(self._compose(cand)))
             self._store.save(write)
         except StorageError as e:
             self._pend(cand, stage, op)
