@@ -1,3 +1,5 @@
+import asyncio
+import threading
 from dataclasses import replace
 from datetime import date
 
@@ -8,6 +10,7 @@ from harness import B_ONLY, PROFILE, drive, setup_tcc, write_profiles
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from runtime_rig import at
 
+from custom_components.train_commute_companion import services
 from custom_components.train_commute_companion.const import DOMAIN
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.model import Direction, DirectionState, OccurrenceKey
@@ -212,3 +215,24 @@ async def test_a_stopped_runtime_is_a_service_error(hass):
     with pytest.raises(HomeAssistantError, match="not running"):
         await hass.services.async_call(DOMAIN, "leaving", {"profile": "office_a"}, blocking=True)
     host.retired.clear()
+
+
+async def test_a_cancelled_caller_leaves_the_runtime_call_to_finish(hass):
+    h = await setup_tcc(hass, PROFILE)
+    started, release = threading.Event(), threading.Event()
+    finished: list[bool] = []
+
+    async def delivery_pass(rt) -> None:
+        started.set()
+        await asyncio.to_thread(release.wait, 5)
+        finished.append(True)
+
+    # the frozen clock never fires RUN_TIMEOUT_S, and a timeout is this same cancellation
+    caller = asyncio.create_task(services._call_runtime(h.entry.runtime_data, delivery_pass))
+    await asyncio.to_thread(started.wait, 5)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    release.set()
+    await asyncio.gather(*services._running)
+    assert finished == [True]

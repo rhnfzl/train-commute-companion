@@ -101,6 +101,7 @@ class RuntimeHost:
     async def run[T](self, fn: Callable[[Runtime], T]) -> T: ...
 
     async def run[T](self, fn: Callable[[Runtime], Awaitable[T] | T]) -> T:
+        """`fn` on the runtime's loop. Cancelling the caller cancels the call there."""
         loop, parts = self._loop, self._parts
         if loop is None or parts is None or self.retired.is_set():
             raise RuntimeNotRunning("the runtime is not running")

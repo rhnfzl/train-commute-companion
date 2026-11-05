@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import date, time
+from typing import Any
 
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -19,6 +20,8 @@ from .host import RuntimeNotRunning
 
 # a choice holds one live request under the core's 90 s deadline
 RUN_TIMEOUT_S = 120
+# calls that outlived their caller: the loop keeps only a weak reference to a task
+_running: set[asyncio.Future[Any]] = set()
 
 BASE = {
     vol.Required("profile"): cv.string,
@@ -54,9 +57,14 @@ def resolve(hass: HomeAssistant, profile: str) -> tuple[TccData, str, str]:
 
 
 async def _call_runtime[T](data: TccData, fn: Callable[[Runtime], Awaitable[T]]) -> T:
+    """The runtime call is its own task: a timeout or a cancelled caller leaves it to finish (a
+    cancelled delivery pass after a send would repeat that alert). `RuntimeHost.stop` ends it."""
+    task = asyncio.ensure_future(data.host.run(fn))
+    _running.add(task)
+    task.add_done_callback(_running.discard)
     try:
         async with asyncio.timeout(RUN_TIMEOUT_S):
-            return await data.host.run(fn)
+            return await asyncio.shield(task)
     except TimeoutError:
         raise HomeAssistantError("the companion is not answering; try again") from None
     except RuntimeNotRunning:
