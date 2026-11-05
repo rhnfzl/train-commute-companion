@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 from train_commute_companion.lifecycle import OccurrenceState
-from train_commute_companion.lookahead import BaselineHistory
+from train_commute_companion.lookahead_probe import BaselineHistory
 from train_commute_companion.model import (
     Config,
     Ctx,

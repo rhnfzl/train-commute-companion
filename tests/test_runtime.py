@@ -25,7 +25,7 @@ from runtime_rig import (
 from train_commute_companion.budget import RequestBudget
 from train_commute_companion.lifecycle import Choose, LockSource, origin_answer
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.lookahead import BaselineHistory
+from train_commute_companion.lookahead_probe import BaselineHistory
 from train_commute_companion.model import (
     AlertEvent,
     Connection,
@@ -1148,7 +1148,7 @@ def _nine_twelve_on(day: date) -> Connection:
 async def test_removed_and_readded_profile_starts_from_the_file(tmp_path):
     from runtime_rig import sig
 
-    from train_commute_companion.lookahead import BaselineVersion
+    from train_commute_companion.lookahead_probe import BaselineVersion
 
     rig = Rig(tmp_path, "06:00")
     hist = BaselineHistory((BaselineVersion(1, sig(time(8, 12), time(8, 50)), date(2026, 10, 1),

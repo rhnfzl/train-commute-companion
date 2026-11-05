@@ -13,7 +13,7 @@ from typing import Any, Protocol
 
 from train_commute_companion.calendar import to_utc
 from train_commute_companion.lifecycle import OccurrenceState
-from train_commute_companion.lookahead import BaselineHistory, LookAheadLedger
+from train_commute_companion.lookahead_probe import BaselineHistory, LookAheadLedger
 from train_commute_companion.model import (
     Config,
     EventKind,

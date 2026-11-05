@@ -20,7 +20,7 @@ from train_commute_companion.lifecycle import (
     on_poll,
 )
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.lookahead import BaselineHistory
+from train_commute_companion.lookahead_probe import BaselineHistory
 from train_commute_companion.model import (
     AdviceRecord,
     AlertEvent,

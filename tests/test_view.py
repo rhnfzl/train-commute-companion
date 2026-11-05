@@ -5,7 +5,11 @@ import runtime_seam as seam
 from builders import ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from runtime_rig import PROFILE, FakeClock, MemoryStore, Notifier, Provider, at
 
-from train_commute_companion.lookahead import BaselineHistory, BaselineVersion, LookAheadLedger
+from train_commute_companion.lookahead_probe import (
+    BaselineHistory,
+    BaselineVersion,
+    LookAheadLedger,
+)
 from train_commute_companion.model import (
     Direction,
     DirectionState,

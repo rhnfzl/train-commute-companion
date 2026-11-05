@@ -26,6 +26,14 @@ from lookahead_fixtures import (
 )
 
 from train_commute_companion.lookahead import (
+    carried_ids,
+    forget_pending,
+    overlaps_next,
+    rebase_on_edit,
+    reset_on_edit,
+    run_lookahead,
+)
+from train_commute_companion.lookahead_probe import (
     BaselineHistory,
     BaselineVersion,
     LookAheadLedger,
@@ -33,17 +41,11 @@ from train_commute_companion.lookahead import (
     ProbeResult,
     adopt_key,
     cancel_key,
-    carried_ids,
     day_key,
     evaluate,
-    forget_pending,
-    overlaps_next,
     probe_dates,
     probe_queries,
     probed_end,
-    rebase_on_edit,
-    reset_on_edit,
-    run_lookahead,
     signature_of,
     signature_text,
     split_day_key,

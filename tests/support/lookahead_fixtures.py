@@ -5,13 +5,13 @@ from datetime import date, datetime, time, timedelta
 
 from builders import AMS, make_connection, make_leg
 
-from train_commute_companion.lookahead import (
+from train_commute_companion.lookahead import run_lookahead
+from train_commute_companion.lookahead_probe import (
     BaselineHistory,
     BaselineVersion,
     LookAheadLedger,
     ProbeResult,
     evaluate,
-    run_lookahead,
     signature_of,
 )
 from train_commute_companion.model import Direction

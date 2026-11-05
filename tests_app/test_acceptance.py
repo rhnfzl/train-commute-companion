@@ -36,7 +36,7 @@ from tcc_app.owntracks import handler
 from tcc_app.web import health_for
 from webhook_receiver import Receiver
 
-from train_commute_companion.lookahead import BaselineHistory, BaselineVersion
+from train_commute_companion.lookahead_probe import BaselineHistory, BaselineVersion
 from train_commute_companion.model import Severity, Signature, SignatureLeg
 from train_commute_companion.store import JsonFileStore
 from train_commute_companion.webhook import PROBE_LOUD, PROBE_SILENT, WebhookTestResult

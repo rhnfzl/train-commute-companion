@@ -35,12 +35,8 @@ from runtime_rig import (
 
 from train_commute_companion.lifecycle import origin_answer
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.lookahead import (
-    BaselineHistory,
-    BaselineVersion,
-    LookAheadFact,
-    render_message,
-)
+from train_commute_companion.lookahead import render_message
+from train_commute_companion.lookahead_probe import BaselineHistory, BaselineVersion, LookAheadFact
 from train_commute_companion.model import (
     AlertEvent,
     DirectionState,

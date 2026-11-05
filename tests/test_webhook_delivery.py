@@ -38,12 +38,8 @@ from runtime_rig import (
 from webhook_receiver import Receiver
 
 from train_commute_companion import webhook_send
-from train_commute_companion.lookahead import (
-    BaselineHistory,
-    BaselineVersion,
-    render_message,
-    signature_of,
-)
+from train_commute_companion.lookahead import render_message
+from train_commute_companion.lookahead_probe import BaselineHistory, BaselineVersion, signature_of
 from train_commute_companion.model import (
     AlertEvent,
     Direction,

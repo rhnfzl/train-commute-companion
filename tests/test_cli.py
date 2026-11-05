@@ -6,7 +6,7 @@ import pytest
 from lifecycle_fixtures import full_state
 
 from train_commute_companion.cli import main, moved_lines
-from train_commute_companion.lookahead import BaselineHistory, BaselineVersion
+from train_commute_companion.lookahead_probe import BaselineHistory, BaselineVersion
 from train_commute_companion.model import Signature, SignatureLeg
 from train_commute_companion.serde import encode
 from train_commute_companion.store import VERSION, PersistedState

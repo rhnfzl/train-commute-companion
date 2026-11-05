@@ -34,7 +34,7 @@ from webhook_receiver import Receiver
 
 from custom_components.train_commute_companion import validate
 from custom_components.train_commute_companion.const import DOMAIN
-from train_commute_companion.lookahead import BaselineHistory, BaselineVersion
+from train_commute_companion.lookahead_probe import BaselineHistory, BaselineVersion
 from train_commute_companion.model import Signature, SignatureLeg
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.replay import Replay, apply_event, load_replay

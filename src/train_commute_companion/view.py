@@ -21,7 +21,7 @@ from train_commute_companion.lifecycle import (
     observe,
     unfinished_leg,
 )
-from train_commute_companion.lookahead import (
+from train_commute_companion.lookahead_probe import (
     WHOLE_JOURNEY,
     BaselineHistory,
     LookAheadLedger,

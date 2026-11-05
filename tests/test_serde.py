@@ -5,7 +5,7 @@ import pytest
 from lifecycle_fixtures import L1, L2, RIDE, at, full_state, journey, occ
 
 from train_commute_companion.lifecycle import OccurrenceState
-from train_commute_companion.lookahead import LookAheadFact, LookAheadLedger
+from train_commute_companion.lookahead_probe import LookAheadFact, LookAheadLedger
 from train_commute_companion.serde import decode, dumps, loads
 from train_commute_companion.store import PersistedState
 

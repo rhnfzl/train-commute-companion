@@ -8,19 +8,17 @@ from datetime import datetime
 
 from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.health import PollFailure
-from train_commute_companion.lookahead import (
+from train_commute_companion.lookahead import carried_ids, render_message, run_lookahead
+from train_commute_companion.lookahead_probe import (
     BaselineHistory,
     LookAheadFact,
     LookAheadLedger,
     ProbeResult,
     adopt_key,
     bundle_key,
-    carried_ids,
     evaluate,
     probe_dates,
     probe_queries,
-    render_message,
-    run_lookahead,
     service_date,
 )
 from train_commute_companion.model import Direction, Obligation, Profile, direction_key, present

@@ -52,14 +52,8 @@ from train_commute_companion.lifecycle import (
     whole_day_keys,
 )
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.lookahead import (
-    BaselineHistory,
-    LookAheadLedger,
-    forget_pending,
-    rebase_on_edit,
-    reset_on_edit,
-    service_date,
-)
+from train_commute_companion.lookahead import forget_pending, rebase_on_edit, reset_on_edit
+from train_commute_companion.lookahead_probe import BaselineHistory, LookAheadLedger, service_date
 from train_commute_companion.lookahead_run import applied_run, lookahead_done, probe_direction
 from train_commute_companion.match import usual_connection
 from train_commute_companion.messages import CHECK_APP, no_journey_text

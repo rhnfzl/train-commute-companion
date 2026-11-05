@@ -28,13 +28,8 @@ from train_commute_companion.lifecycle import (
     merged_pool,
     origin_answer,
 )
-from train_commute_companion.lookahead import (
-    BaselineHistory,
-    LookAheadFact,
-    entry_mark,
-    render_message,
-    split_fact_key,
-)
+from train_commute_companion.lookahead import entry_mark, render_message
+from train_commute_companion.lookahead_probe import BaselineHistory, LookAheadFact, split_fact_key
 from train_commute_companion.model import (
     LIVE_PREFIX,
     SENT_PREFIX,

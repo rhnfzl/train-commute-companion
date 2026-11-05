@@ -19,13 +19,8 @@ from lookahead_fixtures import (
     run,
 )
 
-from train_commute_companion.lookahead import (
-    BaselineHistory,
-    BaselineVersion,
-    probe_queries,
-    rebase_on_edit,
-    run_lookahead,
-)
+from train_commute_companion.lookahead import rebase_on_edit, run_lookahead
+from train_commute_companion.lookahead_probe import BaselineHistory, BaselineVersion, probe_queries
 
 
 def test_in_force_picks_latest_effective_version_and_waits_for_future_ones():
