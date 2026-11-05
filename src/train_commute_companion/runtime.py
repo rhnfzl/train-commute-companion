@@ -53,6 +53,8 @@ from train_commute_companion.lifecycle import (
 )
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import (
+    BaselineHistory,
+    LookAheadLedger,
     forget_pending,
     rebase_on_edit,
     reset_on_edit,
@@ -224,6 +226,76 @@ async def _run_together(*steps: Coroutine[Any, Any, None]) -> None:
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _forget_ended(keys: dict[str, str], events: Sequence[AlertEvent]) -> None:
+    emitted = {e.key for e in events}
+    for k in [k for k in keys if k.startswith(LIVE_PREFIX)]:
+        if k[len(LIVE_PREFIX) :] not in emitted:
+            keys.pop(k)
+            keys.pop(SENT_PREFIX + k[len(LIVE_PREFIX) :], None)
+    keys.update({LIVE_PREFIX + k: "1" for k in emitted})
+
+
+def _news(keys: Mapping[str, str], events: Sequence[AlertEvent], now: datetime) -> list[AlertEvent]:
+    """The events not told yet, and the told silent facts that now go loud."""
+    sent = {
+        k[len(SENT_PREFIX) :]: Severity(v) for k, v in keys.items() if k.startswith(SENT_PREFIX)
+    }
+    out = list(unsent(sent, events))
+    facts = [
+        Fact(e.key, e.kind, e.train.planned_departure if e.train else None)
+        for e in events
+        if sent.get(e.key) is Severity.SILENT
+    ]
+    loud = set(escalations(sent, facts, now))
+    # a known fact that turned loud itself (an arrival now past the limit) goes once more
+    loud |= {e.key for e in events if e.severity is Severity.LOUD}
+    out += [
+        replace(e, severity=Severity.LOUD)
+        for e in {e.key: e for e in events}.values()
+        if e.key in loud and sent.get(e.key) is Severity.SILENT
+    ]
+    return out
+
+
+def _rebased(
+    st: PersistedState, old: Config | None, new: Config, today: date
+) -> tuple[dict[str, BaselineHistory], dict[str, LookAheadLedger]]:
+    """The baselines and look-ahead ledgers after a profile file edit."""
+    baselines, ledgers = dict(st.baselines), dict(st.lookahead)
+    for p in new.profiles:
+        q = find_profile(old, p.id)
+        # removed and added again: its old history goes, so it starts from the file like a
+        # new profile (a first configuration has no earlier profiles to forget)
+        if q is None:
+            for d in Direction if old is not None else ():
+                baselines.pop(direction_key(p.id, d), None)
+                ledgers.pop(direction_key(p.id, d), None)
+            continue
+        for d in Direction:
+            dk = direction_key(p.id, d)
+            hist = baselines.get(dk)
+            if hist is None:
+                continue
+            if dk in ledgers:
+                ledgers[dk] = reset_on_edit(q, p, d, hist, ledgers[dk], today)
+                if not same_route(q, p):  # rule 5(c) drops its pending messages
+                    ledgers[dk] = forget_pending(ledgers[dk])
+            baselines[dk] = rebase_on_edit(q, p, d, hist, today)
+    return baselines, ledgers
+
+
+def _survivors(
+    xs: Iterable[Obligation],
+    finished: set[str],
+    kept: Mapping[str, Obligation],
+    marks: set[str],
+) -> tuple[Obligation, ...]:
+    return tuple(
+        replace(o, webhook_copied=True) if o.id in marks else o
+        for o in (kept.get(x.id, x) for x in xs if x.id not in finished)
+    )
 
 
 class Runtime:
@@ -399,29 +471,8 @@ class Runtime:
         longer reports has ended and leaves the ledger (a recurrence is news again)."""
         keys = dict(s.alert_keys)
         if polled:
-            emitted = {e.key for e in events}
-            for k in [k for k in keys if k.startswith(LIVE_PREFIX)]:
-                if k[len(LIVE_PREFIX) :] not in emitted:
-                    keys.pop(k)
-                    keys.pop(SENT_PREFIX + k[len(LIVE_PREFIX) :], None)
-            keys.update({LIVE_PREFIX + k: "1" for k in emitted})
-        sent = {
-            k[len(SENT_PREFIX) :]: Severity(v) for k, v in keys.items() if k.startswith(SENT_PREFIX)
-        }
-        out = list(unsent(sent, events))
-        facts = [
-            Fact(e.key, e.kind, e.train.planned_departure if e.train else None)
-            for e in events
-            if sent.get(e.key) is Severity.SILENT
-        ]
-        loud = set(escalations(sent, facts, now))
-        # a known fact that turned loud itself (an arrival now past the limit) goes once more
-        loud |= {e.key for e in events if e.severity is Severity.LOUD}
-        out += [
-            replace(e, severity=Severity.LOUD)
-            for e in {e.key: e for e in events}.values()
-            if e.key in loud and sent.get(e.key) is Severity.SILENT
-        ]
+            _forget_ended(keys, events)
+        out = _news(keys, events, now)
         if not out:
             return (s if keys == s.alert_keys else replace(s, alert_keys=keys)), []
         twins = [
@@ -517,6 +568,15 @@ class Runtime:
             and k not in self._memory.boards
         )
 
+    def _due(self, o: Obligation) -> bool:
+        w = self._writer
+        if o.id in w.gone:
+            return False  # finished while the store was down (rule 22)
+        mem = o.id in w.held or o.id in w.notes
+        if not mem and all(x.id != o.id for x in w.st.obligations):
+            return False  # removed by a change written while an earlier send awaited
+        return not self._waits(o)
+
     async def _deliver_pass(self) -> None:
         finished: set[str] = set()
         kept: dict[str, Obligation] = {}
@@ -525,12 +585,7 @@ class Runtime:
         copies = False  # the webhook copies changed
         try:
             for o in (*w.st.obligations, *w.held.values(), *w.notes.values()):
-                if o.id in w.gone:
-                    continue  # finished while the store was down (rule 22)
-                mem = o.id in w.held or o.id in w.notes
-                if not mem and all(x.id != o.id for x in w.st.obligations):
-                    continue  # removed by a change written while an earlier send awaited
-                if self._waits(o):
+                if not self._due(o):
                     continue
                 if port is not None and not o.webhook_copied and o.id not in self._queue.copied:
                     copies |= self._queue.stage(o, o.id in w.held)
@@ -563,16 +618,14 @@ class Runtime:
         marks = set(self._queue.copied)  # written too: a phone send in flight is not in `kept` yet
 
         def outcome(st: PersistedState) -> PersistedState:
-            def survive(xs: Iterable[Obligation]) -> tuple[Obligation, ...]:
-                return tuple(
-                    replace(o, webhook_copied=True) if o.id in marks else o
-                    for o in (kept.get(x.id, x) for x in xs if x.id not in finished)
-                )
-
             # look-ahead messages live in their ledger too, so a delivered one counts as told
-            ledgers = {k: replace(v, pending=survive(v.pending)) for k, v in st.lookahead.items()}
+            ledgers = {
+                k: replace(v, pending=_survivors(v.pending, finished, kept, marks))
+                for k, v in st.lookahead.items()
+            }
             st = _advice_told(st, told)
-            return replace(st, obligations=survive(st.obligations), lookahead=ledgers)
+            obligations = _survivors(st.obligations, finished, kept, marks)
+            return replace(st, obligations=obligations, lookahead=ledgers)
 
         self._writer.st = outcome(self._writer.st)
         self._archive(self._clock.now())
@@ -594,6 +647,22 @@ class Runtime:
         elif self._budget is before:
             self._budget = RequestBudget()
 
+    async def _ask(
+        self, q: Query, left: float
+    ) -> tuple[ProviderAnswer | None, PollFailure | None, BaseException | None]:
+        try:
+            return await asyncio.wait_for(self._provider.trips(q), left), None, None
+        except TimeoutError:
+            return None, "timeout", None
+        except AuthError as e:
+            return None, "auth", e
+        except RateLimited as e:
+            return None, "rate", e
+        except MalformedAnswer as e:
+            return None, "parse", e
+        except ProviderError as e:
+            return None, "provider", e
+
     async def _fetch(
         self,
         q: Query,
@@ -614,21 +683,7 @@ class Runtime:
         before = self._budget
         self.requests += 1
         log.debug("request %d: %s", self.requests, q)
-        error: PollFailure | None = None
-        exc: BaseException | None = None
-        answer = None
-        try:
-            answer = await asyncio.wait_for(self._provider.trips(q), left)
-        except TimeoutError:
-            error = "timeout"
-        except AuthError as e:
-            error, exc = "auth", e
-        except RateLimited as e:
-            error, exc = "rate", e
-        except MalformedAnswer as e:
-            error, exc = "parse", e
-        except ProviderError as e:
-            error, exc = "provider", e
+        answer, error, exc = await self._ask(q, left)
         now = self._clock.now()
         if error is None and to_utc(now) > to_utc(deadline):
             error = "timeout"  # a late answer never overwrites a newer one (7.1)
@@ -743,27 +798,40 @@ class Runtime:
         st, events = t.state, list(t.events)
         current = s.generation == gen
         if current:  # a choice since the poll started makes the answer stale
-            # the whole poll's evidence for the watchdog, the auto lock and advice (6.2)
-            merged = origin_answer(answers, ctx)
-            if merged is not None and s.lock is None:
-                self._remember_usual(k, ctx, merged)
-            tick = on_tick(st, ctx, merged)
-            st, events = tick.state, [*events, *tick.events]
-            if st.lock is not None and not st.all_good_evaluated:
-                good = all_good(st, board, ctx)  # Q4: judged once, at the first poll with a lock
-                st = replace(st, all_good_evaluated=True)
-                events += [good] if good else []
-            if merged is not None:
-                # no reference: an absent or broken usual still makes waiting bad (7.6)
-                arrival = usual_arrival(st, ctx, merged)
-                record, more = advise(st, ctx, merged, arrival)
-                if ctx.signature is None and arrival is not None:  # never a relock's arrival
-                    record = replace(record, usual_arrival=arrival)
-                st, events = replace(st, advice=record), [*events, *more]
-            if answers:
-                self._remember(k, st, answers)
-                self._memory.boards[k] = answers
+            st, events = self._judge_poll(k, s.lock is None, st, events, ctx, board)
         self._apply({k: (st, events)}, polled=current and bool(answers))
+
+    def _judge_poll(
+        self,
+        k: str,
+        unlocked: bool,
+        st: OccurrenceState,
+        events: list[AlertEvent],
+        ctx: Ctx,
+        board: Board,
+    ) -> tuple[OccurrenceState, list[AlertEvent]]:
+        answers = board.answers
+        # the whole poll's evidence for the watchdog, the auto lock and advice (6.2)
+        merged = origin_answer(answers, ctx)
+        if merged is not None and unlocked:
+            self._remember_usual(k, ctx, merged)
+        tick = on_tick(st, ctx, merged)
+        st, events = tick.state, [*events, *tick.events]
+        if st.lock is not None and not st.all_good_evaluated:
+            good = all_good(st, board, ctx)  # Q4: judged once, at the first poll with a lock
+            st = replace(st, all_good_evaluated=True)
+            events += [good] if good else []
+        if merged is not None:
+            # no reference: an absent or broken usual still makes waiting bad (7.6)
+            arrival = usual_arrival(st, ctx, merged)
+            record, more = advise(st, ctx, merged, arrival)
+            if ctx.signature is None and arrival is not None:  # never a relock's arrival
+                record = replace(record, usual_arrival=arrival)
+            st, events = replace(st, advice=record), [*events, *more]
+        if answers:
+            self._remember(k, st, answers)
+            self._memory.boards[k] = answers
+        return st, events
 
     def _remember_usual(self, k: str, ctx: Ctx, merged: Pool) -> None:
         """Before a lock: what the poll shows of every usual leg (rules 13, 20), each as its
@@ -1222,26 +1290,7 @@ class Runtime:
             if effective_profile(snaps, new, moved) != self._profile_for(s):
                 moved = replace(moved, generation=s.generation + 1)  # in-flight results are stale
             occs[k] = moved
-        baselines, ledgers = dict(self._writer.st.baselines), dict(self._writer.st.lookahead)
-        for p in new.profiles:
-            q = find_profile(old, p.id)
-            # removed and added again: its old history goes, so it starts from the file like a
-            # new profile (a first configuration has no earlier profiles to forget)
-            if q is None:
-                for d in Direction if old is not None else ():
-                    baselines.pop(direction_key(p.id, d), None)
-                    ledgers.pop(direction_key(p.id, d), None)
-                continue
-            for d in Direction:
-                dk = direction_key(p.id, d)
-                hist = baselines.get(dk)
-                if hist is None:
-                    continue
-                if dk in ledgers:
-                    ledgers[dk] = reset_on_edit(q, p, d, hist, ledgers[dk], today)
-                    if not same_route(q, p):  # rule 5(c) drops its pending messages
-                        ledgers[dk] = forget_pending(ledgers[dk])
-                baselines[dk] = rebase_on_edit(q, p, d, hist, today)
+        baselines, ledgers = _rebased(self._writer.st, old, new, today)
         self._writer.st = replace(
             self._writer.st, config=new, config_snapshots=snaps, occurrences=occs,
             baselines=baselines, lookahead=ledgers,
