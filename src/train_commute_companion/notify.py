@@ -8,7 +8,10 @@ from train_commute_companion.model import AlertEvent
 
 
 class Notifier(Protocol):
-    async def send(self, event: AlertEvent) -> bool: ...
+    async def send(self, event: AlertEvent) -> bool:
+        """True when the message got through. False or an exception is a failed attempt, which
+        the runtime retries."""
+        ...
 
 
 class WebhookPort(Protocol):
