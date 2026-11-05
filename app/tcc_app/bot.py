@@ -62,9 +62,9 @@ class ShellState:
 
 def load_state(path: Path) -> ShellState | None:
     try:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
         s = ShellState(**raw)
-        if not isinstance(s.offset, int) or not all(
+        if isinstance(s.offset, bool) or not isinstance(s.offset, int) or not all(
             v is None or isinstance(v, str) for v in (s.bot_id, s.confirmed_for)
         ):
             raise ValueError("wrong types")
@@ -80,7 +80,10 @@ def load_state(path: Path) -> ShellState | None:
 def save_state(path: Path, s: ShellState) -> None:
     tmp = path.with_name(path.name + ".tmp")
     try:
-        tmp.write_text(json.dumps(asdict(s)))
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(asdict(s)))
+            f.flush()
+            os.fsync(f.fileno())  # a power loss must not leave an empty file behind the rename
         os.replace(tmp, path)
     except OSError:
         with contextlib.suppress(OSError):

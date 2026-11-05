@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -650,3 +651,13 @@ async def test_a_failed_view_is_not_read_as_a_target_refusal(app, monkeypatch, c
     await app.bot.handle(app.msg(command))
     assert app.texts() == ["That failed; see the app log."]
     assert "Telegram command failed" in caplog.text
+
+
+def test_shell_state_rejects_a_bool_offset_and_syncs_what_it_saves(tmp_path, monkeypatch):
+    path = tmp_path / "telegram.json"
+    path.write_text('{"offset": true}', encoding="utf-8")
+    assert load_state(path) is None
+    synced: list[int] = []
+    monkeypatch.setattr(os, "fsync", synced.append)
+    save_state(path, ShellState(3))
+    assert synced and load_state(path) == ShellState(3)
