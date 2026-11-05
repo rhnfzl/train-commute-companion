@@ -104,7 +104,7 @@ def alert_facts(e: AlertEvent) -> AlertFacts:
 
 
 def states_current(e: AlertEvent, keys: Mapping[str, str]) -> bool:
-    """A delay message whose stated values are still the ones remembered (`_stated`)."""
+    """A delay message whose stated values are still the ones `lifecycle.keep_stated` remembers."""
     return all(keys.get(t.slot) == t.said for t in alert_facts(e).told)
 
 
