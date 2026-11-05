@@ -82,6 +82,20 @@ def test_old_files_load_without_copies():
     assert [o.webhook_copied for o in back.lookahead["p1"].pending] == [False]
 
 
+@pytest.mark.parametrize(
+    "tp, v",
+    [
+        (datetime, "9999-12-31T22:30:00+00:00"),
+        (datetime, "0001-01-02T00:00:00+00:00"),
+        (date, "9999-12-31"),
+        (date, "0001-01-01"),
+    ],
+)
+def test_a_value_at_the_calendars_edge_is_a_value_error(tp, v):
+    with pytest.raises(ValueError, match="expected"):
+        decode(tp, v)
+
+
 def test_a_datetime_out_of_range_in_our_zone_is_a_value_error():
     with pytest.raises(ValueError, match="expected"):
         decode(datetime, "0001-01-01T00:00:00+14:00")

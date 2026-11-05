@@ -238,7 +238,12 @@ def test_current_file_without_delivered_is_kept_aside(tmp_path):
 def test_too_deep_or_out_of_range_store_kept_aside(tmp_path):
     raw = encode(full_state())
     raw["webhook_down"] = {"u": "0001-01-01T00:00:00+14:00"}
-    for text in ("[" * 100_000, json.dumps({"version": VERSION, "write_counter": 1, "state": raw})):
+    near_edge = {**raw, "webhook_down": {"u": "9999-12-31T22:30:00+00:00"}}
+    for text in (
+        "[" * 100_000,
+        json.dumps({"version": VERSION, "write_counter": 1, "state": raw}),
+        json.dumps({"version": VERSION, "write_counter": 1, "state": near_edge}),
+    ):
         path = tmp_path / "state.json"
         path.write_text(text)
         with pytest.raises(StorageError, match="broken-"):

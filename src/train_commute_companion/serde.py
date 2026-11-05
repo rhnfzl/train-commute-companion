@@ -4,7 +4,7 @@ added with a default loads from a file written before it existed (a missing key 
 import json
 from collections.abc import Mapping
 from dataclasses import MISSING, fields, is_dataclass
-from datetime import date, datetime, time
+from datetime import MAXYEAR, MINYEAR, date, datetime, time
 from enum import Enum
 from types import NoneType, UnionType
 from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
@@ -32,6 +32,13 @@ def encode(obj: object) -> Any:
 
 def _bad(tp: object, v: object) -> ValueError:
     return ValueError(f"expected {tp}, got {v!r}")
+
+
+def _with_room[D: date](d: D, v: object) -> D:
+    """`d`, unless it is too near the calendar's edge for the time arithmetic done on it later."""
+    if d.year in (MINYEAR, MAXYEAR):
+        raise _bad(type(d), v)
+    return d
 
 
 def decode(tp: Any, v: Any) -> Any:
@@ -78,11 +85,12 @@ def decode(tp: Any, v: Any) -> Any:
             if d.tzinfo is None:
                 raise ValueError(f"naive datetime {v!r}")
             try:
-                return d.astimezone(TZ)
+                local = d.astimezone(TZ)
             except OverflowError:  # valid in its own offset, out of range in ours
                 raise _bad(tp, v) from None
+            return _with_room(local, v)
         if tp is date:
-            return date.fromisoformat(v)
+            return _with_room(date.fromisoformat(v), v)
         if tp is time:
             return time.fromisoformat(v)
         if is_dataclass(tp):
