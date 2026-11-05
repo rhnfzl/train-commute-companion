@@ -80,6 +80,7 @@ from train_commute_companion.model import (
     direction_key,
     display_name,
     okey,
+    present,
 )
 from train_commute_companion.news import Fact, all_good, escalations, severity, unsent
 from train_commute_companion.notify import Notifier, WebhookPort
@@ -676,9 +677,9 @@ class Runtime:
             error = "timeout"  # a late answer never overwrites a newer one (7.1)
         if exc is not None or error is None:  # a timeout neither backs off nor resets it
             self._update_budget(before, exc, window_end)
-        if error is not None or answer is None:
-            return error or "provider"
-        return answer
+        if error is not None:
+            return error
+        return present(answer)  # _ask gives an answer or a failure, never neither
 
     async def _fetch_all(
         self,
@@ -765,26 +766,29 @@ class Runtime:
         gen, end = s.generation, ctx.schedule.window_end
         deadline = to_utc(now) + POLL_DEADLINE  # one hard deadline for every request (7.1)
         got = await self._fetch_all(queries_needed(s, ctx), True, end, deadline)
-        extra: ProviderAnswer | PollFailure | None = None
-        if not isinstance(got, str) and (usual := origin_answer(got, ctx)) is not None:
+        error = got if isinstance(got, str) else None
+        answers = () if isinstance(got, str) else got
+        advice_error: PollFailure | None = None
+        if error is None and (usual := origin_answer(answers, ctx)) is not None:
             # 7.6: an earlier catchable train is before the time the poll asked from; a failed
             # search leaves advice to the poll's own answers and never fails the poll
             q = advice_query(s, ctx, usual, usual_arrival(s, ctx, usual))
             extra = None if q is None else await self._fetch(q, True, end, deadline)
-            got = got if extra is None or isinstance(extra, str) else (*got, extra)
+            if isinstance(extra, str):
+                advice_error = extra
+            elif extra is not None:
+                answers = (*answers, extra)
         now = self._clock.now()
         s = self._writer.st.occurrences.get(k)
         ctx = None if s is None else self._ctx(s, now)
         if s is None or ctx is None:
             return
-        error = got if isinstance(got, str) else None
-        if error is None and extra == "auth":
+        if advice_error == "auth":
             # 7.11: a rejected key on the advice search is reported like any other, loudly;
             # the main answers still count as observations
             error = "auth"
-        elif isinstance(extra, str):
-            log.warning("advice search for %s failed (%s)", k, extra)
-        answers = () if isinstance(got, str) else got
+        elif advice_error is not None:
+            log.warning("advice search for %s failed (%s)", k, advice_error)
         self._auth(error, k, now)
         board = Board(answers, (PollRecord(now, error is None, error),), gen)
         t = on_poll(s, ctx, board)
@@ -1176,20 +1180,23 @@ class Runtime:
             got = await self._fetch(Query(p.origin(d), p.destination(d), now), True, None)
             qs = location_queries(s, ctx, event)  # the locked trains, from where they leave
             more = await self._fetch_all(qs, True, None) if qs else ()
+            failed = got if isinstance(got, str) else None
+            answer = None if isinstance(got, str) else got
+            failed_more = more if isinstance(more, str) else None
+            watched = () if isinstance(more, str) else more
             now = self._clock.now()
             # a rejected key on either request is reported; a healthy first answer clears an outage
-            error = "auth" if more == "auth" else got if isinstance(got, str) else None
-            self._auth(error, k, now)
+            self._auth("auth" if failed_more == "auth" else failed, k, now)
             # re-read after the request: an occurrence skipped, archived or edited meanwhile is
             # never written back from the old copy (rule 21)
             s = self._writer.st.occurrences.get(k)
             ctx = None if s is None else self._ctx(s, now)
             if s is None or ctx is None or is_resolved(s) or stale(ctx):
                 continue
-            answered = answered and not isinstance(got, str) and not isinstance(more, str)
-            # an answer asked under another generation is stale; the report itself still counts
-            answer = None if isinstance(got, str) or s.generation != gen else got
-            watched = () if isinstance(more, str) or s.generation != gen else more
+            answered = answered and failed is None and failed_more is None
+            if s.generation != gen:
+                # an answer asked under another generation is stale; the report itself still counts
+                answer, watched = None, ()
             t = on_location(s, ctx, event, answer, watched)
             self._apply({k: (t.state, t.events)})
         await self._deliver()
