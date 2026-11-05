@@ -47,6 +47,8 @@ The full guide is in [docs/home-assistant.md](docs/home-assistant.md).
 
 The core is a typed Python library on PyPI. It has no Home Assistant code.
 
+It is released for its two shells, the Home Assistant integration and the Docker app, so its module APIs can change between versions. The supported entry point is the `tcc` command: `check-profile`, `replay` and `run`.
+
 ```bash
 pip install train-commute-companion
 tcc check-profile profiles.yaml
