@@ -504,6 +504,21 @@ def test_station_list_saved_and_reused(tmp_path):
     assert station_list(cache, None) is None
 
 
+def test_a_station_list_save_that_fails_keeps_the_saved_copy(tmp_path, monkeypatch):
+    from train_commute_companion.cli import station_list
+
+    cache = tmp_path / "s.stations.json"
+    station_list(cache, frozenset({"AAA"}))
+
+    def refused(*_):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("train_commute_companion.cli.os.replace", refused)
+    assert station_list(cache, frozenset({"UT"})) == {"UT"}
+    assert json.loads(cache.read_text()) == ["AAA"]
+    assert [x.name for x in tmp_path.iterdir()] == [cache.name]
+
+
 # --- finding 15: replay times use the runtime's DST resolver ---
 
 

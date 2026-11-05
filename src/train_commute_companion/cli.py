@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -78,9 +79,13 @@ async def _ns_stations() -> frozenset[str] | str:
 def station_list(cache: Path, fresh: frozenset[str] | None) -> frozenset[str] | None:
     """The fresh NS list, saved as the validated copy; else the last saved copy (5.3)."""
     if fresh is not None:
-        try:
-            cache.write_text(json.dumps(sorted(fresh)), encoding="utf-8")
+        tmp = cache.with_name(cache.name + ".tmp")
+        try:  # a crash mid-write must not cost the saved copy NS being down would fall back on
+            tmp.write_text(json.dumps(sorted(fresh)), encoding="utf-8")
+            os.replace(tmp, cache)
         except OSError as e:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
             print(f"warning: cannot save the station list to {cache} ({e})", flush=True)
         return fresh
     try:
