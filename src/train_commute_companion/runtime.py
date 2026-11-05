@@ -1,7 +1,7 @@
 """The runtime around the pure core: polling, the independent watchdog, the shared request
 budget, look-ahead, transactional reload and the restart reconcile (7.1, 7.11, 7.12 rules 5,
 10, 11, 12, 14, 21, 22, 5.2, 7.13). The pure modules take time and data as arguments; I/O lives
-here, in store.py, providers/ns.py, webhook_send.py, cli.py and replay.py."""
+here, in store.py, budget.py, providers/ns.py, webhook_send.py, cli.py and replay.py."""
 
 import asyncio
 import logging
@@ -16,7 +16,7 @@ from train_commute_companion.advice import (
     advise,
     usual_arrival,
 )
-from train_commute_companion.budget import POLL_EVERY_S, RequestBudget
+from train_commute_companion.budget import POLL_DEADLINE, POLL_EVERY_S, RequestGate
 from train_commute_companion.calendar import TZ, Clock, resolve_local, to_utc
 from train_commute_companion.choice import ChoiceTarget, choice_target, named_connections
 from train_commute_companion.classify import current_run, evidence, find_leg
@@ -83,21 +83,16 @@ from train_commute_companion.model import (
     direction_key,
     display_name,
     okey,
-    present,
 )
-from train_commute_companion.news import Fact, all_good, escalations, severity, unsent
+from train_commute_companion.news import all_good, forget_ended, news_of, severity
 from train_commute_companion.notify import Notifier, WebhookPort
 from train_commute_companion.profile import load_config
 from train_commute_companion.providers.base import (
-    AuthError,
-    MalformedAnswer,
     PlannedWorks,
     Pool,
     Provider,
     ProviderAnswer,
-    ProviderError,
     Query,
-    RateLimited,
 )
 from train_commute_companion.revisions import (
     effective_profile,
@@ -123,7 +118,6 @@ from train_commute_companion.webhook_queue import CopyQueue
 
 log = logging.getLogger(__name__)
 
-POLL_DEADLINE = timedelta(seconds=90)
 WATCHDOG_EVERY_S = 30
 FILE_EVERY_S = 10
 LOOKAHEAD_AT = time(6, 0)
@@ -215,37 +209,6 @@ async def _run_together(*steps: Coroutine[Any, Any, None]) -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def _forget_ended(keys: dict[str, str], events: Sequence[AlertEvent]) -> None:
-    emitted = {e.key for e in events}
-    for k in [k for k in keys if k.startswith(LIVE_PREFIX)]:
-        if k[len(LIVE_PREFIX) :] not in emitted:
-            keys.pop(k)
-            keys.pop(SENT_PREFIX + k[len(LIVE_PREFIX) :], None)
-    keys.update({LIVE_PREFIX + k: "1" for k in emitted})
-
-
-def _news(keys: Mapping[str, str], events: Sequence[AlertEvent], now: datetime) -> list[AlertEvent]:
-    """The events not told yet, and the told silent facts that now go loud."""
-    sent = {
-        k[len(SENT_PREFIX) :]: Severity(v) for k, v in keys.items() if k.startswith(SENT_PREFIX)
-    }
-    out = list(unsent(sent, events))
-    facts = [
-        Fact(e.key, e.kind, e.train.planned_departure if e.train else None)
-        for e in events
-        if sent.get(e.key) is Severity.SILENT
-    ]
-    loud = set(escalations(sent, facts, now))
-    # a known fact that turned loud itself (an arrival now past the limit) goes once more
-    loud |= {e.key for e in events if e.severity is Severity.LOUD}
-    out += [
-        replace(e, severity=Severity.LOUD)
-        for e in {e.key: e for e in events}.values()
-        if e.key in loud and sent.get(e.key) is Severity.SILENT
-    ]
-    return out
-
-
 def _rebased(
     st: PersistedState, old: Config | None, new: Config, today: date
 ) -> tuple[dict[str, BaselineHistory], dict[str, LookAheadLedger]]:
@@ -320,14 +283,13 @@ class Runtime:
         self._notifier = _LoggingNotifier(notifier, self.events_log)
         self._clock = clock
         self.known_stations = known_stations
-        self._budget = RequestBudget()
+        self._gate = RequestGate(provider, clock.now)
         self._refused_told: str | None = None
         self._mtime: int | None = None
         self._auth_outage = False
         self._auth_told: set[str] = set()
         self._memory = PollMemory()
         self._sending = asyncio.Lock()
-        self.requests = 0  # NS publishes no quota (7.1): counted and logged
         # set while start() reconciles: messages stored before it wait for the fresh poll
         self._reconcile_started_at: datetime | None = None
 
@@ -371,6 +333,10 @@ class Runtime:
     @property
     def started(self) -> bool:
         return self._started
+
+    @property
+    def requests(self) -> int:
+        return self._gate.requests
 
     def now(self) -> datetime:
         return self._clock.now()
@@ -450,8 +416,8 @@ class Runtime:
         longer reports has ended and leaves the ledger (a recurrence is news again)."""
         keys = dict(s.alert_keys)
         if polled:
-            _forget_ended(keys, events)
-        out = _news(keys, events, now)
+            forget_ended(keys, events)
+        out = news_of(keys, events, now)
         if not out:
             return (s if keys == s.alert_keys else replace(s, alert_keys=keys)), []
         twins = [
@@ -611,82 +577,6 @@ class Runtime:
         if w.save(stage=False, op=outcome):
             self._queue.delivery_written(mem)
 
-    # --- provider access under the shared budget ---
-
-    def _update_budget(
-        self, before: RequestBudget, error: BaseException | None, window_end: datetime | None
-    ) -> None:
-        """The shared budget after one request (rule 14). A success clears only the state it
-        started under: an older request finishing late never clears a newer 429 cooldown."""
-        if error is not None:
-            self._budget = self._budget.on_result(error, self._clock.now(), window_end)
-        elif self._budget is before:
-            self._budget = RequestBudget()
-
-    async def _ask(
-        self, q: Query, left: float
-    ) -> tuple[ProviderAnswer | None, PollFailure | None, BaseException | None]:
-        try:
-            return await asyncio.wait_for(self._provider.trips(q), left), None, None
-        except TimeoutError:
-            return None, "timeout", None
-        except AuthError as e:
-            return None, "auth", e
-        except RateLimited as e:
-            return None, "rate", e
-        except MalformedAnswer as e:
-            return None, "parse", e
-        except ProviderError as e:
-            return None, "provider", e
-
-    async def _fetch(
-        self,
-        q: Query,
-        live: bool,
-        window_end: datetime | None,
-        deadline: datetime | None = None,
-    ) -> ProviderAnswer | PollFailure:
-        """`deadline`: the poll's own hard deadline (7.1), shared by all its requests."""
-        if not self._budget.allow(self._clock.now(), live):
-            # skipped by the shared backoff: counts toward board health (7.1), and a rejected
-            # key still reads as one through its cooldown (7.11)
-            return self._budget.reason
-        started = self._clock.now()
-        deadline = deadline or to_utc(started) + POLL_DEADLINE
-        left = (to_utc(deadline) - to_utc(started)).total_seconds()
-        if left <= 0:
-            return "timeout"
-        before = self._budget
-        self.requests += 1
-        log.debug("request %d: %s", self.requests, q)
-        answer, error, exc = await self._ask(q, left)
-        now = self._clock.now()
-        if error is None and to_utc(now) > to_utc(deadline):
-            error = "timeout"  # a late answer never overwrites a newer one (7.1)
-        if exc is not None or error is None:  # a timeout neither backs off nor resets it
-            self._update_budget(before, exc, window_end)
-        if error is not None:
-            return error
-        return present(answer)  # _ask gives an answer or a failure, never neither
-
-    async def _fetch_all(
-        self,
-        queries: Sequence[Query],
-        live: bool,
-        window_end: datetime | None,
-        deadline: datetime | None = None,
-    ) -> tuple[ProviderAnswer, ...] | PollFailure:
-        """All or nothing: a poll missing one answer cannot judge the legs it was for (rule 2).
-        One hard deadline for the whole poll, not one per request (7.1)."""
-        answers = []
-        deadline = deadline or to_utc(self._clock.now()) + POLL_DEADLINE
-        for q in queries:
-            a = await self._fetch(q, live, window_end, deadline)
-            if isinstance(a, str):
-                return a
-            answers.append(a)
-        return tuple(answers)
-
     def _track_key_rejection(self, error: PollFailure | None, who: str, now: datetime) -> None:
         """`key_rejected` once per outage and again when each window opens while it lasts."""
         if error is None:
@@ -753,7 +643,7 @@ class Runtime:
             return  # the window only selects the first train (rule 19)
         gen, end = s.generation, ctx.schedule.window_end
         deadline = to_utc(now) + POLL_DEADLINE  # one hard deadline for every request (7.1)
-        got = await self._fetch_all(queries_needed(s, ctx), True, end, deadline)
+        got = await self._gate.all_trips(queries_needed(s, ctx), True, end, deadline)
         error = got if isinstance(got, str) else None
         answers = () if isinstance(got, str) else got
         advice_error: PollFailure | None = None
@@ -761,7 +651,7 @@ class Runtime:
             # 7.6: an earlier catchable train is before the time the poll asked from; a failed
             # search leaves advice to the poll's own answers and never fails the poll
             q = advice_query(s, ctx, usual, usual_arrival(s, ctx, usual))
-            extra = None if q is None else await self._fetch(q, True, end, deadline)
+            extra = None if q is None else await self._gate.trips(q, True, end, deadline)
             if isinstance(extra, str):
                 advice_error = extra
             elif extra is not None:
@@ -1112,7 +1002,7 @@ class Runtime:
             asks.insert(0, queries_needed(t.occ, ctx))
         out: tuple[ProviderAnswer, ...] = ()
         for queries in asks:
-            got = await self._fetch_all(queries, True, end, deadline)
+            got = await self._gate.all_trips(queries, True, end, deadline)
             self._track_key_rejection(got if isinstance(got, str) else None, k, self._clock.now())
             if isinstance(got, str):
                 await self._deliver()
@@ -1163,9 +1053,9 @@ class Runtime:
             if s is None or ctx is None or is_resolved(s) or stale(ctx):
                 continue
             gen, p, d = s.generation, ctx.profile, ctx.direction
-            got = await self._fetch(Query(p.origin(d), p.destination(d), now), True, None)
+            got = await self._gate.trips(Query(p.origin(d), p.destination(d), now), True, None)
             qs = location_queries(s, ctx, event)  # the locked trains, from where they leave
-            more = await self._fetch_all(qs, True, None) if qs else ()
+            more = await self._gate.all_trips(qs, True, None) if qs else ()
             failed = got if isinstance(got, str) else None
             answer = None if isinstance(got, str) else got
             failed_more = more if isinstance(more, str) else None
@@ -1317,58 +1207,38 @@ class Runtime:
                 await self._lookahead_direction(p, d, works)
         await self._deliver()
 
+    async def _listing[T: (PlannedWorks, frozenset[str])](
+        self, ask: Callable[[], Awaitable[T]], who: str
+    ) -> T | PollFailure | None:
+        """A list from the provider under the shared budget, a rejected key reported as `who`;
+        None when the budget refuses (an accepted key ends the outage, 7.11)."""
+        now = self._clock.now()
+        got = await self._gate.listing(ask, who)
+        if got is not None:
+            self._track_key_rejection(got if isinstance(got, str) else None, who, now)
+        return got
+
     async def _fetch_works(self) -> PlannedWorks | None:
         """None only when the shared budget refuses; a failed lookup is coverage `unknown`, so
         the probes still run and none is clean (7.10)."""
-        now = self._clock.now()
-        if not self._budget.allow(now, live=False):
-            return None
-        before = self._budget
-        self.requests += 1
-        try:
-            works = await asyncio.wait_for(
-                self._provider.planned_works(), POLL_DEADLINE.total_seconds()
-            )
-        except (ProviderError, TimeoutError) as e:
-            self._update_budget(before, e, None)
-            if isinstance(e, AuthError):
-                self._track_key_rejection("auth", "lookahead", now)
-            return PlannedWorks((), "unknown")
-        self._update_budget(before, None, None)
-        # an accepted key ends the outage (7.11)
-        self._track_key_rejection(None, "lookahead", now)
-        return works
+        got = await self._listing(self._provider.planned_works, "lookahead")
+        return PlannedWorks((), "unknown") if isinstance(got, str) else got
 
     async def stations(self) -> frozenset[str] | None:
-        """The NS station list through the shared budget (rule 14); None when the shared budget refuses or the
-        request fails."""
-        now = self._clock.now()
-        if not self._budget.allow(now, live=False):
-            return None
-        before = self._budget
-        self.requests += 1
-        try:
-            got = await asyncio.wait_for(self._provider.stations(), POLL_DEADLINE.total_seconds())
-        except (ProviderError, TimeoutError) as e:
-            self._update_budget(before, e, None)
-            if isinstance(e, AuthError):
-                self._track_key_rejection("auth", "stations", now)
-            return None
-        self._update_budget(before, None, None)
-        # an accepted key ends the outage (7.11)
-        self._track_key_rejection(None, "stations", now)
-        return got
+        """The NS station list through the shared budget (rule 14); None when the shared budget
+        refuses or the request fails."""
+        got = await self._listing(self._provider.stations, "stations")
+        return None if isinstance(got, str) else got
 
     async def _lookahead_direction(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
-        run = await probe_direction(
-            self._writer.st,
-            p,
-            d,
-            works,
-            self._clock.now(),
-            self._fetch_all,
-            self._track_key_rejection,
-        )
+        start = self._clock.now()
+
+        async def probe(queries: Sequence[Query]) -> tuple[ProviderAnswer, ...] | PollFailure:
+            got = await self._gate.all_trips(queries, False, None)
+            self._track_key_rejection(got if isinstance(got, str) else None, "lookahead", start)
+            return got
+
+        run = await probe_direction(self._writer.st, p, d, works, start, probe)
         st = None if run is None else applied_run(self._writer.st, self._queue, p, d, run)
         if st is not None:
             self._writer.st = st

@@ -47,11 +47,7 @@ async def probe_direction(
     d: Direction,
     works: PlannedWorks,
     start: datetime,
-    fetch_all: Callable[
-        [Sequence[Query], bool, datetime | None],
-        Awaitable[tuple[ProviderAnswer, ...] | PollFailure],
-    ],
-    auth: Callable[[PollFailure | None, str, datetime], None],
+    fetch: Callable[[Sequence[Query]], Awaitable[tuple[ProviderAnswer, ...] | PollFailure]],
 ) -> ProbedRun | None:
     """`st`: the state as the run starts. None: an incomplete run, which writes nothing."""
     config = present(st.config)
@@ -64,11 +60,9 @@ async def probe_direction(
     results: list[ProbeResult] = []
     for day in probe_dates(p, today, bases):
         base = hist.in_force(service_date(p, d, day))
-        got = await fetch_all(probe_queries(p, d, day, base), False, None)
+        got = await fetch(probe_queries(p, d, day, base))
         if isinstance(got, str):
-            auth(got, "lookahead", start)
             return None
-        auth(None, "lookahead", start)
         results += evaluate(p, d, day, got, works, base)
     return ProbedRun(start, config.revision, hist.latest, tuple(results))
 

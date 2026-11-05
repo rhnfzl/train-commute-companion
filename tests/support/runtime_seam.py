@@ -39,7 +39,7 @@ def memory(rt):
 
 
 def budget(rt):
-    return rt._budget
+    return rt._gate.budget
 
 
 def ledger(rt):
@@ -83,7 +83,7 @@ def deliver(rt):
 
 
 def fetch(rt, q, live, window_end, deadline=None):
-    return rt._fetch(q, live, window_end, deadline)
+    return rt._gate.trips(q, live, window_end, deadline)
 
 
 def lookahead_direction(rt, p, d, works):
