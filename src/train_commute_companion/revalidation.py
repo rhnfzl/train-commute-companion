@@ -298,11 +298,10 @@ class LiveLedger:
         e, k, mem = o.event, okey(s.key), self._memory
         legs = [x for j in (*((s.lock,) if s.lock else ()), *s.retained) for x in j.legs]
         unfinished = any(x.train == e.train and x.state not in _FINISHED_LEG_STATES for x in legs)
-        if e.kind in DELAY_NEWS:  # the delay memory still says what the message stated
-            if not states_current(e, s.alert_keys):
-                return False
-            if e.kind is EventKind.DELAYED:
-                return SENT_PREFIX + o.fact_key in s.alert_keys
+        # the delay memory still says what the message stated
+        if e.kind in DELAY_NEWS and not states_current(e, s.alert_keys):
+            return False
+        if e.kind in (EventKind.NEARLY_ON_TIME, EventKind.BACK_TO_NORMAL):
             return unfinished and not _broken(s, e.train)  # no all-clear for a broken train
         if e.kind in _ONGOING:  # a healthy poll that stopped reporting it ended it
             return SENT_PREFIX + o.fact_key in s.alert_keys
