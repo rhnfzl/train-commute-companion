@@ -367,3 +367,21 @@ def test_maintenance_crossing_the_repeated_hour_is_complete():
 def test_station_position_with_a_huge_integer_is_left_out():
     payload = {"payload": [{"code": "AAA", "lat": 10**400, "lng": 5.0}]}
     assert map_station_positions(payload) == {}
+
+
+@pytest.mark.parametrize("stamp", ["0001-01-01T00:00:00+0100", "9999-12-31T23:59:59-1200"])
+def test_a_time_out_of_range_reads_as_unreadable(stamp):
+    leg = {"origin": {"stationCode": "AAA", "plannedDateTime": stamp},
+           "destination": {"stationCode": "BBB", "plannedDateTime": stamp}}  # fmt: skip
+    with pytest.raises(MalformedAnswer, match="no planned departure"):
+        map_trips({"trips": [{"legs": [leg]}]}, Q, NOW)
+    work = {"type": "MAINTENANCE", "start": stamp, "end": stamp}
+    assert map_disruptions([work]).coverage == "unknown"
+
+
+def test_a_transfer_message_with_an_endless_number_states_no_minutes():
+    payload = fixture("on_time_direct.json")
+    leg = payload["trips"][0]["legs"][0]
+    leg["transferMessages"] = [{"type": "TRANSFER_TIME", "message": "1" * 5000}]
+    got = map_trips(payload, Q, NOW).connections[0].legs[0]
+    assert got.transfer_message_min is None

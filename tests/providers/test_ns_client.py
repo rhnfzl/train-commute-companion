@@ -213,3 +213,8 @@ async def test_non_ascii_key_is_an_auth_error_and_sends_nothing():
     with pytest.raises(AuthError) as e:
         await NsProvider("ke\u200by", client, lambda: NOW).stations()
     assert "ke\u200by" not in str(e.value)
+
+
+async def test_a_body_nested_deeper_than_the_parser_goes_is_malformed():
+    with pytest.raises(MalformedAnswer):
+        await provider(status(200, body=b"[" * 100_000)).trips(Q)

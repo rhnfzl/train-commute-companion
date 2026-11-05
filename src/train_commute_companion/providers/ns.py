@@ -37,7 +37,7 @@ def _dt(v: object) -> datetime | None:
     for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M%z"):
         try:
             return datetime.strptime(v, fmt).astimezone(TZ)
-        except ValueError:
+        except (ValueError, OverflowError):  # Overflow: at the calendar's edge, past it in our zone
             pass
     return None
 
@@ -115,7 +115,8 @@ def _end_stop(raw: dict[str, Any], aliases: dict[str, str], *, depart: bool, at:
 
 
 def _int_in(text: object) -> int | None:
-    m = re.search(r"\d+", text) if isinstance(text, str) else None
+    # a longer run is no real number of minutes, and int() refuses one over its digit limit
+    m = re.search(r"(?<!\d)\d{1,9}(?!\d)", text) if isinstance(text, str) else None
     return int(m.group()) if m else None
 
 
@@ -385,7 +386,7 @@ class NsProvider:
         _raise_for_status(r)
         try:
             return r.json()
-        except ValueError:
+        except (ValueError, RecursionError):  # Recursion: nested deeper than the parser goes
             raise MalformedAnswer("NS answer is not valid JSON") from None
 
     async def trips(self, q: Query) -> ProviderAnswer:
