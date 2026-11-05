@@ -6,15 +6,15 @@ import hashlib
 import hmac
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
 import httpx
 
 from train_commute_companion.messages import ATTRIBUTION
 from train_commute_companion.model import AlertEvent, Severity
-from train_commute_companion.notify import event_fields
+from train_commute_companion.notify import EventFields, event_fields
 
 SCHEMA_VERSION = 1
 MIN_SECRET_LEN = 16
@@ -22,25 +22,9 @@ PROBE_LOUD = "Train Commute Companion: webhook test, loud."
 PROBE_SILENT = "Train Commute Companion: webhook test, silent."
 _SECRET_RULE = "must be at least 16 characters, or whsec_ and base64 of at least 16 bytes"
 _TOKEN_RULE = "must be at least 16 characters of printable ASCII without spaces"
-# the `event_fields` keys, in order; tests/test_webhook.py pins them to it
-_FIELD_KEYS = (
-    "profile_id",
-    "profile_name",
-    "direction",
-    "service_date",
-    "leg_index",
-    "kind",
-    "severity",
-    "train_operating_date",
-    "train_number",
-    "train_departure",
-    "text",
-    "key",
-    "created_at",
-)
 
 
-def _encode(fields: dict[str, Any], test: bool) -> bytes:
+def _encode(fields: Mapping[str, object], test: bool) -> bytes:
     payload = {"version": SCHEMA_VERSION, "attribution": ATTRIBUTION, "test": test, **fields}
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
 
@@ -51,7 +35,7 @@ def body(event: AlertEvent) -> bytes:
 
 def probe_body(severity: Severity, created_at: datetime) -> bytes:
     """A setup test send: shaped like an alert, marked `"test": true`."""
-    fields: dict[str, Any] = dict.fromkeys(_FIELD_KEYS)
+    fields: dict[str, object] = dict.fromkeys(EventFields.__annotations__)
     fields |= {
         "kind": "test",
         "severity": severity.value,

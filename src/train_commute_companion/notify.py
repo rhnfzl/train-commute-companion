@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Collection
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Protocol, TypedDict
 
 from train_commute_companion.model import AlertEvent
 
@@ -37,7 +37,25 @@ class WebhookPort(Protocol):
         ...
 
 
-def event_fields(event: AlertEvent) -> dict[str, Any]:
+class EventFields(TypedDict):
+    """The JSON fields of an alert, in the order they are sent."""
+
+    profile_id: str
+    profile_name: str
+    direction: str | None
+    service_date: str | None
+    leg_index: int | None
+    kind: str  # an EventKind value, or "test" in a webhook setup test
+    severity: str
+    train_operating_date: str | None
+    train_number: str | None
+    train_departure: str | None
+    text: str
+    key: str
+    created_at: str
+
+
+def event_fields(event: AlertEvent) -> EventFields:
     """The JSON fields of an alert, shared by the HA bus event and the webhook body."""
     t = event.train
     return {
