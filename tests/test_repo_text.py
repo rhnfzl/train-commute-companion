@@ -7,7 +7,9 @@ TEXT = {".py", ".md", ".yaml", ".yml", ".toml", ".json", ".txt"}
 
 
 def tracked_text_files() -> list[Path]:
-    out = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True)
+    out = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True, timeout=60
+    )
     return [ROOT / f for f in out.stdout.split("\n") if f and (ROOT / f).suffix in TEXT]
 
 

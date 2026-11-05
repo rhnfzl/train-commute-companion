@@ -16,6 +16,7 @@ def _collected(root: Path) -> frozenset[str]:
         capture_output=True,
         text=True,
         check=True,
+        timeout=60,
     ).stdout
     return frozenset(line for line in out.splitlines() if "::" in line)
 
