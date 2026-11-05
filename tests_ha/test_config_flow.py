@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,7 +32,7 @@ from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
 from webhook_receiver import Receiver
 
-from custom_components.train_commute_companion import notifier
+from custom_components.train_commute_companion import notifier, validate
 from custom_components.train_commute_companion.config_flow import notify_services
 from custom_components.train_commute_companion.const import DOMAIN
 from train_commute_companion.providers.base import AuthError, ProviderError
@@ -556,3 +557,13 @@ async def test_settings_save_keeps_webhook_options(hass):  # Review Focus 8
     assert len(h.pushes) == before and not rx.requests
     assert h.entry.options["profiles_path"] == str(other)
     assert {k: h.entry.options[k] for k in HOOKS} == HOOKS
+
+
+async def test_the_profile_check_takes_today_from_the_core_zone(hass, tcc_freezer, tmp_path):
+    await hass.config.async_set_time_zone("Pacific/Auckland")
+    tcc_freezer.move_to("2026-10-27T11:30:00+00:00")  # the next day in Auckland
+    path = tmp_path / "profiles.yaml"
+    path.write_text("profiles: []\n")
+    with patch.object(validate, "check_lines", return_value=(None, [])) as check:
+        await validate.validate_file(hass, str(path), frozenset())
+    assert check.call_args.args[2] == date(2026, 10, 27)

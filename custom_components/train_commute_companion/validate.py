@@ -1,12 +1,13 @@
 """Checks behind the config and options flows: the profiles path, and the profiles file itself."""
 
 import os
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 
 from homeassistant.core import HomeAssistant
-from homeassistant.util import dt as dt_util
 
+from train_commute_companion.calendar import TZ
 from train_commute_companion.profile import check_lines
 
 PERSON_DOMAINS = ("person", "device_tracker")
@@ -53,7 +54,7 @@ async def validate_file(hass: HomeAssistant, path: str, known: frozenset[str] | 
         text = await hass.async_add_executor_job(_read, path)
     except (OSError, UnicodeDecodeError) as err:
         return [f"{path}: cannot read ({err})"]
-    cfg, lines = check_lines(text, known, dt_util.now().date())
+    cfg, lines = check_lines(text, known, datetime.now(TZ).date())
     for p in cfg.profiles if cfg else ():
         loc = p.location
         if loc is None or loc.source != "ha":
