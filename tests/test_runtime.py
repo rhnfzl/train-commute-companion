@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import threading
 from collections.abc import Callable
@@ -39,8 +40,8 @@ from train_commute_companion.providers.base import (
 )
 from train_commute_companion.revalidation import leg_now
 from train_commute_companion.runtime import Runtime, _fresh_state
-from train_commute_companion.serde import dumps, loads
-from train_commute_companion.store import PersistedState, StorageError
+from train_commute_companion.serde import dumps
+from train_commute_companion.store import VERSION, PersistedState, StorageError, read_state
 
 DAY = date(2026, 10, 27)  # a Tuesday
 PROFILE = """
@@ -89,16 +90,18 @@ class MemoryStore:
 
     def __init__(self) -> None:
         self.text: str | None = None
+        self.version = VERSION  # set to an older one: `text` as a file of that version holds it
         self.fail = False
         self.writes = 0
 
     def load(self) -> PersistedState | None:
-        return None if self.text is None else loads(PersistedState, self.text)
+        return None if self.text is None else read_state(self.version, json.loads(self.text))
 
     def save(self, s: PersistedState) -> None:
         if self.fail:
             raise StorageError("disk full")
         self.text = dumps(s)
+        self.version = VERSION
         self.writes += 1
 
 

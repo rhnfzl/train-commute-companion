@@ -153,7 +153,7 @@ def test_parse_target_profile_id_like_a_keyword():
 
 def test_render_status_two_occurrences_and_global_lines():
     nxt = make_connection([make_leg("AAA", "RTD", "08:44", "09:30", number="2345")])
-    adv = AdviceRecord(TrainId(DAY, "99", at("07:58")), None, False)
+    adv = AdviceRecord(TrainId(DAY, "99", at("07:58")), None, False, delivered=True)
     o1 = occ(next_good=nxt, advice=adv, not_travelling=True,
              retained=((leg_view("08:40"),),),
              health=BoardHealth(False, at("07:30"), 3, False))  # fmt: skip

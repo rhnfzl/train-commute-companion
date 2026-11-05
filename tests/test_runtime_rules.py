@@ -739,6 +739,7 @@ async def test_stored_leave_now_loses_its_frozen_expiry_on_load(tmp_path):
     st = rig.rt.state  # an older store froze the planned departure minus buffer as expiry
     frozen = tuple(replace(o, expires_at=at("17:17")) for o in st.obligations)
     rig.store.save(replace(st, obligations=frozen))
+    rig.store.version = 1
     late = make_leg("RTD", "AAA", "17:22", "18:00", number="7922", delay_dep=6, delay_arr=6)
     rig.provider.world = [make_connection([late]), *escape_world()[1:]]
     rig.clock.set("17:19")
@@ -1953,7 +1954,7 @@ async def test_legacy_advice_withdrawn_after_an_upgrade_restart(tmp_path):  # Re
     rig.provider.world = cancelled_usual_world()
     await rig.rt.start()  # LEAVE_NOW sent and confirmed
     assert rig.occ("p1|return|2026-10-27").advice.delivered
-    rig.store.text = _strip_delivered(rig.store.text)
+    rig.store.text, rig.store.version = _strip_delivered(rig.store.text), 1
     rt = await rig.restart()
     assert rig.occ("p1|return|2026-10-27").advice.delivered
     rig.clock.set("16:56")
@@ -1975,7 +1976,7 @@ async def test_legacy_advice_still_owed_is_not_withdrawn_after_an_upgrade_restar
     rig.provider.world = cancelled_usual_world()
     await rig.rt.start()
     assert any(o.event.kind is EventKind.LEAVE_NOW for o in rig.rt.state.obligations)
-    rig.store.text = _strip_delivered(rig.store.text)
+    rig.store.text, rig.store.version = _strip_delivered(rig.store.text), 1
     rt = await rig.restart()
     assert not rig.occ("p1|return|2026-10-27").advice.delivered
     rig.clock.set("16:56")
@@ -2076,6 +2077,7 @@ async def test_colliding_stored_ids_are_split_on_load(tmp_path):
     (o, _) = cancelled_owed(rig)
     old = f"{o.event.key}|{o.event.severity.value}|{o.event.created_at.isoformat()}"
     restore_ids(rig, lambda x: old if x.event.kind is EventKind.CANCELLED else x.id)
+    rig.store.version = 1
     await rig.restart()
     owed = cancelled_owed(rig)
     assert sorted(x.event.profile_id for x in owed) == ["p1", "p2"]

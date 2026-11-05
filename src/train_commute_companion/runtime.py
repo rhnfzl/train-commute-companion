@@ -5,7 +5,6 @@ providers/ns.py, cli.py and replay.py."""
 
 import asyncio
 import logging
-from collections import Counter
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
@@ -182,6 +181,21 @@ def _advice_told(st: PersistedState, told: Sequence[tuple[Obligation, bool]]) ->
             continue  # an older episode's message
         a = replace(a, delivered=True) if sent else replace(a, withdrawn=True)
         occs[k] = replace(s, advice=a)
+    return replace(st, occurrences=occs)
+
+
+def _restarted(st: PersistedState) -> PersistedState:
+    """A loaded state as a start runs it (rule 11). Every delivered fact counts as last reported,
+    so the reconcile poll ends the ones that ended (a recurrence is news again): one told outside
+    a healthy poll has no `live:` mark yet, and neither has any fact of a file written before those
+    marks. Every occurrence gets its own fixed schedule, which is a no-op once it has one."""
+    occs = {}
+    for k, s in st.occurrences.items():
+        keys = dict(s.alert_keys)
+        for x in s.alert_keys:
+            if x.startswith(SENT_PREFIX):
+                keys.setdefault(LIVE_PREFIX + x[len(SENT_PREFIX) :], "1")
+        occs[k] = frozen(st, replace(s, alert_keys=keys))
     return replace(st, occurrences=occs)
 
 
@@ -1329,7 +1343,7 @@ class Runtime:
         except StorageError as e:
             loaded, lost = None, str(e)
         if loaded is not None:
-            self._writer.st = self._migrate_state(loaded)
+            self._writer.st = _restarted(loaded)
             self._queue.restore(loaded)
         self._writer.begin(replace(self._writer.st, started_before=True))
         if lost is not None:  # rule 22: fresh state, loud, and a write clears "state lost"
@@ -1343,52 +1357,6 @@ class Runtime:
         # deterministic reconcile: one fresh poll per unarchived occurrence (rule 11)
         for k in sorted(self._writer.st.occurrences):
             await self._poll_occurrence(k)
-
-    def _migrate_state(self, st: PersistedState) -> PersistedState:
-        """A stored state brought into the current model (rule 11): every delivered fact of an
-        older store counts as last reported, so the reconcile poll ends the ones that ended (a
-        recurrence is news again), and every occurrence gets its own fixed schedule."""
-        self._writer.st = st
-        occs = {}
-        for k, s in st.occurrences.items():
-            keys = dict(s.alert_keys)
-            for x in s.alert_keys:
-                if x.startswith(SENT_PREFIX):
-                    keys.setdefault(LIVE_PREFIX + x[len(SENT_PREFIX) :], "1")
-            a = s.advice
-            # a record saved before `delivered` loads as told; its LEAVE_NOW still owed was not
-            if (
-                a is not None
-                and not a.withdrawn
-                and a.sent_at is not None
-                and any(
-                    o.event.kind is EventKind.LEAVE_NOW
-                    and o.occurrence is not None
-                    and okey(o.occurrence) == k
-                    and o.event.train == a.advised_train
-                    and to_utc(o.event.created_at) == to_utc(a.sent_at)
-                    for o in st.obligations
-                )
-            ):
-                s = replace(s, advice=replace(a, delivered=False))
-            occs[k] = frozen(self._writer.st, replace(s, alert_keys=keys))
-        obligations = tuple(  # stored with the planned departure frozen as expiry
-            replace(o, expires_at=None) if o.event.kind is EventKind.LEAVE_NOW else o
-            for o in st.obligations
-        )
-        # an id stored before it named profile and direction is shared by two profiles' alerts
-        ids = Counter(o.id for o in obligations)
-        obligations = tuple(
-            o
-            if ids[o.id] == 1
-            else replace(
-                o,
-                id=f"{o.event.profile_id}|"
-                f"{o.event.direction.value if o.event.direction else ''}|{o.id}",
-            )
-            for o in obligations
-        )
-        return replace(st, occurrences=occs, obligations=obligations)
 
     async def run_forever(self, *, started: bool = False) -> None:
         """Starts (unless `started`) with the watchdog already running, so a slow reconcile is

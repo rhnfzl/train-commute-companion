@@ -3,8 +3,9 @@ from datetime import date, time
 from pathlib import Path
 
 import pytest
+from test_serde import full_state
 
-from train_commute_companion.cli import main
+from train_commute_companion.cli import _moved, main
 from train_commute_companion.lookahead import BaselineHistory, BaselineVersion
 from train_commute_companion.model import Signature, SignatureLeg
 from train_commute_companion.serde import encode
@@ -119,3 +120,12 @@ def test_run_notifier_attributes_every_event(capsys):
     )
     assert asyncio.run(_StdoutNotifier().send(ev)) is True
     assert capsys.readouterr().out.rstrip().endswith("Data: NS")
+
+
+def test_check_profile_reads_a_version_1_store(tmp_path):
+    raw = encode(full_state())
+    for s in raw["occurrences"].values():
+        del s["advice"]["delivered"]  # saved before the field existed
+    store = tmp_path / "state.json"
+    store.write_text(json.dumps({"version": 1, "write_counter": 1, "state": raw}))
+    assert _moved(store, ()) == []

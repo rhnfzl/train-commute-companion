@@ -19,7 +19,7 @@ from train_commute_companion.model import (
     Severity,
     WebhookCopy,
 )
-from train_commute_companion.serde import decode, dumps, encode, loads
+from train_commute_companion.serde import decode, dumps, loads
 from train_commute_companion.store import PersistedState
 
 
@@ -59,7 +59,7 @@ def full_state() -> PersistedState:
         retained=(replace(retained, legs=legs),),
         cancellation_history=legs,
         alert_keys={"a": "b"},
-        advice=AdviceRecord(L2.train, at("08:00"), False),
+        advice=AdviceRecord(L2.train, at("08:00"), False, delivered=True),
         poll_records=(PollRecord(at("08:00"), False, "rate"),),
         zone_reports={"UT": at("08:51")},
         tap_at=at("08:05"),
@@ -128,13 +128,6 @@ def test_bad_shapes_raise_value_error(mutate):
     mutate(raw)
     with pytest.raises(ValueError):
         loads(OccurrenceState, json.dumps(raw))
-
-
-def test_advice_record_saved_before_delivered_loads_as_told():
-    raw = encode(AdviceRecord(L2.train, at("08:00"), False, delivered=False))
-    del raw["delivered"]
-    assert decode(AdviceRecord, raw).delivered is True
-    assert decode(AdviceRecord, {**raw, "delivered": False}).delivered is False
 
 
 def test_old_files_load_without_copies():

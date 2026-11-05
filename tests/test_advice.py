@@ -6,7 +6,6 @@ from builders import AMS, make_connection, make_leg
 from train_commute_companion.advice import advise, still_advised
 from train_commute_companion.lifecycle import Commitment, LockSource, OccurrenceState, journey_of
 from train_commute_companion.model import (
-    AdviceRecord,
     Connection,
     Ctx,
     Direction,
@@ -17,7 +16,6 @@ from train_commute_companion.model import (
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import ProviderAnswer, Query
 from train_commute_companion.schedule import dated_schedule
-from train_commute_companion.serde import decode, encode
 
 PROFILES = """
 profiles:
@@ -289,18 +287,6 @@ def test_fragment_ending_before_the_alighting_stop_is_not_the_locked_arrival(): 
     assert [e.kind for e in events] == [EventKind.LEAVE_NOW]  # unavailable, so advise
     _, again = advise(replace(s, advice=rec), ctx(at("17:05")), board, USUAL_ARRIVAL)
     assert again == []  # still needed: never withdrawn on the fragment
-
-
-def test_legacy_record_without_delivered_still_sends_its_withdrawal():
-    c = ctx(at("17:00"))
-    s = fresh(c)
-    rec, _ = advise(s, c, answer(EARLY, SLOW, LATER), USUAL_ARRIVAL)
-    raw = encode(rec)
-    del raw["delivered"]  # saved before the field existed
-    s = replace(s, advice=decode(AdviceRecord, raw))
-    ok = conn("17:52", "18:26", "1234")
-    rec2, events = advise(s, c, answer(EARLY, ok, LATER), USUAL_ARRIVAL)
-    assert [e.kind for e in events] == [EventKind.EARLIER_TRAIN_WITHDRAWN] and rec2.withdrawn
 
 
 def test_a_new_episode_starts_undelivered():

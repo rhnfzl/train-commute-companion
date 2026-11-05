@@ -4,18 +4,27 @@ import contextlib
 import json
 import os
 import tempfile
+from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from train_commute_companion.calendar import to_utc
 from train_commute_companion.lifecycle import OccurrenceState
 from train_commute_companion.lookahead import BaselineHistory, LookAheadLedger
-from train_commute_companion.model import Config, Obligation, WebhookCopy
+from train_commute_companion.model import (
+    Config,
+    EventKind,
+    Obligation,
+    WebhookCopy,
+    okey,
+)
 from train_commute_companion.serde import decode, encode
 
-VERSION = 1
+VERSION = 2
+_V1 = 1  # read for as long as such files may exist; only VERSION is ever written
 
 
 class StorageError(Exception):
@@ -47,6 +56,64 @@ class Store(Protocol):
         """Raises StorageError when the state was not written, the only failure the runtime
         handles: an OSError must be wrapped."""
         ...
+
+
+def _owes_leave_now(s: OccurrenceState, k: str, obligations: tuple[Obligation, ...]) -> bool:
+    a = s.advice
+    return (
+        a is not None
+        and not a.withdrawn
+        and a.sent_at is not None
+        and any(
+            o.event.kind is EventKind.LEAVE_NOW
+            and o.occurrence is not None
+            and okey(o.occurrence) == k
+            and o.event.train == a.advised_train
+            and to_utc(o.event.created_at) == to_utc(a.sent_at)
+            for o in obligations
+        )
+    )
+
+
+def _from_v1(raw: Any) -> PersistedState:
+    """A version 1 file as the current model has it. That number covered formats that differ:
+    an advice record may lack `delivered` (it counts as told, unless its LEAVE_NOW is still owed),
+    a LEAVE_NOW may hold its planned departure as a frozen expiry, and an id may name neither
+    profile nor direction, so two profiles' alerts may share it."""
+    for s in raw.get("occurrences", {}).values():
+        if s.get("advice") is not None:
+            s["advice"].setdefault("delivered", True)
+    st: PersistedState = decode(PersistedState, raw)
+    occs = {
+        k: replace(s, advice=replace(s.advice, delivered=False))
+        if s.advice is not None and _owes_leave_now(s, k, st.obligations)
+        else s
+        for k, s in st.occurrences.items()
+    }
+    obligations = tuple(
+        replace(o, expires_at=None) if o.event.kind is EventKind.LEAVE_NOW else o
+        for o in st.obligations
+    )
+    ids = Counter(o.id for o in obligations)
+    obligations = tuple(
+        o
+        if ids[o.id] == 1
+        else replace(
+            o,
+            id=f"{o.event.profile_id}|"
+            f"{o.event.direction.value if o.event.direction else ''}|{o.id}",
+        )
+        for o in obligations
+    )
+    return replace(st, occurrences=occs, obligations=obligations)
+
+
+def read_state(version: object, raw: Any) -> PersistedState:
+    """The state saved under a readable `version`, as the current model has it."""
+    if version == _V1:
+        return _from_v1(raw)
+    st: PersistedState = decode(PersistedState, raw)
+    return st
 
 
 def _read_counter(path: Path) -> int | None:
@@ -96,15 +163,16 @@ class JsonFileStore:
             raise self._set_aside(f"{self._path.name} is unreadable ({e})") from e
         try:
             env: Any = json.loads(raw)
-            if not isinstance(env, dict) or env.get("version") != VERSION:
+            if not isinstance(env, dict) or env.get("version") not in (_V1, VERSION):
                 raise ValueError(
                     f"unknown version {env.get('version') if isinstance(env, dict) else env!r}"
                 )
             counter = env["write_counter"]
             if isinstance(counter, bool) or not isinstance(counter, int):
                 raise TypeError("bad write counter")
-            state: PersistedState = decode(PersistedState, env["state"])
-        except (ValueError, KeyError, TypeError) as e:  # JSON errors are ValueErrors
+            state = read_state(env["version"], env["state"])
+        # JSON errors are ValueErrors; AttributeError: a version 1 state of the wrong shape
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             raise self._set_aside(
                 f"{self._path.name} is corrupt or cannot be migrated ({e})"
             ) from e

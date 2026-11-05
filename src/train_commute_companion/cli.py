@@ -18,16 +18,16 @@ from train_commute_companion.providers.base import ProviderError
 from train_commute_companion.providers.ns import NsProvider, map_stations
 from train_commute_companion.replay import ATTRIBUTION, ReplayError, format_event, replay_lines
 from train_commute_companion.runtime import Runtime, SystemClock
-from train_commute_companion.serde import decode
-from train_commute_companion.store import JsonFileStore, PersistedState
+from train_commute_companion.store import JsonFileStore, read_state
 from train_commute_companion.view import moved
 
 
 def _moved(path: Path, profiles: Sequence[Profile]) -> list[str]:
     """Read-only: check-profile never moves a damaged store aside the way a running app does."""
     try:
-        state = decode(PersistedState, json.loads(path.read_text(encoding="utf-8"))["state"])
-    except (OSError, ValueError, KeyError, TypeError) as e:
+        env = json.loads(path.read_text(encoding="utf-8"))
+        state = read_state(env.get("version"), env["state"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         return [f"store: cannot read {path.name} ({type(e).__name__}); NS changes not checked"]
     return [m.text for m in moved(profiles, state.baselines)]
 

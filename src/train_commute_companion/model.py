@@ -1,7 +1,7 @@
 """Core value types. All times are timezone-aware (Europe/Amsterdam)."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 from typing import Literal
@@ -290,9 +290,7 @@ class AdviceRecord:
     usual_arrival: datetime | None = None
     # the episode's LEAVE_NOW reached the user; pending until then. An undelivered episode that
     # stops holding is ended silently (`withdrawn` with this False), so it can start again.
-    # Absent in records saved before the field existed, so it counts as told; every new episode
-    # passes False explicitly.
-    delivered: bool = True
+    delivered: bool = field(kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)

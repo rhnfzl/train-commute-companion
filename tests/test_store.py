@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -7,7 +8,10 @@ from test_lifecycle_follow import L1, L2, L2X, LATER, ans, at, conn, ctx, journe
 from test_location import USUAL, event, locate
 from test_serde import full_state
 
-from train_commute_companion.store import JsonFileStore, StorageError
+from train_commute_companion.lifecycle import OccurrenceState
+from train_commute_companion.model import AdviceRecord, EventKind, Obligation, okey
+from train_commute_companion.serde import encode
+from train_commute_companion.store import VERSION, JsonFileStore, PersistedState, StorageError
 
 
 def test_corrupt_store_kept_aside_and_reported(tmp_path):
@@ -23,8 +27,9 @@ def test_corrupt_store_kept_aside_and_reported(tmp_path):
 @pytest.mark.parametrize(
     "text",
     [
-        '{"version": 2, "write_counter": 1, "state": {}}',
+        '{"version": 3, "write_counter": 1, "state": {}}',
         '{"version": 1, "write_counter": 1, "state": {"x": 1}}',
+        '{"version": 1, "write_counter": 1, "state": {"occurrences": [1]}}',
         "[]",
     ],
 )
@@ -153,3 +158,66 @@ def test_failed_first_write_is_not_state_loss(tmp_path, monkeypatch):
         JsonFileStore(path).save(full_state())
     monkeypatch.undo()
     assert JsonFileStore(path).load() is None  # still a first installation
+
+
+def _file(path: Path, version: int, st: PersistedState, *, keep_delivered: bool = True) -> None:
+    raw = encode(st)
+    if not keep_delivered:
+        for s in raw["occurrences"].values():
+            del s["advice"]["delivered"]
+    path.write_text(json.dumps({"version": version, "write_counter": 1, "state": raw}))
+
+
+def _leave_now(o: Obligation, s: OccurrenceState) -> Obligation:
+    """`o` as the LEAVE_NOW still owed for the advice of `s`, with a frozen expiry."""
+    assert s.advice is not None
+    e = replace(
+        o.event,
+        kind=EventKind.LEAVE_NOW,
+        train=s.advice.advised_train,
+        created_at=s.advice.sent_at,
+    )
+    return replace(o, event=e, occurrence=s.key, expires_at=s.advice.sent_at)
+
+
+def _owing(st: PersistedState) -> PersistedState:
+    """`st` with one occurrence whose advice was told by its record but whose LEAVE_NOW is owed,
+    and two obligations sharing an id."""
+    s = next(iter(st.occurrences.values()))
+    o = _leave_now(st.obligations[0], s)
+    twin = replace(o, event=replace(o.event, profile_id="other"), expires_at=None)
+    return replace(st, occurrences={okey(s.key): s}, obligations=(o, twin))
+
+
+def test_v1_file_with_no_delivered_reads_as_told(tmp_path):
+    path = tmp_path / "state.json"
+    _file(path, 1, full_state(), keep_delivered=False)
+    assert JsonFileStore(path).load() == full_state()  # told: full_state's record is
+
+
+def test_v1_file_is_brought_into_the_current_model(tmp_path):
+    path = tmp_path / "state.json"
+    _file(path, 1, _owing(full_state()), keep_delivered=False)
+    got = JsonFileStore(path).load()
+    a = next(iter(got.occurrences.values())).advice
+    assert isinstance(a, AdviceRecord) and a.delivered is False  # its LEAVE_NOW is still owed
+    assert [o.expires_at for o in got.obligations] == [None, None]
+    assert len({o.id for o in got.obligations}) == 2
+
+
+def test_current_file_is_read_as_written_and_a_v1_file_is_written_back_current(tmp_path):
+    path = tmp_path / "state.json"
+    st = _owing(full_state())
+    _file(path, VERSION, st)
+    assert JsonFileStore(path).load() == st
+    _file(path, 1, st)
+    store = JsonFileStore(path)
+    store.save(store.load())
+    assert json.loads(path.read_text())["version"] == VERSION
+
+
+def test_current_file_without_delivered_is_kept_aside(tmp_path):
+    path = tmp_path / "state.json"
+    _file(path, VERSION, full_state(), keep_delivered=False)
+    with pytest.raises(StorageError, match="broken-"):
+        JsonFileStore(path).load()
