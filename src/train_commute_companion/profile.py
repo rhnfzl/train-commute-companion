@@ -19,9 +19,9 @@ from train_commute_companion.model import (
     UsualJourney,
 )
 from train_commute_companion.overlap import overlap_pairs
+from train_commute_companion.transfer import FALLBACK_MIN
 
 ALLOWED_TRAVELLER = "me"
-FALLBACK_TRANSFER_MIN = 5
 _TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 _SOURCES: tuple[LocationSource, ...] = get_args(LocationSource)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -311,8 +311,8 @@ def _transfer_min(c: _ProfileErrors, raw: Mapping[str, object]) -> dict[str, int
                 c.err(
                     f"transfer_min.{s}",
                     f"no transfer_min for transfer station {s}",
-                    f"add transfer_min: {{ {s}: {FALLBACK_TRANSFER_MIN} }} "
-                    f"({FALLBACK_TRANSFER_MIN} min is the fallback)",
+                    f"add transfer_min: {{ {s}: {FALLBACK_MIN} }} "
+                    f"({FALLBACK_MIN} min is the fallback)",
                 )
     return tm
 

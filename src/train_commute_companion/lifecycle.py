@@ -743,8 +743,8 @@ def apply_action(s: OccurrenceState, ctx: Ctx, action: UserAction) -> Transition
 # --- follow, relock, restore (7.4, 7.12 rules 2, 3, 8, 21) ---
 
 _RUNNING_LEG_KINDS = (LegKind.OK, LegKind.DELAYED)
-_AT_RISK_LOUD = timedelta(minutes=30)
-_PLATFORM_LOUD = timedelta(minutes=15)
+AT_RISK_LOUD_MIN = 30
+PLATFORM_LOUD_MIN = 15
 _KEEP_POLLS = 20  # shortcut: health reads only the latest records; keep more if it ever needs a day
 
 
@@ -1082,7 +1082,7 @@ def _onward(
 
 
 def _at_risk(ctx: Ctx, x: LegProgress, nxt: LegProgress, reason: str) -> AlertEvent:
-    soon = to_utc(nxt.train.planned_departure) - to_utc(ctx.now) <= _AT_RISK_LOUD
+    soon = to_utc(nxt.train.planned_departure) - to_utc(ctx.now) <= timedelta(minutes=AT_RISK_LOUD_MIN)
     text = f"your change at {x.alight_stop} is at risk: {reason}."
     sev = Severity.LOUD if soon else Severity.SILENT
     return make_event(ctx, EventKind.TRANSFER_AT_RISK, sev, text, nxt.train)
@@ -1139,7 +1139,7 @@ def _platform(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
     if not b.planned_track:
         return None
     track = b.actual_track or b.planned_track  # no live track means the planned one
-    soon = _departs(x, cl) - to_utc(ctx.now) <= _PLATFORM_LOUD
+    soon = _departs(x, cl) - to_utc(ctx.now) <= timedelta(minutes=PLATFORM_LOUD_MIN)
     sev = Severity.LOUD if soon else Severity.SILENT
     planned = track == b.planned_track
     if planned:  # `keep_stated` keeps it only after an announced change

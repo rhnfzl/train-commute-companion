@@ -8,6 +8,8 @@ from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.classify import classify_leg, current_run, find_leg
 from train_commute_companion.health import FRESH_FOR, board_health
 from train_commute_companion.lifecycle import (
+    AT_RISK_LOUD_MIN,
+    PLATFORM_LOUD_MIN,
     Board,
     Journey,
     LegProgress,
@@ -36,8 +38,6 @@ from train_commute_companion.model import (
 from train_commute_companion.providers.base import ProviderAnswer
 from train_commute_companion.transfer import check_transfer
 
-AT_RISK_LOUD_MIN = 30
-PLATFORM_LOUD_MIN = 15
 _SILENT = frozenset(
     {
         EventKind.CAN_SEE_TRAIN_AGAIN,
