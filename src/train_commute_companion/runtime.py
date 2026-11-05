@@ -7,8 +7,8 @@ import asyncio
 import logging
 from collections import Counter
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, time, timedelta
+from dataclasses import replace
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -17,7 +17,9 @@ from train_commute_companion.advice import (
     advise,
     usual_arrival,
 )
-from train_commute_companion.calendar import TZ, floor_to_minute, resolve_local, to_utc
+from train_commute_companion.budget import POLL_EVERY_S, RequestBudget
+from train_commute_companion.calendar import TZ, resolve_local, to_utc
+from train_commute_companion.choice import ChoiceTarget, choice_target, named_connections
 from train_commute_companion.classify import current_run, evidence, find_leg
 from train_commute_companion.delivery import (
     deliver,
@@ -34,12 +36,10 @@ from train_commute_companion.health import (
 from train_commute_companion.lifecycle import (
     Board,
     Choose,
-    LegProgress,
     OccurrenceState,
     Pool,
     UserAction,
     apply_action,
-    first_open,
     is_resolved,
     location_queries,
     may_archive,
@@ -54,23 +54,12 @@ from train_commute_companion.lifecycle import (
 )
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import (
-    BaselineHistory,
-    LookAheadFact,
-    LookAheadLedger,
-    ProbeResult,
-    adopt_key,
-    bundle_key,
-    carried_ids,
-    evaluate,
     forget_pending,
-    probe_dates,
-    probe_queries,
     rebase_on_edit,
-    render_message,
     reset_on_edit,
-    run_lookahead,
     service_date,
 )
+from train_commute_companion.lookahead_run import applied_run, lookahead_done, probe_direction
 from train_commute_companion.match import usual_connection
 from train_commute_companion.messages import CHECK_APP, no_journey_text
 from train_commute_companion.model import (
@@ -109,7 +98,6 @@ from train_commute_companion.providers.base import (
     ProviderError,
     Query,
     RateLimited,
-    ServerError,
 )
 from train_commute_companion.revalidation import (
     OBSERVED,
@@ -134,14 +122,10 @@ from train_commute_companion.webhook_queue import CopyQueue
 
 log = logging.getLogger(__name__)
 
-POLL_EVERY_S = 120
 POLL_DEADLINE = timedelta(seconds=90)
 WATCHDOG_EVERY_S = 30
 FILE_EVERY_S = 10
 LOOKAHEAD_AT = time(6, 0)
-BACKOFF_MIN = (2, 4, 8)
-# a rejected key: stays at 30 until a success, never stops (the key may be fixed on NS's side)
-BACKOFF_AUTH_MIN = (2, 5, 15, 30)
 _APP = "app"  # profile name on application warnings, which belong to no profile
 
 
@@ -156,41 +140,6 @@ class SystemClock:
 
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
-
-
-@dataclass(frozen=True, slots=True)
-class RequestBudget:
-    """One per API key, shared by every profile and look-ahead (7.12 rule 14)."""
-
-    cooldown_until: datetime | None = None
-    backoff_step: int = 0
-    reason: PollFailure = "rate"  # which table the step counts in; a skip reports it (7.11)
-
-    def allow(self, now: datetime, live: bool) -> bool:
-        if self.cooldown_until is None:
-            return True
-        # live journeys first: look-ahead waits one more poll interval after a cooldown
-        extra = timedelta(0) if live else timedelta(seconds=POLL_EVERY_S)
-        return to_utc(now) >= to_utc(self.cooldown_until) + extra
-
-    def on_result(
-        self, error: BaseException | None, now: datetime, window_end: datetime | None
-    ) -> "RequestBudget":
-        if error is None:
-            return RequestBudget()
-        reason: PollFailure
-        table: tuple[int, ...]
-        if isinstance(error, AuthError):
-            reason, table = "auth", BACKOFF_AUTH_MIN
-        elif isinstance(error, (RateLimited, ServerError)):
-            reason, table = "rate", BACKOFF_MIN
-        else:
-            return self
-        step = min((self.backoff_step if self.reason == reason else 0) + 1, len(table))
-        until = to_utc(now) + timedelta(minutes=table[step - 1])
-        if window_end is not None and to_utc(now) < to_utc(window_end):
-            until = min(until, to_utc(window_end))
-        return RequestBudget(until, step, reason)
 
 
 def _reasons(errors: Sequence[ProfileProblem]) -> str:
@@ -1054,128 +1003,72 @@ class Runtime:
             (p for s in cands if (p := self._profile_for(s)) is not None), None
         )
         gone = no_journey_text(display_name(named.name if named else profile_id))
-        named_at = f"{departure:%H:%M}"
-
-        def named_leg(x: LegProgress) -> bool:
-            t = x.train.planned_departure.astimezone(TZ)
-            return (
-                x.state is not LegState.DONE
-                and (t.hour, t.minute) == (departure.hour, departure.minute)
-                and train_number in (None, x.train.train_number)
-            )
-
-        # a train of the lock or of a retained remainder: the one the user may ride (N3)
-        hit = next(
-            (
-                (s, x)
-                for s in cands
-                for j in (*((s.lock,) if s.lock else ()), *s.retained)
-                for x in j.legs
-                if named_leg(x)
-            ),
-            None,
+        target = choice_target(
+            cands, departure, train_number, service_date, now, lambda s: self._ctx(s, now)
         )
-        occ: OccurrenceState | None
-        ctx: Ctx | None
-        if hit is not None:
-            occ, x = hit
-            ctx = self._ctx(occ, now)
-            station, when = x.board_station, x.train.planned_departure
-        else:
-            # at a transfer station: target_occurrence would skip it as riding
-            occ = next(
-                (s for s in cands if s.lock and 0 < first_open(s.lock) < len(s.lock.legs)),
-                None,
-            ) or target_occurrence(cands, Leaving(service_date, now))
-            ctx = None if occ is None else self._ctx(occ, now)
-            if occ is None or ctx is None:
-                return gone
-            w = ctx.schedule
-            n = 0 if occ.lock is None else first_open(occ.lock)
-            lock = occ.lock
-            if lock and n:
-                # an onward train continues the kept incoming leg: dated from it, not the window
-                station = lock.legs[n - 1].alight_stop
-                lo = to_utc(lock.legs[n - 1].train.planned_departure)
-                hi = lo + timedelta(days=1)
-            else:
-                station = ctx.profile.origin(ctx.direction)
-                lo, hi = to_utc(w.window_start), to_utc(w.window_end)
-            first = lo.astimezone(TZ).date()
-            inside = sorted(
-                (
-                    t for d in (first, first + timedelta(days=1)) for edge in ("start", "end")
-                    if lo <= to_utc(t := resolve_local(d, departure, edge=edge)) < hi
-                ),
-                key=to_utc,
-            )  # fmt: skip
-            if not inside:
-                return f"{named_at} is outside the {ctx.direction.value} window"
-            when = inside[0]
-        if occ is None or ctx is None:
+        if target is None:
             return gone
-        k, end = okey(occ.key), ctx.schedule.window_end
+        if isinstance(target, str):
+            return target
+        occ = target.occ
+        k = okey(occ.key)
         # rule 21: what the choice is judged on must still hold when it is written
         mark = (occ.generation, occ.route_revision, occ.baseline_version)
-        # one deadline for every request of the choice: the shell waits 120 s in all
-        deadline = to_utc(self._clock.now()) + POLL_DEADLINE
-        boards: tuple[ProviderAnswer, ...] = ()
-        if station != ctx.profile.origin(ctx.direction):
-            # the change from the kept incoming leg is judged on a fresh observation of it,
-            # never on an older poll's answer (rule 1)
-            more = await self._fetch_all(queries_needed(occ, ctx), True, end, deadline)
-            self._auth(more if isinstance(more, str) else None, k, self._clock.now())
-            if isinstance(more, str):
-                await self._deliver()
-                return f"NS did not answer ({more}); try again"
-            boards = more
-        got = await self._fetch(
-            Query(station, ctx.profile.destination(ctx.direction), when), True, end, deadline
-        )
-        self._auth(got if isinstance(got, str) else None, k, self._clock.now())
-        if isinstance(got, str):
-            await self._deliver()
-            return f"NS did not answer ({got}); try again"
-        minute = floor_to_minute(when)
-        same = [
-            c for c in got.connections
-            if c.legs and c.legs[0].board.code == station
-            and floor_to_minute(c.legs[0].train.planned_departure) == minute
-        ]  # fmt: skip
-        # 6.1: two trains in one boarding minute are uncertain even by number, so check_good refuses
-        if len({(c.legs[0].train.operating_date, c.legs[0].train.train_number) for c in same}) > 1:
-            return f"two trains leave {station} at {named_at}; NS data cannot tell them apart"
-        found = [c for c in same if train_number in (None, c.legs[0].train.train_number)]
-        if not found:
-            return f"no train at {named_at} from {station} in NS data"
-        far = datetime.max.replace(tzinfo=UTC)
-        ranked = sorted(found, key=lambda c: to_utc(c.legs[-1].alight.planned_arrival or far))
+        answers = await self._fetch_choice(target, k)
+        if isinstance(answers, str):
+            return answers
+        ranked = named_connections(answers[0], target, departure, train_number)
+        if isinstance(ranked, str):
+            return ranked
         # rule 21: a reload during the request may have removed or archived the occurrence
         now_occ = self._writer.st.occurrences.get(k)
         if now_occ is None or is_resolved(now_occ):
             return gone
         if (now_occ.generation, now_occ.route_revision, now_occ.baseline_version) != mark:
             return "your journey changed while NS answered; try again"
+        choices = [Choose(occ.key.service_date, c, answers) for c in ranked]
         d = occ.key.direction
+        why = [self._choice_refusal(profile_id, d, c, gone) for c in choices]
+        # the earliest arrival that passes; when none does, the earliest is refused loudly
+        i = next((n for n, r in enumerate(why) if r is None), 0)
+        return why[i] if await self.act(profile_id, choices[i], d) is None else gone
+
+    async def _fetch_choice(self, t: ChoiceTarget, k: str) -> tuple[ProviderAnswer, ...] | str:
+        """The answer naming the train first, then what judges the change to it: from a transfer
+        station, a fresh observation of the kept incoming leg, never an older poll's answer
+        (rule 1). One deadline for every request: the shell waits 120 s in all. A string: why not."""
+        ctx = t.ctx
+        end = ctx.schedule.window_end
+        deadline = to_utc(self._clock.now()) + POLL_DEADLINE
+        asks: list[Sequence[Query]] = [
+            (Query(t.station, ctx.profile.destination(ctx.direction), t.when),)
+        ]
+        if t.station != ctx.profile.origin(ctx.direction):
+            asks.insert(0, queries_needed(t.occ, ctx))
+        out: tuple[ProviderAnswer, ...] = ()
+        for queries in asks:
+            got = await self._fetch_all(queries, True, end, deadline)
+            self._auth(got if isinstance(got, str) else None, k, self._clock.now())
+            if isinstance(got, str):
+                await self._deliver()
+                return f"NS did not answer ({got}); try again"
+            out = (*got, *out)
+        return out
+
+    def _choice_refusal(
+        self, profile_id: str, d: Direction, choice: Choose, gone: str
+    ) -> str | None:
+        """The check `act` applies, ridden prefix included, as a dry run (rule 1)."""
         mine = [
             s for s in self._writer.st.occurrences.values()
             if s.key.profile_id == profile_id and s.key.direction is d
         ]  # fmt: skip
-
-        def refusal(choice: Choose) -> str | None:
-            """The check `act` applies, ridden prefix included, as a dry run (rule 1)."""
-            t = target_occurrence(mine, choice)
-            tctx = None if t is None else self._ctx(t, self._clock.now())
-            if t is None or tctx is None:
-                return gone
-            events = apply_action(t, tctx, choice).events
-            return next((e.text for e in events if e.kind is EventKind.CHOOSE_REFUSED), None)
-
-        choices = [Choose(occ.key.service_date, c, (got, *boards)) for c in ranked]
-        why = [refusal(c) for c in choices]
-        # the earliest arrival that passes; when none does, the earliest is refused loudly
-        i = next((n for n, r in enumerate(why) if r is None), 0)
-        return why[i] if await self.act(profile_id, choices[i], d) is None else gone
+        t = target_occurrence(mine, choice)
+        ctx = None if t is None else self._ctx(t, self._clock.now())
+        if t is None or ctx is None:
+            return gone
+        events = apply_action(t, ctx, choice).events
+        return next((e.text for e in events if e.kind is EventKind.CHOOSE_REFUSED), None)
 
     async def location(
         self,
@@ -1367,19 +1260,6 @@ class Runtime:
                 await self._lookahead_direction(p, d, works)
         await self._deliver()
 
-    def _lookahead_done(self, since: datetime) -> bool:
-        """Every configured direction has a look-ahead run written since `since`."""
-        cfg = self._writer.st.config
-        leds = [
-            self._writer.st.lookahead.get(direction_key(p.id, d))
-            for p in (cfg.profiles if cfg else ())
-            for d in Direction
-        ]
-        return all(
-            x is not None and x.last_applied is not None and to_utc(x.last_applied) >= to_utc(since)
-            for x in leds
-        )
-
     async def _fetch_works(self) -> PlannedWorks | None:
         """None only when the shared budget refuses; a failed lookup is coverage `unknown`, so
         the probes still run and none is clean (7.10)."""
@@ -1421,133 +1301,13 @@ class Runtime:
         return got
 
     async def _lookahead_direction(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
-        dk = direction_key(p.id, d)
-        start = self._clock.now()
-        today = start.astimezone(TZ).date()
-        cfg = self._writer.st.config
-        assert cfg is not None
-        started_revision = cfg.revision
-        hist = self._writer.st.baselines.get(dk, BaselineHistory())
-        started_baseline = hist.latest
-        bases = {
-            x: self._writer.st.baselines.get(direction_key(p.id, x), BaselineHistory()).in_force(
-                today
-            )
-            for x in Direction
-        }
-        results: list[ProbeResult] = []
-        for day in probe_dates(p, today, bases):
-            base = hist.in_force(service_date(p, d, day))
-            got = await self._fetch_all(probe_queries(p, d, day, base), False, None)
-            if isinstance(got, str):
-                self._auth(got, "lookahead", start)
-                return  # an incomplete run writes nothing
-            self._auth(None, "lookahead", start)
-            results += evaluate(p, d, day, got, works, base)
-        # write time: the ledger as stored now with this run's start stamps (rule 21)
-        cfg = self._writer.st.config
-        if cfg is None:
-            return
-        stored = self._writer.st.lookahead.get(dk) or LookAheadLedger({}, (), None, 0, None)
-        ledger = replace(
-            stored, started_revision=started_revision, started_baseline=started_baseline
+        run = await probe_direction(
+            self._writer.st, p, d, works, self._clock.now(), self._fetch_all, self._auth
         )
-        current = self._writer.st.baselines.get(dk, BaselineHistory())
-        others = [x for x in cfg.profiles if x.id != p.id]
-        all_bases = {
-            (x.id, y): self._writer.st.baselines.get(direction_key(x.id, y), BaselineHistory())
-            for x in cfg.profiles
-            for y in Direction
-            if (x.id, y) != (p.id, d)
-        }
-        out = run_lookahead(
-            p,
-            d,
-            current,
-            ledger,
-            results,
-            revision=cfg.revision,
-            today=today,
-            now=start,
-            others=others,
-            bases=all_bases,
-        )
-        if out is None:
-            log.info("look-ahead for %s discarded: configuration or baseline changed", dk)
-            return
-        new_hist, new_ledger, _ = out
-        new_ledger = self._copies_through(p, d, stored, current, new_hist, new_ledger)
-        mine = {o.id for o in stored.pending}
-        obligations = (
-            *(o for o in self._writer.st.obligations if o.id not in mine),
-            *new_ledger.pending,
-        )
-        self._writer.st = replace(
-            self._writer.st,
-            baselines={**self._writer.st.baselines, dk: new_hist},
-            lookahead={**self._writer.st.lookahead, dk: new_ledger},
-            obligations=tuple(obligations),
-        )
-        self._writer.save(keep=True, stage=False)
-
-    def _copies_through(
-        self,
-        p: Profile,
-        d: Direction,
-        stored: LookAheadLedger,
-        current: BaselineHistory,
-        new_hist: BaselineHistory,
-        new_ledger: LookAheadLedger,
-    ) -> LookAheadLedger:
-        """A look-ahead run as owed webhook copies see it (rules 5, 18): a copy carried by
-        `retire` follows its message, a copy whose bundled adoption was withdrawn after its
-        phone send keeps its other facts, and every owed copy keeps the facts it is judged on.
-        A copy changed here is judged on what the write tried (the held view) until it lands:
-        a failed write must not drop it against the state before this run (rule 22)."""
-        was = {o.id: o for o in stored.pending}
-        pending = {o.id: o for o in new_ledger.pending}
-        for old, new in carried_ids(stored, new_ledger).items():
-            if old not in was or new not in pending:
-                continue
-            n = replace(pending[new], webhook_copied=True)
-            c = next((c for c in self._queue.copies.values() if c.obligation.id == old), None)
-            if c is not None:  # the same copy: its webhook-id, receipts and tries stay
-                self._queue.copies[c.id] = replace(c, obligation=n)
-                self._queue.held.add(c.id)
-                pending[new] = n
-            elif was[old].webhook_copied or old in self._queue.copied:  # it ended: no second one
-                pending[new] = n
-        rewritten: dict[str, tuple[LookAheadFact, ...]] = {}
-        gone = {v.version for v in current.versions} - {v.version for v in new_hist.versions}
-        for c in list(self._queue.copies.values()):
-            o = c.obligation
-            if o.look_ahead is None or o.look_ahead[:2] != (p.id, d) or o.id in was:
-                continue
-            if o.baseline_version is None or o.baseline_version not in gone:
-                continue
-            fs = stored.facts.get(o.id, ())
-            rest = tuple(f for f in fs if f.key != adopt_key(o.baseline_version))
-            if not rest or len(rest) == len(fs):
-                continue  # only the adoption (dropped at its next try), or none bundled
-            day = o.look_ahead[2]
-            kind, text = render_message(p, day, rest)
-            b = new_hist.in_force(day)
-            o = replace(
-                o,
-                baseline_version=b.version if b else None,
-                fact_key=bundle_key(rest),
-                event=replace(o.event, kind=kind, text=text),
-            )
-            self._queue.copies[c.id] = replace(c, obligation=o)
-            self._queue.held.add(c.id)
-            rewritten[o.id] = rest
-        owed = {c.obligation.id for c in self._queue.copies.values()}
-        carry = {i: f for i, f in stored.facts.items() if i in owed}
-        return replace(
-            new_ledger,
-            pending=tuple(pending.values()),
-            facts={**carry, **rewritten, **new_ledger.facts},
-        )
+        st = None if run is None else applied_run(self._writer.st, self._queue, p, d, run)
+        if st is not None:
+            self._writer.st = st
+            self._writer.save(keep=True, stage=False)
 
     # --- start, reconcile and the loops ---
 
@@ -1643,7 +1403,7 @@ class Runtime:
             while True:
                 now = self._clock.now().astimezone(TZ)
                 six = resolve_local(now.date(), self._lookahead_at, edge="start")
-                if to_utc(six) <= to_utc(now) and self._lookahead_done(six):
+                if to_utc(six) <= to_utc(now) and lookahead_done(self._writer.st, six):
                     six = resolve_local(
                         now.date() + timedelta(days=1), self._lookahead_at, edge="start"
                     )
@@ -1654,7 +1414,7 @@ class Runtime:
                     await self.lookahead_once()
                 except Exception:
                     log.exception("look-ahead failed")
-                if not self._lookahead_done(six):
+                if not lookahead_done(self._writer.st, six):
                     await self._clock.sleep(POLL_EVERY_S)
 
         async def main() -> None:

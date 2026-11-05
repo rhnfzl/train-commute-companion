@@ -11,6 +11,7 @@ import pytest
 from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from test_lifecycle_follow import L1, L1X, L2, L2X, LATER, conn, journey, occ
 
+from train_commute_companion.budget import RequestBudget
 from train_commute_companion.lifecycle import Choose, LockSource, origin_answer
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import BaselineHistory
@@ -37,7 +38,7 @@ from train_commute_companion.providers.base import (
     ServerError,
 )
 from train_commute_companion.revalidation import leg_now
-from train_commute_companion.runtime import RequestBudget, Runtime, _fresh_state
+from train_commute_companion.runtime import Runtime, _fresh_state
 from train_commute_companion.serde import dumps, loads
 from train_commute_companion.store import PersistedState, StorageError
 
