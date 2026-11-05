@@ -37,8 +37,10 @@ from train_commute_companion.providers.base import (
 from train_commute_companion.replay import ReplayClock, ReplayProvider
 from train_commute_companion.store import JsonFileStore
 
-PROFILES = Path(__file__).resolve().parents[1] / "tests" / "data" / "profiles"
+ROOT = Path(__file__).resolve().parents[1]
+PROFILES = ROOT / "tests" / "data" / "profiles"
 PROFILE = (PROFILES / "office_a.yaml").read_text()
+B_ONLY = (PROFILES / "office_b_only.yaml").read_text()
 STATIONS = frozenset({"AAA", "BBB", "UT", "RTD"})
 NOTIFY = "mobile_app_phone"
 

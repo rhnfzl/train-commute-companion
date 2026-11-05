@@ -6,6 +6,7 @@ import threading
 import harness
 import pytest
 from harness import (
+    B_ONLY,
     PROFILE,
     PROFILES,
     STATIONS,
@@ -27,7 +28,6 @@ pytestmark = pytest.mark.usefixtures("tcc_freezer")
 VIA_UT = (PROFILES / "located_via_ut.yaml").read_text()
 DIRECT = (PROFILES / "located_direct.yaml").read_text()
 RADIUS_300 = (PROFILES / "located_300.yaml").read_text()
-B_ONLY = (PROFILES / "office_b_only.yaml").read_text()
 OTHER = (PROFILES / "located_via_ut_other.yaml").read_text()
 TELEGRAM = (PROFILES / "located_via_ut_telegram.yaml").read_text()
 OFF = (PROFILES / "located_via_ut_off.yaml").read_text()

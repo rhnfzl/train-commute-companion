@@ -4,7 +4,7 @@ import asyncio
 import base64
 from pathlib import Path
 
-from app_rig import CHAT, TOKEN, StationsProvider, TickClock
+from app_rig import CHAT, CODES, TOKEN, StationsProvider, TickClock
 from builders import ONE_TRANSFER
 from runtime_rig import PROFILES_DIR, Provider, at
 from tcc_app.main import App, Settings, build
@@ -30,9 +30,6 @@ async def post(port: int, body: bytes, auth: str | None = None,
     writer.close()
     top, _, payload = answer.partition(b"\r\n\r\n")
     return int(top.split(b" ")[1]), top, payload
-
-
-CODES = frozenset({"AAA", "UT", "RTD"})
 
 
 POSITIONS = {"AAA": (52.3, 4.9), "UT": (52.1, 5.1), "RTD": (51.0, 4.0)}

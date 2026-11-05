@@ -16,6 +16,7 @@ from harness import (
     HOOKS,
     PROFILE,
     PROFILES,
+    ROOT,
     SECRET,
     STATIONS,
     Harness,
@@ -41,7 +42,6 @@ from train_commute_companion.replay import Replay, apply_event, load_replay
 
 pytestmark = pytest.mark.usefixtures("tcc_freezer")
 
-ROOT = Path(__file__).resolve().parents[1]
 REPLAYS = ROOT / "tests" / "replays"
 LINE = re.compile(r"(\d\d:\d\d) (LOUD|SILENT) \w+: (.*)")
 REPLAY_NAMES = ["direct", "one_transfer", "cancelled_second_leg", "transfer_broken_by_delay"]

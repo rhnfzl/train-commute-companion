@@ -13,6 +13,7 @@ import pytest
 import runtime_seam as seam
 from app_rig import (
     CHAT,
+    ONE_PROFILE,
     REPLAYS,
     SECRET,
     STRANGER,
@@ -26,7 +27,7 @@ from app_rig import (
     msg,
 )
 from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
-from runtime_rig import PROFILE, Rig, at
+from runtime_rig import Rig, at
 from tcc_app import bot as bot_mod
 from tcc_app.bot import Bot, ShellState, load_state, save_state
 from tcc_app.commands import render_status, render_webhook_tests, status_buttons
@@ -38,7 +39,6 @@ from train_commute_companion.location import LocationEvent
 from train_commute_companion.model import DirectionState, LegState
 from train_commute_companion.webhook import WebhookTestResult
 
-ONE_PROFILE = PROFILE.split('  - id: "p2"')[0].replace("NAME", "office_a")
 OUT, RET = "p1|outbound|2026-10-27", "p1|return|2026-10-27"
 OTHER_TOKEN = "456:TEST"
 

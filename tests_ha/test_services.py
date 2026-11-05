@@ -4,7 +4,7 @@ from datetime import date
 import pytest
 import runtime_seam as seam
 from builders import ONE_TRANSFER, make_connection, make_leg, only_occurrence
-from harness import PROFILE, PROFILES, drive, setup_tcc, write_profiles
+from harness import B_ONLY, PROFILE, drive, setup_tcc, write_profiles
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from runtime_rig import at
 
@@ -15,7 +15,6 @@ from train_commute_companion.runtime import fresh_state
 
 pytestmark = pytest.mark.usefixtures("tcc_freezer")
 
-B_ONLY = (PROFILES / "office_b_only.yaml").read_text()
 TUE = date(2026, 10, 27)
 
 

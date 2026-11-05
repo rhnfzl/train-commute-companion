@@ -10,6 +10,7 @@ from harness import (
     NOTIFY,
     PROFILE,
     PROFILES,
+    ROOT,
     SECRET,
     URL,
     URL2,
@@ -37,7 +38,6 @@ from train_commute_companion.providers.base import AuthError, ProviderError
 CHECK_KEY = "custom_components.train_commute_companion.config_flow.check_key"
 SETUP = "custom_components.train_commute_companion.async_setup_entry"
 KNOWN = frozenset({"AAA", "BBB", "UT", "RTD"})
-ROOT = Path(__file__).resolve().parents[1]
 CAVEAT = (
     "Phone location is not always reliable. In stations, tunnels, or with battery saving on, "
     "your position can be late or wrong. Location only helps the companion. It never hides a "

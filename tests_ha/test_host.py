@@ -7,14 +7,13 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from harness import PROFILES
 
 from custom_components.train_commute_companion.host import Parts, RuntimeHost, RuntimeNotRunning
 from train_commute_companion.calendar import TZ
 from train_commute_companion.model import NotTravelling
 from train_commute_companion.replay import MemoryStore, PrintNotifier, ReplayProvider
 from train_commute_companion.runtime import Runtime
-
-PROFILES = Path(__file__).resolve().parents[1] / "tests" / "data" / "profiles"
 
 
 class YieldingClock:

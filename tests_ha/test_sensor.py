@@ -5,7 +5,7 @@ from datetime import date, datetime
 import pytest
 import runtime_seam as seam
 from builders import AMS, make_leg, only_occurrence
-from harness import PROFILE, PROFILES, drive, jump, rebound, setup_tcc, write_profiles
+from harness import B_ONLY, PROFILE, PROFILES, drive, jump, rebound, setup_tcc, write_profiles
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from lifecycle_fixtures import journey, occ
@@ -33,7 +33,6 @@ def profile(name: str) -> str:
 EDITED = profile("office_a_edited.yaml")
 DIRECT = profile("office_a_direct.yaml")
 RENAMED = profile("office_a_renamed.yaml")
-B_ONLY = profile("office_b_only.yaml")
 
 
 def registry_ids(hass) -> dict[str, str]:
