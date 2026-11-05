@@ -137,9 +137,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         await coordinator.async_config_entry_first_refresh()
         # HA polls a coordinator only while it has a listener; monitoring must not wait for entities
         entry.async_on_unload(coordinator.async_add_listener(lambda: None))
-        entry.runtime_data = TccData(host, coordinator, stop)
+        tracker = LocationTracker(hass, entry, coordinator, host)
+        entry.runtime_data = TccData(host, coordinator, stop, tracker)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-        tracker = entry.runtime_data.tracker = LocationTracker(hass, entry)
         tracker.start()
 
         async def on_stop(_: Event) -> None:
@@ -156,16 +156,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
     tracker = entry.runtime_data.tracker
-    if tracker is not None:
-        await tracker.stop()
+    await tracker.stop()
     try:
         ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     except BaseException:
-        if tracker is not None:
-            tracker.start()  # the entry stays loaded, so it keeps listening
+        tracker.start()  # the entry stays loaded, so it keeps listening
         raise
     if ok:
         await entry.runtime_data.stop()
-    elif tracker is not None:
+    else:
         tracker.start()
     return ok

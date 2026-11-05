@@ -5,8 +5,9 @@ import asyncio
 import logging
 from collections.abc import Coroutine, Iterable, Mapping
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import (
     CALLBACK_TYPE,
     Event,
@@ -34,10 +35,8 @@ from train_commute_companion.model import LocationSettings, Profile
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.view import running_stations
 
-from .host import RuntimeNotRunning
-
-if TYPE_CHECKING:  # data.py imports this module
-    from .data import TccConfigEntry  # noqa: TC004 (annotation only, lazy on 3.14)
+from .coordinator import TccCoordinator
+from .host import RuntimeHost, RuntimeNotRunning
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -80,9 +79,17 @@ def zones_for(
 
 
 class LocationTracker:
-    def __init__(self, hass: HomeAssistant, entry: TccConfigEntry) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        coordinator: TccCoordinator,
+        host: RuntimeHost,
+    ) -> None:
         self._hass = hass
         self._entry = entry
+        self._coordinator = coordinator
+        self._host = host
         # profile id -> (entity, source epoch): the entity lower case like HA's ids, the epoch
         # from the same coordinator view; a change of either is a new source
         self._tracked: dict[str, tuple[str, int]] = {}
@@ -95,7 +102,7 @@ class LocationTracker:
         self._tracks: dict[str, ZoneTrack] = {}
 
     def start(self) -> None:
-        self._unsub_data = self._entry.runtime_data.coordinator.async_add_listener(self._sync)
+        self._unsub_data = self._coordinator.async_add_listener(self._sync)
         self._sync()
 
     async def stop(self) -> None:
@@ -114,7 +121,7 @@ class LocationTracker:
     @callback
     def _sync(self) -> None:
         """Follows the profiles of the coordinator's view, removed ones that still run included."""
-        data = self._entry.runtime_data.coordinator.data
+        data = self._coordinator.data
         want = {
             p.id: (p.location.entity.lower(), data.location_epochs.get(p.id, 0))
             for p in data.profiles
@@ -202,7 +209,7 @@ class LocationTracker:
     ) -> None:
         if self._gen.get(pid) is not gen:  # the source changed while this waited for the lock
             return
-        data = self._entry.runtime_data.coordinator.data
+        data = self._coordinator.data
         profile = next((p for p in data.profiles if p.id == pid), None)
         if profile is None or profile.location is None:
             return
@@ -235,7 +242,7 @@ class LocationTracker:
             # the core rechecks the source after its own request, before any write
             return rt.report_location(pid, event, source, epoch=epoch)
 
-        return await self._entry.runtime_data.host.run(send)
+        return await self._host.run(send)
 
     def _lift_timer(self, pid: str) -> None:
         if pid in self._tracks:  # a source change meanwhile has dropped this track

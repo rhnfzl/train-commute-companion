@@ -16,7 +16,7 @@ class TccData:
     coordinator: TccCoordinator
     # retires the runtime, cancels its pending pushes, then stops its thread
     stop: Callable[[], Awaitable[None]]
-    tracker: LocationTracker | None = None
+    tracker: LocationTracker
 
 
 type TccConfigEntry = ConfigEntry[TccData]
