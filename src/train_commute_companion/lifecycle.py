@@ -2,7 +2,7 @@
 and termination (7.2, 7.4, 7.7, 7.8, 7.12 rules 1, 2, 3, 6, 7, 8, 10, 11, 21, 7.13). Pure: `now`
 always comes from the caller."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import NamedTuple
@@ -1415,6 +1415,72 @@ def _advance_all(
     return replace(s, lock=lock, retained=retained, direction_state=state), events
 
 
+def _missing_events(
+    s: OccurrenceState, ctx: Ctx, pool: Pool, live: bool
+) -> tuple[list[AlertEvent], dict[str, tuple[LegProgress, set[str], str]]]:
+    """The watched legs not in the answers, and per watched train: a leg, its alighting stops and
+    the prefix of its messages."""
+    events: list[AlertEvent] = []
+    seen: dict[str, tuple[LegProgress, set[str], str]] = {}
+    for j in ((s.lock,) if live and s.lock else ()) + s.retained:
+        on = "" if j is s.lock else _on_prefix(j)
+        for x in j.legs:
+            if not _observed(x, ctx.now):
+                continue
+            if observe(pool, x)[1] is Observation.MISSING:
+                text = f"{on}your {_name(x)} train is not in NS data."
+                events.append(make_event(ctx, EventKind.MISSING, Severity.LOUD, text, x.train))
+            seen.setdefault(train_key(x.train), (x, set(), on))[1].add(x.alight_stop)
+    return events, seen
+
+
+def _unclear_events(
+    s: OccurrenceState,
+    ctx: Ctx,
+    pool: Pool,
+    seen: Mapping[str, tuple[LegProgress, set[str], str]],
+) -> tuple[OccurrenceState, list[AlertEvent]]:
+    """Rule 23: on top of the merge, copies of one answer that disagree are shown once per
+    values."""
+    events: list[AlertEvent] = []
+    for tk, (x, alights, on) in seen.items():
+        u = disagreement(newest_copies(pool.answers, x.train, x.board_station), *sorted(alights))
+        slot = unclear_slot(tk)
+        if u is None or s.alert_keys.get(slot) == u.fingerprint:
+            continue
+        s = replace(s, alert_keys={**s.alert_keys, slot: u.fingerprint})
+        text = on + data_unclear_text(u.label, u.station, u.copies)
+        stated = AlertFacts(unclear=u.fingerprint)
+        event = make_event(ctx, EventKind.DATA_UNCLEAR, Severity.LOUD, text, x.train, None, stated)
+        date_ = ctx.schedule.key.service_date.isoformat()
+        key = f"{EventKind.DATA_UNCLEAR.value}:{date_}:{tk}:{u.fingerprint}"
+        events.append(replace(event, key=key))
+    return s, events
+
+
+def _follow_retained(
+    s: OccurrenceState, ctx: Ctx, pool: Pool, asked: tuple[Query, ...]
+) -> tuple[OccurrenceState, list[AlertEvent]]:
+    """Rule 7: a retained remainder gets the locked-journey checks but is never relocked, so it
+    keeps its observed progress and what the checks say, with the next good connection."""
+    events: list[AlertEvent] = []
+    retained = []
+    for r in s.retained:
+        first = r.legs[0].train
+        on = _on_prefix(r)
+        alone = replace(s, lock=r, retained=(), cancellation_history=())
+        t = _follow(alone, ctx, pool, asked, relock=False)
+        retained.append(present(t.state.lock))
+        for e in t.events:
+            text = f"{display_name(e.profile_name)}: {on}{e.body}"
+            tail = f":retained:{train_ident(first)}"
+            key = e.key + tail
+            f = alert_facts(e)
+            facts = replace(f, on=on, moved_slot=f.moved_slot and f.moved_slot + tail)
+            events.append(replace(e, text=text, key=key, facts=facts))
+    return replace(s, retained=tuple(retained)), events
+
+
 def on_poll(s: OccurrenceState, ctx: Ctx, poll: PollAnswers) -> Transition:
     """Apply one poll (7.4, rule 2). A result started under another generation is discarded
     (rule 21). One lock change per poll; the next poll, at the new generation, sees the rest.
@@ -1434,47 +1500,13 @@ def on_poll(s: OccurrenceState, ctx: Ctx, poll: PollAnswers) -> Transition:
     s, events = _accept_all(s, ctx, pool, live)
     s, more = _advance_all(s, ctx, pool, live)
     events += more
-    seen: dict[str, tuple[LegProgress, set[str], str]] = {}
-    for j in ((s.lock,) if live and s.lock else ()) + s.retained:
-        on = "" if j is s.lock else _on_prefix(j)
-        for x in j.legs:
-            if not _observed(x, ctx.now):
-                continue
-            if observe(pool, x)[1] is Observation.MISSING:
-                text = f"{on}your {_name(x)} train is not in NS data."
-                events.append(make_event(ctx, EventKind.MISSING, Severity.LOUD, text, x.train))
-            seen.setdefault(train_key(x.train), (x, set(), on))[1].add(x.alight_stop)
-    # rule 23: on top of the merge, copies of one answer that disagree are shown once per values
-    for tk, (x, alights, on) in seen.items():
-        u = disagreement(newest_copies(pool.answers, x.train, x.board_station), *sorted(alights))
-        slot = unclear_slot(tk)
-        if u is None or s.alert_keys.get(slot) == u.fingerprint:
-            continue
-        s = replace(s, alert_keys={**s.alert_keys, slot: u.fingerprint})
-        text = on + data_unclear_text(u.label, u.station, u.copies)
-        stated = AlertFacts(unclear=u.fingerprint)
-        event = make_event(ctx, EventKind.DATA_UNCLEAR, Severity.LOUD, text, x.train, None, stated)
-        date_ = ctx.schedule.key.service_date.isoformat()
-        key = f"{EventKind.DATA_UNCLEAR.value}:{date_}:{tk}:{u.fingerprint}"
-        events.append(replace(event, key=key))
+    missing, seen = _missing_events(s, ctx, pool, live)
+    events += missing
+    s, unclear = _unclear_events(s, ctx, pool, seen)
+    events += unclear
     asked = tuple(a.query for a in poll.answers)
-    retained = []
-    for r in s.retained:
-        # rule 7: a retained remainder gets the locked-journey checks but is never relocked, so
-        # it keeps its observed progress and what the checks say, with the next good connection
-        first = r.legs[0].train
-        on = _on_prefix(r)
-        alone = replace(s, lock=r, retained=(), cancellation_history=())
-        t = _follow(alone, ctx, pool, asked, relock=False)
-        retained.append(present(t.state.lock))
-        for e in t.events:
-            text = f"{display_name(e.profile_name)}: {on}{e.body}"
-            tail = f":retained:{train_ident(first)}"
-            key = e.key + tail
-            f = alert_facts(e)
-            facts = replace(f, on=on, moved_slot=f.moved_slot and f.moved_slot + tail)
-            events.append(replace(e, text=text, key=key, facts=facts))
-    s = replace(s, retained=tuple(retained))
+    s, retained = _follow_retained(s, ctx, pool, asked)
+    events += retained
     t = (_restore(s, ctx, pool) or _follow(s, ctx, pool, asked)) if live else Transition(s, ())
     return keep_stated(_bumped(start, t.state), (*events, *t.events))
 
