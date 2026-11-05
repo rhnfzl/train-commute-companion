@@ -234,6 +234,7 @@ async def test_bad_requests_get_a_fixed_error_and_never_stall_the_loop(
     errors = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert len(errors) == 1 and "RuntimeError" in errors[0].getMessage()
     assert errors[0].exc_info is None
+    assert "test_web.py" in errors[0].getMessage()  # the log says where, for "see the app log"
 
     current = lambda req: {"x": "a" * MCP_REPLY_MAX}
     assert json.loads(await _exchange(sock, b"{}\n")) == {"error": "Reply too large."}

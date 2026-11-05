@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 import os
+import traceback
 from collections.abc import Callable, Mapping
 from http import HTTPStatus
 from pathlib import Path
@@ -210,9 +211,12 @@ async def start_readout(
                 try:
                     # view and format in one step: no await between, so no runtime coroutine runs in between
                     data = json.dumps(answer(request)).encode()
-                # any failure gets the fixed reply; only the class is logged (text may carry view data)
+                # any failure gets the fixed reply; the log has the class and the frames, never
+                # the text (it may carry view data)
                 except Exception as e:  # noqa: BLE001
-                    log.error("MCP read-out failed (%s)", type(e).__name__)
+                    frames = traceback.extract_tb(e.__traceback__)
+                    where = ", ".join(f"{f.filename}:{f.lineno}" for f in frames)
+                    log.error("MCP read-out failed (%s) at %s", type(e).__name__, where)
                     data = json.dumps({"error": "Internal error; see the app log."}).encode()
                 if len(data) > MCP_REPLY_MAX - 1:
                     data = json.dumps({"error": "Reply too large."}).encode()
