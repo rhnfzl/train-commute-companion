@@ -29,7 +29,7 @@ def moved_lines(path: Path, profiles: Sequence[Profile]) -> list[str]:
     try:
         env = json.loads(path.read_text(encoding="utf-8"))
         state = read_state(env.get("version"), env["state"])
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as e:
         return [f"store: cannot read {path.name} ({type(e).__name__}); NS changes not checked"]
     return [m.text for m in moved(profiles, state.baselines)]
 

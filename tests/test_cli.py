@@ -129,3 +129,17 @@ def test_check_profile_reads_a_version_1_store(tmp_path):
     store = tmp_path / "state.json"
     store.write_text(json.dumps({"version": 1, "write_counter": 1, "state": raw}))
     assert moved_lines(store, ()) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        json.dumps({"version": 3, "write_counter": 1, "state": encode(full_state())}),
+        json.dumps({"write_counter": 1, "state": encode(full_state())}),
+        "[" * 100_000,
+    ],
+)
+def test_check_profile_cannot_read_an_unknown_version_or_a_too_deep_store(tmp_path, text):
+    store = tmp_path / "state.json"
+    store.write_text(text)
+    assert "cannot read" in moved_lines(store, ())[0]

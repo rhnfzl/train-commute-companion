@@ -109,7 +109,10 @@ def _from_v1(raw: Any) -> PersistedState:
 
 
 def read_state(version: object, raw: Any) -> PersistedState:
-    """The state saved under a readable `version`, as the current model has it."""
+    """The state saved under `version`, as the current model has it. Raises ValueError for a
+    version this code cannot read."""
+    if version not in (_V1, VERSION):
+        raise ValueError(f"unknown version {version!r}")
     if version == _V1:
         return _from_v1(raw)
     st: PersistedState = decode(PersistedState, raw)
@@ -126,7 +129,7 @@ def _read_counter(path: Path) -> int | None:
         raise StorageError(f"cannot read {path.name}: {e}") from e
     try:
         counter = json.loads(raw)["write_counter"]
-    except (ValueError, KeyError, TypeError) as e:
+    except (ValueError, KeyError, TypeError, RecursionError) as e:
         raise StorageError(f"{path.name} is not a readable store file") from e
     if isinstance(counter, bool) or not isinstance(counter, int):
         raise StorageError(f"{path.name} has no valid write counter")
@@ -163,16 +166,13 @@ class JsonFileStore:
             raise self._set_aside(f"{self._path.name} is unreadable ({e})") from e
         try:
             env: Any = json.loads(raw)
-            if not isinstance(env, dict) or env.get("version") not in (_V1, VERSION):
-                raise ValueError(
-                    f"unknown version {env.get('version') if isinstance(env, dict) else env!r}"
-                )
             counter = env["write_counter"]
             if isinstance(counter, bool) or not isinstance(counter, int):
                 raise TypeError("bad write counter")
             state = read_state(env["version"], env["state"])
-        # JSON errors are ValueErrors; AttributeError: a version 1 state of the wrong shape
-        except (ValueError, KeyError, TypeError, AttributeError) as e:
+        # JSON errors are ValueErrors; AttributeError: a version 1 state of the wrong shape;
+        # RecursionError: JSON nested deeper than the parser goes
+        except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as e:
             raise self._set_aside(
                 f"{self._path.name} is corrupt or cannot be migrated ({e})"
             ) from e

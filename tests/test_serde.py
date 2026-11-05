@@ -1,5 +1,5 @@
 import json
-from datetime import date, time
+from datetime import date, datetime, time
 
 import pytest
 from lifecycle_fixtures import L1, L2, RIDE, at, full_state, journey, occ
@@ -80,3 +80,8 @@ def test_old_files_load_without_copies():
     assert back.webhook_copies == ()
     assert [o.webhook_copied for o in back.obligations] == [False]
     assert [o.webhook_copied for o in back.lookahead["p1"].pending] == [False]
+
+
+def test_a_datetime_out_of_range_in_our_zone_is_a_value_error():
+    with pytest.raises(ValueError, match="expected"):
+        decode(datetime, "0001-01-01T00:00:00+14:00")

@@ -77,7 +77,10 @@ def decode(tp: Any, v: Any) -> Any:
             d = datetime.fromisoformat(v)
             if d.tzinfo is None:
                 raise ValueError(f"naive datetime {v!r}")
-            return d.astimezone(TZ)
+            try:
+                return d.astimezone(TZ)
+            except OverflowError:  # valid in its own offset, out of range in ours
+                raise _bad(tp, v) from None
         if tp is date:
             return date.fromisoformat(v)
         if tp is time:
