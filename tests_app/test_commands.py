@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date, time, timedelta
 
 import pytest
@@ -30,7 +31,6 @@ from train_commute_companion.model import (
 from train_commute_companion.view import (
     DirectionInfo,
     Moved,
-    RuntimeView,
     WorksDay,
 )
 from train_commute_companion.webhook import WebhookTestResult
@@ -74,23 +74,7 @@ def test_parse_target_spaced_name_split_by_whitespace():
 
 
 def test_parse_target_profile_id_like_a_keyword():
-    v = view()
-    v = (
-        RuntimeView(
-            **{
-                **v.__dict__,
-                "directions": (
-                    DirectionInfo("return", "r", Direction.OUTBOUND, 1),
-                    DirectionInfo("p2", "p", Direction.OUTBOUND, 1),
-                ),
-            }
-        )
-        if False
-        else v
-    )
-    from dataclasses import replace
-
-    v = replace(v, directions=(DirectionInfo("return", "ret", Direction.OUTBOUND, 1),
+    v = replace(view(), directions=(DirectionInfo("return", "ret", Direction.OUTBOUND, 1),
                                DirectionInfo("p2", "two", Direction.OUTBOUND, 1)))  # fmt: skip
     assert parse_target(v, ["p=return", "return"]) == Target("return", "ret", Direction.RETURN)
     with pytest.raises(ValueError) as e:

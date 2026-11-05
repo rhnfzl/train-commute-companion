@@ -52,7 +52,7 @@ def test_core_and_app_process_never_import_the_sdk():
         assert not re.search(r"^\s*(import|from) mcp\b", f.read_text(), re.MULTILINE), f
     code = "import sys, tcc_app.main; print('mcp' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True,
-                         env={**os.environ, "PYTHONPATH": "app"}, check=True)  # fmt: skip
+                         env={**os.environ, "PYTHONPATH": "app"}, check=True, timeout=60)  # fmt: skip
     assert out.stdout.strip() == "False"
 
 

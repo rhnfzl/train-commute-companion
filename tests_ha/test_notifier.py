@@ -8,6 +8,7 @@ import pytest
 from aiohttp import ClientError
 from harness import fake_phone
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -524,8 +525,6 @@ async def test_two_profiles_same_fact_fire_two_bus_events(hass):  # Review Focus
 
 
 async def test_bus_event_has_device_id_when_registered(hass):
-    from homeassistant.helpers import device_registry as dr
-
     entry = MockConfigEntry(domain="train_commute_companion", entry_id="entry1")
     entry.add_to_hass(hass)
     dev = dr.async_get(hass).async_get_or_create(
