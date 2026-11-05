@@ -196,7 +196,7 @@ def _warnings(view: RuntimeView) -> list[str]:
 
 def warning_lines(view: RuntimeView, confirmed: bool) -> list[str]:
     """Every warning `/status` shows for this view, in its wording, so no MCP tool reads as all
-    good while `/status` does not (review focus 3)."""
+    good while `/status` does not."""
     health = [_health_line(o.health) for o in view.occurrences if not o.resolved]
     return [
         *dict.fromkeys(x for x in health if x != "  NS data: fresh"),
