@@ -153,7 +153,7 @@ class StateWriter:
         """A change is waiting for a write that lands."""
         return self._shadow is not None
 
-    def judged(self) -> PersistedState:
+    def judged_state(self) -> PersistedState:
         """What the alerts of unwritten changes are judged on: what the last write tried."""
         return self.st if self._shadow is None else self._shadow
 
@@ -171,7 +171,7 @@ class StateWriter:
         live = [o for o in self.st.obligations if o.id not in self.gone]
         return sum(o.attempts > 0 for o in (*live, *self.held.values(), *self.notes.values()))
 
-    def finish(self, ids: Collection[str]) -> None:
+    def mark_finished(self, ids: Collection[str]) -> None:
         """These written alerts ended; a failed write must not bring them back (rule 22)."""
         self.gone |= set(ids)
 

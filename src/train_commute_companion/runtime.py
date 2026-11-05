@@ -344,7 +344,7 @@ class Runtime:
             return self._writer.st
 
         self._ledger = LiveLedger(read, read, self._memory, clock.now)
-        self._held_ledger = LiveLedger(read, self._writer.judged, self._memory, clock.now)
+        self._held_ledger = LiveLedger(read, self._writer.judged_state, self._memory, clock.now)
         # an edit waiting for the station list retries it under the shared budget
         self._require_stations = require_stations
         self._on_stations = on_stations
@@ -619,7 +619,7 @@ class Runtime:
         self._writer.st = outcome(self._writer.st)
         self._archive(self._clock.now())
         w = self._writer
-        w.finish(finished)
+        w.mark_finished(finished)
         mem = set(w.held) | set(w.notes)  # read before a landed write empties `held`
         if w.save(stage=False, op=outcome):
             self._queue.delivery_written(mem)

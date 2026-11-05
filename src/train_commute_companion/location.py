@@ -111,7 +111,7 @@ def next_zone(
     return ZoneTrack(zone, {**track.reported, **started}), events
 
 
-def undelivered(track: ZoneTrack) -> ZoneTrack:
+def without_current_report(track: ZoneTrack) -> ZoneTrack:
     """`track` when its fix never reached the core, or reached it while NS gave no answer: the
     next fix in its zone reports at once."""
     return ZoneTrack(track.zone, {z: t for z, t in track.reported.items() if z != track.zone})

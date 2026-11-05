@@ -19,7 +19,7 @@ from train_commute_companion.location import (
     resolve_zone,
     seed_zone,
     station_zones,
-    undelivered,
+    without_current_report,
 )
 from train_commute_companion.model import LocationSettings
 from train_commute_companion.runtime import Runtime
@@ -133,7 +133,7 @@ class Follower:
             for name, kind in events:
                 event = LocationEvent(name, kind, fix.at)
                 if not await self._rt.report_location(pid, event, loc, epoch):
-                    mem.track = undelivered(mem.track)
+                    mem.track = without_current_report(mem.track)
         except Exception:
-            mem.track = undelivered(mem.track)
+            mem.track = without_current_report(mem.track)
             raise

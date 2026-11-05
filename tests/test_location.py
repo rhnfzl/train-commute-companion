@@ -38,7 +38,7 @@ from train_commute_companion.location import (
     number,
     resolve_zone,
     seed_zone,
-    undelivered,
+    without_current_report,
 )
 from train_commute_companion.model import EventKind, LegState, Severity
 
@@ -84,10 +84,10 @@ def test_seed_sends_nothing_and_starts_the_report_timer():
 
 def test_undelivered_lifts_only_the_current_zones_timer():
     track, _ = next_zone(seed_zone("AAA", at("08:30")), "UT", at("08:30"))
-    track = undelivered(track)
+    track = without_current_report(track)
     assert next_zone(track, "UT", at("08:31"))[1] == [("UT", "report")]
     assert track.reported == {"AAA": at("08:30")}
-    assert undelivered(ZoneTrack()) == ZoneTrack()
+    assert without_current_report(ZoneTrack()) == ZoneTrack()
 
 
 def test_resolve_zone_inside_and_outside():

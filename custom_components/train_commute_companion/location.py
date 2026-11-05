@@ -27,7 +27,7 @@ from train_commute_companion.location import (
     resolve_zone,
     seed_zone,
     station_zones,
-    undelivered,
+    without_current_report,
 )
 from train_commute_companion.model import LocationSettings, Profile
 from train_commute_companion.runtime import Runtime
@@ -241,4 +241,4 @@ class LocationTracker:
 
     def _lift_timer(self, pid: str) -> None:
         if pid in self._tracks:  # a source change meanwhile has dropped this track
-            self._tracks[pid] = undelivered(self._tracks[pid])
+            self._tracks[pid] = without_current_report(self._tracks[pid])
