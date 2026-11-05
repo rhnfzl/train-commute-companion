@@ -137,6 +137,8 @@ class RuntimeView:
     # "<profile_id>|<direction>" for every direction of the current config: the last successful
     # look-ahead run (a failed works lookup leaves it), None with no ledger or no good run (7.10)
     lookahead_last_ok: Mapping[str, datetime | None] = field(default_factory=dict)
+    # station code -> (lat, lon) from the provider's last station list; empty until it answers
+    positions: Mapping[str, tuple[float, float]] = field(default_factory=dict)
 
 
 def running_stations(occurrences: Iterable[OccurrenceView], profile_id: str) -> set[str]:
@@ -291,6 +293,7 @@ def runtime_view(
     undelivered: int,
     requests: int,
     location_epochs: Mapping[str, int],
+    positions: Mapping[str, tuple[float, float]],
 ) -> RuntimeView:
     """The frozen snapshot of `st` and what the runtime remembers beside it (5.4)."""
     cfg = st.config
@@ -342,4 +345,5 @@ def runtime_view(
             for k in (direction_key(p.id, d),)
             for led in (st.lookahead.get(k),)
         },
+        dict(positions),
     )

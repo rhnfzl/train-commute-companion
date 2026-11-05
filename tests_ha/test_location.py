@@ -71,6 +71,7 @@ async def start_tracker(h: Harness) -> None:
     await h.hass.async_block_till_done()  # events of the setup are not under test
     h.calls = calls = []
     h.provider.positions = dict(POSITIONS)
+    await h.entry.runtime_data.coordinator.async_refresh()
 
     await h.host.run(lambda rt: spy_on_location(rt, calls))
     tracker = h.entry.runtime_data.tracker
@@ -125,12 +126,14 @@ async def test_station_list_down_at_restart_recovers_station_zones(hass):  # 8, 
     h = await rebound(h)  # the stored config runs; the station list failed
     await start_tracker(h)
     h.provider.positions = {}
+    await h.entry.runtime_data.coordinator.async_refresh()
     set_person(hass, 52.0, 5.0)  # at AAA, but no station zone exists yet
     set_person(hass, *FAR)
     assert await spied(h) == []
     down = False
     await drive(h, "08:02")
     await h.host.run(lambda rt: rt.reload_if_changed())  # the 10 s file watch, with the file unchanged
+    await h.entry.runtime_data.coordinator.async_refresh()  # the view carries the new positions
     set_person(hass, 52.0, 5.0)
     assert await spied(h) == [("AAA", "enter")]
 
@@ -349,25 +352,15 @@ async def reload_profiles(h, text):
 
 
 @pytest.mark.parametrize("text", [TELEGRAM, OFF, OTHER], ids=["telegram", "disabled", "replaced"])
-async def test_source_change_during_pending_work_drops_it(hass, text, monkeypatch):
+async def test_source_change_during_pending_work_drops_it(hass, text):
     h = await setup_tcc(hass, VIA_UT)
     set_person(hass, *FAR)
     await start_tracker(h)
-    waiting, release = asyncio.Event(), asyncio.Event()
-    real = h.host.run
-
-    async def held(fn):
-        task = asyncio.current_task()
-        if task is not None and task.get_name().startswith("tcc location"):
-            waiting.set()
-            await release.wait()
-        return await real(fn)
-
-    monkeypatch.setattr(h.host, "run", held)
-    set_person(hass, 52.1, 5.1)  # the old source enters UT while the positions read waits
-    await waiting.wait()
-    await reload_profiles(h, text)
-    release.set()
+    pid = h.entry.runtime_data.coordinator.data.profiles[0].id
+    async with h.entry.runtime_data.tracker._locks.setdefault(pid, asyncio.Lock()):
+        set_person(hass, 52.1, 5.1)  # the old source enters UT while this fix waits for the lock
+        await asyncio.sleep(0)
+        await reload_profiles(h, text)
     assert await spied(h) == []
 
 
@@ -390,7 +383,7 @@ async def test_source_change_during_runtime_request_writes_no_evidence(hass, tex
         return await real(q)
 
     monkeypatch.setattr(h.provider, "trips", held)
-    set_person(hass, 52.1, 5.1)  # positions read, event dispatched, the core's NS request waits
+    set_person(hass, 52.1, 5.1)  # event dispatched, the core's NS request waits
     assert await hass.async_add_executor_job(hit.wait, 30)
     await reload_profiles(h, text)
     await h.host.run(lambda rt: release.set())

@@ -119,7 +119,7 @@ class Follower:
         if fix.acc is not None and fix.acc > loc.station_radius_m:
             return
         running = running_stations(view.occurrences, pid)
-        zones = station_zones(profile, loc.station_radius_m, self._rt.positions, running)
+        zones = station_zones(profile, loc.station_radius_m, view.positions, running)
         zone = _zone_of(fix, loc, zones)
         mem = self._memory.get(pid)
         if mem is None or mem.epoch != epoch:  # a new source: the first fix only seeds (7.2)

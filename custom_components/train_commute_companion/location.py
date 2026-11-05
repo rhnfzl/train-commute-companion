@@ -199,6 +199,8 @@ class LocationTracker:
         acc: float | None,
         seed: bool,
     ) -> None:
+        if self._gen.get(pid) is not gen:  # the source changed while this waited for the lock
+            return
         data = self._entry.runtime_data.coordinator.data
         profile = next((p for p in data.profiles if p.id == pid), None)
         if profile is None or profile.location is None:
@@ -208,12 +210,8 @@ class LocationTracker:
         source = profile.location
         if acc is not None and acc > source.station_radius_m:
             return  # it cannot place the user in a station circle (8, rule 6)
-        positions = await self._entry.runtime_data.host.run(lambda rt: dict(rt.positions))
-        if self._gen.get(pid) is not gen:
-            return
-        # read again after the await: the view may have moved on
-        running = running_stations(self._entry.runtime_data.coordinator.data.occurrences, pid)
-        zone = resolve_zone(*pos, zones_for(self._hass, profile, positions, running))
+        running = running_stations(data.occurrences, pid)
+        zone = resolve_zone(*pos, zones_for(self._hass, profile, data.positions, running))
         if seed:
             self._tracks[pid] = seed_zone(zone, at)
             return

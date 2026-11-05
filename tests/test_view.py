@@ -256,6 +256,14 @@ async def test_view_location_epochs_is_a_copy(tmp_path):
     assert v.location_epochs == {"p1": 3}
 
 
+async def test_view_positions_is_a_copy_of_the_providers(tmp_path):
+    w = await World(tmp_path).start()
+    w.provider.positions = {"UT": (52.09, 5.11)}
+    v = w.rt.view()
+    w.provider.positions["RTD"] = (51.92, 4.47)
+    assert v.positions == {"UT": (52.09, 5.11)}
+
+
 async def test_view_lookahead_last_ok_lists_directions_never_run(tmp_path):
     w = await World(tmp_path).start()
     assert w.rt.view().lookahead_last_ok == {
