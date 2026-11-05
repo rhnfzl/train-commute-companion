@@ -418,6 +418,8 @@ def _load_yaml(text: str) -> tuple[Any, list[ProfileProblem]]:
         return None, [ProfileProblem(None, "file", f"{where}{problem}{tab}", "fix the YAML syntax")]
     except ValueError as e:  # an explicit tag such as !!int on text that is not one
         return None, [ProfileProblem(None, "file", f"invalid value: {e}", "fix the YAML syntax")]
+    except RecursionError:
+        return None, [ProfileProblem(None, "file", "nested too deeply", "fix the YAML syntax")]
 
 
 def _duplicates(items: Sequence[object]) -> list[ProfileProblem]:

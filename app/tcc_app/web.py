@@ -102,7 +102,8 @@ async def _read(reader: asyncio.StreamReader) -> tuple[str, str, dict[str, str],
     # shortcut: no chunked bodies; OwnTracks sends a Content-Length
     if "transfer-encoding" in headers or not (length.isascii() and length.isdigit()):
         raise _Refused(400)
-    if int(length) > BODY_LIMIT:
+    # the length check first: int() raises ValueError on a very long run of digits
+    if len(length) > len(str(BODY_LIMIT)) or int(length) > BODY_LIMIT:
         raise _Refused(413)
     try:
         body = await reader.readexactly(int(length))

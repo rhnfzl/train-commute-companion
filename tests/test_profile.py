@@ -513,3 +513,8 @@ def test_check_lines_warns_on_alert_times_in_the_clock_change_hour():
         "office_a.alerts.latest_acceptable_arrival",
         "office_a.alerts.quiet_hours[0]",
     ]
+
+
+def test_a_deeply_nested_file_is_a_refusal_not_a_crash():
+    _, errors = parse_profiles("[" * 100_000, None)
+    assert [e.message for e in errors] == ["nested too deeply"]

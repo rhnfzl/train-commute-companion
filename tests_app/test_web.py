@@ -117,6 +117,8 @@ async def test_health_endpoint_and_unknown_path():
         assert (await ask(port, huge))[0] == 400
         big = f"POST /owntracks HTTP/1.1\r\nContent-Length: {BODY_LIMIT + 1}\r\n\r\n".encode()
         assert (await ask(port, big))[0] == 413
+        endless = b"POST /owntracks HTTP/1.1\r\nContent-Length: " + b"9" * 5000 + b"\r\n\r\n"
+        assert (await ask(port, endless))[0] == 413
     finally:
         server.close()
         await server.wait_closed()
