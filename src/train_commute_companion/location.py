@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal, get_args
 
-from train_commute_companion.model import Profile
+from train_commute_companion.model import LocationSettings, Profile
 
 _EARTH_M = 6_371_000.0
 STALE_LOCATION = timedelta(minutes=10)
@@ -33,6 +33,15 @@ class LocationEvent:
     at: datetime  # when the position was taken
 
 
+@dataclass(frozen=True, slots=True)
+class Fix:
+    lat: float
+    lon: float
+    at: datetime
+    acc: float | None = None
+    regions: frozenset[str] = frozenset()
+
+
 def number(v: object) -> float | None:
     """A finite JSON number (not a bool), else None."""
     if not isinstance(v, int | float) or isinstance(v, bool):
@@ -55,6 +64,16 @@ def resolve_zone(lat: float, lon: float, zones: Sequence[Zone]) -> str | None:
     """The smallest zone containing the point (a station inside a city zone wins), else None."""
     inside = [z for z in zones if _distance_m(lat, lon, z.lat, z.lon) <= z.radius_m]
     return min(inside, key=lambda z: z.radius_m).name if inside else None
+
+
+def fix_zone(fix: Fix, loc: LocationSettings, zones: Sequence[Zone]) -> str | None:
+    """The zone of a fix's position, else a place the source itself names (OwnTracks regions),
+    by the configured name the core compares."""
+    zone = resolve_zone(fix.lat, fix.lon, zones)
+    if zone is not None:
+        return zone
+    names = (loc.zones.get(role, role) for role in PLACE_ROLES)
+    return next((n for n in names if n in fix.regions), None)
 
 
 def station_zones(

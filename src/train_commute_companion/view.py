@@ -17,6 +17,16 @@ from train_commute_companion.lifecycle import (
     observe,
     unfinished_leg,
 )
+from train_commute_companion.location import (
+    Fix,
+    LocationKind,
+    Zone,
+    ZoneTrack,
+    fix_zone,
+    next_zone,
+    seed_zone,
+    station_zones,
+)
 from train_commute_companion.lookahead_probe import WHOLE_JOURNEY, split_day_key
 from train_commute_companion.model import (
     LIVE_PREFIX,
@@ -150,6 +160,29 @@ def running_stations(occurrences: Iterable[OccurrenceView], profile_id: str) -> 
         for leg in (*o.legs, *(x for r in o.retained for x in r))
         for s in (leg.board, leg.alight)
     }
+
+
+def track_fix(
+    view: RuntimeView,
+    profile: Profile,
+    epoch: int,
+    fix: Fix,
+    track: ZoneTrack | None,
+    places: Sequence[Zone] = (),
+) -> tuple[ZoneTrack, list[tuple[str, LocationKind]]] | None:
+    """A fix read under `epoch` against the view: the new track and the events it owes, the first
+    fix of a source (`track` None) only seeding (7.2). `places` are zones the shell knows beside
+    the stations. None drops the fix: the source changed since `epoch`, a switch back included,
+    or the fix cannot place the user in a station circle (8, rule 6)."""
+    loc = profile.location
+    if loc is None or view.location_epochs.get(profile.id, 0) != epoch:
+        return None
+    if fix.acc is not None and fix.acc > loc.station_radius_m:
+        return None
+    running = running_stations(view.occurrences, profile.id)
+    stations = station_zones(profile, loc.station_radius_m, view.positions, running)
+    zone = fix_zone(fix, loc, [*stations, *places])
+    return (seed_zone(zone, fix.at), []) if track is None else next_zone(track, zone, fix.at)
 
 
 def _reported(obs: TimeObs | None) -> datetime | None:

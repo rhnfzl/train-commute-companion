@@ -8,12 +8,12 @@ from app_rig import TickClock, free_port, make_app, spied, until
 from builders import only_occurrence
 from owntracks_rig import FAR, SECRET, UT, basic, post
 from runtime_rig import PROFILES_DIR, at
-from tcc_app.follow import Fix
 from tcc_app.main import serve
 from tcc_app.owntracks import handler, parse
 from tcc_app.web import BODY_LIMIT, start_web
 
 from train_commute_companion.calendar import TZ
+from train_commute_companion.location import Fix
 from train_commute_companion.profile import check_lines
 
 

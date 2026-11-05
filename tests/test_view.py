@@ -3,12 +3,15 @@ from datetime import date, time, timedelta
 
 import runtime_seam as seam
 from builders import ONE_TRANSFER, make_connection, make_leg, only_occurrence
+from lookahead_fixtures import P as LOOKAHEAD_P
 from runtime_rig import PROFILE, FakeClock, MemoryStore, Notifier, Provider, at
 
+from train_commute_companion.location import Fix, Zone, ZoneTrack
 from train_commute_companion.model import (
     Direction,
     DirectionState,
     LegState,
+    LocationSettings,
     Provenance,
     Signature,
     SignatureLeg,
@@ -19,7 +22,15 @@ from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer,
 from train_commute_companion.revisions import occurrence_ctx
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.state import BaselineHistory, BaselineVersion, LookAheadLedger
-from train_commute_companion.view import Moved, WorksDay, moved, occurrence_view, works_ahead
+from train_commute_companion.view import (
+    Moved,
+    RuntimeView,
+    WorksDay,
+    moved,
+    occurrence_view,
+    track_fix,
+    works_ahead,
+)
 
 DIRECT = PROFILE.replace(", transfers: [UT]", "")
 WITHOUT_P1 = "profiles:\n" + PROFILE[PROFILE.index('  - id: "p2"') :]
@@ -335,3 +346,27 @@ def test_the_alighting_platform_is_the_arrival_side_first():
     assert alight_track(replace(s, planned_track="7", actual_arrival_track="6")) == "6"
     assert alight_track(replace(s, planned_track="7", planned_arrival_track="5")) == "5"
     assert alight_track(replace(s, planned_track="7")) == "7"
+
+
+def test_track_fix_seeds_steps_and_drops():
+    loc = LocationSettings("ha", "person.someone", {})
+    profile = replace(LOOKAHEAD_P, location=loc)
+    aaa = profile.home_station
+    view = RuntimeView(
+        at("08:00"), True, (profile,), (), (), {}, (), None, True, False, 0, 0,
+        location_epochs={profile.id: 3},
+        positions={aaa: (52.0, 5.0)},
+    )  # fmt: skip
+    in_aaa, far = Fix(52.0, 5.0, at("08:00")), Fix(52.5, 5.5, at("08:01"))
+
+    assert track_fix(view, profile, 3, in_aaa, None) == (ZoneTrack(aaa, {aaa: at("08:00")}), [])
+    assert track_fix(view, profile, 2, in_aaa, None) is None  # the source changed since
+    sloppy = replace(in_aaa, acc=loc.station_radius_m + 1.0)
+    assert track_fix(view, profile, 3, sloppy, None) is None  # no use for a station circle
+    assert track_fix(view, profile, 3, far, ZoneTrack(aaa))[1] == [(aaa, "leave")]
+    # a shell's own place counts beside the stations, and a smaller zone wins
+    place = Zone("cafe", 52.0, 5.0, 10.0)
+    assert track_fix(view, profile, 3, in_aaa, None, [place])[0].zone == "cafe"
+    # a region the source names, when no circle holds the fix
+    named = replace(far, regions=frozenset({"home"}))
+    assert track_fix(view, profile, 3, named, None)[0].zone == "home"

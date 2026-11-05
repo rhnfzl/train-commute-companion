@@ -3,7 +3,7 @@ only adds alerts; the zone logic and every consequence of an event live in the c
 
 import asyncio
 import logging
-from collections.abc import Coroutine, Iterable, Mapping
+from collections.abc import Coroutine
 from datetime import datetime
 from typing import Any
 
@@ -20,20 +20,17 @@ from homeassistant.helpers.event import async_track_state_change_event
 
 from train_commute_companion.location import (
     PLACE_ROLES,
+    Fix,
     LocationEvent,
     Zone,
     ZoneTrack,
-    next_zone,
     number,
-    resolve_zone,
-    seed_zone,
     send_zone_events,
-    station_zones,
     without_current_report,
 )
-from train_commute_companion.model import LocationSettings, Profile
+from train_commute_companion.model import LocationSettings
 from train_commute_companion.runtime import Runtime
-from train_commute_companion.view import running_stations
+from train_commute_companion.view import track_fix
 
 from .coordinator import TccCoordinator
 from .host import RuntimeHost, RuntimeNotRunning
@@ -56,16 +53,8 @@ def _acc(state: State) -> float | None:
     return number(state.attributes.get("gps_accuracy"))
 
 
-def zones_for(
-    hass: HomeAssistant,
-    profile: Profile,
-    positions: Mapping[str, tuple[float, float]],
-    running: Iterable[str] = (),
-) -> list[Zone]:
-    loc = profile.location
-    if loc is None:
-        return []
-    zones = station_zones(profile, loc.station_radius_m, positions, running)
+def place_zones(hass: HomeAssistant, loc: LocationSettings) -> list[Zone]:
+    zones: list[Zone] = []
     for role in PLACE_ROLES:
         entity = loc.zones.get(role) or ("zone.home" if role == "home" else None)
         state = None if entity is None else hass.states.get(entity)
@@ -211,18 +200,14 @@ class LocationTracker:
         profile = next((p for p in data.profiles if p.id == pid), None)
         if profile is None or profile.location is None:
             return
-        if data.location_epochs.get(pid, 0) != epoch:  # a lagging view drops it too
-            return
         source = profile.location
-        if acc is not None and acc > source.station_radius_m:
-            return  # it cannot place the user in a station circle (8, rule 6)
-        running = running_stations(data.occurrences, pid)
-        zone = resolve_zone(*pos, zones_for(self._hass, profile, data.positions, running))
-        if seed:
-            self._tracks[pid] = seed_zone(zone, at)
+        # never seeded: no zone to leave
+        track = None if seed else self._tracks.get(pid, ZoneTrack())
+        fix = Fix(*pos, at, acc)
+        step = track_fix(data, profile, epoch, fix, track, place_zones(self._hass, source))
+        if step is None:  # a lagging view drops it too
             return
-        track = self._tracks.get(pid, ZoneTrack())  # never seeded: no zone to leave
-        self._tracks[pid], changes = next_zone(track, zone, at)
+        self._tracks[pid], changes = step
         await send_zone_events(
             changes,
             at,

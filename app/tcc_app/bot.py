@@ -13,7 +13,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
 
-from train_commute_companion.location import number
+from train_commute_companion.location import Fix, number
 from train_commute_companion.model import Direction, NotTravelling, display_name
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.webhook import WebhookTestResult
@@ -25,7 +25,7 @@ from .commands import (
     render_webhook_tests,
     status_buttons,
 )
-from .follow import Fix, Follower, stamp
+from .follow import Follower, stamp
 from .telegram import TelegramApi, TelegramError, split_text
 
 log = logging.getLogger(__name__)

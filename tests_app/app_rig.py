@@ -17,7 +17,6 @@ from runtime_rig import PROFILE, FakeClock, StationsProvider, at
 from runtime_rig import Provider as FakeProvider
 from tcc_app import bot as bot_mod
 from tcc_app.bot import ShellState, save_state
-from tcc_app.follow import Fix
 from tcc_app.main import (
     App,
     Settings,
@@ -25,6 +24,7 @@ from tcc_app.main import (
 )
 
 from train_commute_companion.health import BoardHealth
+from train_commute_companion.location import Fix
 from train_commute_companion.model import (
     Direction,
     DirectionState,

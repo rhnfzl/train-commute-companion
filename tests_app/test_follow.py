@@ -6,9 +6,9 @@ from app_rig import CHAT, STRANGER, feed, spied
 from builders import AMS, only_occurrence
 from owntracks_rig import FAR, UT, located_app
 from runtime_rig import PROFILES_DIR, at, bump_mtime
-from tcc_app.follow import Fix
 from tcc_app.main import App
 
+from train_commute_companion.location import Fix
 from train_commute_companion.state import Commitment, LockSource
 
 

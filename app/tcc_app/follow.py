@@ -1,29 +1,23 @@
-"""Location fixes from Telegram or OwnTracks into core zone events (7.2, 8). Thin: the zone
-consequences live in the core; here only which zone a fix is in and what changed."""
+"""Location fixes from Telegram or OwnTracks into core zone events (7.2, 8). Thin: the zone step
+and its consequences live in the core; here only whether a fix is fit to read and its memory."""
 
 import asyncio
 import logging
-from collections.abc import Coroutine, Sequence
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from train_commute_companion.calendar import TZ
 from train_commute_companion.location import (
-    PLACE_ROLES,
     STALE_LOCATION,
-    Zone,
+    Fix,
     ZoneTrack,
-    next_zone,
-    resolve_zone,
-    seed_zone,
     send_zone_events,
-    station_zones,
     without_current_report,
 )
-from train_commute_companion.model import LocationSettings
 from train_commute_companion.runtime import Runtime
-from train_commute_companion.view import running_stations
+from train_commute_companion.view import track_fix
 
 log = logging.getLogger(__name__)
 
@@ -42,31 +36,13 @@ def stamp(v: object) -> datetime | None:
         return None
 
 
-@dataclass(frozen=True, slots=True)
-class Fix:
-    lat: float
-    lon: float
-    at: datetime
-    acc: float | None = None
-    regions: frozenset[str] = frozenset()
-
-
 @dataclass(slots=True)
 class _Memory:
-    """One profile's last fix under one source epoch; times in UTC."""
+    """One profile's last fix under one source epoch; `last_at` in UTC."""
 
     epoch: int
     last_at: datetime
     track: ZoneTrack
-
-
-def _zone_of(fix: Fix, loc: LocationSettings, zones: Sequence[Zone]) -> str | None:
-    zone = resolve_zone(fix.lat, fix.lon, zones)
-    if zone is not None:
-        return zone
-    # OwnTracks regions, by the configured name the core compares
-    names = (loc.zones.get(role, role) for role in PLACE_ROLES)
-    return next((n for n in names if n in fix.regions), None)
 
 
 class Follower:
@@ -109,30 +85,26 @@ class Follower:
         view = self._rt.view()
         profile = next((p for p in view.profiles if p.id == pid), None)
         loc = profile.location if profile is not None else None
-        epoch = view.location_epochs.get(pid, 0)
-        # a fix queued behind a slow core call while the source went A, B, A: dropped, no seed
-        if profile is None or loc is None or loc.source != source or epoch != fed_epoch:
+        if profile is None or loc is None or loc.source != source:
             return
         now, at = self._rt.now().astimezone(UTC), fix.at.astimezone(UTC)
         if at > now + FUTURE_LIMIT or now - at > STALE_LOCATION:
             return
-        if fix.acc is not None and fix.acc > loc.station_radius_m:
+        known = self._memory.get(pid)
+        if known is not None and known.epoch != fed_epoch:  # a new source: its first fix seeds
+            known = None
+        if known is not None and at <= known.last_at:
             return
-        running = running_stations(view.occurrences, pid)
-        zones = station_zones(profile, loc.station_radius_m, view.positions, running)
-        zone = _zone_of(fix, loc, zones)
-        mem = self._memory.get(pid)
-        if mem is None or mem.epoch != epoch:  # a new source: the first fix only seeds (7.2)
-            self._memory[pid] = _Memory(epoch, at, seed_zone(zone, at))
+        # a fix queued behind a slow core call while the source went A, B, A: dropped, no seed
+        step = track_fix(view, profile, fed_epoch, fix, known.track if known else None)
+        if step is None:
             return
-        if at <= mem.last_at:
-            return
-        mem.last_at = at
-        mem.track, events = next_zone(mem.track, zone, at)
+        track, events = step
+        mem = self._memory[pid] = _Memory(fed_epoch, at, track)
 
         def undelivered() -> None:
             mem.track = without_current_report(mem.track)
 
         await send_zone_events(
-            events, fix.at, lambda e: self._rt.report_location(pid, e, loc, epoch), undelivered
+            events, fix.at, lambda e: self._rt.report_location(pid, e, loc, fed_epoch), undelivered
         )

@@ -3,9 +3,9 @@
 import json
 from collections.abc import Callable
 
-from train_commute_companion.location import number
+from train_commute_companion.location import Fix, number
 
-from .follow import Fix, Follower, stamp
+from .follow import Follower, stamp
 
 
 def parse(body: bytes) -> Fix | None:

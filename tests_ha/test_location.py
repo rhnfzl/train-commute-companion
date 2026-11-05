@@ -20,7 +20,7 @@ from ha_rig import (
 from runtime_rig import bump_mtime
 
 from custom_components.train_commute_companion.const import REFRESH_S
-from custom_components.train_commute_companion.location import zones_for
+from custom_components.train_commute_companion.location import place_zones
 from train_commute_companion.location import LocationKind
 from train_commute_companion.providers.base import ProviderError
 from train_commute_companion.runtime import Runtime
@@ -313,15 +313,12 @@ async def test_fix_with_a_malformed_accuracy_is_not_trusted(hass):
     assert await spied(h) == [("UT", "enter")]
 
 
-async def test_zones_for_names_places_by_role_and_skips_missing_entities(hass):
+async def test_place_zones_name_places_by_role_and_skip_missing_entities(hass):
     h = await setup_tcc(hass, VIA_UT)
-    profile = h.entry.runtime_data.coordinator.data.profiles[0]
-    assert zones_for(hass, profile, POSITIONS) == [
-        z for z in zones_for(hass, profile, POSITIONS) if z.name in ("AAA", "UT")
-    ]  # no zone.home yet, no work entity
+    loc = h.entry.runtime_data.coordinator.data.profiles[0].location
+    assert place_zones(hass, loc) == []  # no zone.home yet, no work entity
     set_home_zone(hass)
-    names = {z.name: z.radius_m for z in zones_for(hass, profile, POSITIONS, running=["RTD"])}
-    assert names == {"AAA": 150, "UT": 150, "home": 100}  # RTD has no position
+    assert {z.name: z.radius_m for z in place_zones(hass, loc)} == {"home": 100}
 
 
 async def test_profile_without_location_is_not_tracked(hass):
