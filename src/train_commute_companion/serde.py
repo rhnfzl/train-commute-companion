@@ -4,12 +4,12 @@ added with a default loads from a file written before it existed (a missing key 
 import json
 from collections.abc import Mapping
 from dataclasses import MISSING, fields, is_dataclass
-from datetime import MAXYEAR, MINYEAR, date, datetime, time
+from datetime import date, datetime, time
 from enum import Enum
 from types import NoneType, UnionType
 from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
-from train_commute_companion.calendar import TZ
+from train_commute_companion.calendar import TZ, has_room
 
 
 def encode(obj: object) -> Any:
@@ -35,8 +35,7 @@ def _bad(tp: object, v: object) -> ValueError:
 
 
 def _with_room[D: date](d: D, v: object) -> D:
-    """`d`, unless it is too near the calendar's edge for the time arithmetic done on it later."""
-    if d.year in (MINYEAR, MAXYEAR):
+    if not has_room(d):
         raise _bad(type(d), v)
     return d
 

@@ -1,7 +1,7 @@
 """Commute days, Dutch public holidays, DST-safe clock resolution and the clock port."""
 
 import asyncio
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import MAXYEAR, MINYEAR, UTC, date, datetime, time, timedelta
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
@@ -19,6 +19,11 @@ class SystemClock:
 
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
+
+
+def has_room(d: date) -> bool:
+    """False too near the calendar's edge for the time arithmetic done on a stored time later."""
+    return d.year not in (MINYEAR, MAXYEAR)
 
 
 def to_utc(t: datetime) -> datetime:

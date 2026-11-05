@@ -369,7 +369,15 @@ def test_station_position_with_a_huge_integer_is_left_out():
     assert map_station_positions(payload) == {}
 
 
-@pytest.mark.parametrize("stamp", ["0001-01-01T00:00:00+0100", "9999-12-31T23:59:59-1200"])
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        "0001-01-01T00:00:00+0100",
+        "9999-12-31T23:59:59-1200",
+        "0001-06-01T12:00:00+0100",  # in range, but the store would refuse it on the next load
+        "9999-06-01T12:00:00+0100",
+    ],
+)
 def test_a_time_out_of_range_reads_as_unreadable(stamp):
     leg = {"origin": {"stationCode": "AAA", "plannedDateTime": stamp},
            "destination": {"stationCode": "BBB", "plannedDateTime": stamp}}  # fmt: skip

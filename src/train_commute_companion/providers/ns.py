@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from train_commute_companion.calendar import TZ
+from train_commute_companion.calendar import TZ, has_room
 from train_commute_companion.location import number
 from train_commute_companion.model import (
     Connection,
@@ -36,7 +36,8 @@ def _dt(v: object) -> datetime | None:
         return None
     for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M%z"):
         try:
-            return datetime.strptime(v, fmt).astimezone(TZ)
+            t = datetime.strptime(v, fmt).astimezone(TZ)
+            return t if has_room(t) else None  # the store would refuse it, and lose the whole state
         except (ValueError, OverflowError):  # Overflow: at the calendar's edge, past it in our zone
             pass
     return None
