@@ -35,8 +35,11 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _fix(state: State) -> tuple[float, float] | None:
-    """The coordinates of a state; None for unavailable, unknown or a tracker with no GPS."""
+    """The coordinates of a state; None for unavailable, unknown or a tracker with no GPS, and
+    for a malformed accuracy: that is not "accuracy unknown" (a null is), the fix is not trusted."""
     if state.state in ("unavailable", "unknown"):
+        return None
+    if (raw := state.attributes.get("gps_accuracy")) is not None and number(raw) is None:
         return None
     lat, lon = number(state.attributes.get("latitude")), number(state.attributes.get("longitude"))
     return None if lat is None or lon is None else (lat, lon)

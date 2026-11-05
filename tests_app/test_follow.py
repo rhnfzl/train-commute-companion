@@ -226,3 +226,16 @@ async def app(tmp_path, tg):
     a = await located_app(tmp_path, tg, "located_via_ut_telegram")
     yield a
     await a.follower.close()
+
+
+async def test_telegram_fix_with_a_malformed_accuracy_is_not_trusted(app):
+    spied(app)
+    steps = [
+        ("08:20", location_update("message", "08:20", *FAR)),
+        ("08:22", location_update("edited_message", "08:22", *UT, horizontal_accuracy="10")),
+    ]
+    for hhmm, update in steps:
+        app.clock.t = at(hhmm)
+        await app.bot.handle(update)
+        await app.follower.drain()
+    assert spied(app) == []

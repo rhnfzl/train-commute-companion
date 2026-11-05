@@ -300,6 +300,16 @@ async def test_fix_less_accurate_than_the_station_radius_is_ignored(hass):  # 8,
     assert await spied(h) == [("UT", "enter")]
 
 
+async def test_fix_with_a_malformed_accuracy_is_not_trusted(hass):
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    set_person(hass, 52.1, 5.1, gps_accuracy="20")
+    assert await spied(h) == []
+    set_person(hass, 52.1, 5.1, gps_accuracy=None)  # a null is "accuracy unknown"
+    assert await spied(h) == [("UT", "enter")]
+
+
 async def test_zones_for_names_places_by_role_and_skips_missing_entities(hass):
     h = await setup_tcc(hass, VIA_UT)
     profile = h.entry.runtime_data.coordinator.data.profiles[0]

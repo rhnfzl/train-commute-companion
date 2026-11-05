@@ -252,6 +252,8 @@ class Bot:
         acc = number(loc.get("horizontal_accuracy"))
         if self._follower is None or lat is None or lon is None or at is None:
             return
+        if "horizontal_accuracy" in loc and acc is None:
+            return  # a malformed accuracy is not "accuracy unknown": the fix is not trusted
         self._follower.feed("telegram", Fix(lat, lon, at, acc))
 
     async def _message(self, msg: dict[str, Any]) -> None:
