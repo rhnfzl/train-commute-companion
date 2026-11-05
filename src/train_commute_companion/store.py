@@ -12,8 +12,6 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from train_commute_companion.calendar import to_utc
-from train_commute_companion.lifecycle import OccurrenceState
-from train_commute_companion.lookahead_probe import BaselineHistory, LookAheadLedger
 from train_commute_companion.model import (
     Config,
     EventKind,
@@ -22,6 +20,7 @@ from train_commute_companion.model import (
     okey,
 )
 from train_commute_companion.serde import decode, encode
+from train_commute_companion.state import BaselineHistory, LookAheadLedger, OccurrenceState
 
 VERSION = 2
 _V1 = 1  # read for as long as such files may exist; only VERSION is ever written

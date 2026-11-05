@@ -10,9 +10,6 @@ from train_commute_companion.health import FRESH_FOR, board_health
 from train_commute_companion.lifecycle import (
     AT_RISK_LOUD_MIN,
     PLATFORM_LOUD_MIN,
-    Journey,
-    LegProgress,
-    OccurrenceState,
     PollAnswers,
     make_event,
     next_stated_delay,
@@ -36,6 +33,7 @@ from train_commute_companion.model import (
     train_ident,
 )
 from train_commute_companion.providers.base import ProviderAnswer
+from train_commute_companion.state import Journey, LegProgress, OccurrenceState
 from train_commute_companion.transfer import check_transfer
 
 _SILENT = frozenset(

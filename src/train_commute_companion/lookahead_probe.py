@@ -2,10 +2,10 @@
 (7.10, 7.12 rules 18, 19, 21). Pure."""
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from itertools import pairwise
-from typing import Final, Literal, NamedTuple
+from typing import Final, Literal
 
 from train_commute_companion.calendar import (
     MINUTES_PER_DAY,
@@ -22,7 +22,6 @@ from train_commute_companion.model import (
     Direction,
     Leg,
     LegKind,
-    Obligation,
     Profile,
     Signature,
     SignatureLeg,
@@ -31,6 +30,7 @@ from train_commute_companion.model import (
     present,
 )
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
+from train_commute_companion.state import BaselineVersion, LookAheadFact
 from train_commute_companion.transfer import check_transfer
 from train_commute_companion.unclear import Unclear, disagreement, newest_copies, train_key
 
@@ -43,31 +43,6 @@ DUR_TOL_MIN = 10
 REPLACEMENT_HINT = "Check replacement transport nearer the day."
 MISSING_REASON: Final = "missing"
 _PATTERN = "pattern:"
-
-
-@dataclass(frozen=True, slots=True)
-class BaselineVersion:
-    version: int
-    signature: Signature
-    effective_from: date
-    confirmed: bool
-
-
-@dataclass(frozen=True, slots=True)
-class BaselineHistory:
-    versions: tuple[BaselineVersion, ...] = ()
-    floor: int = 0  # highest number retired (re-seed or cancellation): numbers never repeat
-
-    def in_force(self, day: date) -> BaselineVersion | None:
-        live = [v for v in self.versions if v.effective_from <= day]
-        return max(live, key=lambda v: (v.effective_from, v.version), default=None)
-
-    @property
-    def latest(self) -> int | None:
-        return max((v.version for v in self.versions), default=None)
-
-    def _next(self) -> int:
-        return max(self.latest or 0, self.floor) + 1
 
 
 ProbeTag = Literal["missing", "pattern", "cancelled", "cut_short", "messages", "maintenance", "short"]
@@ -116,42 +91,6 @@ class ProbeResult:
     @property
     def other_pattern(self) -> bool:
         return self.head.startswith(_PATTERN)
-
-
-class LookAheadFact(NamedTuple):
-    """One statement of a look-ahead message, stored as the list [key, text, loud, warning]."""
-
-    key: str
-    text: str
-    loud: bool
-    warning: bool  # the message then closes with the replacement hint
-
-    @property
-    def warns(self) -> bool:
-        return "|warn:" in self.key
-
-    @property
-    def adopts(self) -> bool:
-        return self.key.startswith("adopt:")
-
-    @property
-    def cancels(self) -> bool:
-        return self.key.startswith("cancel:")
-
-
-@dataclass(frozen=True, slots=True)
-class LookAheadLedger:
-    # "<service date>|<leg index or j>" -> entries; a warn/loud/restored mark ends in
-    # "#<id of the obligation that carries it>", read with entry_mark/_owner
-    per_date: Mapping[str, tuple[str, ...]]
-    pending: tuple[Obligation, ...]
-    last_run: datetime | None  # last successful run (look-ahead health only)
-    started_revision: int
-    started_baseline: int | None
-    last_applied: datetime | None = None  # start time of the last run whose writes were applied
-    # pending obligation id -> its facts, so one fact can be withdrawn from a message that
-    # bundles several (7.12 rule 18)
-    facts: Mapping[str, tuple[LookAheadFact, ...]] = field(default_factory=dict)
 
 
 # ---- the stored key grammars, each built and read here

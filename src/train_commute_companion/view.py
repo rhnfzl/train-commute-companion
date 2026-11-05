@@ -11,22 +11,13 @@ from train_commute_companion.calendar import TZ
 from train_commute_companion.classify import pair_transfer
 from train_commute_companion.health import BoardHealth, board_health
 from train_commute_companion.lifecycle import (
-    Commitment,
-    LegProgress,
-    LockSource,
-    OccurrenceState,
     find_next_good,
     is_resolved,
     merged_pool,
     observe,
     unfinished_leg,
 )
-from train_commute_companion.lookahead_probe import (
-    WHOLE_JOURNEY,
-    BaselineHistory,
-    LookAheadLedger,
-    split_day_key,
-)
+from train_commute_companion.lookahead_probe import WHOLE_JOURNEY, split_day_key
 from train_commute_companion.model import (
     LIVE_PREFIX,
     AdviceRecord,
@@ -49,6 +40,14 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.providers.base import ProviderAnswer
 from train_commute_companion.revisions import find_profile, profile_for
+from train_commute_companion.state import (
+    BaselineHistory,
+    Commitment,
+    LegProgress,
+    LockSource,
+    LookAheadLedger,
+    OccurrenceState,
+)
 from train_commute_companion.store import PersistedState
 from train_commute_companion.transfer import check_transfer, transfer_minimum
 

@@ -6,10 +6,6 @@ from lock_fixtures import DAY, LATER, PROFILES, USUAL, answer, at, ctx, direct, 
 
 from train_commute_companion.lifecycle import (
     Choose,
-    Commitment,
-    Journey,
-    LockSource,
-    OccurrenceState,
     apply_action,
     auto_lock,
     catch_from_state,
@@ -31,6 +27,7 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import ProviderAnswer, Query
+from train_commute_companion.state import Commitment, Journey, LockSource, OccurrenceState
 
 
 def pick(c: Connection) -> Choose:

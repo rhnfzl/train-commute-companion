@@ -4,7 +4,6 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from train_commute_companion.lifecycle import OccurrenceState
 from train_commute_companion.model import (
     Connection,
     Direction,
@@ -18,6 +17,7 @@ from train_commute_companion.replacement import (
     Catchability,
 )
 from train_commute_companion.runtime import Runtime
+from train_commute_companion.state import OccurrenceState
 
 AMS = ZoneInfo("Europe/Amsterdam")
 

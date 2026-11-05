@@ -40,7 +40,6 @@ from train_commute_companion.ledger import (
 )
 from train_commute_companion.lifecycle import (
     Choose,
-    OccurrenceState,
     PollAnswers,
     UserAction,
     apply_action,
@@ -58,7 +57,7 @@ from train_commute_companion.lifecycle import (
 )
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import forget_pending, rebase_on_edit, reset_on_edit
-from train_commute_companion.lookahead_probe import BaselineHistory, LookAheadLedger, service_date
+from train_commute_companion.lookahead_probe import service_date
 from train_commute_companion.lookahead_run import applied_run, lookahead_done, probe_direction
 from train_commute_companion.match import usual_connection
 from train_commute_companion.messages import CHECK_APP, no_journey_text
@@ -112,6 +111,7 @@ from train_commute_companion.revisions import (
     signature_for,
 )
 from train_commute_companion.schedule import schedules_active
+from train_commute_companion.state import BaselineHistory, LookAheadLedger, OccurrenceState
 from train_commute_companion.state_writer import StateWriter
 from train_commute_companion.store import PersistedState, StorageError, Store
 from train_commute_companion.view import RuntimeView, runtime_view

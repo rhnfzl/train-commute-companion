@@ -5,7 +5,6 @@ from builders import make_connection, make_leg
 from lifecycle_fixtures import L1, L2, R2, at, ctx, journey, occ, poll_answers
 
 from train_commute_companion.classify import classify_leg
-from train_commute_companion.lifecycle import OccurrenceState
 from train_commute_companion.model import (
     EventKind,
     Provenance,
@@ -26,6 +25,7 @@ from train_commute_companion.news import (
     unsent,
 )
 from train_commute_companion.providers.base import ProviderAnswer, Query
+from train_commute_companion.state import OccurrenceState
 
 LOCK = journey([L1, L2])
 OK_T = TransferCheck(TransferState.OK, 10, 4, "ok")

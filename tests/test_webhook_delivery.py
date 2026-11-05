@@ -39,7 +39,7 @@ from webhook_receiver import Receiver
 
 from train_commute_companion import webhook_send
 from train_commute_companion.lookahead import render_message
-from train_commute_companion.lookahead_probe import BaselineHistory, BaselineVersion, signature_of
+from train_commute_companion.lookahead_probe import signature_of
 from train_commute_companion.model import (
     AlertEvent,
     Direction,
@@ -52,6 +52,7 @@ from train_commute_companion.model import (
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, ServerError
 from train_commute_companion.runtime import POLL_EVERY_S, Runtime
 from train_commute_companion.serde import dumps, loads
+from train_commute_companion.state import BaselineHistory, BaselineVersion
 from train_commute_companion.store import PersistedState
 from train_commute_companion.webhook import (
     PROBE_LOUD,

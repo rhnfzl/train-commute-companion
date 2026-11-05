@@ -11,12 +11,7 @@ from train_commute_companion.classify import (
     evidence,
     find_leg,
 )
-from train_commute_companion.lifecycle import (
-    LegProgress,
-    OccurrenceState,
-    catch_from_state,
-    make_event,
-)
+from train_commute_companion.lifecycle import catch_from_state, make_event
 from train_commute_companion.match import current_arrival, train_only_now, usual_connection
 from train_commute_companion.model import (
     AdviceRecord,
@@ -40,6 +35,7 @@ from train_commute_companion.replacement import (
     choose_replacement,
     max_transfers,
 )
+from train_commute_companion.state import LegProgress, OccurrenceState
 from train_commute_companion.transfer import check_transfer
 
 

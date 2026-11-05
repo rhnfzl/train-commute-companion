@@ -36,7 +36,6 @@ from runtime_rig import (
 from train_commute_companion.lifecycle import origin_answer
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import render_message
-from train_commute_companion.lookahead_probe import BaselineHistory, BaselineVersion, LookAheadFact
 from train_commute_companion.model import (
     AlertEvent,
     DirectionState,
@@ -57,6 +56,7 @@ from train_commute_companion.providers.base import (
 from train_commute_companion.revisions import occurrence_ctx
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.serde import dumps, loads
+from train_commute_companion.state import BaselineHistory, BaselineVersion, LookAheadFact
 from train_commute_companion.store import PersistedState
 
 

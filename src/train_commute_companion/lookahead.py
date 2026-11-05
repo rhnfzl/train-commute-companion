@@ -9,10 +9,6 @@ from train_commute_companion.lookahead_probe import (
     DUR_TOL_MIN,
     MISSING_REASON,
     REPLACEMENT_HINT,
-    BaselineHistory,
-    BaselineVersion,
-    LookAheadFact,
-    LookAheadLedger,
     ProbeReason,
     ProbeResult,
     adopt_key,
@@ -44,6 +40,12 @@ from train_commute_companion.model import (
     display_name,
 )
 from train_commute_companion.overlap import find_overlaps
+from train_commute_companion.state import (
+    BaselineHistory,
+    BaselineVersion,
+    LookAheadFact,
+    LookAheadLedger,
+)
 
 # ---- the run
 

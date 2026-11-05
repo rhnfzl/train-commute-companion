@@ -35,9 +35,6 @@ from lifecycle_fixtures import (
 )
 
 from train_commute_companion.lifecycle import (
-    LegProgress,
-    LockSource,
-    OccurrenceState,
     PollAnswers,
     Transition,
     keep_stated,
@@ -59,6 +56,7 @@ from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import Query
 from train_commute_companion.schedule import dated_schedule
 from train_commute_companion.serde import dumps, loads
+from train_commute_companion.state import LegProgress, LockSource, OccurrenceState
 from train_commute_companion.unclear import train_key
 
 

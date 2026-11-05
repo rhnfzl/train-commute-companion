@@ -5,8 +5,6 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 
-from train_commute_companion.lifecycle import OccurrenceState
-from train_commute_companion.lookahead_probe import BaselineHistory
 from train_commute_companion.model import (
     Config,
     Ctx,
@@ -17,6 +15,7 @@ from train_commute_companion.model import (
     direction_key,
 )
 from train_commute_companion.schedule import dated_schedule
+from train_commute_companion.state import BaselineHistory, OccurrenceState
 from train_commute_companion.store import PersistedState
 
 

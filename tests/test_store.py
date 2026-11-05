@@ -21,9 +21,9 @@ from lifecycle_fixtures import (
 )
 from location_fixtures import USUAL, event, locate
 
-from train_commute_companion.lifecycle import OccurrenceState
 from train_commute_companion.model import AdviceRecord, EventKind, Obligation, okey
 from train_commute_companion.serde import encode
+from train_commute_companion.state import OccurrenceState
 from train_commute_companion.store import VERSION, JsonFileStore, PersistedState, StorageError
 
 

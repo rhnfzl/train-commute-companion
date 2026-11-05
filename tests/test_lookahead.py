@@ -34,9 +34,6 @@ from train_commute_companion.lookahead import (
     run_lookahead,
 )
 from train_commute_companion.lookahead_probe import (
-    BaselineHistory,
-    BaselineVersion,
-    LookAheadLedger,
     ProbeReason,
     ProbeResult,
     adopt_key,
@@ -67,6 +64,7 @@ from train_commute_companion.overlap import find_overlaps
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import PlannedWork, PlannedWorks, ProviderAnswer
 from train_commute_companion.serde import dumps, loads
+from train_commute_companion.state import BaselineHistory, BaselineVersion, LookAheadLedger
 from train_commute_companion.view import works_ahead
 
 SHIFTED = {"l1": ("08:15", "08:43"), "l2": ("08:49", "09:27")}

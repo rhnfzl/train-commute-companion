@@ -49,9 +49,9 @@ from custom_components.train_commute_companion import notifier as notifier_mod
 from custom_components.train_commute_companion.const import CONF_STARTED, DOMAIN, REFRESH_S
 from custom_components.train_commute_companion.coordinator import TccCoordinator
 from train_commute_companion import store as core_store
-from train_commute_companion.lookahead_probe import BaselineHistory, BaselineVersion
 from train_commute_companion.model import EventKind, Signature, SignatureLeg
 from train_commute_companion.runtime import Runtime
+from train_commute_companion.state import BaselineHistory, BaselineVersion
 from train_commute_companion.store import JsonFileStore, StorageError
 
 pytestmark = pytest.mark.usefixtures("tcc_freezer")

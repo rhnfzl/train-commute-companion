@@ -6,7 +6,6 @@ from collections.abc import Callable, Collection, Mapping
 from dataclasses import fields, replace
 from typing import Any, Protocol
 
-from train_commute_companion.lifecycle import OccurrenceState
 from train_commute_companion.model import (
     SENT_PREFIX,
     Obligation,
@@ -15,6 +14,7 @@ from train_commute_companion.model import (
     split_direction_key,
 )
 from train_commute_companion.revisions import find_profile, same_route
+from train_commute_companion.state import OccurrenceState
 from train_commute_companion.store import PersistedState, StorageError, Store
 
 log = logging.getLogger(__name__)

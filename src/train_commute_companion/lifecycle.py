@@ -1,11 +1,10 @@
-"""Occurrence state, the lock writer, user actions, the follow step, location, arrival acceptance
+"""The lock writer, user actions, the follow step, location, arrival acceptance
 and termination (7.2, 7.4, 7.7, 7.8, 7.12 rules 1, 2, 3, 6, 7, 8, 10, 11, 21, 7.13). Pure: `now`
 always comes from the caller."""
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
-from enum import StrEnum
 from typing import NamedTuple
 
 from train_commute_companion.calendar import TZ, hhmm, resolve_local, to_utc
@@ -30,7 +29,6 @@ from train_commute_companion.messages import data_unclear_text
 from train_commute_companion.model import (
     DELAY_NEWS,
     FOLLOW_LIMIT,
-    AdviceRecord,
     AlertEvent,
     AlertFacts,
     ClassifiedLeg,
@@ -50,7 +48,6 @@ from train_commute_companion.model import (
     Profile,
     Provenance,
     Severity,
-    Signature,
     ToldDelay,
     TrainId,
     TransferState,
@@ -68,85 +65,15 @@ from train_commute_companion.replacement import (
     choose_replacement,
     max_transfers,
 )
+from train_commute_companion.state import (
+    Commitment,
+    Journey,
+    LegProgress,
+    LockSource,
+    OccurrenceState,
+)
 from train_commute_companion.transfer import check_transfer, transfer_minimum
 from train_commute_companion.unclear import disagreement, newest_copies, train_key
-
-
-class LockSource(StrEnum):
-    AUTO = "auto"
-    LOCATION = "location"
-    STATION = "station"
-    CHOOSE = "choose"
-    MISSED = "missed"
-    TIMEOUT = "timeout"
-    RELOCK = "relock"
-    RESTORE = "restore"
-
-
-class Commitment(StrEnum):
-    INTENDED = "intended"
-    PROVISIONAL = "provisional"
-    COMMITTED = "committed"
-
-
-@dataclass(frozen=True, slots=True)
-class LegProgress:
-    train: TrainId
-    board_station: str
-    intended_alight: str
-    served_endpoint: str
-    alight_stop: str
-    alight_frozen: bool
-    state: LegState
-    accepted_at: datetime | None
-    accept_value: datetime | None
-    accept_first_seen: datetime | None
-    watch_until: datetime | None
-    # expected arrival + transfer minimum at alight_stop, last observed: the earliest onward
-    # departure, so a broken change is searched from then on (7.4). Persisted state: a store
-    # that drops it falls back to searching from the planned departure.
-    onward_from: datetime | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class Journey:
-    legs: tuple[LegProgress, ...]
-    source: LockSource
-    commitment: Commitment
-    planned_final_arrival: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class OccurrenceState:
-    key: OccurrenceKey
-    generation: int
-    route_revision: int
-    settings_revision: int
-    baseline_version: int | None
-    direction_state: DirectionState
-    lock: Journey | None
-    retained: tuple[Journey, ...]
-    travelling: bool
-    tap_at: datetime | None
-    at_station: bool
-    errand_deadline: datetime | None
-    not_travelling: bool
-    cancellation_history: tuple[LegProgress, ...]  # trains replaced by a break, restorable (rule 8)
-    missing_sent: bool
-    all_good_evaluated: bool
-    alert_keys: Mapping[str, str] = field(default_factory=dict)
-    advice: AdviceRecord | None = None
-    poll_records: tuple[PollRecord, ...] = ()
-    # latest non-stale location time per zone: arrival evidence for a silent end (rule 6), and
-    # what the news ledger reads to stop repeat silent messages. Persisted state: a store that
-    # drops it turns a silent end after a restart into a loud stopped_following.
-    zone_reports: Mapping[str, datetime] = field(default_factory=dict)
-    # the baseline signature this occurrence started on (rule 10): a later re-seed of the
-    # direction's history must not move a locked occurrence's schedule
-    baseline_signature: Signature | None = None
-    # True once `baseline_signature` is this occurrence's own (None then means it started with
-    # no baseline); False only in stores written before it existed, hydrated at start
-    baseline_frozen: bool = False
 
 
 @dataclass(frozen=True, slots=True)

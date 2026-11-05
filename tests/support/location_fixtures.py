@@ -2,14 +2,11 @@
 
 from lifecycle_fixtures import L1, L2, ans, at, conn, ctx
 
-from train_commute_companion.lifecycle import (
-    OccurrenceState,
-    Transition,
-    on_location,
-)
+from train_commute_companion.lifecycle import Transition, on_location
 from train_commute_companion.location import (
     LocationEvent,
 )
+from train_commute_companion.state import OccurrenceState
 
 USUAL = conn(L1, L2)
 

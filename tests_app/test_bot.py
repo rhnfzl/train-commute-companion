@@ -35,9 +35,9 @@ from tcc_app.commands import render_status, render_webhook_tests, status_buttons
 from tcc_app.telegram import TelegramApi
 from webhook_receiver import Receiver
 
-from train_commute_companion.lifecycle import Commitment, LockSource
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.model import DirectionState, LegState
+from train_commute_companion.state import Commitment, LockSource
 from train_commute_companion.webhook import WebhookTestResult
 
 OUT, RET = "p1|outbound|2026-10-27", "p1|return|2026-10-27"

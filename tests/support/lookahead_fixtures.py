@@ -6,17 +6,11 @@ from datetime import date, datetime, time, timedelta
 from builders import AMS, make_connection, make_leg
 
 from train_commute_companion.lookahead import run_lookahead
-from train_commute_companion.lookahead_probe import (
-    BaselineHistory,
-    BaselineVersion,
-    LookAheadLedger,
-    ProbeResult,
-    evaluate,
-    signature_of,
-)
+from train_commute_companion.lookahead_probe import ProbeResult, evaluate, signature_of
 from train_commute_companion.model import Direction
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
+from train_commute_companion.state import BaselineHistory, BaselineVersion, LookAheadLedger
 
 OUT = Direction.OUTBOUND
 MON = date(2026, 10, 26)  # probe days: Tue 27 Oct, Wed 28 Oct, Tue 3 Nov

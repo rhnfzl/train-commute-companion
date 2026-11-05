@@ -41,8 +41,6 @@ from lifecycle_fixtures import (
 from train_commute_companion.ledger import zone_report_stops_silent
 from train_commute_companion.lifecycle import (
     Choose,
-    LockSource,
-    OccurrenceState,
     apply_action,
     may_archive,
     on_location,
@@ -63,6 +61,7 @@ from train_commute_companion.model import (
     Severity,
 )
 from train_commute_companion.providers.base import ProviderAnswer, Query
+from train_commute_companion.state import LockSource, OccurrenceState
 
 DONE = (LegState.DONE,)
 LATE_L1 = make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_arr=12)  # 08:52 at UT

@@ -9,7 +9,7 @@ from runtime_rig import PROFILES_DIR, at, bump_mtime
 from tcc_app.follow import Fix
 from tcc_app.main import App
 
-from train_commute_companion.lifecycle import Commitment, LockSource
+from train_commute_companion.state import Commitment, LockSource
 
 
 async def switch(app: App, *names: str) -> None:

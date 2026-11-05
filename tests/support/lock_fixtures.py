@@ -4,9 +4,6 @@ from datetime import date, datetime
 
 from builders import AMS, make_connection, make_leg
 
-from train_commute_companion.lifecycle import (
-    OccurrenceState,
-)
 from train_commute_companion.model import (
     Connection,
     Ctx,
@@ -16,6 +13,7 @@ from train_commute_companion.model import (
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import ProviderAnswer, Query
 from train_commute_companion.schedule import dated_schedule
+from train_commute_companion.state import OccurrenceState
 
 PROFILES = """
 profiles:

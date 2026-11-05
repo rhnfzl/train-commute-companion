@@ -10,9 +10,6 @@ from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.health import PollFailure
 from train_commute_companion.lookahead import carried_ids, render_message, run_lookahead
 from train_commute_companion.lookahead_probe import (
-    BaselineHistory,
-    LookAheadFact,
-    LookAheadLedger,
     ProbeResult,
     adopt_key,
     bundle_key,
@@ -23,6 +20,7 @@ from train_commute_companion.lookahead_probe import (
 )
 from train_commute_companion.model import Direction, Obligation, Profile, direction_key, present
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
+from train_commute_companion.state import BaselineHistory, LookAheadFact, LookAheadLedger
 from train_commute_companion.store import PersistedState
 from train_commute_companion.webhook_queue import CopyQueue
 

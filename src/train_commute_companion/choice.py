@@ -6,14 +6,10 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 
 from train_commute_companion.calendar import TZ, floor_to_minute, resolve_local, to_utc
-from train_commute_companion.lifecycle import (
-    LegProgress,
-    OccurrenceState,
-    first_open,
-    target_occurrence,
-)
+from train_commute_companion.lifecycle import first_open, target_occurrence
 from train_commute_companion.model import Connection, Ctx, Leaving, LegState
 from train_commute_companion.providers.base import ProviderAnswer
+from train_commute_companion.state import LegProgress, OccurrenceState
 
 
 @dataclass(frozen=True, slots=True)

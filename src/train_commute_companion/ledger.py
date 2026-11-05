@@ -16,8 +16,6 @@ from train_commute_companion.classify import current_run, find_leg
 from train_commute_companion.delivery import JOURNEY_WARNINGS, covers
 from train_commute_companion.health import WatchedLeg
 from train_commute_companion.lifecycle import (
-    LegProgress,
-    OccurrenceState,
     PollAnswers,
     left_note,
     legacy_facts,
@@ -25,7 +23,7 @@ from train_commute_companion.lifecycle import (
     origin_answer,
 )
 from train_commute_companion.lookahead import entry_mark, render_message
-from train_commute_companion.lookahead_probe import BaselineHistory, LookAheadFact, split_fact_key
+from train_commute_companion.lookahead_probe import split_fact_key
 from train_commute_companion.model import (
     DELAY_NEWS,
     LIVE_PREFIX,
@@ -49,6 +47,12 @@ from train_commute_companion.model import (
 from train_commute_companion.news import all_good
 from train_commute_companion.providers.base import ProviderAnswer
 from train_commute_companion.revisions import find_profile, occurrence_ctx, profile_for, same_route
+from train_commute_companion.state import (
+    BaselineHistory,
+    LegProgress,
+    LookAheadFact,
+    OccurrenceState,
+)
 from train_commute_companion.store import PersistedState
 from train_commute_companion.unclear import train_key
 

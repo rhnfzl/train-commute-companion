@@ -22,15 +22,7 @@ from lifecycle_fixtures import (
 )
 from location_fixtures import USUAL, event, locate
 
-from train_commute_companion.lifecycle import (
-    Commitment,
-    LockSource,
-    OccurrenceState,
-    may_archive,
-    on_location,
-    on_poll,
-    on_tick,
-)
+from train_commute_companion.lifecycle import may_archive, on_location, on_poll, on_tick
 from train_commute_companion.location import (
     Zone,
     ZoneTrack,
@@ -41,6 +33,7 @@ from train_commute_companion.location import (
     without_current_report,
 )
 from train_commute_companion.model import EventKind, LegState, Severity
+from train_commute_companion.state import Commitment, LockSource, OccurrenceState
 
 E1 = make_leg("AAA", "UT", "07:42", "08:10", number="1100")
 E2 = make_leg("UT", "RTD", "08:20", "08:54", number="2200")

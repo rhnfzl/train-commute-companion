@@ -9,10 +9,6 @@ from lookahead_fixtures import NEXT_TUE, NOW, OUT, P, confirmed, ledger
 
 from train_commute_companion.health import PollRecord
 from train_commute_companion.lifecycle import (
-    Commitment,
-    Journey,
-    LockSource,
-    OccurrenceState,
     PollAnswers,
     Transition,
     journey_of,
@@ -20,7 +16,6 @@ from train_commute_companion.lifecycle import (
     on_poll,
 )
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.lookahead_probe import BaselineHistory
 from train_commute_companion.model import (
     AdviceRecord,
     AlertEvent,
@@ -40,6 +35,13 @@ from train_commute_companion.model import (
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import ProviderAnswer, Query
 from train_commute_companion.schedule import dated_schedule
+from train_commute_companion.state import (
+    BaselineHistory,
+    Commitment,
+    Journey,
+    LockSource,
+    OccurrenceState,
+)
 from train_commute_companion.store import PersistedState
 
 PROFILES = """
