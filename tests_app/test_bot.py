@@ -515,7 +515,9 @@ async def test_overlapping_state_saves_keep_the_newest(app, monkeypatch):
             active[0] -= 1
 
     monkeypatch.setattr(bot_mod, "save_state", spy)
-    first = asyncio.create_task(app.bot._take([app.msg("/help", uid=7, kind="edited_message")]))
+    first = asyncio.create_task(
+        app.bot._commit_and_dispatch([app.msg("/help", uid=7, kind="edited_message")])
+    )
     await until(entered.is_set)
     tap_task = asyncio.create_task(app.bot.handle(tap(button["callback_data"], 8)))
     await until(lambda: app.bot.state.confirmed_for is not None)

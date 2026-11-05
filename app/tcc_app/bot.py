@@ -148,7 +148,7 @@ class Bot:
                     {"offset": self.state.offset, "timeout": POLL_S, "allowed_updates": ALLOWED},
                     timeout=POLL_S + 10,
                 )
-                await self._take(_updates(ups))
+                await self._commit_and_dispatch(_updates(ups))
             except TelegramError as e:
                 log.warning("Telegram getUpdates failed (%s: %s)", e.code, e)
                 await asyncio.sleep(CONFLICT_RETRY_S if e.code == 409 else RETRY_S)
@@ -162,7 +162,7 @@ class Bot:
         await self._save()
         log.warning("no saved Telegram offset for this bot; queued updates discarded")
 
-    async def _take(self, ups: list[dict[str, Any]]) -> None:
+    async def _commit_and_dispatch(self, ups: list[dict[str, Any]]) -> None:
         """Durable first, then dispatched: no handled update can come back after a restart."""
         while ups:
             old = self.state.offset
@@ -207,9 +207,9 @@ class Bot:
         for u in ups:
             task = asyncio.create_task(self.handle(u))
             self._tasks.add(task)
-            task.add_done_callback(self._done)
+            task.add_done_callback(self._on_task_done)
 
-    def _done(self, task: asyncio.Task[None]) -> None:
+    def _on_task_done(self, task: asyncio.Task[None]) -> None:
         self._tasks.discard(task)
         if not task.cancelled() and task.exception() is not None:
             log.error("Telegram update failed", exc_info=task.exception())
@@ -343,17 +343,17 @@ class Bot:
         self, pid: str, name: str, at: time, train: str | None,
         day: date | None, direction: Direction | None,
     ) -> None:  # fmt: skip
-        reason = await self._call(self._rt.choose_at(pid, at, train, day, direction))
+        reason = await self._call_runtime(self._rt.choose_at(pid, at, train, day, direction))
         await self._reply(f"Locked the {at:%H:%M} for {name}." if reason is None else reason)
 
     async def _leaving(self, pid: str, day: date | None, direction: Direction | None) -> None:
-        reason = await self._call(self._rt.leaving(pid, day, direction))
+        reason = await self._call_runtime(self._rt.leaving(pid, day, direction))
         await self._reply("Marked as leaving now." if reason is None else _nothing(reason))
 
     async def _skip(
         self, pid: str, day: date | None, direction: Direction | None, whole: bool
     ) -> None:
-        reason = await self._call(self._rt.act(pid, NotTravelling(day, whole), direction))
+        reason = await self._call_runtime(self._rt.act(pid, NotTravelling(day, whole), direction))
         if reason is not None:
             await self._reply(_nothing(reason))
         elif whole:
@@ -361,7 +361,7 @@ class Bot:
         else:
             await self._reply("Not travelling: alerts for that journey stop.")
 
-    async def _call(self, aw: Awaitable[T]) -> T:
+    async def _call_runtime(self, aw: Awaitable[T]) -> T:
         """The runtime call is its own task: a timeout or a cancelled handler leaves it to finish
         (a cancelled delivery pass after a send would repeat that alert)."""
         task = asyncio.ensure_future(aw)

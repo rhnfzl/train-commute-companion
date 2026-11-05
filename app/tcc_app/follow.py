@@ -81,7 +81,7 @@ class Follower:
         for p in view.profiles:
             if p.location is not None and p.location.source == source:
                 epoch = view.location_epochs.get(p.id, 0)
-                self._spawn(self._handle(p.id, source, epoch, fix))
+                self._spawn(self._process_fix(p.id, source, epoch, fix))
 
     def _spawn(self, coro: Coroutine[Any, Any, None]) -> None:
         task = asyncio.create_task(coro)
@@ -98,14 +98,14 @@ class Follower:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _handle(self, pid: str, source: Source, fed_epoch: int, fix: Fix) -> None:
+    async def _process_fix(self, pid: str, source: Source, fed_epoch: int, fix: Fix) -> None:
         async with self._locks.setdefault(pid, asyncio.Lock()):
             try:
-                await self._step(pid, source, fed_epoch, fix)
+                await self._apply_fix(pid, source, fed_epoch, fix)
             except Exception:
                 log.exception("location fix for %s failed", pid)
 
-    async def _step(self, pid: str, source: Source, fed_epoch: int, fix: Fix) -> None:
+    async def _apply_fix(self, pid: str, source: Source, fed_epoch: int, fix: Fix) -> None:
         view = self._rt.view()
         profile = next((p for p in view.profiles if p.id == pid), None)
         loc = profile.location if profile is not None else None

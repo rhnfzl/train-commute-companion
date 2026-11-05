@@ -135,7 +135,7 @@ class LocationTracker:
             state = self._hass.states.get(entity)  # 7.2: the state found now only seeds the zone
             if state is not None and (pos := _fix(state)) is not None:
                 at, acc = state.last_updated, _acc(state)
-                self._spawn(self._handle(pid, gen, epoch, pos, at, acc, seed=True), pid)
+                self._spawn(self._process_fix(pid, gen, epoch, pos, at, acc, seed=True), pid)
 
     def _subscribe(self, entities: list[str], before: list[str]) -> None:
         if self._unsub_state is not None and entities == before:
@@ -159,14 +159,14 @@ class LocationTracker:
         for pid, (entity, epoch) in self._tracked.items():
             if entity == event.data["entity_id"]:
                 at = new.last_updated
-                self._spawn(self._handle(pid, self._gen[pid], epoch, pos, at, _acc(new)), pid)
+                self._spawn(self._process_fix(pid, self._gen[pid], epoch, pos, at, _acc(new)), pid)
 
     def _spawn(self, coro: Coroutine[Any, Any, None], pid: str) -> None:
         task = self._entry.async_create_task(self._hass, coro, f"tcc location {pid}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _handle(
+    async def _process_fix(
         self,
         pid: str,
         gen: object,
@@ -183,13 +183,13 @@ class LocationTracker:
         changed (a switch back included) is dropped here and again by the core."""
         async with self._locks.setdefault(pid, asyncio.Lock()):
             try:
-                await self._step(pid, gen, epoch, pos, at, acc, seed)
+                await self._apply_fix(pid, gen, epoch, pos, at, acc, seed)
             except RuntimeNotRunning:
                 _LOGGER.debug("location event dropped: the runtime is not running")
             except Exception:
                 _LOGGER.exception("location event for %s failed", pid)
 
-    async def _step(
+    async def _apply_fix(
         self,
         pid: str,
         gen: object,
