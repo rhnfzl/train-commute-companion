@@ -17,10 +17,10 @@ from train_commute_companion.news import (
     Fact,
     alert_key,
     all_good,
-    announced,
-    announced_delays,
     escalations,
     key_legs,
+    next_stated_delay,
+    next_stated_delays,
     segment,
     severity,
     unsent,
@@ -38,7 +38,7 @@ def key(leg1=L1, transfer=OK_T, target=None, last=None) -> str:
 def keyed(leg1=L1, transfer=OK_T, target=None, last=None):
     """The key and the delays it states, starting from what the last message stated."""
     cls = [classify_leg(leg1, "UT"), classify_leg(L2, "RTD")]
-    delays = announced_delays(last, key_legs(cls, target))
+    delays = next_stated_delays(last, key_legs(cls, target))
     return alert_key(LOCK, cls, [transfer], target, delays), delays
 
 
@@ -121,10 +121,12 @@ def test_delay_is_news_by_movement_since_last_announced():  # 7.5
 
 
 def test_announced_delay_rules():
-    assert announced(None, 2) is None and announced(None, 3) == 3
-    assert announced(5, 6) == 5 and announced(3, 2) == 3 and announced(3, 1) == 0
-    assert announced(6, 2) == 2  # nearly on time is news
-    assert announced(4, None) == 4  # no reported time states nothing new
+    assert next_stated_delay(None, 2) is None and next_stated_delay(None, 3) == 3
+    assert next_stated_delay(5, 6) == 5
+    assert next_stated_delay(3, 2) == 3
+    assert next_stated_delay(3, 1) == 0
+    assert next_stated_delay(6, 2) == 2  # nearly on time is news
+    assert next_stated_delay(4, None) == 4  # no reported time states nothing new
 
 
 def test_key_changes_with_transfer_state_and_replacement():
@@ -415,6 +417,6 @@ def test_planned_only_time_does_not_change_key_by_itself():
 
 def test_plus_5_to_plus_8_is_news_and_plus_5_to_plus_6_is_not():
     k5, said5 = keyed(late(5))
-    assert announced(5, 8) == 8
+    assert next_stated_delay(5, 8) == 8
     assert key(late(8), last=said5) != k5
     assert key(late(6), last=said5) == k5

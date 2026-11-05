@@ -14,8 +14,8 @@ from train_commute_companion.lifecycle import (
     LegProgress,
     OccurrenceState,
     PollAnswers,
-    announced,
     make_event,
+    next_stated_delay,
 )
 from train_commute_companion.messages import all_good_text
 from train_commute_companion.model import (
@@ -59,7 +59,7 @@ def segment(leg: Leg) -> str:
     return f"{train_ident(leg.train)}/{leg.board.code}/{leg.alight.code}"
 
 
-def announced_delays(
+def next_stated_delays(
     last: Mapping[str, Delays] | None, classified: Sequence[ClassifiedLeg]
 ) -> dict[str, Delays]:
     """Per segment, the delays to state next, from what the last message stated about that
@@ -70,8 +70,8 @@ def announced_delays(
     for c in classified:
         was = prev.get(segment(c.leg), (None, None))
         out[segment(c.leg)] = (
-            announced(was[0], c.dep_delay_min),
-            announced(was[1], c.arr_delay_min),
+            next_stated_delay(was[0], c.dep_delay_min),
+            next_stated_delay(was[1], c.arr_delay_min),
         )
     return out
 
@@ -84,7 +84,7 @@ def key_legs(
     classified: Sequence[ClassifiedLeg], replacement: Connection | None
 ) -> list[ClassifiedLeg]:
     """The legs a message states: the journey's, then the named replacement's. What
-    `announced_delays` and `alert_key` take, in this order."""
+    `next_stated_delays` and `alert_key` take, in this order."""
     rep = () if replacement is None else replacement.legs
     return [*classified, *(classify_leg(x, x.alight.code) for x in rep)]
 
@@ -98,7 +98,7 @@ def alert_key(
 ) -> str:
     """Everything a message states, per leg and per transfer, and the named replacement by
     every leg (train with planned departure, stations, platform, delays); only a change is
-    news. `delays` come from `announced_delays` over `key_legs`, so they move only by news."""
+    news. `delays` come from `next_stated_delays` over `key_legs`, so they move only by news."""
     none: Delays = (None, None)
     legs = [
         "/".join(

@@ -314,16 +314,16 @@ DELAY_STEP_MIN = 3
 ON_TIME_MAX_MIN = 1
 
 
-def announced(last: int | None, now: int | None) -> int | None:
+def next_stated_delay(last_min: int | None, reported_min: int | None) -> int | None:
     """The delay the user was last told, moved only by news (7.5): a 3-min step either way
     from what was said, or back to normal at 1 min or less. A wobble around the last stated
     delay keeps it, so +5 to +6 or +3 to +2 says nothing. No reported time keeps it too."""
-    if now is None:
-        return last
-    said = last or 0
-    if said > ON_TIME_MAX_MIN and now <= ON_TIME_MAX_MIN:
+    if reported_min is None:
+        return last_min
+    said = last_min or 0
+    if said > ON_TIME_MAX_MIN and reported_min <= ON_TIME_MAX_MIN:
         return 0
-    return now if abs(now - said) >= DELAY_STEP_MIN else last
+    return reported_min if abs(reported_min - said) >= DELAY_STEP_MIN else last_min
 
 
 def _recovery(
@@ -355,7 +355,7 @@ def _stated_delays(e: AlertEvent, f: AlertFacts, keys: dict[str, str]) -> AlertE
     slots = [e.key + (f"#{d.tag}" if d.tag else "") for d in f.delays]
     was = [None if keys.get(x) is None else int(keys[x]) for x in slots]
     live = [d.minutes for d in f.delays]
-    told = [announced(w, n) for w, n in zip(was, live, strict=True)]
+    told = [next_stated_delay(w, n) for w, n in zip(was, live, strict=True)]
     if told != was:  # news: the message states every live value, so each is remembered
         told = [t if n is None else n for t, n in zip(told, live, strict=True)]
     said = [t or 0 for t in told]
