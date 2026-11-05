@@ -375,3 +375,46 @@ def test_data_unclear_is_loud_by_default() -> None:
         is_tomorrow=False,
     )
     assert sev is Severity.LOUD
+
+
+# --- News rules by behaviour: what changes the alert key and what does not ---
+
+
+def leg(**k):
+    return make_leg("AAA", "UT", "08:12", "08:40", number="1234", **k)
+
+
+def test_same_facts_give_the_same_key():
+    assert key(leg()) == key(leg())
+
+
+def test_departure_or_arrival_moving_three_minutes_is_news():
+    assert key(leg(delay_dep=3, delay_arr=3)) != key(leg(delay_dep=6, delay_arr=6))
+
+
+def test_cancelled_train_differs_from_running():
+    assert key(leg(cancelled=True)) != key(leg())
+
+
+def test_cut_short_stop_change_is_news():
+    a = make_leg(
+        "AAA", "UT", "08:12", "08:40", number="1234", stops=["BBB", "XXX"], cut_after="BBB"
+    )
+    b = make_leg(
+        "AAA", "UT", "08:12", "08:40", number="1234", stops=["BBB", "XXX"], cut_after="XXX"
+    )
+    assert key(a) != key(b)
+
+
+def test_planned_only_time_does_not_change_key_by_itself():
+    assert key(leg(provenance=Provenance.PLANNED)) == key(leg())
+
+
+# --- Board row 23: a delay that grows by a full step after being announced is news again ---
+
+
+def test_plus_5_to_plus_8_is_news_and_plus_5_to_plus_6_is_not():
+    k5, said5 = keyed(late(5))
+    assert announced(5, 8) == 8
+    assert key(late(8), last=said5) != k5
+    assert key(late(6), last=said5) == k5

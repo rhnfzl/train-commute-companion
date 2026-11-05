@@ -293,3 +293,73 @@ def test_a_new_episode_starts_undelivered():
     c = ctx(at("17:00"))
     rec, events = advise(fresh(c), c, answer(EARLY, SLOW, LATER), USUAL_ARRIVAL)
     assert [e.kind for e in events] == [EventKind.LEAVE_NOW] and rec.delivered is False
+
+
+# --- Board rows 58-63, on whole journeys ---
+
+
+def test_picks_the_largest_saving_and_a_tie_goes_to_the_earlier_train():
+    c = ctx(at("16:52"))
+    a = conn("17:10", "17:50", "1")
+    b = conn("17:20", "17:50", "2")  # same arrival: tie goes to the earlier train
+    d = conn("17:30", "17:58", "3")
+    rec, events = advise(fresh(c), c, answer(d, b, a, SLOW), USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.LEAVE_NOW]
+    assert rec.advised_train == a.legs[0].train
+
+
+def test_never_suggested_when_nothing_is_bad():
+    c = ctx(at("16:52"))
+    _, events = advise(
+        fresh(c), c, answer(EARLY, conn("17:52", "18:30", "1234"), LATER), USUAL_ARRIVAL
+    )
+    assert events == []  # 4 min late is under the 10 min threshold
+
+
+def test_a_cancelled_earlier_candidate_is_not_advised():
+    c = ctx(at("16:52"))
+    dead = conn("17:22", "17:56", "1000", cancelled=True)
+    _, events = advise(fresh(c), c, answer(dead, SLOW), USUAL_ARRIVAL)
+    assert events == []
+
+
+# --- Board rows 9 and 11, lifecycle row 48: cut-short trains and advice that stops ---
+
+
+def cut_short(onward_arrival: str | None):
+    """The usual 17:52 train cut short at BBB, with an optional onward train to AAA."""
+    part = make_leg("UT", "AAA", "17:52", "18:26", number="1234", stops=["BBB"], cut_after="BBB")
+    if onward_arrival is None:
+        return make_connection([part])
+    return make_connection([part, make_leg("BBB", "AAA", "18:10", onward_arrival, number="3000")])
+
+
+def test_cut_short_with_a_connection_22_min_late_triggers_advice():
+    c = ctx(at("16:52"))
+    _, events = advise(fresh(c), c, answer(EARLY, cut_short("18:48"), LATER), USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.LEAVE_NOW]
+
+
+def test_cut_short_without_a_connection_advises_without_calling_it_cancelled():
+    c = ctx(at("16:52"))
+    _, events = advise(fresh(c), c, answer(EARLY, cut_short(None), LATER), USUAL_ARRIVAL)
+    assert [e.kind for e in events] == [EventKind.LEAVE_NOW]
+    assert "cancel" not in events[0].text.lower()
+
+
+def test_earlier_train_advice_stops_quietly_while_the_usual_train_is_still_cancelled():
+    c = ctx(at("16:52"))
+    cancelled = conn("17:52", "18:26", "1234", cancelled=True)
+    rec, first = advise(fresh(c), c, answer(EARLY, cancelled, LATER), USUAL_ARRIVAL)
+    assert [e.kind for e in first] == [EventKind.LEAVE_NOW]
+    # the earlier train is gone, the usual one is still cancelled: nothing to withdraw
+    s = replace(fresh(c), advice=rec)
+    _, events = advise(s, ctx(at("17:10")), answer(cancelled, LATER), USUAL_ARRIVAL)
+    assert all(e.kind is not EventKind.EARLIER_TRAIN_WITHDRAWN for e in events)
+
+
+def test_cut_short_with_a_2_min_late_change_gives_no_advice():
+    # board 10: arriving 2 min late is not bad (7.6), so the early train is not advised
+    c = ctx(at("16:52"))
+    _, events = advise(fresh(c), c, answer(EARLY, cut_short("18:28"), LATER), USUAL_ARRIVAL)
+    assert events == []

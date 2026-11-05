@@ -5,7 +5,7 @@ import sys
 from functools import cache
 from pathlib import Path
 
-from ROWS import PORTED
+from prior_art_rows import PORTED
 
 
 @cache
