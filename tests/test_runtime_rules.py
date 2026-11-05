@@ -2124,6 +2124,18 @@ async def test_a_failing_occurrence_does_not_starve_the_others(tmp_path, caplog)
     assert "poll of p1|outbound|2026-10-26 failed" in caplog.text
 
 
+async def test_a_failing_occurrence_does_not_stop_the_start(tmp_path, caplog):
+    rig = Rig(tmp_path, "07:50")
+    rig.provider.error = lambda q: RuntimeError("not a provider error")
+    await rig.rt.start()
+    assert "poll of p1|outbound|2026-10-27 failed" in caplog.text
+    rig.provider.error = lambda q: None
+    before = rig.occ().poll_records
+    rig.clock.jump(2)
+    await rig.rt.poll_once()
+    assert rig.occ().poll_records != before
+
+
 async def test_a_rejected_key_on_the_locked_train_query_is_reported(tmp_path):
     rig = await started(tmp_path, "07:56")
     assert rig.occ().lock is not None

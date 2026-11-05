@@ -741,12 +741,15 @@ class Runtime:
 
     async def poll_once(self) -> None:
         self._create_occurrences(self._clock.now())
+        await self._poll_occurrences()
+        await self._deliver()
+
+    async def _poll_occurrences(self) -> None:
         for k in sorted(self._writer.st.occurrences):
             try:
                 await self._poll_occurrence(k)
             except Exception:  # one failing occurrence must not starve the others (rule 12)
                 log.exception("poll of %s failed", k)
-        await self._deliver()
 
     async def _poll_occurrence(self, k: str) -> None:
         s = self._writer.st.occurrences.get(k)
@@ -1402,8 +1405,7 @@ class Runtime:
         await self.reload()
         self._create_occurrences(now)
         # deterministic reconcile: one fresh poll per unarchived occurrence (rule 11)
-        for k in sorted(self._writer.st.occurrences):
-            await self._poll_occurrence(k)
+        await self._poll_occurrences()
 
     async def run_forever(self, *, started: bool = False) -> None:
         """Starts (unless `started`) with the watchdog already running, so a slow reconcile is
