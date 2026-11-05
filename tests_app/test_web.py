@@ -245,8 +245,9 @@ async def test_bad_requests_get_a_fixed_error_and_never_stall_the_loop(
     raw.connect(str(sock))
     raw.sendall(b"{}\n")
     before = turns[0]
-    while not (handlers := [t for t in asyncio.all_tasks() - known if is_handler(t)]):
-        await asyncio.sleep(0)
+    async with asyncio.timeout(30):  # fail, not spin, if the handler never shows
+        while not (handlers := [t for t in asyncio.all_tasks() - known if is_handler(t)]):
+            await asyncio.sleep(0)
     await asyncio.wait_for(asyncio.wait(handlers), 30)  # never read: the 0.05 s budget ran out
     assert turns[0] > before  # the loop kept turning throughout
     raw.setblocking(False)
