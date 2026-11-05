@@ -205,11 +205,11 @@ def occurrence_view(
     for a, b in pairwise(lock):
         station = b.board_station
         inc, out = observed(a)[0], observed(b)[0]
-        if inc is None or out is None:  # not in the answers: never shown as fine (7.3)
+        # not in the answers: never shown as fine (7.3)
+        if pool is None or inc is None or out is None:
             minimum = transfer_minimum(station, ctx.profile.transfer_min, None, None)
             transfers.append(TransferView(station, TransferState.AT_RISK, None, minimum))
             continue
-        assert pool is not None  # inc was observed in it
         inc, out = pair_transfer(pool.answers, inc, out)
         t = check_transfer(inc, out, station, ctx.profile.transfer_min)
         transfers.append(TransferView(station, t.state, t.margin_min, t.minimum))

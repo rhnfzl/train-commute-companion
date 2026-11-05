@@ -26,6 +26,7 @@ from train_commute_companion.model import (
     TrainId,
     TransferState,
     display_name,
+    present,
 )
 from train_commute_companion.profile import find_overlaps
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
@@ -301,8 +302,7 @@ def probe_queries(p: Profile, d: Direction, day: date, base: BaselineVersion | N
     The whole-journey query has no via station, so a changed transfer pattern is visible."""
     st = _stations(p, d)
     deps = _base_departures(p, d, day, base)
-    first = deps[0]
-    assert first is not None
+    first = present(deps[0])  # a journey's first departure is always known
     whole = Query(st[0], st[-1], _minus_search(first))
     if len(st) == 2:
         return [whole]
@@ -612,8 +612,7 @@ def evaluate(
     n = len(st) - 1
     deps = _base_departures(p, d, day, base)
     by_route = {(a.query.origin, a.query.destination): a for a in answers}
-    first = deps[0]
-    assert first is not None
+    first = present(deps[0])  # a journey's first departure is always known
 
     whole_ans = by_route.get((st[0], st[-1]))
     whole, pattern = (
@@ -1194,7 +1193,8 @@ def run_lookahead(
     this run started; `history` and `revision` are the current ones; `now` is the run's start
     time. A newer run that finished first stamped a later `last_run`, so this one is dropped.
     `ledger.pending` holds only undelivered obligations: delivery removes each one it finishes."""
-    assert bases is not None or not others
+    if bases is None and others:
+        raise AssertionError("`others` is only compared through `bases`")
     if ledger.started_revision != revision or ledger.started_baseline != history.latest:
         return None  # the route or baseline changed since the run started (rule 21)
     stamps = [t.astimezone(UTC) for t in (ledger.last_applied, ledger.last_run) if t is not None]

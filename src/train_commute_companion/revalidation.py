@@ -50,6 +50,7 @@ from train_commute_companion.model import (
     direction_key,
     display_name,
     okey,
+    present,
     train_ident,
 )
 from train_commute_companion.news import all_good
@@ -210,8 +211,8 @@ class LiveLedger:
         return True
 
     def _stored_facts(self, o: Obligation) -> tuple[LookAheadFact, ...]:
-        assert o.look_ahead is not None
-        led = self._state.lookahead.get(direction_key(o.look_ahead[0], o.look_ahead[1]))
+        pid, d, _ = present(o.look_ahead)
+        led = self._state.lookahead.get(direction_key(pid, d))
         return () if led is None else tuple(led.facts.get(o.id, ()))
 
     def _live_facts(self, o: Obligation) -> tuple[LookAheadFact, ...] | None:
@@ -221,8 +222,8 @@ class LiveLedger:
         withdrawal always (judged by `baseline_version`). None when its ledger holds no facts for
         it, as for a message stored before facts were kept: they cannot be rebuilt on load, since
         ";" also joins the legs inside a whole-journey fingerprint, so never reads o.fact_key."""
-        assert o.look_ahead is not None
-        led = self._state.lookahead.get(direction_key(o.look_ahead[0], o.look_ahead[1]))
+        pid, d, _ = present(o.look_ahead)
+        led = self._state.lookahead.get(direction_key(pid, d))
         if led is None or not (fs := led.facts.get(o.id)):
             return None
         live = []

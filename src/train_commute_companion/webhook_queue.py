@@ -138,16 +138,15 @@ class CopyQueue:
 
     def soon(self) -> None:
         """A webhook pass now, or one more round of the running one (copies made meanwhile)."""
-        if self.port is None:
+        port = self.port
+        if port is None:
             return
         if self._post_task is not None and not self._post_task.done():
             self._post_again = True
             return
-        self._post_task = asyncio.get_running_loop().create_task(self._post_passes())
+        self._post_task = asyncio.get_running_loop().create_task(self._post_passes(port))
 
-    async def _post_passes(self) -> None:
-        port = self.port
-        assert port is not None
+    async def _post_passes(self, port: WebhookPort) -> None:
         again = True
         while again:
             self._post_again = False

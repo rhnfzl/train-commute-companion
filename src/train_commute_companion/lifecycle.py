@@ -54,6 +54,7 @@ from train_commute_companion.model import (
     TrainId,
     TransferState,
     display_name,
+    present,
     train_ident,
 )
 from train_commute_companion.providers.base import ProviderAnswer, Query
@@ -488,10 +489,11 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
     )
     events: list[AlertEvent] = []
     if usual is not None:
-        locked = write_lock(
-            s, journey_of(usual, LockSource.AUTO, Commitment.INTENDED), expect=None, now=now
+        locked = present(  # no lock existed
+            write_lock(
+                s, journey_of(usual, LockSource.AUTO, Commitment.INTENDED), expect=None, now=now
+            )
         )
-        assert locked is not None  # no lock existed
         first = usual.legs[0]
         # the newest copy says whether it left: an older one may have won on arrival (6.2)
         cur = current_connection(evidence(answer), usual)
@@ -532,10 +534,9 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
         text = "no connection found, check the NS app."
         events.append(make_event(ctx, EventKind.NO_CONNECTION, Severity.LOUD, text))
         return Transition(s, tuple(events))
-    locked = write_lock(
-        s, journey_of(nxt, LockSource.AUTO, Commitment.INTENDED), expect=None, now=now
+    locked = present(
+        write_lock(s, journey_of(nxt, LockSource.AUTO, Commitment.INTENDED), expect=None, now=now)
     )
-    assert locked is not None
     return Transition(locked, tuple(events))
 
 
@@ -651,8 +652,8 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
         )
     new = replace(new, legs=(*head, *done, *legs))
     # a choice ends every retained remainder; the writer retains the old lock if ridden
-    written = write_lock(replace(s, retained=()), new, expect=s.lock, now=ctx.now)
-    assert written is not None  # a choice always writes over the lock it read
+    # a choice always writes over the lock it read
+    written = present(write_lock(replace(s, retained=()), new, expect=s.lock, now=ctx.now))
     if source is not None:  # a ridden journey, also one promoted after the main one ended
         written = replace(written, direction_state=DirectionState.RIDING)
     return Transition(written, ())
@@ -804,11 +805,9 @@ def observe(
     leg, ob = find_leg(pool, x.train, x.board_station)
     if leg is None:
         return None, ob, None
-    run = current_run(pool.answers, leg.train, x.board_station, x.intended_alight)
     # find_leg found the leg in this pool, and every fragment comes from a raw connection of
     # one of its answers
-    assert run is not None
-    seen, best = run
+    seen, best = present(current_run(pool.answers, leg.train, x.board_station, x.intended_alight))
     if best.leg.alternative_transport and best.kind is not LegKind.CANCELLED:
         # 6.3: a train NS now runs as other transport is no train to follow; NS itself
         # usually shows that as a cancellation, so it alerts and relocks as one
@@ -827,7 +826,8 @@ def _good_kw(
 ) -> GoodKwargs:
     """`n_before` legs stay before the new suffix; the last of them is `kept`, which every
     caller must have observed when there is one (rule 1)."""
-    assert n_before == 0 or kept is not None, "a kept leg's change must be checked"
+    if n_before and kept is None:
+        raise AssertionError("a kept leg's change must be checked")
     p, d = ctx.profile, ctx.direction
     j = p.journey(d)
     catch = (
@@ -856,15 +856,13 @@ def _journey(
 
 def _progress(s: OccurrenceState, legs: Sequence[LegProgress]) -> OccurrenceState:
     """Observed progress only; the generation is raised once per poll by `_bumped`."""
-    assert s.lock is not None
-    return replace(s, lock=replace(s.lock, legs=tuple(legs)))
+    return replace(s, lock=replace(present(s.lock), legs=tuple(legs)))
 
 
 def _write(s: OccurrenceState, new: Journey) -> OccurrenceState:
     # None: every caller has checked that the replaced train is not ridden
-    written = write_lock(s, new, expect=s.lock, now=None)
-    assert written is not None  # relock and restore pass the lock just read as `expect`
-    return written
+    # relock and restore pass the lock just read as `expect`
+    return present(write_lock(s, new, expect=s.lock, now=None))
 
 
 def _move_stop(x: LegProgress, end: str, stop: str) -> LegProgress:
@@ -885,8 +883,7 @@ def _move_stop(x: LegProgress, end: str, stop: str) -> LegProgress:
 
 def _restore(s: OccurrenceState, ctx: Ctx, pool: Pool) -> Transition | None:
     """Rule 8: a reinstated train moves back only for legs not boarded and only if good."""
-    lock = s.lock
-    assert lock is not None
+    lock = present(s.lock)
     p, d = ctx.profile, ctx.direction
     legs = lock.legs
     for h in s.cancellation_history:
@@ -959,8 +956,7 @@ def _relock(
     the cause is still reported, and nothing is relocked on it."""
     legs, j, station, kept = cut.legs, cut.j, cut.station, cut.kept
     history, over_cap = cut.history, cut.over_cap
-    lock = s.lock
-    assert lock is not None
+    lock = present(s.lock)
     p, d = ctx.profile, ctx.direction
     kind, sev, text, train = cut.cause
     if j and kept is None:
@@ -1311,8 +1307,7 @@ def _follow(
     This loop alone owns `legs`, `events` and `relock`: each check proposes, and a move not
     taken keeps its warnings, while every later leg is still checked and reported but never
     relocked on top of the kept break (7.4)."""
-    lock = s.lock
-    assert lock is not None
+    lock = present(s.lock)
     now = ctx.now
     legs = list(lock.legs)
     k = first_open(lock)
@@ -1488,8 +1483,7 @@ def on_poll(s: OccurrenceState, ctx: Ctx, board: Board) -> Transition:
         on = f"if you are on the {hhmm(first.planned_departure)}: "
         alone = replace(s, lock=r, retained=(), cancellation_history=())
         t = _follow(alone, ctx, pool, asked, relock=False)
-        assert t.state.lock is not None
-        retained.append(t.state.lock)
+        retained.append(present(t.state.lock))
         for e in t.events:
             text = f"{display_name(e.profile_name)}: {on}{e.body}"
             tail = f":retained:{train_ident(first)}"
@@ -1540,8 +1534,8 @@ def _accept(ctx: Ctx, x: LegProgress, pool: Pool, on: str) -> tuple[LegProgress,
             kind = EventKind.CANCELLED if cl.kind is LegKind.CANCELLED else EventKind.CUT_SHORT
             text = f"{on}your {_name(x)} train {what}; following it again."
             return reopened, make_event(ctx, kind, Severity.LOUD, text, x.train)
-        assert v is not None
-        text = f"{on}NS now shows your {_name(x)} train arriving at {hhmm(v)}; following it again."
+        arrives = hhmm(present(v))
+        text = f"{on}NS now shows your {_name(x)} train arriving at {arrives}; following it again."
         return reopened, make_event(ctx, EventKind.DELAYED, Severity.SILENT, text, x.train)
     if bad or v is None:
         return reset, None
@@ -1676,8 +1670,10 @@ def _left_origin(
         return Transition(s, ())
     deadline = (to_utc(event.at) + ERRAND_TIMEOUT).astimezone(TZ)
     new = journey_of(c, LockSource.LOCATION, Commitment.PROVISIONAL)
-    written = write_lock(replace(s, errand_deadline=deadline), new, expect=lock, now=ctx.now)
-    assert written is not None  # only an auto lock or none is replaced
+    # only an auto lock or none is replaced
+    written = present(
+        write_lock(replace(s, errand_deadline=deadline), new, expect=lock, now=ctx.now)
+    )
     return Transition(written, ())
 
 
@@ -1691,10 +1687,14 @@ def _at_first_station(s: OccurrenceState, ctx: Ctx, pool: Pool | None) -> Transi
         if c is not None and (
             lock is None or [x.train for x in c.legs] != [x.train for x in lock.legs]
         ):
-            written = write_lock(
-                s, journey_of(c, LockSource.STATION, Commitment.COMMITTED), expect=lock, now=ctx.now
+            written = present(
+                write_lock(
+                    s,
+                    journey_of(c, LockSource.STATION, Commitment.COMMITTED),
+                    expect=lock,
+                    now=ctx.now,
+                )
             )
-            assert written is not None
             return Transition(written, ())
         if c is not None and new is not None:  # the same train: only the source changes
             new = replace(new, source=LockSource.STATION)
@@ -1816,8 +1816,8 @@ def _merge_retained(s: OccurrenceState) -> OccurrenceState:
     whose unfinished trains are exactly the lock's from its first one on is merged into the
     lock with its progress and watches. Any other remainder, also one that shares only its
     first train, stays retained (rule 7)."""
-    assert s.lock is not None
-    legs = list(s.lock.legs)
+    lock = present(s.lock)
+    legs = list(lock.legs)
     trains = [x.train for x in legs]
     kept = []
     for r in s.retained:
@@ -1827,7 +1827,7 @@ def _merge_retained(s: OccurrenceState) -> OccurrenceState:
             kept.append(r)
             continue
         legs[i:] = rest
-    return replace(s, lock=replace(s.lock, legs=tuple(legs)), retained=tuple(kept))
+    return replace(s, lock=replace(lock, legs=tuple(legs)), retained=tuple(kept))
 
 
 def _arrived(s: OccurrenceState, ctx: Ctx, last: LegProgress) -> bool:

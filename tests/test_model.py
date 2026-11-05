@@ -1,6 +1,9 @@
 from datetime import date
 
+import pytest
 from builders import make_connection, make_leg
+
+from train_commute_companion.model import present
 
 
 def test_connection_transfer_stations():
@@ -33,3 +36,9 @@ def test_train_ids_in_the_repeated_autumn_hour_are_distinct():
     assert first != second and len({first, second}) == 2
     same = TrainId(day, "3150", first.planned_departure.astimezone(TZ))
     assert same == first and hash(same) == hash(first)
+
+
+def test_present_passes_a_value_through_and_refuses_none():
+    assert present(0) == 0  # falsy is still a value
+    with pytest.raises(AssertionError):
+        present(None)

@@ -21,6 +21,7 @@ from train_commute_companion.model import (
     LegKind,
     Observation,
     TransferState,
+    present,
 )
 from train_commute_companion.providers.base import ProviderAnswer
 from train_commute_companion.transfer import check_transfer, is_reported
@@ -102,9 +103,8 @@ def check_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) 
         # rule 20: a planned or missing time at either end of a leg is at risk, never good
         if not (is_reported(x.leg.board.departure) and is_reported(x.leg.alight.arrival)):
             return bad("leg has a planned or missing time")
-    first = cls[0].leg.board.departure
-    assert first is not None and first.value is not None  # is_reported() above
-    if first.value.astimezone(UTC) < kw["catch"].not_before.astimezone(UTC):
+    first = present(present(cls[0].leg.board.departure).value)  # is_reported() above
+    if first.astimezone(UTC) < kw["catch"].not_before.astimezone(UTC):
         return bad("first leg cannot be caught")
     pairs = [(*pair_transfer(seen_in, kept, cls[0]), board)] if kept is not None else []
     pairs += [(a, b, leg.alight.code) for (a, b), leg in zip(itertools.pairwise(cls), c.legs)]

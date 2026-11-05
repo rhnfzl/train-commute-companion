@@ -23,6 +23,7 @@ from train_commute_companion.model import (
     TrainId,
     TransferCheck,
     TransferState,
+    present,
     train_ident,
 )
 from train_commute_companion.providers.base import ProviderAnswer
@@ -254,8 +255,7 @@ def all_good(s: OccurrenceState, board: Board, ctx: Ctx) -> AlertEvent | None:
             return None  # 6.3: a train any answer shows as other transport is never "on time"
         # the worst of every copy at the newest fetch, in any order: timing and platform (7.12)
         run = current_run(board.answers, found.train, x.board_station, x.alight_stop)
-        assert run is not None  # find_leg saw the train in `newest`
-        g = run[1].leg
+        g = present(run)[1].leg  # find_leg saw the train in `newest`
         end = next((i for i, st in enumerate(g.stops) if i and st.code == x.alight_stop), None)
         if end is None:
             return None

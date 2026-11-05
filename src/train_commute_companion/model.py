@@ -14,6 +14,13 @@ class Direction(StrEnum):
     RETURN = "return"
 
 
+def present[T](value: T | None) -> T:
+    """A value an invariant says is there. Unlike `assert`, the check survives `python -O`."""
+    if value is None:
+        raise AssertionError("an invariant promised a value here")
+    return value
+
+
 def direction_key(profile_id: str, d: Direction) -> str:
     """The stored key of one profile's direction."""
     return f"{profile_id}|{d.value}"

@@ -23,7 +23,7 @@ from train_commute_companion.lookahead import (
     run_lookahead,
     service_date,
 )
-from train_commute_companion.model import Direction, Profile, direction_key
+from train_commute_companion.model import Direction, Profile, direction_key, present
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
 from train_commute_companion.store import PersistedState
 from train_commute_companion.webhook_queue import CopyQueue
@@ -54,7 +54,7 @@ async def probe_direction(
     auth: Callable[[PollFailure | None, str, datetime], None],
 ) -> ProbedRun | None:
     """`st`: the state as the run starts. None: an incomplete run, which writes nothing."""
-    assert st.config is not None
+    config = present(st.config)
     today = start.astimezone(TZ).date()
     hist = st.baselines.get(direction_key(p.id, d), BaselineHistory())
     bases = {
@@ -70,7 +70,7 @@ async def probe_direction(
             return None
         auth(None, "lookahead", start)
         results += evaluate(p, d, day, got, works, base)
-    return ProbedRun(start, st.config.revision, hist.latest, tuple(results))
+    return ProbedRun(start, config.revision, hist.latest, tuple(results))
 
 
 def applied_run(

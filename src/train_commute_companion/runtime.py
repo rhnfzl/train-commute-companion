@@ -1227,11 +1227,12 @@ class Runtime:
             q = find_profile(old, p.id)
             # removed and added again: its old history goes, so it starts from the file like a
             # new profile (a first configuration has no earlier profiles to forget)
-            for d in Direction if q is None and old is not None else ():
-                baselines.pop(direction_key(p.id, d), None)
-                ledgers.pop(direction_key(p.id, d), None)
-            for d in Direction if q is not None else ():
-                assert q is not None
+            if q is None:
+                for d in Direction if old is not None else ():
+                    baselines.pop(direction_key(p.id, d), None)
+                    ledgers.pop(direction_key(p.id, d), None)
+                continue
+            for d in Direction:
                 dk = direction_key(p.id, d)
                 hist = baselines.get(dk)
                 if hist is None:
