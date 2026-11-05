@@ -652,14 +652,11 @@ def evaluate(
             issue = chain_issues.get(i)
             extra = () if issue is None else (issue,)
             out.append(judging.missing(i) if c is None else judging.usual(i, c, extra))
-    if whole_ans is not None:
-        if whole is not None:
-            out.append(judging.usual(None, whole, whole_issues))
-        elif pattern is not None:
-            out.append(judging.other_pattern(pattern))
-        else:
-            out.append(judging.missing(None))
-    return out
+    if whole_ans is None:
+        return out
+    if whole is not None:
+        return [*out, judging.usual(None, whole, whole_issues)]
+    return [*out, judging.other_pattern(pattern) if pattern is not None else judging.missing(None)]
 
 
 # ---- the run
@@ -688,28 +685,31 @@ def _station_name(r: ProbeResult, code: str) -> str:
     return code
 
 
+def _reason_text(r: ProbeResult, x: ProbeReason, what: str) -> str | None:
+    tag = x.tag
+    if tag == _MISSING:
+        return f"your {what} has no usual train (works)"
+    if tag == "cancelled":
+        return f"your {what} has no trains (works)"
+    if tag == "cut_short":
+        stop = _station_name(r, x.stop) if x.stop else "an earlier stop"
+        return f"your {what} runs only to {stop} (works)"
+    if tag == "pattern" and r.connection is not None:
+        via = " then ".join(_station_name(r, s) for s in r.connection.transfer_stations)
+        return f"your journey goes {'via ' + via if via else 'direct'} (works)"
+    if tag == "short":
+        return (
+            f"your change at {_station_name(r, x.stop or '')} is too short"
+            f" ({x.margin} min, you need {x.minimum})"
+        )
+    if tag in ("messages", "maintenance"):
+        return f"your {what} is affected by planned works"
+    return None
+
+
 def _warn_text(r: ProbeResult, p: Profile, base: Signature | None) -> str:
     what = _leg_name(r, p)
-    parts: list[str] = []
-    for x in r.reasons:
-        tag = x.tag
-        if tag == _MISSING:
-            parts.append(f"your {what} has no usual train (works)")
-        elif tag == "cancelled":
-            parts.append(f"your {what} has no trains (works)")
-        elif tag == "cut_short":
-            stop = _station_name(r, x.stop) if x.stop else "an earlier stop"
-            parts.append(f"your {what} runs only to {stop} (works)")
-        elif tag == "pattern" and r.connection is not None:
-            via = " then ".join(_station_name(r, s) for s in r.connection.transfer_stations)
-            parts.append(f"your journey goes {'via ' + via if via else 'direct'} (works)")
-        elif tag == "short":
-            parts.append(
-                f"your change at {_station_name(r, x.stop or '')} is too short"
-                f" ({x.margin} min, you need {x.minimum})"
-            )
-        elif tag in ("messages", "maintenance"):
-            parts.append(f"your {what} is affected by planned works")
+    parts = [t for x in r.reasons if (t := _reason_text(r, x, what))]
     if not parts and r.connection is not None and base is not None:
         now = signature_of(r.connection, r.service_date)
         parts.append(
@@ -970,6 +970,24 @@ def _adopt(
     return adopted, None
 
 
+def _changed(r: ProbeResult, exp: Signature | None) -> bool:
+    return (
+        exp is not None
+        and r.connection is not None
+        and not r.other_pattern
+        and _differs(signature_of(r.connection, r.service_date), exp, DEP_TOL_MIN, DUR_TOL_MIN)
+    )
+
+
+def _last_mark(entries: tuple[str, ...]) -> tuple[str | None, tuple[str, ...]]:
+    """The latest warning or restoration and the entries after it."""
+    at = next(
+        (i for i in reversed(range(len(entries))) if entries[i].startswith(("warn:", "restored:"))),
+        None,
+    )
+    return (None, ()) if at is None else (entries[at], entries[at + 1 :])
+
+
 def _probe_facts(
     draft: _Draft,
     p: Profile,
@@ -988,24 +1006,8 @@ def _probe_facts(
         base = final.in_force(sd)
         conf = base if base is not None and base.confirmed and _usable(p, d, base) else None
         exp = _expected(conf, r.leg_index) if conf is not None else None
-        changed = (
-            exp is not None
-            and r.connection is not None
-            and not r.other_pattern
-            and _differs(signature_of(r.connection, sd), exp, DEP_TOL_MIN, DUR_TOL_MIN)
-        )
-        entries = tuple(entry_mark(x) for x in draft.per_date.get(key, ()))
-        at = next(
-            (
-                i
-                for i in reversed(range(len(entries)))
-                if entries[i].startswith(("warn:", "restored:"))
-            ),
-            None,
-        )
-        last = None if at is None else entries[at]
-        since = () if at is None else entries[at + 1 :]
-        if r.works or changed:
+        last, since = _last_mark(tuple(entry_mark(x) for x in draft.per_date.get(key, ())))
+        if r.works or _changed(r, exp):
             loud = sd == today + timedelta(days=1)
             fact = f"{key}|warn:{r.fingerprint}"
             if last == f"warn:{r.fingerprint}":  # only the latest entry counts
