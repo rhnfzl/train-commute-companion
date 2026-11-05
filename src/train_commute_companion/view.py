@@ -14,6 +14,7 @@ from train_commute_companion.lifecycle import (
     find_next_good,
     is_resolved,
     merged_pool,
+    next_good_instead_of,
     observe,
     unfinished_leg,
 )
@@ -201,25 +202,36 @@ def _leg_view(x: LegProgress, cl: ClassifiedLeg | None, ob: Observation) -> LegV
     state = ob if ob is not Observation.SEEN or cl is None else cl.kind
     if cl is None:
         return LegView(
-            x.train.train_number, x.board_station, x.alight_stop, x.train.planned_departure,
-            None, None, None, None, None, None, None, state, x.state,
-        )  # fmt: skip
+            train_number=x.train.train_number,
+            board=x.board_station,
+            alight=x.alight_stop,
+            planned_departure=x.train.planned_departure,
+            departure=None,
+            planned_arrival=None,
+            arrival=None,
+            departure_platform=None,
+            arrival_platform=None,
+            departure_delay_min=None,
+            arrival_delay_min=None,
+            state=state,
+            progress=x.state,
+        )
     board = cl.leg.board
     stop = next((st for st in cl.leg.stops[1:] if st.code == x.alight_stop), None)
     return LegView(
-        x.train.train_number,
-        x.board_station,
-        x.alight_stop,
-        x.train.planned_departure,
-        _reported(board.departure),
-        None if stop is None else stop.planned_arrival,
-        None if stop is None else _reported(stop.arrival),
-        board.actual_track or board.planned_track,
-        None if stop is None else alight_track(stop),
-        cl.dep_delay_min,
-        cl.arr_delay_min,
-        state,
-        x.state,
+        train_number=x.train.train_number,
+        board=x.board_station,
+        alight=x.alight_stop,
+        planned_departure=x.train.planned_departure,
+        departure=_reported(board.departure),
+        planned_arrival=None if stop is None else stop.planned_arrival,
+        arrival=None if stop is None else _reported(stop.arrival),
+        departure_platform=board.actual_track or board.planned_track,
+        arrival_platform=None if stop is None else alight_track(stop),
+        departure_delay_min=cl.dep_delay_min,
+        arrival_delay_min=cl.arr_delay_min,
+        state=state,
+        progress=x.state,
     )
 
 
@@ -258,26 +270,23 @@ def occurrence_view(
         if s.lock is None:
             next_good = find_next_good(s, ctx, pool)
         elif x is not None:  # as `left_note` names it (7.7, rule 7)
-            i = s.lock.legs.index(x)
-            kept = observe(pool, s.lock.legs[i - 1])[0] if i else None
-            if not i or kept is not None:
-                next_good = find_next_good(s, ctx, pool, x.train, x.board_station, kept, i)
+            next_good = next_good_instead_of(s, ctx, pool, s.lock, s.lock.legs.index(x))[1]
 
     return OccurrenceView(
-        s.key,
-        ctx.profile.name,
-        s.direction_state,
-        resolved,
-        s.not_travelling,
-        holds_live(s.alert_keys, (EventKind.ROUTE_CHANGED,)),
-        s.lock.source if s.lock else None,
-        s.lock.commitment if s.lock else None,
-        legs(lock),
-        tuple(transfers),
-        tuple(legs(j.legs) for j in s.retained),
-        next_good,
-        s.advice,
-        board_health(s.poll_records, ctx.now),
+        key=s.key,
+        profile_name=ctx.profile.name,
+        direction_state=s.direction_state,
+        resolved=resolved,
+        not_travelling=s.not_travelling,
+        route_changed=holds_live(s.alert_keys, (EventKind.ROUTE_CHANGED,)),
+        lock_source=s.lock.source if s.lock else None,
+        commitment=s.lock.commitment if s.lock else None,
+        legs=legs(lock),
+        transfers=tuple(transfers),
+        retained=tuple(legs(j.legs) for j in s.retained),
+        next_good=next_good,
+        advice=s.advice,
+        health=board_health(s.poll_records, ctx.now),
     )
 
 
@@ -316,6 +325,35 @@ def moved(
     return tuple(out)
 
 
+def _shown_profiles(st: PersistedState) -> list[Profile]:
+    """The current profiles, then each removed one that still runs on its occurrences (rule 10)."""
+    cfg = st.config
+    profiles = list(cfg.profiles if cfg else ())
+    running = [s for s in st.occurrences.values() if find_profile(cfg, s.key.profile_id) is None]
+    for pid in sorted({s.key.profile_id for s in running}):
+        newest = max(
+            (s for s in running if s.key.profile_id == pid), key=lambda s: s.key.service_date
+        )
+        p = profile_for(st, newest)
+        if p is not None:
+            profiles.append(p)
+    return profiles
+
+
+def _direction_infos(st: PersistedState, profiles: Sequence[Profile]) -> tuple[DirectionInfo, ...]:
+    directions = []
+    for p in profiles:
+        for d in Direction:
+            routes = [
+                find_profile(st.config_snapshots.get(s.route_revision), p.id)
+                for s in st.occurrences.values()
+                if s.key.profile_id == p.id and s.key.direction is d
+            ]
+            n = max(len(r.journey(d).transfers) for r in (p, *routes) if r is not None)
+            directions.append(DirectionInfo(p.id, p.name, d, n))
+    return tuple(directions)
+
+
 def runtime_view(
     st: PersistedState,
     boards: Mapping[str, Sequence[ProviderAnswer]],
@@ -337,48 +375,29 @@ def runtime_view(
         ctx = occurrence_ctx(st, s, now)
         if ctx is not None:
             occurrences.append(occurrence_view(s, ctx, boards.get(k, ())))
-    # rule 10: a removed profile still runs on its occurrences, so its entities stay
-    # deep copies: a profile's mappings (`transfer_min`, zones) stay the runtime's own
-    profiles = list(cfg.profiles if cfg else ())
-    running = [s for s in st.occurrences.values() if find_profile(cfg, s.key.profile_id) is None]
-    for pid in sorted({s.key.profile_id for s in running}):
-        newest = max(
-            (s for s in running if s.key.profile_id == pid), key=lambda s: s.key.service_date
-        )
-        p = profile_for(st, newest)
-        if p is not None:
-            profiles.append(p)
-    directions = []
-    for p in profiles:
-        for d in Direction:
-            routes = [
-                find_profile(st.config_snapshots.get(s.route_revision), p.id)
-                for s in st.occurrences.values()
-                if s.key.profile_id == p.id and s.key.direction is d
-            ]
-            n = max(len(r.journey(d).transfers) for r in (p, *routes) if r is not None)
-            directions.append(DirectionInfo(p.id, p.name, d, n))
+    profiles = _shown_profiles(st)
     today = now.astimezone(TZ).date()
+    last_ok: dict[str, datetime | None] = {}
+    for p in cfg.profiles if cfg else ():
+        for d in Direction:
+            k = direction_key(p.id, d)
+            led = st.lookahead.get(k)
+            last_ok[k] = led.last_run if led else None
     return RuntimeView(
-        now,
-        started,
-        copy.deepcopy(tuple(profiles)),
-        tuple(directions),
-        tuple(occurrences),
-        {k: works_ahead(v, today) for k, v in st.lookahead.items()},
-        moved(cfg.profiles if cfg else (), st.baselines),
-        refusal,
-        store_ok,
-        key_rejected,
-        undelivered,
-        requests,
-        dict(location_epochs),
-        {
-            k: led.last_run if led else None
-            for p in (cfg.profiles if cfg else ())
-            for d in Direction
-            for k in (direction_key(p.id, d),)
-            for led in (st.lookahead.get(k),)
-        },
-        dict(positions),
+        at=now,
+        started=started,
+        # deep copies: a profile's mappings (`transfer_min`, zones) stay the runtime's own
+        profiles=copy.deepcopy(tuple(profiles)),
+        directions=_direction_infos(st, profiles),
+        occurrences=tuple(occurrences),
+        works={k: works_ahead(v, today) for k, v in st.lookahead.items()},
+        moved=moved(cfg.profiles if cfg else (), st.baselines),
+        refusal=refusal,
+        store_ok=store_ok,
+        key_rejected=key_rejected,
+        undelivered=undelivered,
+        requests=requests,
+        location_epochs=dict(location_epochs),
+        lookahead_last_ok=last_ok,
+        positions=dict(positions),
     )

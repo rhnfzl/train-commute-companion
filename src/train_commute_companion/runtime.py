@@ -130,9 +130,23 @@ def _reasons(errors: Sequence[ProfileProblem]) -> str:
 
 def fresh_state(key: OccurrenceKey, revision: int, baseline: int | None) -> OccurrenceState:
     return OccurrenceState(
-        key, 0, revision, revision, baseline, DirectionState.IDLE, None, (), False, None,
-        False, None, False, (), False, False,
-    )  # fmt: skip
+        key=key,
+        generation=0,
+        route_revision=revision,
+        settings_revision=revision,
+        baseline_version=baseline,
+        direction_state=DirectionState.IDLE,
+        lock=None,
+        retained=(),
+        travelling=False,
+        tap_at=None,
+        at_station=False,
+        errand_deadline=None,
+        not_travelling=False,
+        cancellation_history=(),
+        missing_sent=False,
+        all_good_evaluated=False,
+    )
 
 
 class _LoggingNotifier:

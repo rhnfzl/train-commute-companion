@@ -151,7 +151,17 @@ def catch_from_state(s: OccurrenceState, buffer_min: int, now: datetime) -> Catc
 def progress_of(leg: Leg) -> LegProgress:
     a = leg.alight.code
     return LegProgress(
-        leg.train, leg.board.code, a, a, a, False, LegState.PENDING, None, None, None, None
+        train=leg.train,
+        board_station=leg.board.code,
+        intended_alight=a,
+        served_endpoint=a,
+        alight_stop=a,
+        alight_frozen=False,
+        state=LegState.PENDING,
+        accepted_at=None,
+        accept_value=None,
+        accept_first_seen=None,
+        watch_until=None,
     )
 
 
@@ -1380,16 +1390,27 @@ def _advance(ctx: Ctx, pool: Pool, j: Journey) -> tuple[Journey, list[int]]:
     return replace(j, legs=tuple(legs)), left
 
 
+def next_good_instead_of(
+    s: OccurrenceState, ctx: Ctx, pool: Pool, j: Journey, i: int
+) -> tuple[bool, Connection | None]:
+    """The next good connection in place of leg `i`, kept on the leg before it (7.7, rule 7).
+    False: that change is not in NS data, so none can be judged."""
+    x = j.legs[i]
+    kept = observe(pool, j.legs[i - 1])[0] if i else None
+    if i and kept is None:
+        return False, None
+    return True, find_next_good(s, ctx, pool, x.train, x.board_station, kept, i)
+
+
 def left_note(s: OccurrenceState, ctx: Ctx, pool: Pool, j: Journey, i: int) -> AlertEvent:
     """A locked train departed with no missed-leg report: keep following it and show the next
     good connection in case the user is not on it (7.7, rule 7)."""
     x = j.legs[i]
-    kept = observe(pool, j.legs[i - 1])[0] if i else None
+    judged, c = next_good_instead_of(s, ctx, pool, j, i)
     text = f"your {_name(x)} train has left. If you are not on it, "
-    if i and kept is None:
+    if not judged:
         text += "check the NS app: the change from your current train is not in NS data."
     else:
-        c = find_next_good(s, ctx, pool, x.train, x.board_station, kept, i)
         text += (
             f"next good connection: {hhmm(_departure(c))}."
             if c is not None

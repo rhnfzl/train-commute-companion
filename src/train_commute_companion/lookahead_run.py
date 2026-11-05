@@ -77,7 +77,9 @@ def apply_run(
         return None
     dk = direction_key(p.id, d)
     # write time: the ledger as stored now with this run's start stamps (rule 21)
-    stored = st.lookahead.get(dk) or LookAheadLedger({}, (), None, 0, None)
+    stored = st.lookahead.get(dk) or LookAheadLedger(
+        per_date={}, pending=(), last_run=None, started_revision=0, started_baseline=None
+    )
     ledger = replace(stored, started_revision=run.revision, started_baseline=run.baseline)
     current = st.baselines.get(dk, BaselineHistory())
     all_bases = {

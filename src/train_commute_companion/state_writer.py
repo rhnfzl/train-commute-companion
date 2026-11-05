@@ -142,7 +142,15 @@ class StateWriter:
         self, store: Store, outbox: CopyQueue, storage_note: Callable[[], Obligation]
     ) -> None:
         self._store, self._outbox, self._storage_note = store, outbox, storage_note
-        self._st = PersistedState(None, {}, {}, {}, {}, (), False)
+        self._st = PersistedState(
+            config=None,
+            config_snapshots={},
+            baselines={},
+            lookahead={},
+            occurrences={},
+            obligations=(),
+            started_before=False,
+        )
         self.store_ok = True
         self._durable = self._st
         self._base: PersistedState | None = None
