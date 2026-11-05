@@ -18,6 +18,7 @@ from train_commute_companion.model import (
     TimeObs,
     direction_key,
     display_name,
+    present,
     split_direction_key,
 )
 from train_commute_companion.view import LegView, OccurrenceView, RuntimeView
@@ -363,8 +364,8 @@ def answer(view: RuntimeView, confirmed: bool, request: object) -> dict[str, Any
         return status_tool(view, confirmed, pid)
     if tool == "get_works_ahead":
         return works_tool(view, confirmed, pid)
-    assert direction is not None  # checked above for get_next_connections
-    return connections_tool(view, confirmed, pid, direction)
+    # checked above for get_next_connections
+    return connections_tool(view, confirmed, pid, present(direction))
 
 
 def status_buttons(view: RuntimeView) -> dict[str, Any] | None:

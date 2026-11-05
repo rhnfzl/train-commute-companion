@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from train_commute_companion.model import present
 from train_commute_companion.providers.base import Provider
 from train_commute_companion.providers.ns import NsProvider
 from train_commute_companion.runtime import (
@@ -228,8 +229,7 @@ def setup_logging() -> None:
 
 
 async def _run(s: Settings) -> int:
-    me = asyncio.current_task()
-    assert me is not None
+    me = present(asyncio.current_task())  # a coroutine run by asyncio.run is always in a task
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, me.cancel)
