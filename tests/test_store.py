@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -233,6 +234,24 @@ def test_current_file_without_delivered_is_kept_aside(tmp_path):
     _file(path, VERSION, full_state(), keep_delivered=False)
     with pytest.raises(StorageError, match="broken-"):
         JsonFileStore(path).load()
+
+
+@pytest.mark.parametrize(
+    "text, reason",
+    [
+        ("[1]", "unknown version [1]"),
+        ("null", "unknown version None"),
+        ("1", "unknown version 1"),
+        ('{"version": 3}', "unknown version 3"),
+        ('{"write_counter": 1, "state": {}}', "unknown version None"),
+    ],
+)
+def test_a_file_of_no_known_version_is_set_aside_saying_so(tmp_path, text, reason):
+    path = tmp_path / "state.json"
+    path.write_text(text)
+    with pytest.raises(StorageError, match=re.escape(f"migrated ({reason})")):
+        JsonFileStore(path).load()
+    assert not path.exists()
 
 
 def test_too_deep_or_out_of_range_store_kept_aside(tmp_path):

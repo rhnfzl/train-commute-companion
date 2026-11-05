@@ -108,11 +108,15 @@ def _from_v1(raw: Any) -> PersistedState:
     return replace(st, occurrences=occs, obligations=obligations)
 
 
+def _check_version(version: object) -> None:
+    if version not in (_V1, VERSION):
+        raise ValueError(f"unknown version {version!r}")
+
+
 def read_state(version: object, raw: Any) -> PersistedState:
     """The state saved under `version`, as the current model has it. Raises ValueError for a
     version this code cannot read."""
-    if version not in (_V1, VERSION):
-        raise ValueError(f"unknown version {version!r}")
+    _check_version(version)
     if version == _V1:
         return _from_v1(raw)
     st: PersistedState = decode(PersistedState, raw)
@@ -166,6 +170,10 @@ class JsonFileStore:
             raise self._set_aside(f"{self._path.name} is unreadable ({e})") from e
         try:
             env: Any = json.loads(raw)
+            # first, because the reason reaches the user in the "state was lost" warning
+            if not isinstance(env, dict):
+                raise TypeError(f"unknown version {env!r}")
+            _check_version(env.get("version"))
             counter = env["write_counter"]
             if isinstance(counter, bool) or not isinstance(counter, int):
                 raise TypeError("bad write counter")
