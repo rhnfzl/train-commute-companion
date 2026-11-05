@@ -24,7 +24,7 @@ services:
     environment:
       TCC_STATE_DIR: "${TCC_STATE_DIR:-/data}"
     volumes:
-      - tcc-data:/data
+      - tcc-data:/data:ro  # connecting to a socket needs no write access to the volume
     # the image's check probes the app's port, where the relay never listens
     healthcheck:
       disable: true

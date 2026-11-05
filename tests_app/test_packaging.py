@@ -83,4 +83,4 @@ def test_the_mcp_relay_service_has_no_app_healthcheck():
     mcp = svc["mcp"]
     assert mcp["healthcheck"] == {"disable": True} and mcp["profiles"] == ["mcp"]
     assert mcp["command"] == ["python", "-m", "tcc_app.mcp_server"]
-    assert "tcc-data:/data" in mcp["volumes"] and mcp["image"] == svc["tcc"]["image"]
+    assert "tcc-data:/data:ro" in mcp["volumes"] and mcp["image"] == svc["tcc"]["image"]
