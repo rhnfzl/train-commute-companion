@@ -199,10 +199,6 @@ class LookAheadFact(NamedTuple):
     warning: bool  # the message then closes with the replacement hint
 
     @property
-    def warns(self) -> bool:
-        return "|warn:" in self.key
-
-    @property
     def adopts(self) -> bool:
         return self.key.startswith("adopt:")
 

@@ -97,8 +97,13 @@ class ProbeResult:
 
 
 WHOLE_JOURNEY = "j"  # a day key's leg part for the journey probe
-WORKS_MARKS = ("warn:", "restored:")  # the marks that say whether a date has works
+_WARN_MARK = "warn:"
+_LOUD_MARK = "loud:"
+_RESTORED_MARK = "restored:"
+WORKS_MARKS = (_WARN_MARK, _RESTORED_MARK)  # the marks that say whether a date has works
 UNCLEAR_MARK = "unclear:"
+LOUD_FACT = "|loud"  # a warning fact told again, loud
+RESTORED_FACT = "restored"
 
 
 def day_key(sd: date, leg_index: int | None) -> str:
@@ -125,6 +130,30 @@ def seed_mark(version: int) -> str:
 def owned_mark(mark: str, owner: str) -> str:
     """A per-date mark with the id of the obligation that carries it."""
     return f"{mark}#{owner}"
+
+
+def warn_mark(fingerprint: str) -> str:
+    return f"{_WARN_MARK}{fingerprint}"
+
+
+def loud_mark(fingerprint: str) -> str:
+    return f"{_LOUD_MARK}{fingerprint}"
+
+
+def restored_mark(fingerprint: str) -> str:
+    return f"{_RESTORED_MARK}{fingerprint}"
+
+
+def is_warning(mark: str | None) -> bool:
+    return mark is not None and mark.startswith(_WARN_MARK)
+
+
+def is_restored(mark: str | None) -> bool:
+    return mark is not None and mark.startswith(_RESTORED_MARK)
+
+
+def fact_warns(fact: LookAheadFact) -> bool:
+    return f"|{_WARN_MARK}" in fact.key
 
 
 def entry_mark(entry: str) -> str:
@@ -156,7 +185,9 @@ def split_fact_key(key: str) -> tuple[str, str] | None:
     """A per-date fact key's ledger key and mark ("warn:<fp>[|loud]", "unclear:<fp>" or
     "restored"). None for any other fact: an adoption or its withdrawal."""
     parts = key.split("|", 2)
-    if len(parts) < 3 or not (parts[2].startswith(("warn:", "unclear:")) or parts[2] == "restored"):
+    if len(parts) < 3 or not (
+        parts[2].startswith((_WARN_MARK, UNCLEAR_MARK)) or parts[2] == RESTORED_FACT
+    ):
         return None
     return f"{parts[0]}|{parts[1]}", parts[2]
 

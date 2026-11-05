@@ -7,8 +7,10 @@ from datetime import UTC, date, datetime, time, timedelta
 from train_commute_companion.lookahead_probe import (
     DEP_TOL_MIN,
     DUR_TOL_MIN,
+    LOUD_FACT,
     MISSING_REASON,
     REPLACEMENT_HINT,
+    RESTORED_FACT,
     UNCLEAR_MARK,
     WORKS_MARKS,
     ProbeReason,
@@ -22,11 +24,15 @@ from train_commute_companion.lookahead_probe import (
     day_key,
     entry_mark,
     entry_owner,
+    fact_warns,
+    is_warning,
     journey_stations,
     latest_mark,
+    loud_mark,
     owned_mark,
     probe_dates,
     probed_end,
+    restored_mark,
     seed_mark,
     service_date,
     signature_differs,
@@ -34,6 +40,7 @@ from train_commute_companion.lookahead_probe import (
     signature_of,
     split_day_key,
     unclear_day_key,
+    warn_mark,
 )
 from train_commute_companion.messages import data_unclear_text
 from train_commute_companion.model import (
@@ -150,7 +157,7 @@ def render_message(p: Profile, sd: date, fs: Sequence[LookAheadFact]) -> tuple[E
     """One look-ahead message for direction and date `sd` from its facts (`_fact_messages`): its kind and text."""
     kind = (
         EventKind.WORKS_AHEAD
-        if any(f.warns for f in fs)
+        if any(fact_warns(f) for f in fs)
         else EventKind.TIMETABLE_ADOPTED
         if any(f.adopts for f in fs)
         else EventKind.RESTORED
@@ -391,27 +398,31 @@ def _probe_facts(
         last, since = latest_mark(draft.per_date.get(key, ()), WORKS_MARKS)
         if r.works or _changed(r, exp):
             loud = sd == today + timedelta(days=1)
-            fact = f"{key}|warn:{r.fingerprint}"
-            if last == f"warn:{r.fingerprint}":  # only the latest entry counts
-                if not loud or f"loud:{r.fingerprint}" in since:
+            warned = warn_mark(r.fingerprint)
+            fact = f"{key}|{warned}"
+            if last == warned:  # only the latest entry counts
+                if not loud or loud_mark(r.fingerprint) in since:
                     continue  # already told at this severity
-                fact += "|loud"  # rule 4: told silent, now tomorrow: once more, loud
+                fact += LOUD_FACT  # rule 4: told silent, now tomorrow: once more, loud
             else:
-                draft.add_owned_entry(sd, key, f"warn:{r.fingerprint}")
+                draft.add_owned_entry(sd, key, warned)
             if loud:
-                draft.add_owned_entry(sd, key, f"loud:{r.fingerprint}")
+                draft.add_owned_entry(sd, key, loud_mark(r.fingerprint))
             draft.add_fact(sd, LookAheadFact(fact, _warn_text(r, p, exp), loud, r.works))
             if probed_end(r) is None:
                 unsure.add(sd)
-        elif last is not None and last.startswith("warn:"):
-            draft.add_owned_entry(sd, key, f"restored:{r.fingerprint}")
-            if adopted is not None and last == f"warn:{r.fingerprint}":
+        elif is_warning(last):
+            draft.add_owned_entry(sd, key, restored_mark(r.fingerprint))
+            if adopted is not None and last == warn_mark(r.fingerprint):
                 continue  # the warned change is what this run adopted: told by the adoption
             what = _leg_name(r, p)
             draft.add_fact(
                 sd,
                 LookAheadFact(
-                    f"{key}|restored", f"your {what} is back to normal", loud=False, warning=False
+                    f"{key}|{RESTORED_FACT}",
+                    f"your {what} is back to normal",
+                    loud=False,
+                    warning=False,
                 ),
             )
             if probed_end(r) is None:

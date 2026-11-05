@@ -23,8 +23,11 @@ from train_commute_companion.lifecycle import (
 )
 from train_commute_companion.lookahead import render_message
 from train_commute_companion.lookahead_probe import (
+    LOUD_FACT,
+    RESTORED_FACT,
     UNCLEAR_MARK,
     WORKS_MARKS,
+    is_restored,
     latest_mark,
     split_fact_key,
 )
@@ -254,12 +257,8 @@ class LiveLedger:
                 live.append(f)
                 continue
             key, rest = dated
-            last = latest_mark(led.per_date.get(key, ()), (*WORKS_MARKS, UNCLEAR_MARK))[0] or ""
-            if (
-                last.startswith("restored:")
-                if rest == "restored"
-                else last == rest.removesuffix("|loud")
-            ):
+            last = latest_mark(led.per_date.get(key, ()), (*WORKS_MARKS, UNCLEAR_MARK))[0]
+            if is_restored(last) if rest == RESTORED_FACT else last == rest.removesuffix(LOUD_FACT):
                 live.append(f)
         return tuple(live)
 

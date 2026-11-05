@@ -31,6 +31,7 @@ from train_commute_companion.location import (
 from train_commute_companion.lookahead_probe import (
     WHOLE_JOURNEY,
     WORKS_MARKS,
+    is_warning,
     latest_mark,
     split_day_key,
 )
@@ -295,7 +296,7 @@ def works_ahead(ledger: LookAheadLedger, today: date) -> tuple[WorksDay, ...]:
     out = []
     for key, entries in ledger.per_date.items():
         last, _ = latest_mark(entries, WORKS_MARKS)
-        if last is None or not last.startswith("warn:"):
+        if not is_warning(last):
             continue
         day, leg = split_day_key(key)
         if day >= today:

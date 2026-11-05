@@ -40,14 +40,20 @@ from train_commute_companion.lookahead_probe import (
     cancel_key,
     day_key,
     evaluate,
+    fact_warns,
+    is_restored,
+    is_warning,
+    loud_mark,
     probe_dates,
     probe_queries,
     probed_end,
+    restored_mark,
     signature_of,
     signature_text,
     split_day_key,
     split_fact_key,
     unclear_day_key,
+    warn_mark,
 )
 from train_commute_companion.model import (
     AlertEvent,
@@ -64,7 +70,12 @@ from train_commute_companion.overlap import find_overlaps
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import PlannedWork, PlannedWorks, ProviderAnswer
 from train_commute_companion.serde import dumps, loads
-from train_commute_companion.state import BaselineHistory, BaselineVersion, LookAheadLedger
+from train_commute_companion.state import (
+    BaselineHistory,
+    BaselineVersion,
+    LookAheadFact,
+    LookAheadLedger,
+)
 from train_commute_companion.view import works_ahead
 
 SHIFTED = {"l1": ("08:15", "08:43"), "l2": ("08:49", "09:27")}
@@ -938,6 +949,19 @@ def test_stored_keys_keep_their_form_and_read_back():
 )
 def test_a_fact_key_names_its_ledger_key_and_mark(key, read):
     assert split_fact_key(key) == read
+
+
+def test_the_works_marks_keep_their_stored_text_and_read_back():
+    assert (warn_mark("x"), loud_mark("x"), restored_mark("x")) == (
+        "warn:x",
+        "loud:x",
+        "restored:x",
+    )
+    assert is_warning(warn_mark("x")) and not is_warning(restored_mark("x"))
+    assert is_restored(restored_mark("x")) and not is_restored(warn_mark("x"))
+    assert not is_warning(None) and not is_restored(None)
+    assert fact_warns(LookAheadFact("2026-10-27|1|warn:x", "", False, True))
+    assert not fact_warns(LookAheadFact("2026-10-27|1|restored", "", False, False))
 
 
 # --- Look-ahead edge cases (prior-art section 4) by behaviour, with timetable signatures ---
