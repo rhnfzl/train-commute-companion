@@ -32,7 +32,7 @@ from .bot import Bot
 from .commands import answer
 from .follow import Follower
 from .telegram import TelegramApi, TelegramNotifier
-from .web import health_report, mcp_socket_path, start_readout, start_web
+from .web import health_report, mcp_socket_path, start_readout, start_web, state_dir
 
 log = logging.getLogger(__name__)
 
@@ -122,7 +122,7 @@ class Settings:
             chat_id,
             owntracks_secret,
             Path(_optional(env, "TCC_PROFILES") or "/config/profiles.yaml"),
-            Path(_optional(env, "TCC_STATE_DIR") or "/data"),
+            state_dir(env),
             lookahead_at,
             health_token,
             webhook_urls,

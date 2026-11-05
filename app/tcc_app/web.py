@@ -185,10 +185,14 @@ async def start_web(
     return await asyncio.start_server(handle, host, port, limit=HEAD_LIMIT)
 
 
+def state_dir(env: Mapping[str, str]) -> Path:
+    return Path(env.get("TCC_STATE_DIR", "").strip() or "/data")
+
+
 def mcp_socket_path(env: Mapping[str, str]) -> Path:
     """In the state directory: the example compose file runs the container read-only, and the
     data volume is the one writable place."""
-    return Path(env.get("TCC_STATE_DIR", "").strip() or "/data") / "mcp.sock"
+    return state_dir(env) / "mcp.sock"
 
 
 async def start_readout(
