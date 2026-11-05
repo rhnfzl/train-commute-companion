@@ -3,7 +3,7 @@ consequences live in the core; here only which zone a fix is in and what changed
 
 import asyncio
 import logging
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -13,6 +13,7 @@ from train_commute_companion.location import (
     PLACE_ROLES,
     STALE_LOCATION,
     LocationEvent,
+    Zone,
     ZoneTrack,
     next_zone,
     resolve_zone,
@@ -20,6 +21,7 @@ from train_commute_companion.location import (
     station_zones,
     undelivered,
 )
+from train_commute_companion.model import LocationSettings
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.view import running_stations
 
@@ -56,6 +58,15 @@ class _Memory:
     epoch: int
     last_at: datetime
     track: ZoneTrack
+
+
+def _zone_of(fix: Fix, loc: LocationSettings, zones: Sequence[Zone]) -> str | None:
+    zone = resolve_zone(fix.lat, fix.lon, zones)
+    if zone is not None:
+        return zone
+    # OwnTracks regions, by the configured name the core compares
+    names = (loc.zones.get(role, role) for role in PLACE_ROLES)
+    return next((n for n in names if n in fix.regions), None)
 
 
 class Follower:
@@ -109,10 +120,7 @@ class Follower:
             return
         running = running_stations(view.occurrences, pid)
         zones = station_zones(profile, loc.station_radius_m, self._rt.positions, running)
-        zone = resolve_zone(fix.lat, fix.lon, zones)
-        if zone is None:  # OwnTracks regions, by the configured name the core compares
-            names = (loc.zones.get(role, role) for role in PLACE_ROLES)
-            zone = next((n for n in names if n in fix.regions), None)
+        zone = _zone_of(fix, loc, zones)
         mem = self._memory.get(pid)
         if mem is None or mem.epoch != epoch:  # a new source: the first fix only seeds (7.2)
             self._memory[pid] = _Memory(epoch, at, seed_zone(zone, at))

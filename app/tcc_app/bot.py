@@ -92,6 +92,17 @@ class _TimedOut(Exception):
     pass
 
 
+def _log_foreign_chat(chat: object) -> None:
+    # startup refuses a group id, so only a private chat may be pointed at it
+    private = isinstance(chat, int) and chat > 0
+    hint = (
+        "set TELEGRAM_CHAT_ID to this id to use this chat"
+        if private
+        else "not a private chat, so it cannot be TELEGRAM_CHAT_ID"
+    )
+    log.warning("ignored an update from chat %s; %s", chat, hint)
+
+
 class Bot:
     def __init__(
         self,
@@ -212,14 +223,7 @@ class Bot:
         msg, edited, cb = (_obj(update.get(k)) for k in ALLOWED)
         chat = _obj((msg or edited or _obj(cb.get("message"))).get("chat")).get("id")
         if self._chat is None or chat != self._chat:
-            # startup refuses a group id, so only a private chat may be pointed at it
-            private = isinstance(chat, int) and chat > 0
-            hint = (
-                "set TELEGRAM_CHAT_ID to this id to use this chat"
-                if private
-                else "not a private chat, so it cannot be TELEGRAM_CHAT_ID"
-            )
-            log.warning("ignored an update from chat %s; %s", chat, hint)
+            _log_foreign_chat(chat)
             return
         if not cb and "location" in (msg or edited):
             self._location(msg or edited)  # no command: a failure is logged, never answered
@@ -270,25 +274,28 @@ class Bot:
             view = self._rt.view()
             await self._reply(render_status(view, self.confirmed), status_buttons(view))
         elif word in ("/choose", "/leaving", "/skip"):
-            view = self._rt.view()  # outside the try: only parse_target's refusals are replies
-            try:
-                t = parse_target(view, args)
-            except ValueError as e:
-                await self._reply(str(e))
+            await self._targeted(word, args)
+
+    async def _targeted(self, word: str, args: Sequence[str]) -> None:
+        view = self._rt.view()  # outside the try: only parse_target's refusals are replies
+        try:
+            t = parse_target(view, args)
+        except ValueError as e:
+            await self._reply(str(e))
+            return
+        name = display_name(t.profile_name)
+        if word == "/choose":
+            if t.departure is None:
+                await self._reply(USAGE_CHOOSE)
                 return
-            name = display_name(t.profile_name)
-            if word == "/choose":
-                if t.departure is None:
-                    await self._reply(USAGE_CHOOSE)
-                    return
-                await self._choose(
-                    t.profile_id, name, t.departure, t.train, t.service_date, t.direction
-                )
-            elif word == "/leaving":
-                await self._leaving(t.profile_id, t.service_date, t.direction)
-            else:
-                whole = t.whole_day or t.direction is None
-                await self._skip(t.profile_id, t.service_date, t.direction, whole)
+            await self._choose(
+                t.profile_id, name, t.departure, t.train, t.service_date, t.direction
+            )
+        elif word == "/leaving":
+            await self._leaving(t.profile_id, t.service_date, t.direction)
+        else:
+            whole = t.whole_day or t.direction is None
+            await self._skip(t.profile_id, t.service_date, t.direction, whole)
 
     async def _button(self, cb: dict[str, Any]) -> None:
         try:
@@ -298,15 +305,7 @@ class Bot:
         data = cb.get("data")
         parts = data.split("|") if isinstance(data, str) else []
         if parts[:1] == ["ok"] and len(parts) == 2:
-            if self._nonce is not None and secrets.compare_digest(
-                parts[1].encode(), self._nonce.encode()
-            ):
-                self._nonce = None  # spent before the save: a second tap or a newer /test is safe
-                self.state.confirmed_for = f"{self._api.bot_id}:{self._chat}"
-                await self._save()
-                await self._reply("Delivery confirmed. Setup is complete.")
-            else:
-                await self._reply("That test is old; send /test again.")
+            await self._confirm(parts[1])
             return
         try:
             tag, pid, d, day, *rest = parts
@@ -323,6 +322,15 @@ class Bot:
         elif at is not None and len(rest) <= 2:
             await self._choose(pid, name, at, rest[1] if len(rest) == 2 else None,
                                service_date, direction)  # fmt: skip
+
+    async def _confirm(self, nonce: str) -> None:
+        if self._nonce is not None and secrets.compare_digest(nonce.encode(), self._nonce.encode()):
+            self._nonce = None  # spent before the save: a second tap or a newer /test is safe
+            self.state.confirmed_for = f"{self._api.bot_id}:{self._chat}"
+            await self._save()
+            await self._reply("Delivery confirmed. Setup is complete.")
+        else:
+            await self._reply("That test is old; send /test again.")
 
     # --- actions ---
 

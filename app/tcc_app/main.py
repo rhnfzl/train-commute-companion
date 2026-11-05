@@ -50,6 +50,41 @@ def _optional(env: Mapping[str, str], name: str) -> str | None:
     return env.get(name, "").strip() or None
 
 
+def _chat_id(env: Mapping[str, str]) -> int | None:
+    raw = _optional(env, "TELEGRAM_CHAT_ID")
+    if raw is None:
+        return None
+    try:
+        chat_id = int(raw)
+    except ValueError:
+        raise ValueError("TELEGRAM_CHAT_ID must be a whole number") from None
+    if chat_id < 1:  # group and channel ids are negative; there every member could act
+        raise ValueError("TELEGRAM_CHAT_ID must be a private chat, not a group")
+    return chat_id
+
+
+def _lookahead_at(env: Mapping[str, str]) -> time:
+    raw = _optional(env, "TCC_LOOKAHEAD_AT")
+    if raw is None:
+        return LOOKAHEAD_AT
+    try:
+        return datetime.strptime(raw, "%H:%M").time()
+    except ValueError:
+        raise ValueError("TCC_LOOKAHEAD_AT must be HH:MM") from None
+
+
+def _health_token(env: Mapping[str, str]) -> str | None:
+    token = _optional(env, "TCC_HEALTH_TOKEN")
+    # headers are parsed as stripped Latin-1, so anything else could never match
+    if token is not None and not (
+        len(token) >= 16 and token.isascii() and token.isprintable() and " " not in token
+    ):
+        raise ValueError(
+            "TCC_HEALTH_TOKEN must be at least 16 characters of printable ASCII without spaces"
+        )
+    return token
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     ns_key: str
@@ -70,31 +105,9 @@ class Settings:
         """Errors name the variable, never its value."""
         ns_key = _required(env, "NS_API_KEY")
         bot_token = _required(env, "TELEGRAM_BOT_TOKEN")
-        chat_id = None
-        if (raw := _optional(env, "TELEGRAM_CHAT_ID")) is not None:
-            try:
-                chat_id = int(raw)
-            except ValueError:
-                raise ValueError("TELEGRAM_CHAT_ID must be a whole number") from None
-            if chat_id < 1:  # group and channel ids are negative; there every member could act
-                raise ValueError("TELEGRAM_CHAT_ID must be a private chat, not a group")
-        lookahead_at = LOOKAHEAD_AT
-        if (raw := _optional(env, "TCC_LOOKAHEAD_AT")) is not None:
-            try:
-                lookahead_at = datetime.strptime(raw, "%H:%M").time()
-            except ValueError:
-                raise ValueError("TCC_LOOKAHEAD_AT must be HH:MM") from None
-        health_token = _optional(env, "TCC_HEALTH_TOKEN")
-        # headers are parsed as stripped Latin-1, so anything else could never match
-        if health_token is not None and not (
-            len(health_token) >= 16
-            and health_token.isascii()
-            and health_token.isprintable()
-            and " " not in health_token
-        ):
-            raise ValueError(
-                "TCC_HEALTH_TOKEN must be at least 16 characters of printable ASCII without spaces"
-            )
+        chat_id = _chat_id(env)
+        lookahead_at = _lookahead_at(env)
+        health_token = _health_token(env)
         try:
             webhook_urls = parse_urls(env.get("TCC_WEBHOOK_URLS", ""))
         except ValueError as e:
@@ -200,23 +213,32 @@ async def serve(app: App, port: int) -> int:
                 log.error("%s stopped", t.get_name())
         return 1
     finally:
-        for srv in (server, readout):
-            if srv is not None:
-                srv.close()
-        # Server.close leaves open connection handlers running: every task begun here goes,
-        # except a Telegram save, whose worker thread outlives a cancel (bot.close drains it)
-        rest = asyncio.all_tasks() - before - {asyncio.current_task()} - app.bot.writes
-        for t in rest:
-            t.cancel()
-        await asyncio.gather(*rest, return_exceptions=True)
-        await app.bot.close()
-        await app.follower.close()
-        for srv in (server, readout):
-            if srv is not None:
-                await srv.wait_closed()
-        sock = app.settings.mcp_socket
-        if readout is not None and sock is not None and sock.is_socket():
-            sock.unlink(missing_ok=True)  # never a regular file someone put there
+        await _clean_up(app, before, server, readout)
+
+
+async def _clean_up(
+    app: App,
+    before: set[asyncio.Task[object]],
+    server: asyncio.Server | None,
+    readout: asyncio.Server | None,
+) -> None:
+    for srv in (server, readout):
+        if srv is not None:
+            srv.close()
+    # Server.close leaves open connection handlers running: every task begun here goes,
+    # except a Telegram save, whose worker thread outlives a cancel (bot.close drains it)
+    rest = asyncio.all_tasks() - before - {asyncio.current_task()} - app.bot.writes
+    for t in rest:
+        t.cancel()
+    await asyncio.gather(*rest, return_exceptions=True)
+    await app.bot.close()
+    await app.follower.close()
+    for srv in (server, readout):
+        if srv is not None:
+            await srv.wait_closed()
+    sock = app.settings.mcp_socket
+    if readout is not None and sock is not None and sock.is_socket():
+        sock.unlink(missing_ok=True)  # never a regular file someone put there
 
 
 def setup_logging() -> None:

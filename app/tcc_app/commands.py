@@ -3,7 +3,7 @@
 MCP answer built from a per-profile copy of the view by the functions `/status` uses. No I/O."""
 
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
@@ -54,47 +54,61 @@ def _day(d: date) -> str:
     return f"{d:%a} {d.day} {d:%b}"
 
 
+def _find_profile(profiles: Collection[tuple[str, str]], token: str) -> tuple[str, str] | None:
+    """By id first, then by name; `profiles` holds (id, name) pairs."""
+    return next((p for p in profiles if p[0] == token), None) or next(
+        (p for p in profiles if _key(p[1]) == _key(token)), None
+    )
+
+
+def _named_profile(
+    profiles: Collection[tuple[str, str]], args: Sequence[str], named: str, names: str
+) -> tuple[tuple[str, str], Sequence[str]]:
+    """The profile `p=...` names and the arguments without the words of its name."""
+    at = args.index(named)
+    # a spaced name arrives split by whitespace: take the longest run of words that names a profile
+    for end in range(len(args), at, -1):
+        profile = _find_profile(profiles, " ".join([named[2:], *args[at + 1 : end]]))
+        if profile is not None:
+            return profile, [a for j, a in enumerate(args) if not at < j < end]
+    raise ValueError(f"No profile {named[2:]}. One of: {names}.")
+
+
+def _time_or_date(token: str) -> time | date | None:
+    """None when the token has neither shape; shaped but impossible (25:99) is a refusal."""
+    try:
+        if _TIME.fullmatch(token):
+            return time.fromisoformat(token.zfill(5))
+        if _DATE.fullmatch(token):
+            return date.fromisoformat(token)
+    except ValueError as e:
+        raise ValueError(f"I did not understand {token}.") from e
+    return None
+
+
 def parse_target(view: RuntimeView, args: Sequence[str]) -> Target:
     """The command's target; a ValueError whose message is the reply when it names none."""
     profiles = dict.fromkeys((d.profile_id, d.profile_name) for d in view.directions)
     names = ", ".join(n for _, n in profiles)
-
-    def find(token: str) -> tuple[str, str] | None:
-        return next((p for p in profiles if p[0] == token), None) or next(
-            (p for p in profiles if _key(p[1]) == _key(token)), None
-        )
-
-    profile = None
+    profile: tuple[str, str] | None = None
     named = next((a for a in args if a.startswith("p=")), None)
     if named is not None:
-        at = args.index(named)
-        # a spaced name arrives split by whitespace: take the longest run of words that names a profile
-        for end in range(len(args), at, -1):
-            profile = find(" ".join([named[2:], *args[at + 1 : end]]))
-            if profile is not None:
-                args = [a for j, a in enumerate(args) if not at < j < end]
-                break
-        if profile is None:
-            raise ValueError(f"No profile {named[2:]}. One of: {names}.")
+        profile, args = _named_profile(profiles, args, named, names)
     direction = service_date = departure = train = None
     whole_day = False
     for i, token in enumerate(args):
         if token == named:
             continue
-        try:
-            if _TIME.fullmatch(token):
-                departure = time.fromisoformat(token.zfill(5))
-                continue
-            if _DATE.fullmatch(token):
-                service_date = date.fromisoformat(token)
-                continue
-        except ValueError as e:  # 25:99
-            raise ValueError(f"I did not understand {token}.") from e
-        if token.lower() in (d.value for d in Direction):
+        when = _time_or_date(token)
+        if isinstance(when, time):
+            departure = when
+        elif isinstance(when, date):
+            service_date = when
+        elif token.lower() in (d.value for d in Direction):
             direction = Direction(token.lower())
         elif token.lower() == "day":
             whole_day = True
-        elif (p := find(token)) is not None and profile is None:
+        elif (p := _find_profile(profiles, token)) is not None and profile is None:
             profile = p
         elif token.isdigit():
             train = token
