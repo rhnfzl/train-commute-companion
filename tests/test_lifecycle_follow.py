@@ -1,20 +1,46 @@
-from collections.abc import Sequence
 from dataclasses import replace
-from datetime import date, datetime
 
-from builders import AMS, _on_track, make_connection, make_leg, planned_at_alight
+from builders import make_connection, make_leg, on_track, planned_at_alight
+from lifecycle_fixtures import (
+    B1,
+    DAY,
+    DIRECT,
+    FROM_BBB,
+    FROM_UT,
+    L1,
+    L1X,
+    L2,
+    L2X,
+    LATER,
+    PROFILES,
+    R2,
+    RIDE,
+    T_BBB,
+    T_FULL,
+    T_UT,
+    ans,
+    at,
+    board,
+    conn,
+    ctx,
+    cut_at_ut,
+    direct_riding,
+    journey,
+    kinds,
+    numbers,
+    occ,
+    poll,
+    usual_locked,
+    with_track,
+)
 
-from train_commute_companion.health import PollRecord
 from train_commute_companion.lifecycle import (
     Board,
-    Commitment,
-    Journey,
     LegProgress,
     LockSource,
     OccurrenceState,
     Transition,
     _stated,
-    journey_of,
     on_poll,
     progress_of,
     queries_needed,
@@ -24,134 +50,16 @@ from train_commute_companion.model import (
     Connection,
     Ctx,
     Direction,
-    DirectionState,
     EventKind,
     Leg,
     LegState,
     Severity,
 )
 from train_commute_companion.profile import parse_profiles
-from train_commute_companion.providers.base import ProviderAnswer, Query
+from train_commute_companion.providers.base import Query
 from train_commute_companion.schedule import dated_schedule
 from train_commute_companion.serde import dumps, loads
 from train_commute_companion.unclear import train_key
-
-PROFILES = """
-profiles:
-  - id: "p1"
-    name: "office_a"
-    days: [mon, tue, wed, thu, fri]
-    home_station: "AAA"
-    work_station: "RTD"
-    transfer_min: {UT: UT_MIN}
-    outbound: {first_train: "08:12", buffer_min: 10, transfers: TRANSFERS}
-    return: {first_train: "17:52", buffer_min: 5}
-"""
-DAY = date(2026, 10, 27)
-
-
-def at(hhmm: str) -> datetime:
-    return datetime.fromisoformat(f"2026-10-27 {hhmm}").replace(tzinfo=AMS)
-
-
-def ctx(now: datetime, transfers: str = "[UT]", ut_min: int = 4) -> Ctx:
-    text = PROFILES.replace("TRANSFERS", transfers).replace("UT_MIN", str(ut_min))
-    ps, errs = parse_profiles(text, None)
-    assert errs == []
-    p = ps[0]
-    return Ctx(p, Direction.OUTBOUND, dated_schedule(p, Direction.OUTBOUND, DAY, None), None, now)
-
-
-DIRECT = "[]"
-
-
-def conn(*legs: Leg) -> Connection:
-    return make_connection(legs)
-
-
-def ans(origin: str, *conns: Connection, when: str = "08:00") -> ProviderAnswer:
-    q = Query(origin, "RTD", at(when))
-    return ProviderAnswer(q, conns, q.at)
-
-
-def board(s: OccurrenceState, *answers: ProviderAnswer) -> Board:
-    return Board(answers, (PollRecord(at("08:00"), True, None),), s.generation)
-
-
-def poll(s: OccurrenceState, c: Ctx, *answers: ProviderAnswer) -> Transition:
-    return on_poll(s, c, board(s, *answers))
-
-
-def journey(
-    legs: Sequence[Leg], states: Sequence[LegState] = (), source: LockSource = LockSource.AUTO
-) -> Journey:
-    j = journey_of(conn(*legs), source, Commitment.INTENDED)
-    xs = [replace(x, state=st) for x, st in zip(j.legs, states, strict=False)]
-    return replace(j, legs=(*xs, *j.legs[len(xs) :]))
-
-
-def occ(lock: Journey | None, **kw: object) -> OccurrenceState:
-    base = OccurrenceState(
-        key=ctx(at("07:12")).schedule.key,
-        generation=1,
-        route_revision=1,
-        settings_revision=1,
-        baseline_version=None,
-        direction_state=DirectionState.LOCKED,
-        lock=lock,
-        retained=(),
-        travelling=False,
-        tap_at=None,
-        at_station=False,
-        errand_deadline=None,
-        not_travelling=False,
-        cancellation_history=(),
-        missing_sent=False,
-        all_good_evaluated=False,
-    )
-    s = replace(base, **kw)  # type: ignore[arg-type]
-    departed = s.retained or (lock and any(x.state in RIDDEN for x in lock.legs))
-    if departed and "direction_state" not in kw:  # a consistent state: riding once leg 1 left
-        s = replace(s, direction_state=DirectionState.RIDING)
-    return s
-
-
-RIDDEN = (LegState.RIDING, LegState.DONE)
-
-
-def numbers(s: OccurrenceState) -> list[str]:
-    assert s.lock is not None
-    return [x.train.train_number for x in s.lock.legs]
-
-
-def kinds(t: Transition) -> list[tuple[EventKind, Severity]]:
-    return [(e.kind, e.severity) for e in t.events]
-
-
-# two-leg usual journey AAA -> UT -> RTD
-L1 = make_leg("AAA", "UT", "08:12", "08:40", number="1234")
-L2 = make_leg("UT", "RTD", "08:50", "09:24", number="5678")
-L1X = make_leg("AAA", "UT", "08:12", "08:40", number="1234", cancelled=True)
-L2X = make_leg("UT", "RTD", "08:50", "09:24", number="5678", cancelled=True)
-R2 = make_leg("UT", "RTD", "09:05", "09:39", number="6666")
-LATER = conn(make_leg("AAA", "UT", "08:25", "08:53", number="1300"), R2)
-RIDE = (LegState.RIDING,)
-
-
-# direct usual journey AAA -> RTD calling at BBB and UT
-def direct_1234(cut_after: str | None = None) -> Leg:
-    return make_leg(
-        "AAA", "RTD", "08:12", "09:24", number="1234", stops=["BBB", "UT"], cut_after=cut_after
-    )
-
-
-T_FULL, T_UT, T_BBB = direct_1234(), direct_1234("UT"), direct_1234("BBB")
-FROM_UT = make_leg("UT", "RTD", "08:30", "09:00", number="8888")
-FROM_BBB = make_leg("BBB", "RTD", "08:35", "09:10", number="9999")
-
-
-def usual_locked() -> OccurrenceState:
-    return occ(journey([L1, L2]))
 
 
 def test_cancelled_first_leg_relocks_whole_journey():
@@ -202,7 +110,6 @@ def test_broken_transfer_searches_from_expected_arrival_plus_minimum():
     assert kinds(t3)[-1] == (EventKind.NO_CONNECTION, Severity.LOUD)
 
 
-B1 = make_leg("BBB", "UT", "08:30", "08:45", number="2001")
 L1_CUT = make_leg("AAA", "UT", "08:12", "08:40", number="1234", stops=["BBB"], cut_after="BBB")
 
 
@@ -223,10 +130,6 @@ def test_cut_short_first_leg_before_transfer_station():  # spec fixture
     assert "runs only to BBB" in t.events[0].text and "cancelled" not in t.events[0].text
     # the original onward train can come back by the restore rule
     assert [h.train for h in t.state.cancellation_history] == [L2.train]
-
-
-def direct_riding() -> OccurrenceState:
-    return occ(journey([T_FULL], RIDE))
 
 
 def test_cut_short_alighting_stop_follows_endpoint_until_recovery_boarded():
@@ -253,12 +156,6 @@ def test_cut_short_alighting_stop_follows_endpoint_until_recovery_boarded():
     assert (x.alight_stop, x.served_endpoint, x.alight_frozen) == ("UT", "BBB", True)
     # shown, never moved: the boarded recovery is kept (7.4, 7.12 rule 7)
     assert kinds(t3)[0] == (EventKind.TRANSFER_BROKEN, Severity.LOUD)
-
-
-def cut_at_ut(recovery: LegState) -> OccurrenceState:
-    j = journey([T_FULL, FROM_UT], (LegState.RIDING, recovery))
-    cut = replace(j.legs[0], served_endpoint="UT", alight_stop="UT")
-    return occ(replace(j, legs=(cut, j.legs[1])))
 
 
 def test_cut_short_endpoint_extended_after_recovery_boarded_keeps_frozen_stop():
@@ -501,11 +398,6 @@ def test_delay_past_latest_acceptable_arrival_is_loud():  # 7.9
 # --- live news per leg: platform, delay recovery, both delays, arrival limit (7.5, 7.9) ---
 
 
-def with_track(leg: Leg, planned: str, actual: str) -> Leg:
-    b = replace(leg.stops[0], planned_track=planned, actual_track=actual)
-    return replace(leg, stops=(b, *leg.stops[1:]))
-
-
 def test_platform_change_is_news_silent_then_loud_in_the_15_min_zone():
     s = occ(journey([L1, L2]))
     t = poll(s, ctx(at("07:40")), ans("AAA", conn(with_track(L1, "1", "5"), L2)))
@@ -614,7 +506,7 @@ def test_data_unclear_is_sent_once_per_train_per_day():
 def test_data_unclear_is_sent_again_when_the_values_change():
     c = ctx(at("07:52"))
     s = poll(occ(journey([T_FULL])), c, ans("AAA", *SPLIT)).state
-    (e,) = unclear(poll(s, c, ans("AAA", conn(T_FULL), conn(_on_track(T_FULL, "7")))))
+    (e,) = unclear(poll(s, c, ans("AAA", conn(T_FULL), conn(on_track(T_FULL, "7")))))
     assert "platform 7" in e.text
 
 

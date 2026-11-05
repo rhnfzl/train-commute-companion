@@ -11,7 +11,8 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from conftest import StationsProvider, TickClock
+from app_rig import CODES, StationsProvider, TickClock, make_app, occ, view
+from runtime_rig import Provider, at, every_day
 from tcc_app import commands, web
 from tcc_app.web import (
     BODY_LIMIT,
@@ -22,9 +23,6 @@ from tcc_app.web import (
     start_readout,
     start_web,
 )
-from test_commands import occ, view
-from test_main import CODES, make_app
-from test_runtime import Provider, at, every_day
 
 from train_commute_companion.view import RuntimeView
 

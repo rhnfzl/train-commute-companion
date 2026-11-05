@@ -6,9 +6,9 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 from builders import AMS, make_leg
-from test_lifecycle_end import DONE_RIDE, accepted_first, arrived, polls, report, retained_of
-from test_lifecycle_follow import (
+from lifecycle_fixtures import (
     DIRECT,
+    DONE_RIDE,
     FROM_BBB,
     L1,
     L1X,
@@ -20,7 +20,9 @@ from test_lifecycle_follow import (
     T_BBB,
     T_FULL,
     T_UT,
+    accepted_first,
     ans,
+    arrived,
     at,
     conn,
     ctx,
@@ -30,6 +32,9 @@ from test_lifecycle_follow import (
     numbers,
     occ,
     poll,
+    polls,
+    report,
+    retained_of,
     usual_locked,
 )
 
@@ -285,7 +290,7 @@ def test_newer_cancelled_copy_beats_an_older_running_one():
 
 
 def test_acceptance_uses_the_time_of_the_answer_that_showed_the_leg():
-    from test_lifecycle_follow import B1
+    from lifecycle_fixtures import B1
 
     s = occ(accepted_first(journey([L1, L2], (LegState.DONE, LegState.RIDING))))
     for seen, other in (("09:29", "09:30"), ("09:32", "09:34")):  # 3 min apart
@@ -322,10 +327,10 @@ def test_choosing_a_retained_journey_does_not_take_done_legs_of_the_lock():
 
 def test_same_minute_alternative_is_never_recommended():  # 6.1
     from builders import make_connection
-    from test_lifecycle_lock import LATER as LOCK_LATER
-    from test_lifecycle_lock import USUAL as LOCK_USUAL
-    from test_lifecycle_lock import answer, fresh
-    from test_lifecycle_lock import ctx as lock_ctx
+    from lock_fixtures import LATER as LOCK_LATER
+    from lock_fixtures import USUAL as LOCK_USUAL
+    from lock_fixtures import answer, fresh
+    from lock_fixtures import ctx as lock_ctx
 
     from train_commute_companion.lifecycle import auto_lock
 
@@ -344,9 +349,9 @@ def test_same_minute_alternative_is_never_recommended():  # 6.1
 
 def test_auto_lock_of_a_cancelled_usual_relocks_at_once_with_the_warning():  # 7.2
     from builders import make_connection
-    from test_lifecycle_lock import LATER as LOCK_LATER
-    from test_lifecycle_lock import answer, fresh
-    from test_lifecycle_lock import ctx as lock_ctx
+    from lock_fixtures import LATER as LOCK_LATER
+    from lock_fixtures import answer, fresh
+    from lock_fixtures import ctx as lock_ctx
 
     from train_commute_companion.lifecycle import auto_lock
 

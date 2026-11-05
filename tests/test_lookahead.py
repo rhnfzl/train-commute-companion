@@ -2,7 +2,7 @@ from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 
 import pytest
-from builders import AMS, _on_track, make_connection, make_leg, planned_at_alight
+from builders import AMS, make_connection, make_leg, on_track, planned_at_alight
 from lookahead_fixtures import (
     CLEAR,
     DAYS,
@@ -796,7 +796,7 @@ def test_probe_data_unclear_is_once_per_train_per_day():
 def test_probe_data_unclear_resent_when_values_change():
     h, led, _ = run(BaselineHistory(), split_probe())
     a, b = legs(TUE)
-    moved = [ans("AAA", "UT", make_connection([a]), make_connection([_on_track(a, "7")])),
+    moved = [ans("AAA", "UT", make_connection([a]), make_connection([on_track(a, "7")])),
              ans("UT", "RTD", make_connection([b])), ans("AAA", "RTD", make_connection([a, b]))]  # fmt: skip
     _, _, events = run(h, evaluate(P, OUT, TUE, moved, CLEAR, None), led=led)
     (event,) = unclear_events(events)

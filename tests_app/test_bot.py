@@ -10,15 +10,26 @@ from typing import Any
 
 import httpx
 import pytest
+from app_rig import (
+    CHAT,
+    REPLAYS,
+    SECRET,
+    STRANGER,
+    TOKEN,
+    URL,
+    URL2,
+    FakeTelegram,
+    build_from_replay,
+    error,
+    gated_saves,
+    msg,
+)
 from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
-from conftest import CHAT, STRANGER, TOKEN, FakeTelegram, build_from_replay, error, gated_saves
+from runtime_rig import PROFILE, Rig, at
 from tcc_app import bot as bot_mod
 from tcc_app.bot import Bot, ShellState, load_state, save_state
 from tcc_app.commands import render_status, render_webhook_tests, status_buttons
 from tcc_app.telegram import TelegramApi
-from test_acceptance import REPLAYS, msg
-from test_main import SECRET, URL, URL2
-from test_runtime import PROFILE, Rig, at
 from webhook_receiver import Receiver
 
 from train_commute_companion.lifecycle import Commitment, LockSource

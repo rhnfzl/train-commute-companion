@@ -10,13 +10,18 @@ from typing import Any
 
 import httpx
 import pytest
-from builders import AMS, ONE_TRANSFER, only_occurrence  # noqa: F401  (re-exported for tests)
+from builders import AMS, ONE_TRANSFER
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
-from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
-from test_runtime import FakeClock, Provider, at
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+    async_mock_service,
+)
+from runtime_rig import FakeClock, Provider, at
 from webhook_receiver import Receiver
 
 from custom_components.train_commute_companion import host as host_mod
@@ -24,8 +29,13 @@ from custom_components.train_commute_companion import notifier as notifier_mod
 from custom_components.train_commute_companion.const import DOMAIN
 from custom_components.train_commute_companion.host import RuntimeHost
 from train_commute_companion.model import Connection
-from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
+from train_commute_companion.providers.base import (
+    PlannedWorks,
+    ProviderAnswer,
+    Query,
+)
 from train_commute_companion.replay import ReplayClock, ReplayProvider
+from train_commute_companion.store import JsonFileStore
 
 PROFILES = Path(__file__).resolve().parents[1] / "tests" / "data" / "profiles"
 PROFILE = (PROFILES / "office_a.yaml").read_text()
@@ -244,3 +254,42 @@ async def rebound(h: Harness) -> Harness:
     n = replace(h, host=h.entry.runtime_data.host)
     await _start(n)
     return n
+
+
+URL, URL2 = "https://hooks.example.invalid/tcc", "https://hooks2.example.invalid/tcc"
+
+
+SECRET, WTOKEN = "test-webhook-secret-0001", "test-webhook-token-0001"
+
+
+HOOKS = {"webhook_urls": [URL], "webhook_secret": SECRET, "webhook_token": ""}
+
+
+async def open_webhooks(hass, entry):
+    r = await hass.config_entries.options.async_init(entry.entry_id)
+    assert r["type"] is FlowResultType.MENU
+    assert r["menu_options"] == ["validate", "settings", "webhooks"]
+    r = await hass.config_entries.options.async_configure(
+        r["flow_id"], {"next_step_id": "webhooks"}
+    )
+    assert r["type"] is FlowResultType.FORM and r["step_id"] == "webhooks"
+    return r
+
+
+async def submit(hass, r, urls="", secret="", token=""):
+    data = {"webhook_urls": urls, "webhook_secret": secret, "webhook_token": token}
+    r = await hass.config_entries.options.async_configure(r["flow_id"], data)
+    await hass.async_block_till_done()
+    return r
+
+
+def stored_copies(hass, entry) -> tuple:
+    return JsonFileStore(state_path(hass, entry)).load().webhook_copies
+
+
+async def tick(hass, seconds: float) -> None:
+    """Moves HA time on so its own scheduled refresh runs, with no manual refresh."""
+    FREEZER.tick(seconds)
+    async_fire_time_changed(hass)
+    # the scheduled refresh is a background task waiting on the runtime thread
+    await hass.async_block_till_done(wait_background_tasks=True)

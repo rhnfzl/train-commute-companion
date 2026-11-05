@@ -1,7 +1,7 @@
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
-from builders import AMS, _on_track, make_connection, make_leg, planned_at_alight
+from builders import AMS, make_connection, make_leg, on_track, planned_at_alight
 
 from train_commute_companion.providers.base import ProviderAnswer, Query
 from train_commute_companion.providers.ns import map_trips
@@ -39,7 +39,7 @@ def test_cancelled_stop_disagrees():
 
 def test_platform_disagrees_and_names_the_planned_one():
     on5 = replace(A, stops=(replace(A.stops[0], planned_track="5"), A.stops[1]))
-    u = disagreement([_on_track(on5, "7"), on5], "UT")
+    u = disagreement([on_track(on5, "7"), on5], "UT")
     assert u.station == "AAA" and u.copies == ("platform 5", "platform 7 (planned 5)")
 
 
@@ -130,7 +130,7 @@ def test_a_copy_cut_short_before_the_bound_is_clipped_by_time():
 
 def test_a_missing_live_platform_means_as_planned():
     on5 = replace(A, stops=(replace(A.stops[0], planned_track="5"), A.stops[1]))
-    assert disagreement([on5, _on_track(on5, "5")], "UT") is None
+    assert disagreement([on5, on_track(on5, "5")], "UT") is None
 
 
 def test_an_empty_platform_is_no_platform():
@@ -319,7 +319,7 @@ def test_a_uic_number_that_comes_and_goes_keeps_the_fingerprint():
 
 def test_reserved_characters_in_provider_strings_stay_out_of_keys():
     on = replace(A, stops=(replace(A.stops[0], planned_track="5|x"), A.stops[1]))
-    u = disagreement([on, _on_track(on, "7#north")], "UT")
+    u = disagreement([on, on_track(on, "7#north")], "UT")
     assert set(u.fingerprint) <= set("0123456789abcdef")
     assert u.copies == ("platform 5|x", "platform 7#north (planned 5|x)")  # text keeps them
     odd = replace(A.train, train_number="12|3#4 ~")

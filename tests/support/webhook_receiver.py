@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-DOCS = Path(__file__).resolve().parent.parent / "docs" / "webhooks.md"
+DOCS = Path(__file__).resolve().parents[2] / "docs" / "webhooks.md"
 
 
 @cache

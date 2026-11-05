@@ -8,15 +8,15 @@ import pytest
 
 mcp = pytest.importorskip("mcp")  # only this module; the 10.4 gate never skips
 
+from app_rig import CHAT, CODES, TOKEN, StationsProvider, TickClock, make_app
 from builders import ONE_TRANSFER, make_connection, make_leg
-from conftest import CHAT, CODES, TOKEN, StationsProvider, TickClock, make_app
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
+from runtime_rig import Provider as FakeProvider
+from runtime_rig import at
 from tcc_app.main import mcp_answer
 from tcc_app.mcp_server import NOT_RUNNING, build
 from tcc_app.web import start_readout
-from test_runtime import Provider as FakeProvider
-from test_runtime import at
 
 from train_commute_companion.providers.base import AuthError
 from train_commute_companion.store import StorageError

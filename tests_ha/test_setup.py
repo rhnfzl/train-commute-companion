@@ -10,17 +10,23 @@ from unittest.mock import AsyncMock, Mock
 import harness
 import httpx
 import pytest
-from builders import make_leg
+from builders import make_leg, only_occurrence
 from harness import (
+    HOOKS,
     NOTIFY,
     PROFILE,
     PROFILES,
+    SECRET,
+    URL,
     drive,
-    only_occurrence,
+    open_webhooks,
     prepare,
     rebound,
     setup_tcc,
     state_path,
+    stored_copies,
+    submit,
+    tick,
     write_profiles,
 )
 from homeassistant.config_entries import ConfigEntryState
@@ -28,10 +34,8 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import (
-    async_fire_time_changed,
     async_mock_service,
 )
-from test_config_flow import HOOKS, SECRET, URL, open_webhooks, stored_copies, submit
 from webhook_receiver import Receiver
 
 from custom_components.train_commute_companion import async_setup_entry, async_unload_entry
@@ -370,14 +374,6 @@ async def test_runtime_loop_timers_run_under_freezer(hass, tcc_freezer):
         return False
 
     assert await h.host.run(lambda rt: times_out())
-
-
-async def tick(hass, seconds: float) -> None:
-    """Moves HA time on so its own scheduled refresh runs, with no manual refresh."""
-    harness.FREEZER.tick(seconds)
-    async_fire_time_changed(hass)
-    # the scheduled refresh is a background task waiting on the runtime thread
-    await hass.async_block_till_done(wait_background_tasks=True)
 
 
 async def test_monitoring_runs_without_manual_refresh(hass):

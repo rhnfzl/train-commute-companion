@@ -3,21 +3,12 @@ from dataclasses import replace
 from datetime import date, datetime
 
 import pytest
-from builders import AMS, make_leg
-from harness import (
-    PROFILE,
-    PROFILES,
-    drive,
-    jump,
-    only_occurrence,
-    rebound,
-    setup_tcc,
-    write_profiles,
-)
+from builders import AMS, make_leg, only_occurrence
+from harness import PROFILE, PROFILES, drive, jump, rebound, setup_tcc, write_profiles
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from test_lifecycle_follow import journey, occ
-from test_runtime import at
+from lifecycle_fixtures import journey, occ
+from runtime_rig import at
 
 from custom_components.train_commute_companion.const import DOMAIN
 from custom_components.train_commute_companion.entity import health_state, shown_and_others

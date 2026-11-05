@@ -4,9 +4,21 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from test_lifecycle_follow import L1, L2, L2X, LATER, ans, at, conn, ctx, journey, occ, poll
-from test_location import USUAL, event, locate
-from test_serde import full_state
+from lifecycle_fixtures import (
+    L1,
+    L2,
+    L2X,
+    LATER,
+    ans,
+    at,
+    conn,
+    ctx,
+    full_state,
+    journey,
+    occ,
+    poll,
+)
+from location_fixtures import USUAL, event, locate
 
 from train_commute_companion.lifecycle import OccurrenceState
 from train_commute_companion.model import AdviceRecord, EventKind, Obligation, okey

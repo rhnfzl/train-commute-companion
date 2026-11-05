@@ -1,7 +1,7 @@
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 
-from builders import AMS, _cut, make_connection, make_leg
+from builders import AMS, cut_stop, make_connection, make_leg
 
 from train_commute_companion.classify import (
     classify_leg,
@@ -284,14 +284,14 @@ def test_pair_transfer_ignores_another_connections_change():
 
 
 def test_check_good_judges_a_cut_short_whose_copy_omits_the_alight():
-    from test_replacement import kw
+    from builders import kw
 
     from train_commute_companion.lifecycle import merged_pool
     from train_commute_companion.replacement import check_good
 
     raw = one(r6666())
     short = r6666("BBB", "09:05", stops=["XA"])
-    short = replace(short, stops=(short.stops[0], _cut(short.stops[1]), short.stops[2]))
+    short = replace(short, stops=(short.stops[0], cut_stop(short.stops[1]), short.stops[2]))
     pool = merged_pool([at_(OLDER, raw), at_(NEWER, one(short))])
     g = check_good(raw, pool, **kw())
     assert not g.ok and g.reason == "leg cut_short"

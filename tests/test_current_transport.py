@@ -4,22 +4,12 @@ the ride advice compares with, nor "on time" (no false reassurance)."""
 from dataclasses import replace
 
 from builders import make_leg
-from test_lifecycle_follow import (
-    L1,
-    DirectionState,
-    at,
-    board,
-    conn,
-    ctx,
-    journey,
-    numbers,
-    occ,
-    poll,
-)
+from lifecycle_fixtures import L1, at, board, conn, ctx, journey, numbers, occ, poll
 
 from train_commute_companion.advice import _ridden
 from train_commute_companion.lifecycle import auto_lock, merged_pool
 from train_commute_companion.match import route_changed, usual_connection
+from train_commute_companion.model import DirectionState
 from train_commute_companion.news import all_good
 from train_commute_companion.providers.base import ProviderAnswer, Query
 from train_commute_companion.serde import decode, encode
@@ -80,7 +70,7 @@ def test_no_all_good_for_a_locked_train_any_answer_shows_as_a_bus():
 
 
 def test_a_locked_train_now_a_bus_alerts_loud_and_relocks():
-    from test_lifecycle_follow import kinds
+    from lifecycle_fixtures import kinds
 
     from train_commute_companion.model import EventKind, Severity
 
@@ -96,7 +86,7 @@ def test_a_locked_train_now_a_bus_alerts_loud_and_relocks():
 
 
 def test_a_ridden_train_now_a_bus_is_kept_and_warned():
-    from test_lifecycle_follow import kinds
+    from lifecycle_fixtures import kinds
 
     from train_commute_companion.model import EventKind, LegState, Severity
 

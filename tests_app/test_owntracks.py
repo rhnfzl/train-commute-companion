@@ -1,24 +1,20 @@
 import asyncio
-import base64
 import json
 from dataclasses import replace
 from datetime import date
 
 import pytest
+from app_rig import TickClock, free_port, make_app, spied, until
 from builders import only_occurrence
-from conftest import TickClock, spied
+from owntracks_rig import FAR, SECRET, UT, basic, post
+from runtime_rig import PROFILES_DIR, at
 from tcc_app.follow import Fix
 from tcc_app.main import serve
 from tcc_app.owntracks import handler, parse
 from tcc_app.web import BODY_LIMIT, start_web
-from test_follow import FAR, UT, app_owntracks  # noqa: F401 (fixture)
-from test_main import free_port, make_app, until
-from test_runtime import PROFILES_DIR, at
 
 from train_commute_companion.calendar import TZ
 from train_commute_companion.profile import check_lines
-
-SECRET = "test-owntracks-secret-0001"
 
 
 @pytest.mark.parametrize(
@@ -61,26 +57,6 @@ def test_owntracks_profile_passes_check_lines():
     assert cfg is not None and lines == []
 
 
-def basic(user: str, password: str) -> str:
-    return "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
-
-
-async def post(port: int, body: bytes, auth: str | None = None,
-               length: int | None = None) -> tuple[int, bytes, bytes]:  # fmt: skip
-    reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    head = (
-        f"POST /owntracks HTTP/1.1\r\nContent-Length: {len(body) if length is None else length}\r\n"
-    )
-    if auth is not None:
-        head += f"Authorization: {auth}\r\n"
-    writer.write(head.encode() + b"\r\n" + body)
-    await writer.drain()
-    answer = await asyncio.wait_for(reader.read(), 5)
-    writer.close()
-    top, _, payload = answer.partition(b"\r\n\r\n")
-    return int(top.split(b" ")[1]), top, payload
-
-
 async def test_owntracks_endpoint_auth_and_reply():
     got: list[bytes] = []
     server = await start_web(0, health=lambda: (200, {}), owntracks=got.append, secret=SECRET,
@@ -107,7 +83,7 @@ async def test_owntracks_endpoint_auth_and_reply():
             await s.wait_closed()
 
 
-async def test_owntracks_post_produces_a_zone_event(app_owntracks):  # noqa: F811
+async def test_owntracks_post_produces_a_zone_event(app_owntracks):
     app = app_owntracks
     spied(app)
     server = await start_web(0, health=lambda: (200, {}), owntracks=handler(app.follower),

@@ -13,9 +13,9 @@ from harness import (
     profiles_path,
     rebound,
     setup_tcc,
+    tick,
     write_profiles,
 )
-from test_setup import tick
 
 from custom_components.train_commute_companion.const import REFRESH_S
 from custom_components.train_commute_companion.location import zones_for

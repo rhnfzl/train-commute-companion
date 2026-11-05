@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from train_commute_companion.lifecycle import OccurrenceState
@@ -13,12 +14,15 @@ from train_commute_companion.model import (
     TimeObs,
     TrainId,
 )
+from train_commute_companion.replacement import (
+    Catchability,
+)
 from train_commute_companion.runtime import Runtime
 
 AMS = ZoneInfo("Europe/Amsterdam")
 
 
-def _at(day: date, hhmm: str, fold: int = 0) -> datetime:
+def local_at(day: date, hhmm: str, fold: int = 0) -> datetime:
     h, m = (int(x) for x in hhmm.split(":"))
     d = day + timedelta(days=1) if h < 4 else day  # before 04:00 belongs to the next day
     return datetime.combine(d, time(h, m, fold=fold), tzinfo=AMS)  # fold=1: the second 02:xx
@@ -47,7 +51,7 @@ def _stop(
     )
 
 
-def _cut(s: Stop) -> Stop:
+def cut_stop(s: Stop) -> Stop:
     def plan(o: TimeObs | None) -> TimeObs | None:
         return o and TimeObs(o.planned, None, Provenance.PLANNED, o.observed_at)
 
@@ -72,7 +76,7 @@ def make_leg(
     fold_dep: int = 0,
     fold_arr: int = 0,
 ) -> Leg:
-    t_dep, t_arr = _at(day, dep, fold_dep), _at(day, arr, fold_arr)
+    t_dep, t_arr = local_at(day, dep, fold_dep), local_at(day, arr, fold_arr)
     mids = [_stop(c, t_dep, t_dep, delay_dep, delay_dep, provenance, cancelled) for c in stops]
     chain = [
         _stop(board, None, t_dep, 0, delay_dep, provenance, cancelled),
@@ -82,7 +86,7 @@ def make_leg(
     if cut_after is not None:
         # stops after cut_after are cancelled
         idx = next(i for i, s in enumerate(chain) if s.code == cut_after)
-        chain = [s if i <= idx else _cut(s) for i, s in enumerate(chain)]
+        chain = [s if i <= idx else cut_stop(s) for i, s in enumerate(chain)]
     return Leg(
         train=TrainId(day, number, t_dep),
         category="IC",
@@ -103,7 +107,7 @@ def make_connection(legs: Sequence[Leg], status: str = "NORMAL") -> Connection:
     return Connection(tuple(legs), status, None)
 
 
-def _on_track(leg: Leg, track: str) -> Leg:
+def on_track(leg: Leg, track: str) -> Leg:
     board = replace(leg.stops[0], actual_track=track)
     return replace(leg, stops=(board, *leg.stops[1:]))
 
@@ -121,7 +125,7 @@ ONE_TRANSFER: tuple[Connection, ...] = (
     make_connection(
         [
             make_leg("AAA", "UT", "08:12", "08:40", number="1234"),
-            _on_track(
+            on_track(
                 make_leg("UT", "RTD", "08:46", "09:20", number="5678", delay_dep=5, delay_arr=5),
                 "7",
             ),
@@ -141,3 +145,20 @@ def only_occurrence(rt: Runtime, direction: Direction = Direction.OUTBOUND) -> O
     mine = [s for s in rt.state.occurrences.values() if s.key.direction is direction]
     assert len(mine) == 1, mine
     return mine[0]
+
+
+def dt(s: str) -> datetime:
+    return datetime.fromisoformat(s).replace(tzinfo=AMS)
+
+
+def kw(**over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "board_station": "UT",
+        "destination": "RTD",
+        "catch": Catchability(dt("2026-10-27 08:30")),
+        "kept_incoming": None,
+        "done_transfers": 0,
+        "max_transfers": 2,
+        "profile_min": {"UT": 4},
+    }
+    return {**base, **over}

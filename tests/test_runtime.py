@@ -1,16 +1,25 @@
 import asyncio
-import json
-import os
 import threading
-from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, time, timedelta
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
-from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
-from test_lifecycle_follow import L1, L1X, L2, L2X, LATER, conn, journey, occ
+from builders import ONE_TRANSFER, make_connection, make_leg, only_occurrence
+from lifecycle_fixtures import L1, L1X, L2, L2X, LATER, conn, journey, occ
+from runtime_rig import (
+    DAY,
+    PROFILE,
+    PROFILES_DIR,
+    USUAL,
+    Rig,
+    at,
+    bump_mtime,
+    every_day,
+    kinds,
+    started,
+)
 
 from train_commute_companion.budget import RequestBudget
 from train_commute_companion.lifecycle import Choose, LockSource, origin_answer
@@ -31,7 +40,6 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.providers.base import (
     AuthError,
-    PlannedWorks,
     ProviderAnswer,
     ProviderError,
     Query,
@@ -40,202 +48,7 @@ from train_commute_companion.providers.base import (
 )
 from train_commute_companion.revalidation import leg_now
 from train_commute_companion.runtime import Runtime, _fresh_state
-from train_commute_companion.serde import dumps
-from train_commute_companion.store import VERSION, PersistedState, StorageError, read_state
-
-DAY = date(2026, 10, 27)  # a Tuesday
-PROFILE = """
-profiles:
-  - id: "p1"
-    name: "NAME"
-    days: [mon, tue, wed, thu, fri]
-    home_station: "AAA"
-    work_station: "RTD"
-    transfer_min: {UT: 4}
-    outbound: {first_train: "08:12", buffer_min: 10, transfers: [UT]}
-    return: {first_train: "17:52", buffer_min: 5}
-  - id: "p2"
-    name: "office_b"
-    days: [sat]
-    home_station: "AAA"
-    work_station: "RTD"
-    outbound: {first_train: "08:12", buffer_min: 10}
-    return: {first_train: "17:52", buffer_min: 5}
-"""
-
-
-def at(hhmm: str, day: date = DAY) -> datetime:
-    return datetime.fromisoformat(f"{day.isoformat()} {hhmm}").replace(tzinfo=AMS)
-
-
-class FakeClock:
-    def __init__(self, now: datetime) -> None:
-        self.t = now
-
-    def now(self) -> datetime:
-        return self.t
-
-    async def sleep(self, seconds: float) -> None:
-        self.t = (self.t.astimezone(UTC) + timedelta(seconds=seconds)).astimezone(AMS)
-
-    def jump(self, minutes: float) -> None:
-        self.t = (self.t.astimezone(UTC) + timedelta(minutes=minutes)).astimezone(AMS)
-
-    def set(self, hhmm: str) -> None:
-        self.t = at(hhmm, self.t.date())
-
-
-class MemoryStore:
-    """Keeps the encoded text, so what survives a restart went through the real codec."""
-
-    def __init__(self) -> None:
-        self.text: str | None = None
-        self.version = VERSION  # set to an older one: `text` as a file of that version holds it
-        self.fail = False
-        self.writes = 0
-
-    def load(self) -> PersistedState | None:
-        return None if self.text is None else read_state(self.version, json.loads(self.text))
-
-    def save(self, s: PersistedState) -> None:
-        if self.fail:
-            raise StorageError("disk full")
-        self.text = dumps(s)
-        self.version = VERSION
-        self.writes += 1
-
-
-class Notifier:
-    def __init__(self) -> None:
-        self.fails: Callable[[AlertEvent], bool] = lambda e: False
-        self.attempts: list[AlertEvent] = []
-
-    async def send(self, event: AlertEvent) -> bool:
-        self.attempts.append(event)
-        return not self.fails(event)
-
-
-def pieces(c: Connection, origin: str, destination: str) -> list[Connection]:
-    """Every run of whole legs of `c` from `origin` to `destination`."""
-    n = len(c.legs)
-    return [
-        Connection(c.legs[i:j], c.status, None)
-        for i in range(n)
-        for j in range(i + 1, n + 1)
-        if c.legs[i].board.code == origin and c.legs[j - 1].alight.code == destination
-    ]
-
-
-class Provider:
-    """Replays a scripted world: every query gets the connections from its origin, fetched now.
-    `hook` runs inside a request (to move the clock, act or edit mid-flight); `error` raises.
-    `window`: like NS, only connections leaving from the asked time up to that much later."""
-
-    def __init__(self, clock: FakeClock, world: list[Connection]) -> None:
-        self.clock = clock
-        self.world = world
-        self.positions: dict[str, tuple[float, float]] = {}
-        self.calls: list[Query] = []
-        self.error: Callable[[Query], Exception | None] = lambda q: None
-        self.hook: Callable[[Query], object] | None = None
-        self.works_calls = 0
-        self.window: timedelta | None = None
-
-    async def trips(self, q: Query) -> ProviderAnswer:
-        self.calls.append(q)
-        if self.hook is not None:
-            r = self.hook(q)
-            if hasattr(r, "__await__"):
-                await r  # type: ignore[misc]
-        err = self.error(q)
-        if err is not None:
-            raise err
-        conns = tuple(x for c in self.world for x in pieces(c, q.origin, q.destination))
-        if self.window is not None:
-            t, w = q.at.astimezone(UTC), self.window
-            conns = tuple(c for c in conns if t <= c.legs[0].train.planned_departure < t + w)
-        return ProviderAnswer(q, conns, self.clock.now())
-
-    async def planned_works(self) -> PlannedWorks:
-        self.works_calls += 1
-        return PlannedWorks((), "complete")
-
-    async def stations(self) -> frozenset[str]:
-        return frozenset()
-
-
-USUAL = make_connection([L1, L2])
-
-
-def usual_on(day: date, first: str = "08:12") -> Connection:
-    return make_connection(
-        [
-            make_leg("AAA", "UT", first, "08:40", number="1234", day=day),
-            make_leg("UT", "RTD", "08:50", "09:24", number="5678", day=day),
-        ]
-    )
-
-
-def every_day(first: str = "08:12") -> list[Connection]:
-    return [usual_on(DAY + timedelta(days=i), first) for i in range(12)]
-
-
-class Rig:
-    def __init__(self, tmp: Path, now: str = "07:50", name: str = "office_a") -> None:
-        self.path = tmp / "profiles.yaml"
-        self.write(name)
-        self.clock = FakeClock(at(now))
-        self.store = MemoryStore()
-        self.notifier = Notifier()
-        self.provider = Provider(self.clock, [USUAL])
-        self.rt = self.new()
-
-    def write(self, name: str = "office_a", text: str | None = None) -> None:
-        self.path.write_text(text if text is not None else PROFILE.replace("NAME", name))
-
-    def new(self, *, require_stations: bool = False, on_stations=None) -> Runtime:
-        return Runtime(
-            profile_path=self.path,
-            store=self.store,
-            provider=self.provider,
-            notifier=self.notifier,
-            clock=self.clock,
-            require_stations=require_stations,
-            on_stations=on_stations,
-        )
-
-    async def restart(self) -> Runtime:
-        self.rt = self.new()
-        await self.rt.start()
-        return self.rt
-
-    def occ(self, key: str = "p1|outbound|2026-10-27"):
-        return self.rt.state.occurrences.get(key)
-
-    def occ_set(self, s, key: str = "p1|outbound|2026-10-27") -> None:
-        st = self.rt._writer.st
-        self.rt._writer.st = replace(st, occurrences={**st.occurrences, key: s})
-
-    async def run_until(self, hhmm: str, poll: bool = True) -> None:
-        """Polls every 2 min and runs the watchdog every 30 s up to `hhmm`."""
-        end = at(hhmm, self.clock.t.date())
-        while self.clock.t < end:
-            if poll and self.clock.t.minute % 2 == 0 and self.clock.t.second == 0:
-                await self.rt.poll_once()
-            await self.rt.watchdog_once()
-            await self.clock.sleep(30)
-
-
-def kinds(events: list[AlertEvent]) -> list[EventKind]:
-    return [e.kind for e in events]
-
-
-async def started(tmp: Path, now: str = "07:50") -> Rig:
-    rig = Rig(tmp, now)
-    await rig.rt.start()
-    await rig.rt.poll_once()
-    return rig
-
+from train_commute_companion.store import PersistedState, StorageError
 
 # --- request budget ---
 
@@ -481,15 +294,15 @@ async def test_watchdog_uncertain_identity_still_fires(tmp_path):
 
 
 async def test_leg_now_names_the_newest_platform(tmp_path):
-    from builders import _on_track
+    from builders import on_track
 
     rig = await started(tmp_path, "07:56")
     x = rig.occ().lock.legs[1]  # the 08:50 from UT
     older = ProviderAnswer(
-        Query("AAA", "RTD", at("08:12")), (make_connection([L1, _on_track(L2, "5")]),), at("07:58")
+        Query("AAA", "RTD", at("08:12")), (make_connection([L1, on_track(L2, "5")]),), at("07:58")
     )
     newer = ProviderAnswer(
-        Query("UT", "RTD", at("08:50")), (make_connection([_on_track(L2, "7")]),), at("07:59")
+        Query("UT", "RTD", at("08:50")), (make_connection([on_track(L2, "7")]),), at("07:59")
     )
     rig.rt._memory.boards["p1|outbound|2026-10-27"] = (older, newer)
     assert leg_now(rig.rt._memory.boards["p1|outbound|2026-10-27"], x) == ("08:50", " (platform 7)")
@@ -1328,7 +1141,7 @@ def _nine_twelve_on(day: date) -> Connection:
 
 
 async def test_removed_and_readded_profile_starts_from_the_file(tmp_path):
-    from test_runtime_rules import sig
+    from runtime_rig import sig
 
     from train_commute_companion.lookahead import BaselineVersion
 
@@ -1421,8 +1234,6 @@ async def test_now_is_the_runtime_clock(tmp_path):
 
 # --- choose a train by its time; act reports a miss (7.13, N3) ---
 
-PROFILES_DIR = Path(__file__).parent / "data" / "profiles"
-
 
 async def one_transfer(tmp: Path, now: str = "07:50", poll: bool = True) -> Rig:
     rig = Rig(tmp, now)
@@ -1473,15 +1284,6 @@ async def test_location_source_changed_during_request_is_not_written(tmp_path, a
     release.set()
     await task
     assert only_occurrence(rig.rt).zone_reports == {}
-
-
-_MTIME = [2_000_000_000 * 10**9]
-
-
-def bump_mtime(path: Path) -> None:
-    """A strictly increasing mtime, so two writes in one tick are both seen by check_file."""
-    _MTIME[0] += 10**9
-    os.utime(path, ns=(_MTIME[0], _MTIME[0]))
 
 
 async def _switch_rig(tmp_path):

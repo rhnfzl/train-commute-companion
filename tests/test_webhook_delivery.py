@@ -15,15 +15,21 @@ from typing import Any
 
 import httpx
 import pytest
-from builders import AMS, _on_track, make_connection, make_leg
-from test_lifecycle_follow import L1, L1X, L2, LATER
-from test_runtime import DAY, PROFILE, MemoryStore, Provider, Rig, at, kinds
-from test_runtime_rules import (
-    _cancelled_l2,
-    _clean,
-    _split_world,
+from builders import AMS, make_connection, make_leg, on_track
+from lifecycle_fixtures import L1, L1X, L2, LATER
+from runtime_rig import (
+    DAY,
+    PROFILE,
+    MemoryStore,
+    Provider,
+    Rig,
+    at,
+    cancelled_l2,
     cancelled_usual_world,
+    clean_world,
+    kinds,
     live_facts_bundle,
+    split_world,
     tracked,
 )
 from webhook_receiver import Receiver
@@ -615,7 +621,7 @@ async def test_a_pass_cancelled_during_a_post_keeps_the_new_copy(tmp_path):  # r
 @pytest.mark.parametrize("works", ["gone", "unchanged"])
 async def test_look_ahead_copy_keeps_its_facts_after_the_phone_send(tmp_path, works):
     rig = WRig(tmp_path, "05:40", text=P1)
-    rig.provider.world = _cancelled_l2(THU)
+    rig.provider.world = cancelled_l2(THU)
     rig.end.status = 503
     await rig.rt.start()
     await rig.rt.lookahead_once()  # a silent works warning, told by phone
@@ -623,7 +629,7 @@ async def test_look_ahead_copy_keeps_its_facts_after_the_phone_send(tmp_path, wo
     assert c.obligation.event.severity is Severity.SILENT
     assert not rig.rt.state.lookahead["p1|outbound"].pending
     rig.clock.set("06:10")
-    rig.provider.world = _clean() if works == "gone" else _cancelled_l2(THU)
+    rig.provider.world = clean_world() if works == "gone" else cancelled_l2(THU)
     await rig.rt.lookahead_once()
     assert c.obligation.id in rig.rt.state.lookahead["p1|outbound"].facts
     rig.end.status = 200
@@ -637,13 +643,13 @@ async def test_look_ahead_copy_keeps_its_facts_after_the_phone_send(tmp_path, wo
 
 async def test_superseded_lookahead_data_unclear_copy_is_dropped(tmp_path):
     rig = WRig(tmp_path, "05:40", text=P1)
-    rig.provider.world = _split_world(THU, lambda leg: leg)
+    rig.provider.world = split_world(THU, lambda leg: leg)
     rig.end.status = 503
     await rig.rt.start()
     await rig.rt.lookahead_once()
     (a,) = copies(rig, EventKind.DATA_UNCLEAR)
     rig.clock.set("06:10")
-    rig.provider.world = _split_world(THU, lambda leg: _on_track(leg, "7"))
+    rig.provider.world = split_world(THU, lambda leg: on_track(leg, "7"))
     await rig.rt.lookahead_once()
     rig.end.status = 200
     await tick(rig)
@@ -948,7 +954,7 @@ async def test_start_without_webhooks_drops_saved_copies(tmp_path, caplog):  # R
 
 async def test_rename_keeps_the_snapshot_an_owed_copy_needs(tmp_path):  # rule 5(c)
     rig = WRig(tmp_path, "05:40")
-    rig.provider.world = _cancelled_l2(THU)
+    rig.provider.world = cancelled_l2(THU)
     rig.end.status = 503
     await rig.rt.start()
     await rig.rt.lookahead_once()

@@ -3,7 +3,7 @@ from datetime import date, time
 from pathlib import Path
 
 import pytest
-from test_serde import full_state
+from lifecycle_fixtures import full_state
 
 from train_commute_companion.cli import _moved, main
 from train_commute_companion.lookahead import BaselineHistory, BaselineVersion

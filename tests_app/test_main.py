@@ -1,25 +1,30 @@
 import asyncio
 import logging
-import socket
 import threading
 from datetime import time
 from pathlib import Path
 
 import pytest
-from builders import ONE_TRANSFER
-from conftest import (
+from app_rig import (
     CHAT,
     CODES,
+    SECRET,
     TOKEN,
+    URL,
+    URL2,
+    WTOKEN,
     StationsProvider,
     TickClock,
+    free_port,
     gated_saves,
     make_app,
+    until,
 )
+from builders import ONE_TRANSFER
+from runtime_rig import Provider, at
 from tcc_app.bot import load_state
 from tcc_app.main import App, Settings, main, serve, setup_logging
 from tcc_app.web import ask_readout, health_report, mcp_socket_path, start_readout
-from test_runtime import Provider, at
 from webhook_receiver import Receiver
 
 from train_commute_companion.model import EventKind, Leaving
@@ -27,14 +32,6 @@ from train_commute_companion.store import JsonFileStore
 from train_commute_companion.webhook_send import WebhookPoster
 
 ENV = {"NS_API_KEY": "k", "TELEGRAM_BOT_TOKEN": TOKEN}
-URL, URL2 = "https://hooks.example.invalid/tcc", "https://hooks2.example.invalid/tcc"
-SECRET, WTOKEN = "test-webhook-secret-0001", "test-webhook-token-0001"
-
-
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
 
 
 async def refused(port: int) -> bool:
@@ -44,12 +41,6 @@ async def refused(port: int) -> bool:
         return True
     w.close()
     return False
-
-
-async def until(cond, seconds: float = 5) -> None:
-    async with asyncio.timeout(seconds):
-        while not cond():
-            await asyncio.sleep(0.005)
 
 
 def test_settings_from_env_defaults_and_refusals():

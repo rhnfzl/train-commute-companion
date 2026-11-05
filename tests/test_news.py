@@ -2,7 +2,7 @@ from dataclasses import replace
 from datetime import timedelta
 
 from builders import make_connection, make_leg
-from test_lifecycle_follow import L1, L2, R2, at, board, ctx, journey, occ
+from lifecycle_fixtures import L1, L2, R2, at, board, ctx, journey, occ
 
 from train_commute_companion.classify import classify_leg
 from train_commute_companion.lifecycle import OccurrenceState
@@ -236,8 +236,8 @@ def test_all_good_not_rescued_by_older_answer_when_newest_is_uncertain():
 
 
 def test_changed_cut_short_endpoint_is_news_again():  # 7.5: the key states the endpoint
-    from test_lifecycle_follow import DIRECT, FROM_BBB, FROM_UT, T_BBB, T_UT, ans, conn, poll
-    from test_lifecycle_follow import direct_riding as riding
+    from lifecycle_fixtures import DIRECT, FROM_BBB, FROM_UT, T_BBB, T_UT, ans, conn, poll
+    from lifecycle_fixtures import direct_riding as riding
 
     c = ctx(at("08:14"), DIRECT)
     t1 = poll(riding(), c, ans("AAA", conn(T_BBB)), ans("BBB", conn(FROM_BBB)))
@@ -309,7 +309,7 @@ def test_relock_does_not_inherit_another_trains_announced_delay():  # 7.5, findi
 
 
 def test_retained_warning_replacement_time_moves_by_news_steps():  # 7.5, finding 1
-    from test_lifecycle_follow import L2X, LATER, RIDE, ans, conn, poll
+    from lifecycle_fixtures import L2X, LATER, RIDE, ans, conn, poll
 
     def r2(delay: int):
         return make_leg("UT", "RTD", "09:05", "09:39", number="6666", delay_dep=delay)

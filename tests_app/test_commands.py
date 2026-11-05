@@ -1,7 +1,9 @@
 from datetime import date, time, timedelta
 
 import pytest
+from app_rig import DAY, directions, leg_view, occ, view
 from builders import make_connection, make_leg
+from runtime_rig import at
 from tcc_app.commands import (
     NO_WORKS,
     REFUSAL_HIDDEN,
@@ -14,79 +16,24 @@ from tcc_app.commands import (
     render_webhook_tests,
     status_buttons,
 )
-from test_runtime import at
 
 from train_commute_companion.health import BoardHealth
 from train_commute_companion.model import (
     AdviceRecord,
     Direction,
-    DirectionState,
     LegKind,
     LegState,
     OccurrenceKey,
     Provenance,
     TrainId,
-    TransferState,
 )
 from train_commute_companion.view import (
     DirectionInfo,
-    LegView,
     Moved,
-    OccurrenceView,
     RuntimeView,
-    TransferView,
     WorksDay,
 )
 from train_commute_companion.webhook import WebhookTestResult
-
-DAY = date(2026, 10, 27)
-
-
-def directions(*names: str) -> tuple[DirectionInfo, ...]:
-    return tuple(DirectionInfo(f"p{i}", n, d, 1) for i, n in enumerate(names, 1) for d in Direction)
-
-
-def leg_view(
-    dep="08:12", delay=None, platform=None, state=LegKind.OK, board="AAA", alight="UT",
-    reported=True, arr=None, planned_arr=None, progress=LegState.PENDING,
-):  # fmt: skip
-    t = at(dep)
-    return LegView(
-        "1234",
-        board,
-        alight,
-        t,
-        t if reported else None,
-        at(planned_arr or arr) if planned_arr or arr else None,
-        at(arr) if arr else None,
-        platform,
-        None,
-        delay,
-        None,
-        state,
-        progress,
-    )
-
-
-def occ(pid="p1", resolved=False, **kw) -> OccurrenceView:
-    base = {
-        "key": OccurrenceKey(pid, Direction.OUTBOUND, DAY), "profile_name": "office_a",
-        "direction_state": DirectionState.LOCKED, "resolved": resolved, "not_travelling": False,
-        "route_changed": False, "lock_source": None, "commitment": None,
-        "legs": (leg_view(delay=3, platform="5"), leg_view("08:30", board="UT", alight="RTD")),
-        "transfers": (TransferView("UT", TransferState.OK, 6, 4),), "retained": (), "next_good": None,
-        "advice": None, "health": BoardHealth(True, at("07:50"), 0, False),
-    }  # fmt: skip
-    return OccurrenceView(**{**base, **kw})  # type: ignore[arg-type]
-
-
-def view(*occs, names=("office_a",), **kw) -> RuntimeView:
-    base = {
-        "at": at("07:55"), "started": True, "profiles": (), "directions": directions(*names),
-        "occurrences": tuple(occs), "works": {}, "moved": (), "refusal": None, "store_ok": True,
-        "key_rejected": False, "undelivered": 0, "requests": 0,
-    }  # fmt: skip
-    return RuntimeView(**{**base, **kw})  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("args, want", [

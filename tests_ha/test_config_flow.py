@@ -6,14 +6,21 @@ from unittest.mock import patch
 import httpx
 import pytest
 from harness import (
+    HOOKS,
     NOTIFY,
     PROFILE,
     PROFILES,
+    SECRET,
+    URL,
+    URL2,
+    WTOKEN,
     fake_phone,
+    open_webhooks,
     profiles_path,
     rebound,
     setup_tcc,
-    state_path,
+    stored_copies,
+    submit,
     write_profiles,
 )
 from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER
@@ -26,7 +33,6 @@ from custom_components.train_commute_companion import notifier
 from custom_components.train_commute_companion.config_flow import notify_services
 from custom_components.train_commute_companion.const import DOMAIN
 from train_commute_companion.providers.base import AuthError, ProviderError
-from train_commute_companion.store import JsonFileStore
 
 CHECK_KEY = "custom_components.train_commute_companion.config_flow.check_key"
 SETUP = "custom_components.train_commute_companion.async_setup_entry"
@@ -421,10 +427,6 @@ async def test_options_flow_aborts_with_only_a_non_phone_target(hass):
 
 # --- options flow: webhooks ---
 
-URL, URL2 = "https://hooks.example.invalid/tcc", "https://hooks2.example.invalid/tcc"
-SECRET, WTOKEN = "test-webhook-secret-0001", "test-webhook-token-0001"
-HOOKS = {"webhook_urls": [URL], "webhook_secret": SECRET, "webhook_token": ""}
-
 
 async def loaded(hass, status=200, **options):
     """A loaded entry whose webhook clients, the flow's test send included, reach `rx`."""
@@ -435,28 +437,6 @@ async def loaded(hass, status=200, **options):
     rx.requests.clear()
     rx.posts.clear()
     return h, rx
-
-
-async def open_webhooks(hass, entry):
-    r = await hass.config_entries.options.async_init(entry.entry_id)
-    assert r["type"] is FlowResultType.MENU
-    assert r["menu_options"] == ["validate", "settings", "webhooks"]
-    r = await hass.config_entries.options.async_configure(
-        r["flow_id"], {"next_step_id": "webhooks"}
-    )
-    assert r["type"] is FlowResultType.FORM and r["step_id"] == "webhooks"
-    return r
-
-
-async def submit(hass, r, urls="", secret="", token=""):
-    data = {"webhook_urls": urls, "webhook_secret": secret, "webhook_token": token}
-    r = await hass.config_entries.options.async_configure(r["flow_id"], data)
-    await hass.async_block_till_done()
-    return r
-
-
-def stored_copies(hass, entry) -> tuple:
-    return JsonFileStore(state_path(hass, entry)).load().webhook_copies
 
 
 @pytest.mark.usefixtures("tcc_freezer")

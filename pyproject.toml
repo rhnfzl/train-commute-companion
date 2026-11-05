@@ -70,4 +70,4 @@ asyncio_mode = "auto"
 testpaths = ["tests", "tests_app"]
 # phcc's plugin blocks sockets for every test; the HA suite turns it on in tests_ha/pytest.ini
 addopts = "-p no:homeassistant"
-pythonpath = ["tests", ".", "app"]
+pythonpath = ["tests/support", ".", "app"]

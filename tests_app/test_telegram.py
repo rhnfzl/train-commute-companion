@@ -4,8 +4,9 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
+from app_rig import CHAT, TOKEN, FakeTelegram, error
 from builders import AMS
-from conftest import CHAT, TOKEN, FakeTelegram, error
+from runtime_rig import DAY, FakeClock, Rig, at
 from tcc_app.telegram import (
     TelegramApi,
     TelegramError,
@@ -13,7 +14,6 @@ from tcc_app.telegram import (
     callback_data,
     split_text,
 )
-from test_runtime import DAY, FakeClock, Rig, at
 
 from train_commute_companion.model import AlertEvent, Direction, EventKind, Obligation, Severity
 

@@ -5,7 +5,7 @@ import json
 from dataclasses import replace
 
 from builders import make_leg
-from test_lifecycle_follow import (
+from lifecycle_fixtures import (
     DIRECT,
     L1,
     L1X,

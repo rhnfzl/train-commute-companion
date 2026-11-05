@@ -9,28 +9,31 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from builders import AMS, ONE_TRANSFER, only_occurrence
-from conftest import (
+from app_rig import (
     CHAT,
+    CODES,
+    REPLAYS,
     TOKEN,
+    URL,
     FakeTelegram,
     StationsProvider,
     TickClock,
     build_from_replay,
     drive_replay,
     expected_lines,
+    make_app,
+    msg,
     spied,
 )
+from app_rig import SECRET as HOOK_SECRET
+from builders import AMS, ONE_TRANSFER, only_occurrence
+from owntracks_rig import FAR, SECRET, UT, basic, located_app, post
+from runtime_rig import PROFILES_DIR, Provider, at, bump_mtime, usual_on
 from tcc_app import bot as bot_mod
 from tcc_app.commands import render_webhook_tests
 from tcc_app.main import App, Settings, build, health_report, start_web
 from tcc_app.owntracks import handler
 from tcc_app.web import health_for
-from test_follow import FAR, UT, located_app
-from test_main import CODES, URL, make_app
-from test_main import SECRET as HOOK_SECRET
-from test_owntracks import SECRET, basic, post
-from test_runtime import PROFILES_DIR, Provider, at, bump_mtime, usual_on
 from webhook_receiver import Receiver
 
 from train_commute_companion.lookahead import BaselineHistory, BaselineVersion
@@ -38,7 +41,6 @@ from train_commute_companion.model import Severity, Signature, SignatureLeg
 from train_commute_companion.store import JsonFileStore
 from train_commute_companion.webhook import PROBE_LOUD, PROBE_SILENT, WebhookTestResult
 
-REPLAYS = Path(__file__).resolve().parents[1] / "tests" / "replays"
 OUT = "p1|outbound|2026-10-27"
 REPLAY_NAMES = ["direct", "one_transfer", "two_transfers", "cancelled_second_leg",
                 "transfer_broken_by_delay"]  # fmt: skip
@@ -47,16 +49,6 @@ HEALTH_TOKEN = "test-health-token-0001"
 
 def silent(m: dict[str, Any]) -> bool:
     return bool(m["disable_notification"])
-
-
-def msg(app: App, text: str, uid: int = 1) -> dict[str, Any]:
-    body = {
-        "message_id": uid,
-        "date": int(app.rt.now().timestamp()),
-        "chat": {"id": CHAT},
-        "text": text,
-    }
-    return {"update_id": uid, "message": body}
 
 
 def tap(data: str, uid: int = 1) -> dict[str, Any]:

@@ -1,48 +1,15 @@
 import asyncio
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pytest
-from builders import AMS, ONE_TRANSFER, only_occurrence
-from conftest import CHAT, STRANGER, TOKEN, StationsProvider, TickClock, feed, spied
+from app_rig import CHAT, STRANGER, feed, spied
+from builders import AMS, only_occurrence
+from owntracks_rig import FAR, UT, located_app
+from runtime_rig import PROFILES_DIR, at, bump_mtime
 from tcc_app.follow import Fix
-from tcc_app.main import App, Settings, build
-from test_runtime import PROFILES_DIR, Provider, at, bump_mtime
+from tcc_app.main import App
 
 from train_commute_companion.lifecycle import Commitment, LockSource
-
-CODES = frozenset({"AAA", "UT", "RTD"})
-POSITIONS = {"AAA": (52.3, 4.9), "UT": (52.1, 5.1), "RTD": (51.0, 4.0)}
-FAR = (53.0, 6.0)
-UT = (52.1, 5.1)
-
-
-async def located_app(
-    tmp_path: Path, tg, name: str, positions=POSITIONS, now: str = "08:00"
-) -> App:
-    clock = TickClock(at(now))
-    profiles = tmp_path / "profiles.yaml"
-    profiles.write_text((PROFILES_DIR / f"{name}.yaml").read_text())
-    s = Settings("k", TOKEN, CHAT, None, profiles, tmp_path)
-    provider = StationsProvider(Provider(clock, list(ONE_TRANSFER)), CODES, positions)
-    app = build(s, clock=clock, provider=provider, client=tg.client())
-    app.clock = clock  # type: ignore[attr-defined]
-    await app.rt.start()
-    return app
-
-
-@pytest.fixture
-async def app(tmp_path, tg):
-    a = await located_app(tmp_path, tg, "located_via_ut_telegram")
-    yield a
-    await a.follower.close()
-
-
-@pytest.fixture
-async def app_owntracks(tmp_path, tg):
-    a = await located_app(tmp_path, tg, "located_via_ut_owntracks", now="07:40")
-    yield a
-    await a.follower.close()
 
 
 async def switch(app: App, *names: str) -> None:
@@ -231,3 +198,10 @@ async def test_telegram_location_messages_reach_the_follower(app):
         await app.bot.handle(update)
         await app.follower.drain()
     assert spied(app) == [("UT", "enter")]
+
+
+@pytest.fixture
+async def app(tmp_path, tg):
+    a = await located_app(tmp_path, tg, "located_via_ut_telegram")
+    yield a
+    await a.follower.close()

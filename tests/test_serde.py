@@ -1,75 +1,13 @@
 import json
-from dataclasses import replace
 from datetime import date, time
 
 import pytest
-from lookahead_fixtures import NEXT_TUE, NOW, OUT, P, confirmed, ledger
-from test_lifecycle_follow import L1, L2, RIDE, at, journey, occ
+from lifecycle_fixtures import L1, L2, RIDE, at, full_state, journey, occ
 
-from train_commute_companion.health import PollRecord
 from train_commute_companion.lifecycle import OccurrenceState
-from train_commute_companion.lookahead import BaselineHistory, LookAheadFact, LookAheadLedger
-from train_commute_companion.model import (
-    AdviceRecord,
-    AlertEvent,
-    Config,
-    EventKind,
-    LocationSettings,
-    Obligation,
-    Severity,
-    WebhookCopy,
-)
+from train_commute_companion.lookahead import LookAheadFact, LookAheadLedger
 from train_commute_companion.serde import decode, dumps, loads
 from train_commute_companion.store import PersistedState
-
-
-def full_state() -> PersistedState:
-    """One of every persisted type, every optional field filled."""
-    p = replace(
-        P,
-        extra_dates=frozenset({date(2026, 12, 24)}),
-        location=LocationSettings("ha", "tracker", {"UT": "zone.ut"}),
-        alerts=replace(
-            P.alerts, latest_acceptable_arrival=time(10, 0), quiet_hours=(time(22), time(7))
-        ),
-    )
-    cfg = Config(2, (p,))
-    event = AlertEvent(
-        "p1",
-        "office_a",
-        OUT,
-        NEXT_TUE,
-        1,
-        EventKind.DELAYED,
-        Severity.SILENT,
-        L1.train,
-        "t",
-        "k",
-        NOW,
-    )
-    ob = Obligation("o", event, None, ("p1", OUT, NEXT_TUE), 1, 3, "f", NOW, 2, True)
-    copy = WebhookCopy("tcc_x", ob, ("ab12",), NOW, NOW)
-    retained = journey([L1, L2], RIDE)
-    legs = (
-        replace(retained.legs[0], onward_from=at("08:44"), accepted_at=at("08:50")),
-        *retained.legs[1:],
-    )
-    s = occ(
-        journey([L1, L2], RIDE),
-        retained=(replace(retained, legs=legs),),
-        cancellation_history=legs,
-        alert_keys={"a": "b"},
-        advice=AdviceRecord(L2.train, at("08:00"), False, delivered=True),
-        poll_records=(PollRecord(at("08:00"), False, "rate"),),
-        zone_reports={"UT": at("08:51")},
-        tap_at=at("08:05"),
-    )
-    hist = BaselineHistory((confirmed(1), confirmed(2, date(2026, 11, 1))), floor=4)
-    led = ledger(hist, per_date={"2026-11-03|j": ("a", "b")}, pending=(ob,), last_run=NOW)
-    return PersistedState(
-        cfg, {1: Config(1, ()), 2: cfg}, {"p1": hist}, {"p1": led}, {"k": s}, (ob,), True,
-        (copy,),
-    )  # fmt: skip
 
 
 def test_round_trip_every_persisted_type():
@@ -98,9 +36,12 @@ def test_a_bad_fact_raises_value_error(bad):
 
 
 def test_dst_fold_survives():
-    from builders import _at
+    from builders import local_at
 
-    first, second = _at(date(2026, 10, 24), "02:30", 0), _at(date(2026, 10, 24), "02:30", 1)
+    first, second = (
+        local_at(date(2026, 10, 24), "02:30", 0),
+        local_at(date(2026, 10, 24), "02:30", 1),
+    )
     a, b = (loads(type(first), dumps(x)) for x in (first, second))
     assert a.utcoffset() != b.utcoffset()
 

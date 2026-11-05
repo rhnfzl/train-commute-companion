@@ -122,14 +122,14 @@ def test_pending_count_counts_only_this_occurrences_journey_warnings():
 
 
 def test_destination_zone_report_stops_repeat_silent_messages():
-    from test_lifecycle_end import arrived, report
+    from lifecycle_fixtures import arrived, report
 
     assert not zone_report_stops_silent(arrived(), {"RTD", "work"})
     assert zone_report_stops_silent(report(arrived(), "work", "09:31"), {"RTD", "work"})
 
 
 def test_zone_report_helper_as_fact_holds_drops_silent_through_revalidate():
-    from test_lifecycle_end import arrived, report
+    from lifecycle_fixtures import arrived, report
 
     zones = {"RTD", "work"}
 

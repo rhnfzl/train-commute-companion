@@ -1,13 +1,16 @@
 from dataclasses import replace
 
 from builders import make_leg
-from test_lifecycle_follow import (
+from lifecycle_fixtures import (
+    DONE_RIDE,
     L1,
     L1X,
     L2,
     LATER,
     RIDE,
+    accepted_first,
     ans,
+    arrived,
     at,
     conn,
     ctx,
@@ -15,17 +18,16 @@ from test_lifecycle_follow import (
     kinds,
     occ,
     poll,
+    polls,
+    report,
+    retained_of,
 )
 
 from train_commute_companion.lifecycle import (
-    Journey,
-    OccurrenceState,
     apply_action,
     may_archive,
-    on_location,
     on_tick,
 )
-from train_commute_companion.location import LocationEvent
 from train_commute_companion.model import (
     DirectionState,
     EventKind,
@@ -33,32 +35,6 @@ from train_commute_companion.model import (
     NotTravelling,
     Severity,
 )
-
-USUAL = conn(L1, L2)
-DONE_RIDE = (LegState.DONE, LegState.RIDING)
-
-
-def accepted_first(j: Journey) -> Journey:
-    x = replace(j.legs[0], state=LegState.DONE, accepted_at=at("08:50"), accept_value=at("08:40"))
-    return replace(j, legs=(x, *j.legs[1:]))
-
-
-def polls(s: OccurrenceState, *whens: str, c: object = USUAL) -> OccurrenceState:
-    for w in whens:
-        s = poll(s, ctx(at(w)), ans("AAA", c, when=w)).state  # type: ignore[arg-type]
-    return s
-
-
-def arrived() -> OccurrenceState:
-    """The last leg (09:24) accepted at 09:33, watched until 10:03."""
-    s = polls(occ(accepted_first(journey([L1, L2], DONE_RIDE))), "09:29", "09:33")
-    assert s.lock is not None and s.lock.legs[-1].state is LegState.DONE
-    return s
-
-
-def report(s: OccurrenceState, zone: str, when: str) -> OccurrenceState:
-    e = LocationEvent(zone, "report", at(when))
-    return on_location(s, ctx(at(when)), e).state
 
 
 def test_repeated_estimate_before_its_time_does_not_end_journey():
@@ -141,11 +117,6 @@ def test_intermediate_leg_cancelled_after_acceptance_reopens():
     assert t.state.lock.legs[0].state is LegState.RIDING
     assert t.state.lock.legs[0].accepted_at is None
     assert (EventKind.CANCELLED, Severity.LOUD) in kinds(t)
-
-
-def retained_of(j: Journey) -> OccurrenceState:
-    """The lock moved to the 08:25; the user may still be on `j`."""
-    return occ(journey(list(LATER.legs)), retained=(j,))
 
 
 def test_retained_watch_ends_without_evidence_sends_own_stopped_following_and_lock_continues():

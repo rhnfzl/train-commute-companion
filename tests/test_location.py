@@ -1,7 +1,7 @@
 from dataclasses import replace
 
 from builders import make_leg
-from test_lifecycle_follow import (
+from lifecycle_fixtures import (
     L1,
     L1X,
     L2,
@@ -20,19 +20,18 @@ from test_lifecycle_follow import (
     occ,
     poll,
 )
+from location_fixtures import USUAL, event, locate
 
 from train_commute_companion.lifecycle import (
     Commitment,
     LockSource,
     OccurrenceState,
-    Transition,
     may_archive,
     on_location,
     on_poll,
     on_tick,
 )
 from train_commute_companion.location import (
-    LocationEvent,
     Zone,
     ZoneTrack,
     next_zone,
@@ -43,19 +42,9 @@ from train_commute_companion.location import (
 )
 from train_commute_companion.model import EventKind, LegState, Severity
 
-USUAL = conn(L1, L2)
 E1 = make_leg("AAA", "UT", "07:42", "08:10", number="1100")
 E2 = make_leg("UT", "RTD", "08:20", "08:54", number="2200")
 EARLY = conn(E1, E2)
-
-
-def event(zone: str, kind: str, when: str) -> LocationEvent:
-    return LocationEvent(zone, kind, at(when))  # type: ignore[arg-type]
-
-
-def locate(s: OccurrenceState, now: str, e: LocationEvent, *conns: object) -> Transition:
-    a = ans("AAA", *conns, when=now) if conns else None  # type: ignore[arg-type]
-    return on_location(s, ctx(at(now)), e, a)
 
 
 def test_number_is_a_finite_json_number():

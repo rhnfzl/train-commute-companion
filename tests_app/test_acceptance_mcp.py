@@ -4,13 +4,12 @@ SDK client, and after every 30 s step each tool's answer agrees with `/status`. 
 directly, so a run without the `app` extra fails instead of skipping this gate."""
 
 import pytest
-from conftest import build_from_replay, drive_replay
+from app_rig import REPLAYS, build_from_replay, drive_replay, msg
 from mcp import Client
 from tcc_app.commands import NO_WORKS, REFUSAL_HIDDEN
 from tcc_app.main import mcp_answer
 from tcc_app.mcp_server import build as build_server
 from tcc_app.web import start_readout
-from test_acceptance import REPLAYS, msg
 
 ALL_REPLAYS = sorted(p.stem for p in REPLAYS.glob("*.yaml"))  # the single- and two-profile replays
 

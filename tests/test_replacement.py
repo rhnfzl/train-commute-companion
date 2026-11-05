@@ -1,8 +1,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
-from builders import AMS, make_connection, make_leg
+from builders import AMS, dt, kw, make_connection, make_leg
 
 from train_commute_companion.classify import classify_leg
 from train_commute_companion.model import Observation, Provenance
@@ -16,10 +15,6 @@ from train_commute_companion.replacement import (
 )
 
 
-def dt(s: str) -> datetime:
-    return datetime.fromisoformat(s).replace(tzinfo=AMS)
-
-
 def one_leg(a, b, dep, arr, **k):
     return make_connection([make_leg(a, b, dep, arr, **k)])
 
@@ -27,19 +22,6 @@ def one_leg(a, b, dep, arr, **k):
 def arrives(station, hhmm, obs=Observation.SEEN, **k):
     leg = make_leg("AAA", station, "08:12", hhmm, **k)
     return replace(classify_leg(leg, station), observation=obs)
-
-
-def kw(**over: Any) -> dict[str, Any]:
-    base: dict[str, Any] = {
-        "board_station": "UT",
-        "destination": "RTD",
-        "catch": Catchability(dt("2026-10-27 08:30")),
-        "kept_incoming": None,
-        "done_transfers": 0,
-        "max_transfers": 2,
-        "profile_min": {"UT": 4},
-    }
-    return {**base, **over}
 
 
 def answer(*conns):

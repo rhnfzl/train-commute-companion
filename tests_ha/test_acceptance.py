@@ -10,10 +10,12 @@ from typing import Any
 
 import harness
 import pytest
+from builders import AMS
 from harness import (
-    AMS,
+    HOOKS,
     PROFILE,
     PROFILES,
+    SECRET,
     STATIONS,
     Harness,
     ReplayStations,
@@ -26,8 +28,7 @@ from harness import (
 )
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import issue_registry as ir
-from test_config_flow import HOOKS, SECRET
-from test_runtime import usual_on
+from runtime_rig import usual_on
 from webhook_receiver import Receiver
 
 from custom_components.train_commute_companion import validate

@@ -8,18 +8,28 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
-from builders import _on_track, make_connection, make_leg, planned_at_alight
-from test_lifecycle_follow import FROM_UT, L1, L1X, L2, L2X, LATER, R2, RIDE, T_FULL, journey
-from test_runtime import (
+from builders import make_connection, make_leg, on_track, planned_at_alight
+from lifecycle_fixtures import FROM_UT, L1, L1X, L2, L2X, LATER, R2, RIDE, T_FULL, journey
+from runtime_rig import (
     DAY,
     PROFILE,
     USUAL,
     FakeClock,
     Rig,
+    _world_with,
     at,
+    cancelled_l2,
+    cancelled_usual_world,
+    clean_world,
+    escape_world,
     every_day,
     kinds,
+    live_facts_bundle,
+    returns_every_day,
+    sig,
+    split_world,
     started,
+    tracked,
 )
 
 from train_commute_companion.lifecycle import origin_answer
@@ -32,15 +42,12 @@ from train_commute_companion.lookahead import (
 )
 from train_commute_companion.model import (
     AlertEvent,
-    Direction,
     DirectionState,
     EventKind,
     NotTravelling,
     Obligation,
     Provenance,
     Severity,
-    Signature,
-    SignatureLeg,
 )
 from train_commute_companion.providers.base import (
     AuthError,
@@ -53,8 +60,6 @@ from train_commute_companion.providers.base import (
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.serde import dumps, loads
 from train_commute_companion.store import PersistedState
-
-OUT = Direction.OUTBOUND
 
 
 def at_risk_l1() -> object:
@@ -189,7 +194,7 @@ async def test_location_does_not_resurrect_a_skipped_occurrence(tmp_path):
     await rig.rt.start()
     mon = date(2026, 10, 26)
     night = make_leg("AAA", "RTD", "23:50", "03:40", number="9999", day=mon)
-    from test_lifecycle_follow import journey, occ
+    from lifecycle_fixtures import journey, occ
 
     from train_commute_companion.model import LegState
 
@@ -213,14 +218,6 @@ async def test_location_does_not_resurrect_a_skipped_occurrence(tmp_path):
 
 
 # --- finding 7: look-ahead never stamps a newer revision on an old profile ---
-
-
-def returns_every_day(first: str) -> list:
-    n = f"7{first[3:]}"
-    days = [DAY + timedelta(days=i) for i in range(12)]
-    return [
-        make_connection([make_leg("RTD", "AAA", first, "18:30", number=n, day=d)]) for d in days
-    ]
 
 
 async def test_lookahead_sibling_direction_uses_the_profile_of_its_revision(tmp_path):
@@ -406,11 +403,6 @@ async def test_station_lookup_waits_on_the_shared_cooldown(tmp_path):
 # --- finding 12: baselines stay with the occurrences that use them ---
 
 
-def sig(first: time, second: time) -> Signature:
-    return Signature((SignatureLeg("AAA", "UT", first, 0, 20), SignatureLeg("UT", "RTD", second,
-                      0, 34)))  # fmt: skip
-
-
 async def test_route_reseed_keeps_a_locked_occurrences_adopted_schedule(tmp_path):
     rig = Rig(tmp_path, "07:56")
     hist = BaselineHistory((BaselineVersion(1, sig(time(8, 20), time(8, 50)), date(2026, 10, 1),
@@ -480,7 +472,7 @@ async def test_data_unclear_through_the_runtime_survives_a_restart(tmp_path):
     split = [make_connection([planned_at_alight(L1), L2]), make_connection([L1, L2])]
     moved = [
         make_connection([planned_at_alight(L1), L2]),
-        make_connection([_on_track(L1, "7"), L2]),
+        make_connection([on_track(L1, "7"), L2]),
     ]
     for hhmm, world in (("07:52", [USUAL]), ("07:54", split), ("07:56", split),
                         ("07:58", [USUAL]), ("08:00", split), ("08:02", moved)):  # fmt: skip
@@ -527,11 +519,6 @@ def test_replay_times_follow_the_core_resolver():
 
 
 # --- second Codex pass on the runtime group ---
-
-
-def tracked(leg, planned: str, actual: str):
-    b = replace(leg.stops[0], planned_track=planned, actual_track=actual)
-    return replace(leg, stops=(b, *leg.stops[1:]))
 
 
 async def test_platform_back_to_the_planned_track_is_told(tmp_path):
@@ -607,14 +594,6 @@ async def test_older_store_cancel_restore_restart_cancel_alerts_twice(tmp_path):
     rig.provider.world = [make_connection([L1X, L2]), LATER]
     await rt.poll_once()
     assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 2
-
-
-def escape_world(escape_cancelled: bool = False) -> list:
-    return [
-        make_connection([make_leg("RTD", "AAA", "17:22", "18:00", number="7922",
-                                  cancelled=escape_cancelled)]),
-        make_connection([make_leg("RTD", "AAA", "18:22", "19:00", number="7982")]),
-    ]  # fmt: skip
 
 
 async def test_first_day_advice_when_the_usual_is_absent(tmp_path):
@@ -750,14 +729,6 @@ async def test_stored_leave_now_loses_its_frozen_expiry_on_load(tmp_path):
     assert leave[-1:] and "leaves at 17:28" in leave[-1]
 
 
-def cancelled_usual_world() -> list:
-    return [
-        make_connection([make_leg("RTD", "AAA", "17:52", "18:30", number="7952",
-                                  cancelled=True)]),
-        *escape_world(),
-    ]  # fmt: skip
-
-
 async def test_advice_searches_before_the_usual_departure(tmp_path):
     # the provider answers only from the asked time on, like NS: the 17:22 is not in the answer
     # asked from the usual 17:52, so advice asks again from now plus the buffer (7.6, rule 17)
@@ -833,8 +804,8 @@ async def test_newer_cancellation_on_the_advice_search_beats_an_older_recovery(t
 
 
 def test_origin_answer_keeps_distinct_connections_sharing_an_onward_train():
-    from test_lifecycle_follow import ans, conn
-    from test_lifecycle_follow import ctx as follow_ctx
+    from lifecycle_fixtures import ans, conn
+    from lifecycle_fixtures import ctx as follow_ctx
 
     from train_commute_companion.lifecycle import Pool
 
@@ -895,12 +866,12 @@ async def test_advice_goes_when_the_newer_answer_cuts_the_usual_short(tmp_path):
 
 
 async def test_advice_goes_when_the_cut_short_copy_omits_the_destination(tmp_path):
-    from builders import _cut
+    from builders import cut_stop
 
     full = make_leg("RTD", "AAA", "17:52", "18:30", number="7952", stops=["BBB", "UT"])
     # the newer copy lists BBB cancelled and ends at UT: AAA is not in it at all
     short = make_leg("RTD", "UT", "17:52", "18:20", number="7952", stops=["BBB"])
-    short = replace(short, stops=(short.stops[0], _cut(short.stops[1]), short.stops[2]))
+    short = replace(short, stops=(short.stops[0], cut_stop(short.stops[1]), short.stops[2]))
     onward = make_leg("UT", "AAA", "18:25", "18:35", number="7999")
     leave = await held_then_split(
         tmp_path,
@@ -1539,25 +1510,6 @@ async def test_window_edit_keeps_an_undelivered_works_warning_told_later(tmp_pat
 # --- rule 5(b): a held look-ahead message that no longer holds is dropped ---
 
 
-def _world_with(day: date, l2: object) -> list:
-    """Every usual journey, the outbound on `day` with `l2` as its second leg."""
-    l1 = make_leg("AAA", "UT", "08:12", "08:40", number="1234", day=day)
-    return [
-        *(c for c in every_day() if c.legs[0].train.operating_date != day),
-        make_connection([l1, l2]),
-        *returns_every_day("17:52"),
-    ]
-
-
-def _cancelled_l2(day: date) -> list:
-    l2x = make_leg("UT", "RTD", "08:50", "09:24", number="5678", day=day, cancelled=True)
-    return _world_with(day, l2x)
-
-
-def _clean() -> list:
-    return [*every_day(), *returns_every_day("17:52")]
-
-
 def _ahead(rig: Rig, kind: EventKind) -> list[AlertEvent]:
     return [e for e in rig.notifier.attempts if e.kind is kind and e.profile_id == "p1"]
 
@@ -1565,7 +1517,7 @@ def _ahead(rig: Rig, kind: EventKind) -> list[AlertEvent]:
 async def _held_warning(tmp_path, day: date) -> Rig:
     """05:40 on DAY: the look-ahead tells works on `day`; every delivery fails."""
     rig = Rig(tmp_path, "05:40")
-    rig.provider.world = _cancelled_l2(day)
+    rig.provider.world = cancelled_l2(day)
     rig.notifier.fails = lambda e: True
     await rig.rt.start()
     await rig.rt.lookahead_once()
@@ -1582,25 +1534,14 @@ async def _back(rig: Rig) -> None:
 NEXT = DAY + timedelta(days=1)  # the look-ahead's next commute day, as `_held_warning` uses it
 
 
-def _split_world(day: date, other) -> list:
-    l1 = make_leg("AAA", "UT", "08:12", "08:40", number="1234", day=day)
-    l2 = make_leg("UT", "RTD", "08:50", "09:24", number="5678", day=day)
-    return [
-        *(c for c in every_day() if c.legs[0].train.operating_date != day),
-        make_connection([planned_at_alight(l1), l2]),
-        make_connection([other(l1), l2]),
-        *returns_every_day("17:52"),
-    ]
-
-
 async def test_superseded_lookahead_data_unclear_is_never_delivered(tmp_path):
     rig = Rig(tmp_path, "05:40")
-    rig.provider.world = _split_world(NEXT, lambda leg: leg)  # A: planned only vs live
+    rig.provider.world = split_world(NEXT, lambda leg: leg)  # A: planned only vs live
     rig.notifier.fails = lambda e: True
     await rig.rt.start()
     await rig.rt.lookahead_once()
     rig.clock.set("06:10")
-    rig.provider.world = _split_world(NEXT, lambda leg: _on_track(leg, "7"))  # B
+    rig.provider.world = split_world(NEXT, lambda leg: on_track(leg, "7"))  # B
     await rig.rt.lookahead_once()
     await _back(rig)
     (e,) = _ahead(rig, EventKind.DATA_UNCLEAR)
@@ -1609,7 +1550,7 @@ async def test_superseded_lookahead_data_unclear_is_never_delivered(tmp_path):
 
 async def test_lookahead_and_live_data_unclear_are_separate(tmp_path):
     rig = Rig(tmp_path, "05:40")
-    rig.provider.world = _split_world(NEXT, lambda leg: leg)
+    rig.provider.world = split_world(NEXT, lambda leg: leg)
     await rig.rt.start()
     await rig.rt.lookahead_once()  # told ahead for NEXT by the look-ahead
     (ahead,) = _ahead(rig, EventKind.DATA_UNCLEAR)
@@ -1676,7 +1617,7 @@ def _set_expiry(rig: Rig, expires: object) -> None:
 @pytest.mark.parametrize("restart", [False, True])
 async def test_held_works_warning_survives_a_recovery_written_through_a_rename(tmp_path, restart):
     rig = Rig(tmp_path, "05:40")  # rule 5(c), 22: a held warning keeps the revision it is on
-    rig.provider.world = _cancelled_l2(DAY + timedelta(days=1))
+    rig.provider.world = cancelled_l2(DAY + timedelta(days=1))
     rig.notifier.fails = lambda e: True
     await rig.rt.start()
     rig.store.fail = True
@@ -1818,7 +1759,7 @@ async def test_withdrawn_adoption_correction_after_its_date_is_still_sent(tmp_pa
 async def test_held_warning_whose_works_ended_is_dropped_restored_still_sent(tmp_path):
     rig = await _held_warning(tmp_path, DAY + timedelta(days=2))
     rig.clock.t = at("05:40", DAY + timedelta(days=1))
-    rig.provider.world = _clean()
+    rig.provider.world = clean_world()
     await rig.rt.lookahead_once()
     assert any(o.event.kind is EventKind.RESTORED for o in rig.rt.state.obligations)
     await _back(rig)
@@ -1829,17 +1770,17 @@ async def test_held_warning_whose_works_ended_is_dropped_restored_still_sent(tmp
 async def test_held_restoration_followed_by_renewed_works_is_dropped(tmp_path):
     thu = DAY + timedelta(days=2)
     rig = Rig(tmp_path, "05:40")
-    rig.provider.world = _cancelled_l2(thu)
+    rig.provider.world = cancelled_l2(thu)
     await rig.rt.start()
     await rig.rt.lookahead_once()
     assert _ahead(rig, EventKind.WORKS_AHEAD)  # delivered
     rig.notifier.fails = lambda e: True
     rig.clock.t = at("05:40", DAY + timedelta(days=1))
-    rig.provider.world = _clean()
+    rig.provider.world = clean_world()
     await rig.rt.lookahead_once()
     assert any(o.event.kind is EventKind.RESTORED for o in rig.rt.state.obligations)
     rig.clock.set("12:00")
-    rig.provider.world = _cancelled_l2(thu)
+    rig.provider.world = cancelled_l2(thu)
     await rig.rt.lookahead_once()
     await _back(rig)
     got = [e.kind for e in _ahead(rig, EventKind.WORKS_AHEAD) + _ahead(rig, EventKind.RESTORED)]
@@ -2097,56 +2038,6 @@ async def test_colliding_stored_ids_are_split_on_load(tmp_path):
 # --- rule 5(b): a look-ahead bundle sends only its facts that still hold (Review Focus 12) ---
 
 
-def thu_world(leg0: bool, leg1: bool) -> list:
-    """Every usual journey, the outbound two days after DAY with leg 0 and leg 1 cancelled or
-    not."""
-    thu = DAY + timedelta(days=2)
-    l1 = make_leg("AAA", "UT", "08:12", "08:40", number="1234", day=thu, cancelled=leg0)
-    l2 = make_leg("UT", "RTD", "08:50", "09:24", number="5678", day=thu, cancelled=leg1)
-    return [
-        *(c for c in every_day() if c.legs[0].train.operating_date != thu),
-        make_connection([l1, l2]),
-        *returns_every_day("17:52"),
-    ]
-
-
-async def live_facts_bundle(rig: Rig, change: str, stale: bool, fail) -> tuple[Obligation, tuple]:
-    """Look-ahead runs on DAY at 05:40, 06:10 (and 06:40) on a rig not started yet; `fail(True)`
-    makes every delivery fail from the bundle under test on. "recovery": works on both legs,
-    then leg 0 is restored (both when `stale`). "relapse": works on both legs, delivered, both
-    back to normal, then leg 1 under works again (both when `stale`). Returns the bundle under
-    test, still owed, and the facts of it that still hold."""
-    thu = DAY + timedelta(days=2)
-
-    def owed() -> Obligation:
-        (o,) = [x for x in rig.rt.state.obligations if x.look_ahead == ("p1", OUT, thu)]
-        return o
-
-    rig.provider.world = thu_world(True, True)
-    fail(change == "recovery")
-    await rig.rt.start()
-    await rig.rt.lookahead_once()
-    if change == "recovery":
-        o = owed()
-        rig.clock.set("06:10")
-        rig.provider.world = thu_world(False, not stale)
-        await rig.rt.lookahead_once()
-        keep = f"{thu.isoformat()}|1|warn:"
-    else:
-        rig.clock.set("06:10")
-        rig.provider.world = thu_world(False, False)
-        fail(True)
-        await rig.rt.lookahead_once()
-        o = owed()
-        rig.clock.set("06:40")
-        rig.provider.world = thu_world(stale, True)
-        await rig.rt.lookahead_once()
-        keep = f"{thu.isoformat()}|0|restored"
-    facts = rig.rt.state.lookahead["p1|outbound"].facts[o.id]
-    assert len(facts) > 1  # a bundle
-    return o, () if stale else tuple(f for f in facts if f[0].startswith(keep))
-
-
 @pytest.mark.parametrize("stale", [False, True])
 @pytest.mark.parametrize("change", ["relapse", "recovery"])
 async def test_partial_relapse_or_recovery_phone_sends_only_live_facts(tmp_path, change, stale):
@@ -2174,7 +2065,7 @@ async def test_occurrence_data_unclear_holds_only_while_its_values_are_the_lates
     split = [make_connection([planned_at_alight(L1), L2]), make_connection([L1, L2])]
     moved = [
         make_connection([planned_at_alight(L1), L2]),
-        make_connection([_on_track(L1, "7"), L2]),
+        make_connection([on_track(L1, "7"), L2]),
     ]
 
     async def poll(hhmm, world):
