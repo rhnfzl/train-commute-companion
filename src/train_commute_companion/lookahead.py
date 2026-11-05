@@ -570,22 +570,20 @@ def run_lookahead(
     revision: int,
     today: date,
     now: datetime,
-    others: Sequence[Profile] = (),
-    bases: Mapping[tuple[str, Direction], BaselineHistory] | None = None,
+    others: Sequence[Profile],
+    bases: Mapping[tuple[str, Direction], BaselineHistory],
 ) -> tuple[BaselineHistory, LookAheadLedger, list[AlertEvent]] | None:
     """The direction's serialised look-ahead writer. Every fact is written to the ledger and
     stored as a pending message before any delivery. `others` are the other profiles and
     `bases` the current baseline histories of every other (profile id, direction), this
     profile's other direction included, for the dated overlap check of an adoption (7.12
-    rule 19); `others` is only compared through `bases`, so it needs them.
+    rule 19).
 
     Caller contract (rule 21): `ledger` is the ledger as stored at write time with
     `started_revision` / `started_baseline` set to the revision and `history.latest` seen when
     this run started; `history` and `revision` are the current ones; `now` is the run's start
     time. A newer run that finished first stamped a later `last_run`, so this one is dropped.
     `ledger.pending` holds only undelivered obligations: delivery removes each one it finishes."""
-    if bases is None and others:
-        raise AssertionError("`others` is only compared through `bases`")
     if ledger.started_revision != revision or ledger.started_baseline != history.latest:
         return None  # the route or baseline changed since the run started (rule 21)
     stamps = [t.astimezone(UTC) for t in (ledger.last_applied, ledger.last_run) if t is not None]
@@ -610,7 +608,7 @@ def run_lookahead(
     n = len(p.journey(d).transfers) + 1
     agreed, pattern_refusal = _agreed_signature(results, wholes, expected, n + 1 if n > 1 else 1)
     _cancel_waiting(draft, agreed, in_force_today, today)
-    adopted, adopt_refusal = _adopt(draft, p, d, agreed, expected, today, others, bases or {})
+    adopted, adopt_refusal = _adopt(draft, p, d, agreed, expected, today, others, bases)
     final = draft.history()
     unsure = _probe_facts(draft, p, d, results, final, adopted, today)
 

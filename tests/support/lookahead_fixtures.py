@@ -94,7 +94,16 @@ def ledger(history: BaselineHistory, revision: int = 1, **kw) -> LookAheadLedger
 
 def run(history: BaselineHistory, results: list[ProbeResult], led=None, today=MON, now=NOW, p=P):
     out = run_lookahead(
-        p, OUT, history, led or ledger(history), results, revision=1, today=today, now=now
+        p,
+        OUT,
+        history,
+        led or ledger(history),
+        results,
+        revision=1,
+        today=today,
+        now=now,
+        others=(),
+        bases={},
     )
     assert out is not None
     return out
