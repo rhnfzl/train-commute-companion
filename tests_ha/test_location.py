@@ -65,7 +65,7 @@ async def start_tracker(h):
 
         async def spy(profile_id, event, *rest, **kw):
             calls.append((event.zone, event.kind))
-            await orig(profile_id, event, *rest, **kw)
+            return await orig(profile_id, event, *rest, **kw)
 
         rt.location = spy
 
@@ -225,6 +225,27 @@ async def test_a_failed_enter_starts_no_report_timer(hass):
     harness.FREEZER.tick(5)
     set_person(hass, 52.10001, 5.1)
     assert await spied(h) == [("UT", "report")]  # the core hears the user is here after all
+
+
+async def test_an_enter_ns_did_not_answer_starts_no_report_timer(hass):
+    h = await setup_tcc(hass, VIA_UT, now="08:00")
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    await drive(h, "08:14")  # after the 08:12 left
+    answering = h.provider.trips
+
+    async def timing_out(q):
+        raise TimeoutError
+
+    h.provider.trips = timing_out
+    set_person(hass, 52.0, 5.0)  # in AAA's zone
+    assert await spied(h) == [("AAA", "enter")]
+    h.provider.trips = answering
+    harness.FREEZER.tick(30)
+    set_person(hass, 52.00001, 5.0)  # inside the 2 minutes, and it still reports
+    await drive(h, "08:15")
+    assert await spied(h) == [("AAA", "enter"), ("AAA", "report")]
+    assert any("missed" in c.data["message"].lower() and loud(c) for c in h.pushes), texts(h)
 
 
 async def test_attribute_change_with_old_coordinates_sends_nothing(hass):

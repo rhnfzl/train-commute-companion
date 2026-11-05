@@ -182,9 +182,9 @@ def spied(app: Any) -> list[tuple[str | None, str]]:
         app.calls = calls = []
         orig = app.rt.location
 
-        async def spy(profile_id: str, event: Any, *rest: Any, **kw: Any) -> None:
+        async def spy(profile_id: str, event: Any, *rest: Any, **kw: Any) -> bool:
             calls.append((event.zone, event.kind))
-            await orig(profile_id, event, *rest, **kw)
+            return await orig(profile_id, event, *rest, **kw)
 
         app.rt.location = spy
     return list(app.calls)

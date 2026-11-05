@@ -1363,6 +1363,20 @@ async def test_location_epoch_bumps_only_on_location_changes(tmp_path):
         assert rig.rt.view().location_epochs.get("p1", 0) == first + want, name
 
 
+async def test_location_says_whether_ns_answered(tmp_path):
+    rig = await one_transfer(tmp_path)
+    rig.clock.set("08:18")
+    assert await rig.rt.location("p1", LocationEvent("AAA", "report", at("08:18"))) is True
+    answering = rig.provider.trips
+
+    async def timing_out(q):
+        raise TimeoutError
+
+    rig.provider.trips = timing_out
+    assert await rig.rt.location("p1", LocationEvent("AAA", "report", at("08:18"))) is False
+    rig.provider.trips = answering
+
+
 async def test_choose_at_retained_remainder_promotes_ridden_train(tmp_path):  # N3, required
     rig = await one_transfer(tmp_path)
     rig.clock.set("08:18")  # at AAA after the 08:12 left: it may still dwell with the user on it

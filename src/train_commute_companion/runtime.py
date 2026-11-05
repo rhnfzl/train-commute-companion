@@ -1090,8 +1090,9 @@ class Runtime:
         event: LocationEvent,
         source: LocationSettings | None = None,
         epoch: int | None = None,
-    ) -> None:
-        """Every unresolved occurrence of the profile gets the event with a fresh origin answer.
+    ) -> bool:
+        """Every unresolved occurrence of the profile gets the event with a fresh origin answer;
+        False when NS failed one of those requests, so the event was judged without it.
         With `source` (the settings the event was read under), a profile whose location settings
         differ by the time it would be written drops the event: a switched, disabled or replaced
         source supplies no evidence (8). With `epoch` (`RuntimeView.location_epochs` when the fix
@@ -1102,6 +1103,7 @@ class Runtime:
                 return True
             return source is not None and ctx.profile.location != source
 
+        answered = True
         mine = [k for k, s in self._writer.st.occurrences.items() if s.key.profile_id == profile_id]
         for k in mine:
             s = self._writer.st.occurrences.get(k)
@@ -1121,12 +1123,14 @@ class Runtime:
             ctx = None if s is None else self._ctx(s, now)
             if s is None or ctx is None or is_resolved(s) or stale(ctx):
                 continue
+            answered = answered and not isinstance(got, str) and not isinstance(more, str)
             # an answer asked under another generation is stale; the report itself still counts
             answer = None if isinstance(got, str) or s.generation != gen else got
             watched = () if isinstance(more, str) or s.generation != gen else more
             t = on_location(s, ctx, event, answer, watched)
             self._apply({k: (t.state, t.events)})
         await self._deliver()
+        return answered
 
     # --- reload (5.2, rule 10) ---
 

@@ -29,7 +29,7 @@ Station zones are not set up by hand. The companion takes each station's positio
 
 ## What it does
 
-Leaving a zone, entering one, and reports from inside a station zone are sent as they happen. Reports from one zone are sent at most once every 2 minutes, because each one costs a live NS request. A position inside those 2 minutes is dropped, not kept for later: if your phone then stops moving, a missed-train warning waits for its next changed position. A state that is `unavailable` or `unknown`, has no coordinates, repeats the previous coordinates, or has a `gps_accuracy` larger than the station radius is ignored. Starting Home Assistant inside a zone sends nothing.
+Leaving a zone, entering one, and reports from inside a station zone are sent as they happen. Reports from one zone are sent at most once every 2 minutes, because each one costs a live NS request. A position inside those 2 minutes is dropped, not kept for later: if your phone then stops moving, a missed-train warning waits for its next changed position. An update NS could not answer does not start those 2 minutes, so the next position is sent at once. A state that is `unavailable` or `unknown`, has no coordinates, repeats the previous coordinates, or has a `gps_accuracy` larger than the station radius is ignored. Starting Home Assistant inside a zone sends nothing.
 
 Leaving home before your usual train leaves picks the next train you can still catch. A "left home" that comes only after your usual train left does not change your train, because a phone often reports late. If you really missed it, arriving at the station picks the next good train.
 

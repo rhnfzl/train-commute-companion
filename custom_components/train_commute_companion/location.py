@@ -173,6 +173,10 @@ class LocationTracker:
         def live() -> bool:
             return self._gen.get(pid) is gen
 
+        def lift_timer() -> None:
+            if pid in self._tracks:  # a source change meanwhile has dropped this track
+                self._tracks[pid] = undelivered(self._tracks[pid])
+
         async with self._locks.setdefault(pid, asyncio.Lock()):
             try:
                 data = self._entry.runtime_data.coordinator.data
@@ -205,14 +209,14 @@ class LocationTracker:
 
                         def send(
                             rt: Runtime, msg: LocationEvent = event
-                        ) -> Coroutine[Any, Any, None]:
+                        ) -> Coroutine[Any, Any, bool]:
                             # the core rechecks the source after its own request, before any write
                             return rt.location(pid, msg, source, epoch=epoch)
 
-                        await host.run(send)
+                        if not await host.run(send):
+                            lift_timer()
                 except Exception:
-                    if pid in self._tracks:  # a source change meanwhile has dropped this track
-                        self._tracks[pid] = undelivered(self._tracks[pid])
+                    lift_timer()
                     raise
             except RuntimeNotRunning:
                 _LOGGER.debug("location event dropped: the runtime is not running")
