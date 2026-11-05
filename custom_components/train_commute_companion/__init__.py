@@ -2,9 +2,11 @@
 
 import os
 import threading
+from collections.abc import Awaitable, Callable
 from functools import partial
 from pathlib import Path
 
+import httpx
 from homeassistant.const import CONF_API_KEY, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
@@ -41,6 +43,18 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async_setup_services(hass)
     return True
+
+
+def _closing_client(
+    close_provider: Callable[[], Awaitable[None]], client: httpx.AsyncClient
+) -> Callable[[], Awaitable[None]]:
+    async def close() -> None:
+        try:
+            await close_provider()
+        finally:
+            await client.aclose()
+
+    return close
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
@@ -87,13 +101,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
                 token=webhook_token,
                 stopped=retired.is_set,
             )
-            close_provider = close
-
-            async def close() -> None:
-                try:
-                    await close_provider()
-                finally:
-                    await client.aclose()
+            close = _closing_client(close, client)
 
         rt = Runtime(
             profile_path=Path(profiles_path),

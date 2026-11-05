@@ -4,8 +4,11 @@ import asyncio
 import logging
 import threading
 import time
+from collections.abc import Callable
+from types import ModuleType
 from typing import Any, cast
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
@@ -142,7 +145,6 @@ async def _push_mobile(
 
     data = hass.data[MOBILE_APP]
     entry = data["config_entries"][webhook_id]
-    session = async_get_clientsession(hass)
     message = {"message": payload["message"], "data": payload.get("data")}
     channel: Any = data["push_channel"].get(webhook_id)  # PushChannel, untyped upstream
     if channel is None or not channel.support_confirm:
@@ -153,9 +155,35 @@ async def _push_mobile(
                 f"{entry.title} has no push relay and no confirming local push channel"
             )
         async with asyncio.timeout(NOTIFY_TIMEOUT_S):
-            await mobile_notify._send_message(session, entry, message)
+            await mobile_notify._send_message(async_get_clientsession(hass), entry, message)
         return True
+    return await _push_local(hass, channel, entry, message, mobile_notify, retired, tasks)
 
+
+def _on_confirmation(pending: dict[str, Any], settle: Callable[[bool], None]) -> Callable[[], None]:
+    """The phone's confirmation also settles the push; returns HA's own unsubscribe. The
+    confirmation is the only caller of this unsubscribe (a failure pops first)."""
+    unsub: Callable[[], None] = pending["unsub_scheduled_push_failed"]
+
+    def confirmed() -> None:
+        unsub()
+        settle(True)
+
+    pending["unsub_scheduled_push_failed"] = confirmed
+    return unsub
+
+
+async def _push_local(
+    hass: HomeAssistant,
+    channel: Any,  # PushChannel, untyped upstream
+    entry: ConfigEntry,
+    message: dict[str, Any],
+    mobile_notify: ModuleType,
+    retired: threading.Event | None,
+    tasks: set[asyncio.Task[None]] | None,
+) -> bool:
+    """Waits for the phone's confirmation or for HA's fallback through the relay to finish."""
+    session = async_get_clientsession(hass)
     done: asyncio.Future[bool] = hass.loop.create_future()
 
     def settle(ok: bool) -> None:
@@ -193,16 +221,7 @@ async def _push_mobile(
     channel.async_send_notification(message, fallback)
     confirm_id = message.get("hass_confirm_id", "")
     pending = channel.pending_confirms.get(confirm_id)
-    unsub: Any = None
-    if pending is not None:
-        # the phone's confirmation is the only caller of this unsubscribe (a failure pops first)
-        unsub = pending["unsub_scheduled_push_failed"]
-
-        def confirmed() -> None:
-            unsub()
-            settle(True)
-
-        pending["unsub_scheduled_push_failed"] = confirmed
+    unsub = None if pending is None else _on_confirmation(pending, settle)
     try:
         # neither a confirmation nor a finished fallback by the deadline: unproven, so not delivered
         async with asyncio.timeout(LOCAL_PUSH_SETTLE_S):

@@ -22,7 +22,7 @@ from train_commute_companion.location import (
     station_zones,
     undelivered,
 )
-from train_commute_companion.model import Profile
+from train_commute_companion.model import LocationSettings, Profile
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.view import running_stations
 
@@ -110,15 +110,7 @@ class LocationTracker:
             if p.location and p.location.source == "ha" and p.location.entity
         }
         old, self._tracked = self._tracked, want
-        entities = sorted({e for e, _ in want.values()})
-        if self._unsub_state is None or entities != sorted({e for e, _ in old.values()}):
-            if self._unsub_state is not None:
-                self._unsub_state()
-            self._unsub_state = (
-                async_track_state_change_event(self._hass, entities, self._on_change)
-                if entities
-                else None
-            )
+        self._subscribe(sorted({e for e, _ in want.values()}), sorted({e for e, _ in old.values()}))
         for pid in old.keys() | want.keys():
             tracked = want.get(pid)
             if old.get(pid) == tracked:
@@ -134,6 +126,17 @@ class LocationTracker:
             if state is not None and (pos := _fix(state)) is not None:
                 at, acc = state.last_updated, _acc(state)
                 self._spawn(self._handle(pid, gen, epoch, pos, at, acc, seed=True), pid)
+
+    def _subscribe(self, entities: list[str], before: list[str]) -> None:
+        if self._unsub_state is not None and entities == before:
+            return
+        if self._unsub_state is not None:
+            self._unsub_state()
+        self._unsub_state = (
+            async_track_state_change_event(self._hass, entities, self._on_change)
+            if entities
+            else None
+        )
 
     @callback
     def _on_change(self, event: Event[EventStateChangedData]) -> None:
@@ -168,57 +171,64 @@ class LocationTracker:
         drops the work, so evidence of an old source never reaches the core. `epoch` is the
         core's location epoch when the fix arrived: work queued behind the lock while the source
         changed (a switch back included) is dropped here and again by the core."""
-        host = self._entry.runtime_data.host
-
-        def live() -> bool:
-            return self._gen.get(pid) is gen
-
-        def lift_timer() -> None:
-            if pid in self._tracks:  # a source change meanwhile has dropped this track
-                self._tracks[pid] = undelivered(self._tracks[pid])
-
         async with self._locks.setdefault(pid, asyncio.Lock()):
             try:
-                data = self._entry.runtime_data.coordinator.data
-                profile = next((p for p in data.profiles if p.id == pid), None)
-                if profile is None or profile.location is None:
-                    return
-                if data.location_epochs.get(pid, 0) != epoch:  # a lagging view drops it too
-                    return
-                source = profile.location
-                if acc is not None and acc > source.station_radius_m:
-                    return  # it cannot place the user in a station circle (8, rule 6)
-                positions = await host.run(lambda rt: dict(rt.positions))
-                if not live():
-                    return
-                # read again after the await: the view may have moved on
-                running = running_stations(
-                    self._entry.runtime_data.coordinator.data.occurrences, pid
-                )
-                zone = resolve_zone(*pos, zones_for(self._hass, profile, positions, running))
-                if seed:
-                    self._tracks[pid] = seed_zone(zone, at)
-                    return
-                track = self._tracks.get(pid, ZoneTrack())  # never seeded: no zone to leave
-                self._tracks[pid], changes = next_zone(track, zone, at)
-                try:
-                    for name, kind in changes:
-                        if not live():  # checked with no await before the dispatch
-                            return
-                        event = LocationEvent(name, kind, at)
-
-                        def send(
-                            rt: Runtime, msg: LocationEvent = event
-                        ) -> Coroutine[Any, Any, bool]:
-                            # the core rechecks the source after its own request, before any write
-                            return rt.location(pid, msg, source, epoch=epoch)
-
-                        if not await host.run(send):
-                            lift_timer()
-                except Exception:
-                    lift_timer()
-                    raise
+                await self._step(pid, gen, epoch, pos, at, acc, seed)
             except RuntimeNotRunning:
                 _LOGGER.debug("location event dropped: the runtime is not running")
             except Exception:
                 _LOGGER.exception("location event for %s failed", pid)
+
+    async def _step(
+        self,
+        pid: str,
+        gen: object,
+        epoch: int,
+        pos: tuple[float, float],
+        at: datetime,
+        acc: float | None,
+        seed: bool,
+    ) -> None:
+        data = self._entry.runtime_data.coordinator.data
+        profile = next((p for p in data.profiles if p.id == pid), None)
+        if profile is None or profile.location is None:
+            return
+        if data.location_epochs.get(pid, 0) != epoch:  # a lagging view drops it too
+            return
+        source = profile.location
+        if acc is not None and acc > source.station_radius_m:
+            return  # it cannot place the user in a station circle (8, rule 6)
+        positions = await self._entry.runtime_data.host.run(lambda rt: dict(rt.positions))
+        if self._gen.get(pid) is not gen:
+            return
+        # read again after the await: the view may have moved on
+        running = running_stations(self._entry.runtime_data.coordinator.data.occurrences, pid)
+        zone = resolve_zone(*pos, zones_for(self._hass, profile, positions, running))
+        if seed:
+            self._tracks[pid] = seed_zone(zone, at)
+            return
+        track = self._tracks.get(pid, ZoneTrack())  # never seeded: no zone to leave
+        self._tracks[pid], changes = next_zone(track, zone, at)
+        try:
+            for name, kind in changes:
+                if self._gen.get(pid) is not gen:  # checked with no await before the dispatch
+                    return
+                event = LocationEvent(name, kind, at)
+                if not await self._send(pid, event, source, epoch):
+                    self._lift_timer(pid)
+        except Exception:
+            self._lift_timer(pid)
+            raise
+
+    async def _send(
+        self, pid: str, event: LocationEvent, source: LocationSettings, epoch: int
+    ) -> bool:
+        def send(rt: Runtime) -> Coroutine[Any, Any, bool]:
+            # the core rechecks the source after its own request, before any write
+            return rt.location(pid, event, source, epoch=epoch)
+
+        return await self._entry.runtime_data.host.run(send)
+
+    def _lift_timer(self, pid: str) -> None:
+        if pid in self._tracks:  # a source change meanwhile has dropped this track
+            self._tracks[pid] = undelivered(self._tracks[pid])
