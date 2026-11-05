@@ -7,9 +7,9 @@ from train_commute_companion.classify import (
     classify_leg,
     current_connection,
     current_run,
+    expected_departure,
     find_leg,
     pair_transfer,
-    sort_by_expected_departure,
 )
 from train_commute_companion.model import LegKind, Observation, Provenance, TrainId
 from train_commute_companion.providers.base import ProviderAnswer, Query
@@ -110,7 +110,7 @@ def test_cancelled_last_stop_with_reported_arrival_still_served():
 def test_sort_by_expected_departure_uses_delay():
     late = make_connection([make_leg("UT", "RTD", "08:00", "09:00", delay_dep=20)])
     early = make_connection([make_leg("UT", "RTD", "08:10", "09:10")])
-    assert sort_by_expected_departure([late, early]) == [early, late]
+    assert sorted([late, early], key=expected_departure) == [early, late]
 
 
 def test_train_not_calling_at_alight_station_is_cut_short_at_its_last_stop():
@@ -151,7 +151,7 @@ def test_sort_across_the_repeated_hour_uses_instants():
         [make_leg("UT", "RTD", "02:10", "03:00", day=date(2026, 10, 24), fold_dep=1)]
     )
     first = make_connection([make_leg("UT", "RTD", "02:40", "03:30", day=date(2026, 10, 24))])
-    assert sort_by_expected_departure([second, first]) == [first, second]
+    assert sorted([second, first], key=expected_departure) == [first, second]
 
 
 # one poll's answers a minute apart; train 6666 boarding at UT, alight RTD (item A, 6.2)

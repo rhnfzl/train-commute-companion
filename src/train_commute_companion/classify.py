@@ -47,10 +47,6 @@ def expected_departure(conn: Connection) -> datetime:
     return (t or conn.legs[0].train.planned_departure).astimezone(UTC)
 
 
-def sort_by_expected_departure(conns: Iterable[Connection]) -> list[Connection]:
-    return sorted(conns, key=expected_departure)
-
-
 def classify_leg(leg: Leg, alight_station: str) -> ClassifiedLeg:
     """Kind comes from the stops between boarding and `alight_station`, never from one flag.
     A train that does not call at `alight_station` (absent, passed or cancelled there) is cut
