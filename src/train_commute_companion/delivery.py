@@ -32,7 +32,7 @@ JOURNEY_WARNINGS = frozenset(
 )
 
 
-class LedgerView(Protocol):
+class Ledger(Protocol):
     def skipped(self, key: OccurrenceKey) -> bool: ...
     def fact_holds(self, o: Obligation) -> bool: ...
     def newer_covers(self, o: Obligation) -> bool: ...
@@ -45,22 +45,22 @@ class LedgerView(Protocol):
         ...
 
 
-def revalidate(o: Obligation, view: LedgerView, now: datetime) -> Literal["send", "drop", "hold"]:
+def revalidate(o: Obligation, ledger: Ledger, now: datetime) -> Literal["send", "drop", "hold"]:
     kind = o.event.kind
     if kind in APP_WARNINGS:  # (a) beats (c)
         return "send"
     if kind in JOURNEY_WARNINGS:
-        return "drop" if o.occurrence is not None and view.skipped(o.occurrence) else "send"
+        return "drop" if o.occurrence is not None and ledger.skipped(o.occurrence) else "send"
     if o.expires_at is not None and now.astimezone() >= o.expires_at.astimezone():
         return "drop"
-    if view.newer_covers(o) or not view.fact_holds(o):
+    if ledger.newer_covers(o) or not ledger.fact_holds(o):
         return "drop"
-    if o.occurrence is not None and not view.revision_live(o.occurrence, o.route_revision):
+    if o.occurrence is not None and not ledger.revision_live(o.occurrence, o.route_revision):
         return "drop"
     if (
         o.event.severity is Severity.SILENT
         and kind is not EventKind.ALL_GOOD
-        and view.in_quiet_hours(o.event.profile_id, now)
+        and ledger.in_quiet_hours(o.event.profile_id, now)
     ):
         return "hold"
     return "send"
@@ -73,27 +73,27 @@ def pending_journey_warnings(obligations: Sequence[Obligation], key: OccurrenceK
 
 def zone_report_stops_silent(s: OccurrenceState, zones: Collection[str]) -> bool:
     """Rule 6 / 8.4: a report in the alighting-station or destination zone ends repeat silent
-    messages for the journey. Use as the silent branch of `LedgerView.fact_holds`."""
+    messages for the journey. Use as the silent branch of `Ledger.fact_holds`."""
     return any(z in s.zone_reports for z in zones)
 
 
 async def deliver(
-    o: Obligation, view: LedgerView, notifier: Notifier, now: datetime
+    o: Obligation, ledger: Ledger, notifier: Notifier, now: datetime
 ) -> tuple[Obligation | None, bool]:
     """One watchdog attempt: the obligation to keep (None: finished) and whether it was sent."""
-    verdict = revalidate(o, view, now)
+    verdict = revalidate(o, ledger, now)
     if verdict == "drop":
         return None, False
     if verdict == "hold":
         return o, False
-    if await notifier.send(view.current(o)):
+    if await notifier.send(ledger.current(o)):
         return None, True
     return replace(o, attempts=o.attempts + 1), False
 
 
 async def post_copy(
     c: WebhookCopy,
-    view: LedgerView,
+    ledger: Ledger,
     port: WebhookPort,
     now: datetime,
     started: Callable[[WebhookCopy], None] = lambda c: None,
@@ -102,7 +102,7 @@ async def post_copy(
     (every URL accepted, or dropped). Otherwise the copy to keep; the give-up clock starts
     only with a real request, and `started` gets the copy with its first try before that
     request goes out, so a try cut off by shutdown still counts."""
-    verdict = revalidate(c.obligation, view, now)
+    verdict = revalidate(c.obligation, ledger, now)
     if verdict == "drop":
         return None
     if verdict == "hold":
@@ -115,7 +115,7 @@ async def post_copy(
     if c.first_try is None:
         c = replace(c, first_try=now)
         started(c)
-    tried, ok = await port.post(view.current(c.obligation), c.id, todo)
+    tried, ok = await port.post(ledger.current(c.obligation), c.id, todo)
     if not tried:
         return c
     done = c.done + tuple(url_id(u) for u in todo if u in ok)

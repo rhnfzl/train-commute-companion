@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 from train_commute_companion.calendar import to_utc
-from train_commute_companion.delivery import JOURNEY_WARNINGS, LedgerView, post_copy
+from train_commute_companion.delivery import JOURNEY_WARNINGS, Ledger, post_copy
 from train_commute_companion.model import Obligation, OccurrenceKey, WebhookCopy
 from train_commute_companion.notify import WebhookPort
 from train_commute_companion.revalidation import covers
@@ -26,7 +26,7 @@ MAX_COPIES = 200
 class CopyQueue:
     """The one live record of owed webhook copies, written with every save and never rebuilt from
     the running state (rule 22: a failed write resets that). `held`: copies of alerts held in
-    memory, judged with the held view. `copied`: obligations whose copy was made since the last
+    memory, judged with the held ledger. `copied`: obligations whose copy was made since the last
     delivery write landed (a failed write resets their `webhook_copied`)."""
 
     def __init__(
@@ -35,7 +35,7 @@ class CopyQueue:
         now: Callable[[], datetime],
         record: Callable[[], None],
         waits: Callable[[Obligation], bool],
-        ledger: Callable[[bool], LedgerView],
+        ledger: Callable[[bool], Ledger],
     ) -> None:
         self.port, self._now, self._record = port, now, record
         self._waits, self._ledger = waits, ledger
@@ -77,7 +77,7 @@ class CopyQueue:
 
     def stage(self, o: Obligation, held: bool) -> bool:
         """The webhook copy of an obligation handed to the phone; True when one was made.
-        `held`: an alert held in memory, its copy judged with the held view."""
+        `held`: an alert held in memory, its copy judged with the held ledger."""
         self.copied.add(o.id)
         cid = event_id(o.id)
         if cid in self.copies:
@@ -100,7 +100,7 @@ class CopyQueue:
 
     def rewrite(self, c: WebhookCopy, o: Obligation) -> None:
         """The same copy (webhook-id, receipts, tries) now owing `o`, judged on what the write
-        tried (the held view) until it lands: a failed write must not drop it (rule 22)."""
+        tried (the held ledger) until it lands: a failed write must not drop it (rule 22)."""
         self.copies[c.id] = replace(c, obligation=o)
         self.held.add(c.id)
 

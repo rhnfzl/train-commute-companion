@@ -186,7 +186,7 @@ def _current_body(
 
 
 class LiveLedger:
-    """The delivery ledger view (7.12 rule 5): judges a message on the state and on what the
+    """The delivery ledger (7.12 rule 5): judges a message on the state and on what the
     runtime remembers of the latest polls. `written` reads the running state and `judged` the
     state a message is judged on, both at every call: a skip, reload or poll written while a send
     awaited counts for the next message (7.8, rule 5). For the alerts of unwritten changes
