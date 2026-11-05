@@ -318,10 +318,10 @@ async def test_build_adds_a_poster_only_when_webhooks_are_set(tmp_path, tg):
     clock = TickClock(at("07:50"))
     app = make_app(tmp_path, tg, clock)
     assert (
-        app.webhooks is None and seam.queue(app.rt).port is None and app.bot._webhook_test is None
+        app.webhooks is None and seam.webhook_port(app.rt) is None and app.bot._webhook_test is None
     )
     app = make_app(tmp_path, tg, clock, webhook_token=WTOKEN, **HOOKS)
-    assert isinstance(app.webhooks, WebhookPoster) and seam.queue(app.rt).port is app.webhooks
+    assert isinstance(app.webhooks, WebhookPoster) and seam.webhook_port(app.rt) is app.webhooks
     assert app.webhooks.urls == (URL,) and app.webhooks._token == WTOKEN
     assert app.bot._webhook_test is not None
 

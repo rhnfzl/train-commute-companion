@@ -18,8 +18,20 @@ def held(rt):
     return rt._writer.held
 
 
-def queue(rt):
-    return rt._queue
+def owed_copies(rt):
+    return rt._queue.copies
+
+
+def held_copies(rt):
+    return rt._queue.held
+
+
+def webhook_port(rt):
+    return rt._queue.port
+
+
+def stop_webhooks(rt):
+    return rt._queue.stop()
 
 
 def memory(rt):
