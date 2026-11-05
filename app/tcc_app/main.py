@@ -14,15 +14,11 @@ from typing import Any
 
 import httpx
 
+from train_commute_companion.calendar import Clock, SystemClock
 from train_commute_companion.model import present
 from train_commute_companion.providers.base import Provider
 from train_commute_companion.providers.ns import NsProvider
-from train_commute_companion.runtime import (
-    LOOKAHEAD_AT,
-    Clock,
-    Runtime,
-    SystemClock,
-)
+from train_commute_companion.runtime import LOOKAHEAD_AT, Runtime
 from train_commute_companion.store import JsonFileStore
 from train_commute_companion.webhook import check_secret, check_token, parse_urls
 from train_commute_companion.webhook_send import WebhookPoster, send_webhook_tests

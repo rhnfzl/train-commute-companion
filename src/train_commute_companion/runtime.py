@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, S
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from train_commute_companion.advice import (
     advice_query,
@@ -17,7 +17,7 @@ from train_commute_companion.advice import (
     usual_arrival,
 )
 from train_commute_companion.budget import POLL_EVERY_S, RequestBudget
-from train_commute_companion.calendar import TZ, resolve_local, to_utc
+from train_commute_companion.calendar import TZ, Clock, resolve_local, to_utc
 from train_commute_companion.choice import ChoiceTarget, choice_target, named_connections
 from train_commute_companion.classify import current_run, evidence, find_leg
 from train_commute_companion.delivery import (
@@ -124,19 +124,6 @@ WATCHDOG_EVERY_S = 30
 FILE_EVERY_S = 10
 LOOKAHEAD_AT = time(6, 0)
 _APP = "app"  # profile name on application warnings, which belong to no profile
-
-
-class Clock(Protocol):
-    def now(self) -> datetime: ...
-    async def sleep(self, seconds: float) -> None: ...
-
-
-class SystemClock:
-    def now(self) -> datetime:
-        return datetime.now(TZ)
-
-    async def sleep(self, seconds: float) -> None:
-        await asyncio.sleep(seconds)
 
 
 def _reasons(errors: Sequence[ProfileProblem]) -> str:

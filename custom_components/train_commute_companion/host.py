@@ -12,9 +12,10 @@ from typing import Any, cast, overload
 
 import httpx
 
+from train_commute_companion.calendar import Clock, SystemClock
 from train_commute_companion.providers.base import Provider
 from train_commute_companion.providers.ns import NsProvider
-from train_commute_companion.runtime import Clock, Runtime, SystemClock
+from train_commute_companion.runtime import Runtime
 
 _LOGGER = logging.getLogger(__name__)
 

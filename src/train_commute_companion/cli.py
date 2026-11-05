@@ -12,14 +12,14 @@ from pathlib import Path
 
 import httpx
 
-from train_commute_companion.calendar import TZ
+from train_commute_companion.calendar import TZ, SystemClock
 from train_commute_companion.messages import ATTRIBUTION
 from train_commute_companion.model import AlertEvent, Profile
 from train_commute_companion.profile import check_lines
 from train_commute_companion.providers.base import ProviderError
 from train_commute_companion.providers.ns import NsProvider, map_stations
 from train_commute_companion.replay import ReplayError, format_event, replay_lines
-from train_commute_companion.runtime import Runtime, SystemClock
+from train_commute_companion.runtime import Runtime
 from train_commute_companion.store import JsonFileStore, read_state
 from train_commute_companion.view import moved
 

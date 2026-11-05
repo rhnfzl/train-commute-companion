@@ -1,10 +1,24 @@
-"""Commute days, Dutch public holidays and DST-safe clock resolution."""
+"""Commute days, Dutch public holidays, DST-safe clock resolution and the clock port."""
 
+import asyncio
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Literal
+from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("Europe/Amsterdam")
+
+
+class Clock(Protocol):
+    def now(self) -> datetime: ...
+    async def sleep(self, seconds: float) -> None: ...
+
+
+class SystemClock:
+    def now(self) -> datetime:
+        return datetime.now(TZ)
+
+    async def sleep(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
 
 
 def to_utc(t: datetime) -> datetime:

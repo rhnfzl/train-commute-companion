@@ -29,9 +29,9 @@ from tcc_app.main import PORT, App, Settings, main, serve, setup_logging
 from tcc_app.web import ask_readout, health_report, mcp_socket_path, start_readout
 from webhook_receiver import Receiver
 
+from train_commute_companion.calendar import SystemClock
 from train_commute_companion.model import EventKind, Leaving, WebhookCopy
 from train_commute_companion.providers.ns import NsProvider
-from train_commute_companion.runtime import SystemClock
 from train_commute_companion.store import JsonFileStore
 from train_commute_companion.webhook_send import WebhookPoster
 

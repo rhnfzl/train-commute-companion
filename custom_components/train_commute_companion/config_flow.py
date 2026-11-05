@@ -26,7 +26,6 @@ from homeassistant.helpers.selector import (
 from train_commute_companion.model import Severity
 from train_commute_companion.providers.base import AuthError, ProviderError
 from train_commute_companion.providers.ns import NsProvider
-from train_commute_companion.runtime import SystemClock
 from train_commute_companion.webhook import check_secret, check_token, parse_urls
 from train_commute_companion.webhook_send import send_webhook_tests
 
@@ -75,7 +74,7 @@ def _fails(check: Callable[[str], None], value: str) -> bool:
 
 async def check_key(hass: HomeAssistant, api_key: str) -> frozenset[str]:
     """The NS station list; AuthError or ProviderError when it cannot be had."""
-    return await NsProvider(api_key, get_async_client(hass), SystemClock().now).stations()
+    return await NsProvider(api_key, get_async_client(hass), host_mod.make_clock().now).stations()
 
 
 async def key_error(hass: HomeAssistant, api_key: str) -> str | None:
