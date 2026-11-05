@@ -7,13 +7,8 @@ from datetime import date, datetime, time
 from builders import AMS, make_connection, make_leg
 from lookahead_fixtures import NEXT_TUE, NOW, OUT, P, confirmed, ledger
 
-from train_commute_companion.lifecycle import (
-    PollAnswers,
-    Transition,
-    journey_of,
-    on_location,
-    on_poll,
-)
+from train_commute_companion.lifecycle import PollAnswers, Transition, on_location, on_poll
+from train_commute_companion.lifecycle_lock import journey_of
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.model import (
     AdviceRecord,

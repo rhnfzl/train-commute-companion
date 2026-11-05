@@ -1,6 +1,6 @@
-"""The lock writer, user actions, the follow step, location, arrival acceptance
-and termination (7.2, 7.4, 7.7, 7.8, 7.12 rules 1, 2, 3, 6, 7, 8, 10, 11, 21, 7.13). Pure: `now`
-always comes from the caller."""
+"""User actions, the auto lock, the follow step, location and arrival acceptance (7.2, 7.4, 7.7,
+7.12 rules 1, 2, 3, 6, 7, 8, 10, 11, 21, 7.13). The lock writer is in `lifecycle_lock`, termination
+in `lifecycle_end`. Pure: `now` always comes from the caller."""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -17,6 +17,15 @@ from train_commute_companion.classify import (
     pair_transfer,
     served,
 )
+from train_commute_companion.lifecycle_lock import (
+    MAY_HAVE_LEFT,
+    journey_of,
+    may_be_on,
+    progress_of,
+    rides,
+    unfinished_leg,
+    write_lock,
+)
 from train_commute_companion.location import STALE_LOCATION, LocationEvent
 from train_commute_companion.match import (
     matches_pattern,
@@ -26,7 +35,6 @@ from train_commute_companion.match import (
 )
 from train_commute_companion.messages import data_unclear_text
 from train_commute_companion.model import (
-    FOLLOW_LIMIT,
     AlertEvent,
     AlertFacts,
     ClassifiedLeg,
@@ -94,15 +102,7 @@ class Choose:
 
 UserAction = Choose | Leaving | NotTravelling
 
-# a train the user may be on: departed and not done (7.12 rule 7). RIDING and MISSED say so by
-# state; a PENDING or BOARDING leg says so once its planned departure has passed, since leg
-# progress may lag the clock (a departed usual is auto-locked PENDING). A delayed train still at
-# the platform also counts: retaining it errs on the safe side.
-_MAY_BE_ON = (LegState.RIDING, LegState.MISSED)
-_MAY_HAVE_LEFT = (LegState.PENDING, LegState.BOARDING)
-_YIELDS_TO_CHOICE = (LockSource.AUTO, LockSource.STATION, LockSource.LOCATION)
 _STATION_REPLACES = (LockSource.AUTO, LockSource.LOCATION)
-_NEEDS_EXPECT_OVER_CHOICE = (LockSource.RELOCK, LockSource.RESTORE)
 _UNRESOLVED_END = (DirectionState.DONE, DirectionState.EXPIRED)
 _DEPARTED = (LegState.RIDING, LegState.DONE)  # by departure evidence: boarding progress (7.4)
 
@@ -137,7 +137,7 @@ def _plan(s: OccurrenceState) -> tuple[object, ...]:
     )
 
 
-def _bumped(old: OccurrenceState, new: OccurrenceState) -> OccurrenceState:
+def bumped(old: OccurrenceState, new: OccurrenceState) -> OccurrenceState:
     """`new` with the generation raised once when its plan moved and nothing raised it yet."""
     if new.generation != old.generation or _plan(new) == _plan(old):
         return new
@@ -146,107 +146,6 @@ def _bumped(old: OccurrenceState, new: OccurrenceState) -> OccurrenceState:
 
 def catch_from_state(s: OccurrenceState, buffer_min: int, now: datetime) -> Catchability:
     return catch_from(now, buffer_min, s.tap_at if s.travelling else None, s.at_station)
-
-
-def progress_of(leg: Leg) -> LegProgress:
-    a = leg.alight.code
-    return LegProgress(
-        train=leg.train,
-        board_station=leg.board.code,
-        intended_alight=a,
-        served_endpoint=a,
-        alight_stop=a,
-        alight_frozen=False,
-        state=LegState.PENDING,
-        accepted_at=None,
-        accept_value=None,
-        accept_first_seen=None,
-        watch_until=None,
-    )
-
-
-def journey_of(c: Connection, source: LockSource, commitment: Commitment) -> Journey:
-    last = c.legs[-1]
-    arrival = last.alight.planned_arrival or last.train.planned_departure
-    return Journey(tuple(progress_of(x) for x in c.legs), source, commitment, arrival)
-
-
-def unfinished_leg(j: Journey) -> LegProgress | None:
-    return next((x for x in j.legs if x.state is not LegState.DONE), None)
-
-
-def _may_be_on(x: LegProgress, now: datetime | None) -> bool:
-    if x.state in _MAY_BE_ON:
-        return True
-    left = now is not None and x.train.planned_departure.astimezone(UTC) <= now.astimezone(UTC)
-    return left and x.state in _MAY_HAVE_LEFT
-
-
-def _rides(j: Journey | None, train: TrainId, now: datetime | None) -> bool:
-    """The user may be on `train` as the first unfinished leg of `j`."""
-    first = None if j is None else unfinished_leg(j)
-    return first is not None and first.train == train and _may_be_on(first, now)
-
-
-def _lock_refused(old: Journey | None, new: Journey, expect: Journey | None) -> bool:
-    if expect is not None and old != expect:
-        return True
-    if old is None or old.source is not LockSource.CHOOSE:
-        return False
-    return new.source in _YIELDS_TO_CHOICE or (
-        new.source in _NEEDS_EXPECT_OVER_CHOICE and expect is None
-    )
-
-
-def _merged_legs(old: Journey | None, new: Journey) -> tuple[LegProgress, ...]:
-    """Completed travel stays; a caller passing a done leg again may update its watched fields
-    (served endpoint, alighting stop, acceptance). A choice brings its own prefix (7.12 r7):
-    completed legs of another journey are never merged into it."""
-    newer = {x.train: x for x in new.legs}
-    done = (
-        ()
-        if old is None or new.source is LockSource.CHOOSE
-        else tuple(newer.get(x.train, x) for x in old.legs if x.state is LegState.DONE)
-    )
-    done_trains = {x.train for x in done}
-    return done + tuple(x for x in new.legs if x.train not in done_trains)
-
-
-def _ridden_remainder(
-    old: Journey, legs: Sequence[LegProgress], now: datetime | None
-) -> tuple[Journey, ...]:
-    kept = {x.train for x in legs}
-    replaced = [
-        i for i, x in enumerate(old.legs) if x.state is not LegState.DONE and x.train not in kept
-    ]
-    # from the first replaced train the user may be on: an earlier replaced one (say a
-    # cancelled train never boarded) does not hide a later one that may be ridden
-    on = next((i for i in replaced if _may_be_on(old.legs[i], now)), None)
-    return () if on is None else (replace(old, legs=old.legs[on:]),)
-
-
-def write_lock(
-    s: OccurrenceState, new: Journey, *, expect: Journey | None, now: datetime | None
-) -> OccurrenceState | None:
-    """Compare-and-set lock write. None when refused (stale `expect` or precedence).
-    `now` decides whether a replaced train has departed, so it is retained (7.12 rule 7); None
-    judges by leg state only, for a caller that already knows the replaced train is not ridden."""
-    old = s.lock
-    if _lock_refused(old, new, expect):
-        return None
-    legs = _merged_legs(old, new)
-    retained = s.retained
-    if old is not None:
-        retained += _ridden_remainder(old, legs, now)
-    state = s.direction_state
-    return replace(
-        s,
-        lock=replace(new, legs=legs),
-        retained=retained,
-        generation=s.generation + 1,
-        direction_state=DirectionState.LOCKED if state is DirectionState.IDLE else state,
-        errand_deadline=s.errand_deadline if new.commitment is Commitment.PROVISIONAL else None,
-    )
 
 
 DELAY_STEP_MIN = 3
@@ -335,7 +234,7 @@ def keep_stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
     return Transition(replace(s, alert_keys=keys) if keys != s.alert_keys else s, tuple(out))
 
 
-def _on_prefix(j: Journey) -> str:
+def on_prefix(j: Journey) -> str:
     """A retained journey's warnings open with this, so it says which train it is about."""
     return f"if you are on the {hhmm(j.legs[0].train.planned_departure)}: "
 
@@ -492,7 +391,7 @@ def _lock_without_usual(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) ->
 def _ridden_source(s: OccurrenceState, train: TrainId, now: datetime | None) -> Journey | None:
     """The lock or retained remainder whose first unfinished leg is `train`, a train the user
     may be on. A retained remainder holds such a train by construction, whatever its state."""
-    if _rides(s.lock, train, now):
+    if rides(s.lock, train, now):
         return s.lock
     return next((j for j in s.retained if (f := unfinished_leg(j)) and f.train == train), None)
 
@@ -815,7 +714,7 @@ def _journey(
 
 
 def _progress(s: OccurrenceState, legs: Sequence[LegProgress]) -> OccurrenceState:
-    """Observed progress only; the generation is raised once per poll by `_bumped`."""
+    """Observed progress only; the generation is raised once per poll by `bumped`."""
     return replace(s, lock=replace(present(s.lock), legs=tuple(legs)))
 
 
@@ -864,7 +763,7 @@ def _restore_at(
     rest = legs[j:]
     if station != h.board_station or rest[0].train == h.train:
         return None
-    if any(y.state is LegState.DONE or _may_be_on(y, ctx.now) for y in rest):
+    if any(y.state is LegState.DONE or may_be_on(y, ctx.now) for y in rest):
         return None
     kept = observe(pool, legs[j - 1])[0] if j else None
     if j and kept is None:
@@ -1094,7 +993,7 @@ def _boarded_reroute(
 ) -> Connection | None:
     """The actual route of the boarded kept leg just before `first_replaced`, if NS reroutes it."""
     before = first_replaced - 1
-    boarded = first_replaced > 0 and _may_be_on(legs[before], w.ctx.now)
+    boarded = first_replaced > 0 and may_be_on(legs[before], w.ctx.now)
     on_it = w.rc is not None and boarded and w.rc.legs[0].train == legs[before].train
     return w.rc if on_it else None
 
@@ -1334,7 +1233,7 @@ def _follow(
         proposal = _check_cancelled(w, legs, i, cl)
         if proposal is None:
             usable = cl.kind in _RUNNING_LEG_KINDS or cl.kind is LegKind.CUT_SHORT
-            if usable and before.state in _MAY_HAVE_LEFT and (pc := _platform(ctx, before, cl)):
+            if usable and before.state in MAY_HAVE_LEFT and (pc := _platform(ctx, before, cl)):
                 events.append(pc)
             legs[i] = _observed_ends(ctx.profile, before, nxt, cl, ncl)
             proposal = _check_cut_short(w, legs, i, before, cl)
@@ -1349,7 +1248,7 @@ def _follow(
         events += proposal.transition.events
     if rc is not None and obs[k] is not None:
         # a boarded train is never dropped: its stop moves to where NS changes, taken or not
-        boarded = _may_be_on(legs[k], now)
+        boarded = may_be_on(legs[k], now)
         if boarded:
             end = rc.legs[0].alight.code
             legs[k] = _move_stop(legs[k], end, end)
@@ -1371,13 +1270,13 @@ def _advance(ctx: Ctx, pool: Pool, j: Journey) -> tuple[Journey, list[int]]:
     """Leg progress (7.7): boarding within the buffer of the expected departure, riding once it
     has departed. A train cancelled at its boarding stop is never boarded. A train not
     identified in this poll gets no progress: RIDING is departure evidence (it freezes an
-    alighting stop, 7.4), while `_may_be_on` already retains it by its planned time. Returns
+    alighting stop, 7.4), while `may_be_on` already retains it by its planned time. Returns
     the journey and the indexes of the legs that departed now."""
     now = to_utc(ctx.now)
     buffer = timedelta(minutes=ctx.profile.journey(ctx.direction).buffer_min)
     legs, left = list(j.legs), list[int]()
     for i, x in enumerate(legs):
-        if x.state not in _MAY_HAVE_LEFT:
+        if x.state not in MAY_HAVE_LEFT:
             continue
         cl = observe(pool, x)[0]
         if cl is None or cl.kind is LegKind.CANCELLED:
@@ -1444,7 +1343,7 @@ def _missing_events(
     events: list[AlertEvent] = []
     seen: dict[str, tuple[LegProgress, set[str], str]] = {}
     for j in ((s.lock,) if live and s.lock else ()) + s.retained:
-        on = "" if j is s.lock else _on_prefix(j)
+        on = "" if j is s.lock else on_prefix(j)
         for x in j.legs:
             if not _observed(x, ctx.now):
                 continue
@@ -1488,7 +1387,7 @@ def _follow_retained(
     retained = []
     for r in s.retained:
         first = r.legs[0].train
-        on = _on_prefix(r)
+        on = on_prefix(r)
         alone = replace(s, lock=r, retained=(), cancellation_history=())
         t = _follow(alone, ctx, pool, asked, relock=False)
         retained.append(present(t.state.lock))
@@ -1529,10 +1428,10 @@ def on_poll(s: OccurrenceState, ctx: Ctx, poll: PollAnswers) -> Transition:
     s, retained = _follow_retained(s, ctx, pool, asked)
     events += retained
     t = (_restore(s, ctx, pool) or _follow(s, ctx, pool, asked)) if live else Transition(s, ())
-    return keep_stated(_bumped(start, t.state), (*events, *t.events))
+    return keep_stated(bumped(start, t.state), (*events, *t.events))
 
 
-# --- arrival acceptance, location, missed legs, termination (7.2, 7.7, 7.12 rules 6, 7) ---
+# --- arrival acceptance, location, missed legs (7.2, 7.7, 7.12 rules 6, 7) ---
 
 ERRAND_TIMEOUT = timedelta(minutes=45)
 ACCEPT_AFTER = timedelta(minutes=5)
@@ -1608,14 +1507,14 @@ def _accept_all(
         events += es
     retained = []
     for r in s.retained:
-        on = _on_prefix(r)
+        on = on_prefix(r)
         r, es = _accept_journey(ctx, r, pool, on)
         retained.append(r)
         events += es
     return replace(s, lock=lock, retained=tuple(retained)), events
 
 
-def _place_zone(p: Profile, station: str) -> str:
+def place_zone(p: Profile, station: str) -> str:
     """The configured zone of the home or work end; by its role name when none is configured.
     A station zone is named by its station code (8)."""
     role = "home" if station == p.home_station else "work"
@@ -1660,7 +1559,7 @@ def on_location(
     t = _locate(s, ctx, event, answer, watched)
     # rule 21: a lock, catchability or missed-leg change raises the generation; a repeat
     # report that changes none of them keeps polls in flight
-    return keep_stated(_bumped(start, t.state), t.events)
+    return keep_stated(bumped(start, t.state), t.events)
 
 
 def _locate(
@@ -1674,7 +1573,7 @@ def _locate(
     if s.direction_state is DirectionState.DONE:
         return Transition(s, ())  # only arrival evidence for a retained remainder (rule 7)
     if event.kind == "leave":
-        if event.zone == _place_zone(p, p.origin(d)):
+        if event.zone == place_zone(p, p.origin(d)):
             return _left_origin(s, ctx, event, answer)
         return Transition(s, ())
     seen = (*((answer,) if answer is not None else ()), *watched)  # `location_queries`
@@ -1785,149 +1684,6 @@ def _missed(s: OccurrenceState, ctx: Ctx, event: LocationEvent, pool: Pool) -> T
         source=LockSource.MISSED,
     )
     return _relock(s, ctx, pool, asked, cut)
-
-
-def on_tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None = None) -> Transition:
-    """Time-driven steps: the errand timeout (45 min) clears a provisional lock, keeping a
-    departed train retained; the auto lock when due (`answer` is the usual's query answer); a
-    window closed with no lock; each journey's end by its last watch or its 150-min limit
-    (rules 6, 7). Arrival acceptance itself runs on each poll. Only a poll passes the usual's
-    answer; any other tick has none and writes no auto lock."""
-    if s.not_travelling:
-        return Transition(s, ())
-    t = _tick(s, ctx, answer)
-    return Transition(_bumped(s, t.state), t.events)  # termination and removal: rule 21
-
-
-def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transition:
-    now = to_utc(ctx.now)
-    events: list[AlertEvent] = []
-    lock = s.lock
-    if (
-        lock is not None
-        and lock.commitment is Commitment.PROVISIONAL
-        and s.errand_deadline is not None
-        and now >= to_utc(s.errand_deadline)
-    ):
-        f = first_open(lock)
-        retained = s.retained
-        if f < len(lock.legs) and _may_be_on(lock.legs[f], now):
-            retained += (replace(lock, legs=lock.legs[f:]),)
-        state = s.direction_state
-        s = replace(
-            s,
-            lock=None,
-            retained=retained,
-            travelling=False,
-            tap_at=None,
-            errand_deadline=None,
-            generation=s.generation + 1,
-            direction_state=DirectionState.IDLE if state is DirectionState.LOCKED else state,
-        )
-    if answer is not None and s.lock is None and s.direction_state is not DirectionState.DONE:
-        t = auto_lock(s, ctx, answer)
-        s, events = t.state, [*events, *t.events]
-        if s.lock is not None:
-            s = _merge_retained(s)
-    if (
-        s.lock is None
-        and s.direction_state is not DirectionState.DONE
-        and now >= to_utc(ctx.schedule.window_end)
-    ):
-        text = "I stopped following your journey, check the NS app."
-        events.append(make_event(ctx, EventKind.STOPPED_FOLLOWING, Severity.LOUD, text))
-        s = replace(s, direction_state=DirectionState.DONE)
-    if s.lock is not None and s.direction_state is not DirectionState.DONE:
-        end = _journey_end(s, ctx, s.lock, retained=False)
-        if end is not None:
-            events += end
-            s = replace(s, direction_state=DirectionState.DONE)
-    left = []
-    for r in s.retained:
-        end = _journey_end(s, ctx, r, retained=True)
-        if end is None:
-            left.append(r)
-        else:
-            events += end
-    return Transition(replace(s, retained=tuple(left)), tuple(events))
-
-
-def _merge_retained(s: OccurrenceState) -> OccurrenceState:
-    """The auto lock may follow the very journey a cleared lock kept: a retained remainder
-    whose unfinished trains are exactly the lock's from its first one on is merged into the
-    lock with its progress and watches. Any other remainder, also one that shares only its
-    first train, stays retained (rule 7)."""
-    lock = present(s.lock)
-    legs = list(lock.legs)
-    trains = [x.train for x in legs]
-    kept = []
-    for r in s.retained:
-        rest = r.legs[first_open(r) :]
-        i = trains.index(rest[0].train) if rest and rest[0].train in trains else None
-        if i is None or trains[i:] != [x.train for x in rest]:
-            kept.append(r)
-            continue
-        legs[i:] = rest
-    return replace(s, lock=replace(lock, legs=tuple(legs)), retained=tuple(kept))
-
-
-def _arrived(s: OccurrenceState, ctx: Ctx, last: LegProgress) -> bool:
-    """A location report time-stamped after the accepted arrival, at the alighting station or
-    the destination zone (rule 6)."""
-    when = last.accept_value or last.accepted_at
-    if when is None:
-        return False
-    p, d = ctx.profile, ctx.direction
-    zones = {last.alight_stop, p.destination(d), _place_zone(p, p.destination(d))}
-    return any((t := s.zone_reports.get(z)) is not None and to_utc(t) > to_utc(when) for z in zones)
-
-
-def _journey_end(
-    s: OccurrenceState, ctx: Ctx, j: Journey, *, retained: bool
-) -> tuple[AlertEvent, ...] | None:
-    """None while `j` is followed; else the events of its end: silent with arrival evidence,
-    else one loud `stopped_following` naming it."""
-    now = to_utc(ctx.now)
-    last = j.legs[-1]
-    first = j.legs[0].train
-    on = _on_prefix(j) if retained else ""
-    train = first if retained else None
-    limit = to_utc(j.planned_final_arrival) + FOLLOW_LIMIT
-    if last.state is LegState.DONE:
-        # the earlier of the last watch and the journey's 150-min limit (rules 6, 7)
-        w = last.watch_until
-        if now < limit and (w is None or now < to_utc(w)):
-            return None
-        if _arrived(s, ctx, last):
-            return ()
-        arrival = hhmm(last.accept_value or last.accepted_at or w or limit)
-        text = (
-            f"{on}NS showed it arriving at {arrival}; I stopped following it, check the NS app."
-            if retained
-            else f"NS showed your train arriving at {arrival}; I stopped following, check the NS "
-            "app if you are not there."
-        )
-        return (make_event(ctx, EventKind.STOPPED_FOLLOWING, Severity.LOUD, text, train),)
-    if now < limit:
-        return None
-    text = f"{on}I stopped following {'it' if retained else 'your journey'}, check the NS app."
-    return (make_event(ctx, EventKind.STOPPED_FOLLOWING, Severity.LOUD, text, train),)
-
-
-def may_archive(s: OccurrenceState, now: datetime, pending_journey_warnings: int) -> bool:
-    """Rule 6: the occurrence may be archived. The caller counts the occurrence's undelivered
-    journey warnings in its ledger; none may remain."""
-    if pending_journey_warnings > 0:
-        return False
-    if s.not_travelling:
-        return True
-    if s.direction_state is not DirectionState.DONE or s.retained:
-        return False
-    if s.lock is None:
-        return True
-    w = s.lock.legs[-1].watch_until
-    limit = to_utc(s.lock.planned_final_arrival) + FOLLOW_LIMIT
-    return w is None or to_utc(now) >= min(to_utc(w), limit)
 
 
 def origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> Pool | None:

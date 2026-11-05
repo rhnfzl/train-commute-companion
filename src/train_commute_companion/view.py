@@ -16,8 +16,8 @@ from train_commute_companion.lifecycle import (
     merged_pool,
     next_good_instead_of,
     observe,
-    unfinished_leg,
 )
+from train_commute_companion.lifecycle_lock import unfinished_leg
 from train_commute_companion.location import (
     Fix,
     LocationKind,

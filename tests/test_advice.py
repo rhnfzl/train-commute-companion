@@ -4,7 +4,7 @@ from datetime import date, datetime
 from builders import AMS, make_connection, make_leg
 
 from train_commute_companion.advice import advise, still_advised
-from train_commute_companion.lifecycle import journey_of
+from train_commute_companion.lifecycle_lock import journey_of
 from train_commute_companion.model import (
     Connection,
     Ctx,

@@ -86,7 +86,7 @@ def revalidate(o: Obligation, ledger: Ledger, now: datetime) -> Literal["send", 
 
 
 def pending_journey_warnings(obligations: Sequence[Obligation], key: OccurrenceKey) -> int:
-    """What callers pass to `lifecycle.may_archive`: undelivered journey warnings of this occurrence."""
+    """What callers pass to `lifecycle_end.may_archive`: undelivered journey warnings of this occurrence."""
     return sum(1 for o in obligations if o.occurrence == key and o.event.kind in JOURNEY_WARNINGS)
 
 

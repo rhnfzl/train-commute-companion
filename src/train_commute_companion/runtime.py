@@ -42,16 +42,15 @@ from train_commute_companion.lifecycle import (
     apply_action,
     is_resolved,
     location_queries,
-    may_archive,
     merged_pool,
     on_location,
     on_poll,
-    on_tick,
     origin_answer,
     queries_needed,
     target_occurrence,
     whole_day_keys,
 )
+from train_commute_companion.lifecycle_end import may_archive, on_tick
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import forget_pending, rebase_on_edit, reset_on_edit
 from train_commute_companion.lookahead_probe import service_date

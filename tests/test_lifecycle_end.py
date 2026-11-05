@@ -23,11 +23,8 @@ from lifecycle_fixtures import (
     retained_of,
 )
 
-from train_commute_companion.lifecycle import (
-    apply_action,
-    may_archive,
-    on_tick,
-)
+from train_commute_companion.lifecycle import apply_action
+from train_commute_companion.lifecycle_end import may_archive, on_tick
 from train_commute_companion.model import (
     DirectionState,
     EventKind,

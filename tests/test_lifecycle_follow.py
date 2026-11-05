@@ -39,9 +39,9 @@ from train_commute_companion.lifecycle import (
     Transition,
     keep_stated,
     on_poll,
-    progress_of,
     queries_needed,
 )
+from train_commute_companion.lifecycle_lock import progress_of
 from train_commute_companion.model import (
     AlertEvent,
     Connection,

@@ -9,11 +9,10 @@ from train_commute_companion.lifecycle import (
     apply_action,
     auto_lock,
     catch_from_state,
-    journey_of,
     target_occurrence,
     whole_day_keys,
-    write_lock,
 )
+from train_commute_companion.lifecycle_lock import journey_of, write_lock
 from train_commute_companion.model import (
     Connection,
     Direction,

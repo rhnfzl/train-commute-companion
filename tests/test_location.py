@@ -23,7 +23,8 @@ from lifecycle_fixtures import (
 )
 from location_fixtures import USUAL, event, locate
 
-from train_commute_companion.lifecycle import may_archive, on_location, on_poll, on_tick
+from train_commute_companion.lifecycle import on_location, on_poll
+from train_commute_companion.lifecycle_end import may_archive, on_tick
 from train_commute_companion.location import (
     Zone,
     ZoneTrack,

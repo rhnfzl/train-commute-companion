@@ -42,15 +42,14 @@ from train_commute_companion.ledger import zone_report_stops_silent
 from train_commute_companion.lifecycle import (
     Choose,
     apply_action,
-    may_archive,
     on_location,
     on_poll,
-    on_tick,
     origin_answer,
     queries_needed,
     target_occurrence,
-    write_lock,
 )
+from train_commute_companion.lifecycle_end import may_archive, on_tick
+from train_commute_companion.lifecycle_lock import write_lock
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.model import (
     DirectionState,
