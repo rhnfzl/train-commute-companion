@@ -117,6 +117,51 @@ def _station(c: _ProfileErrors, v: object, path: str, known: frozenset[str] | No
     return v
 
 
+def _transfers(
+    c: _ProfileErrors, raw: object, name: str, known: frozenset[str] | None
+) -> list[str]:
+    if not isinstance(raw, list):
+        c.err(f"{name}.transfers", "must be a list of station codes, [] for a direct train")
+        return []
+    found = (_station(c, t, f"{name}.transfers[{i}]", known) for i, t in enumerate(raw))
+    return [s for s in found if s]
+
+
+def _window(
+    c: _ProfileErrors, raw: object, name: str, first: time | None
+) -> tuple[time, time] | None:
+    if raw is None and first is not None:
+        return _shift(first, -60), _shift(first, 120)
+    if isinstance(raw, list) and len(raw) == 2:
+        a, b = c.time(raw[0], f"{name}.window[0]"), c.time(raw[1], f"{name}.window[1]")
+        return (a, b) if a and b else None
+    if raw is not None:
+        c.err(f"{name}.window", 'must be two times, for example ["07:12", "10:12"]')
+    return None
+
+
+def _check_window(
+    c: _ProfileErrors, name: str, first: time, window: tuple[time, time], buf: int
+) -> None:
+    before = (minute_of_day(first) - minute_of_day(window[0])) % MINUTES_PER_DAY
+    after = (minute_of_day(window[1]) - minute_of_day(first)) % MINUTES_PER_DAY
+    span = (minute_of_day(window[1]) - minute_of_day(window[0])) % MINUTES_PER_DAY
+    if before + after != span:
+        c.err(f"{name}.window", "window does not contain first_train")
+    elif after == 0:  # windows are half-open, so the end itself is outside
+        c.err(
+            f"{name}.window",
+            "window closes at first_train, so the train itself is outside it",
+            "close the window after first_train",
+        )
+    elif before < buf + 15:
+        c.err(
+            f"{name}.window",
+            f"window opens {before} min before first_train, needs at least {buf + 15} (buffer_min + 15)",
+            f"open the window at {_shift(first, -(buf + 15)):%H:%M} or earlier",
+        )
+
+
 def _journey(
     c: _ProfileErrors, raw: object, name: str, known: frozenset[str] | None, *, allow_offset: bool
 ) -> UsualJourney | None:
@@ -134,15 +179,7 @@ def _journey(
             f"{name}.day_offset", "day_offset is allowed on return only", "remove it from outbound"
         )
     first = c.time(raw.get("first_train"), f"{name}.first_train")
-    tr = raw.get("transfers", [])
-    transfers: list[str] = []
-    if not isinstance(tr, list):
-        c.err(f"{name}.transfers", "must be a list of station codes, [] for a direct train")
-    else:
-        for i, t in enumerate(tr):
-            s = _station(c, t, f"{name}.transfers[{i}]", known)
-            if s:
-                transfers.append(s)
+    transfers = _transfers(c, raw.get("transfers", []), name, known)
     buf = c.integer(raw.get("buffer_min"), f"{name}.buffer_min", 0)
     advice = c.boolean(
         raw.get("earlier_train_advice", name == "return"), f"{name}.earlier_train_advice"
@@ -150,35 +187,9 @@ def _journey(
     offset = 0
     if allow_offset:
         offset = c.integer(raw.get("day_offset", 0), f"{name}.day_offset", 0, 1) or 0
-    window: tuple[time, time] | None = None
-    w = raw.get("window")
-    if w is None and first is not None:
-        window = (_shift(first, -60), _shift(first, 120))
-    elif isinstance(w, list) and len(w) == 2:
-        a, b = c.time(w[0], f"{name}.window[0]"), c.time(w[1], f"{name}.window[1]")
-        window = (a, b) if a and b else None
-    elif w is not None:
-        c.err(f"{name}.window", 'must be two times, for example ["07:12", "10:12"]')
+    window = _window(c, raw.get("window"), name, first)
     if first and window and buf is not None:
-        before = (minute_of_day(first) - minute_of_day(window[0])) % MINUTES_PER_DAY
-        after = (minute_of_day(window[1]) - minute_of_day(first)) % MINUTES_PER_DAY
-        if (
-            before + after
-            != (minute_of_day(window[1]) - minute_of_day(window[0])) % MINUTES_PER_DAY
-        ):
-            c.err(f"{name}.window", "window does not contain first_train")
-        elif after == 0:  # windows are half-open, so the end itself is outside
-            c.err(
-                f"{name}.window",
-                "window closes at first_train, so the train itself is outside it",
-                "close the window after first_train",
-            )
-        elif before < buf + 15:
-            c.err(
-                f"{name}.window",
-                f"window opens {before} min before first_train, needs at least {buf + 15} (buffer_min + 15)",
-                f"open the window at {_shift(first, -(buf + 15)):%H:%M} or earlier",
-            )
+        _check_window(c, name, first, window, buf)
     if len(c.errors) > n or first is None or window is None or buf is None or advice is None:
         return None
     return UsualJourney(first, tuple(transfers), window, buf, advice, offset)
@@ -317,6 +328,30 @@ def _transfer_min(c: _ProfileErrors, raw: Mapping[str, object]) -> dict[str, int
     return tm
 
 
+_PROFILE_KEYS = (
+    "id",
+    "name",
+    "traveller",
+    "days",
+    "extra_dates",
+    "skip_public_holidays",
+    "home_station",
+    "work_station",
+    "outbound",
+    "return",
+    "transfer_min",
+    "alerts",
+    "location",
+)
+
+
+def _name(c: _ProfileErrors, raw: object) -> str | None:
+    if isinstance(raw, str) and slug(raw):
+        return raw
+    c.err("name", f"missing or empty name: {raw!r}")
+    return None
+
+
 def _profile(
     raw: object, idx: int, known: frozenset[str] | None
 ) -> tuple[Profile | None, list[ProfileProblem]]:
@@ -325,29 +360,8 @@ def _profile(
         return None, [ProfileProblem(None, base, "each profile must be a mapping")]
     pid = raw.get("id")
     c = _ProfileErrors(pid if isinstance(pid, str) and pid else None, base)
-    c.keys(
-        raw,
-        (
-            "id",
-            "name",
-            "traveller",
-            "days",
-            "extra_dates",
-            "skip_public_holidays",
-            "home_station",
-            "work_station",
-            "outbound",
-            "return",
-            "transfer_min",
-            "alerts",
-            "location",
-        ),
-        "",
-    )
-    name = raw.get("name")
-    if not isinstance(name, str) or not slug(name):
-        c.err("name", f"missing or empty name: {name!r}")
-        name = None
+    c.keys(raw, _PROFILE_KEYS, "")
+    name = _name(c, raw.get("name"))
     if c.pid is None:
         c.err(
             "id",
@@ -417,6 +431,37 @@ def _load_yaml(text: str) -> tuple[Any, list[ProfileProblem]]:
         return None, [ProfileProblem(None, "file", f"invalid value: {e}", "fix the YAML syntax")]
 
 
+def _duplicates(items: Sequence[object]) -> list[ProfileProblem]:
+    problems: list[ProfileProblem] = []
+    seen_id: set[str] = set()
+    seen_name: set[str] = set()
+    for i, raw in enumerate(items):
+        if not isinstance(raw, dict):
+            continue
+        pid, nm = raw.get("id"), raw.get("name")
+        if isinstance(pid, str) and pid in seen_id:
+            problems.append(
+                ProfileProblem(
+                    pid, f"profiles[{i}].id", f"duplicate id {pid!r}", "ids must be unique"
+                )
+            )
+        elif isinstance(pid, str):
+            seen_id.add(pid)
+        key = slug(nm) if isinstance(nm, str) else ""
+        if key and key in seen_name:
+            problems.append(
+                ProfileProblem(
+                    pid if isinstance(pid, str) else None,
+                    f"profiles[{i}].name",
+                    f"duplicate name {nm!r}",
+                    "names must be unique (they become entity prefixes)",
+                )
+            )
+        elif key:
+            seen_name.add(key)
+    return problems
+
+
 def parse_profiles(
     text: str, known_stations: frozenset[str] | None
 ) -> tuple[list[Profile], list[ProfileProblem]]:
@@ -439,32 +484,7 @@ def parse_profiles(
         errors += errs
         if p:
             profiles.append(p)
-    seen_id: dict[str, int] = {}
-    seen_name: dict[str, int] = {}
-    for i, raw in enumerate(items):
-        if not isinstance(raw, dict):
-            continue
-        pid, nm = raw.get("id"), raw.get("name")
-        if isinstance(pid, str) and pid in seen_id:
-            errors.append(
-                ProfileProblem(
-                    pid, f"profiles[{i}].id", f"duplicate id {pid!r}", "ids must be unique"
-                )
-            )
-        elif isinstance(pid, str):
-            seen_id[pid] = i
-        key = slug(nm) if isinstance(nm, str) else ""
-        if key and key in seen_name:
-            errors.append(
-                ProfileProblem(
-                    pid if isinstance(pid, str) else None,
-                    f"profiles[{i}].name",
-                    f"duplicate name {nm!r}",
-                    "names must be unique (they become entity prefixes)",
-                )
-            )
-        elif key:
-            seen_name[key] = i
+    errors += _duplicates(items)
     dup = {e.profile_id for e in errors if e.message.startswith("duplicate")}
     # a duplicate poisons every profile that shares the value
     # counted over raw entries, so a valid profile sharing a name with an invalid one is refused too
@@ -514,24 +534,29 @@ def _occurrences(
     return out
 
 
+def _collision(x: _Occ, y: _Occ, floor: datetime, same: bool) -> datetime | None:
+    if same and (x.day, x.direction) == (y.day, y.direction):
+        return None  # the same occurrence when a profile is checked against itself
+    # a weekly pattern collides in every non-holiday week, so holidays only count when a one-off
+    # date is involved
+    if not ((x.real and y.real) or (x.recurring and y.recurring)):
+        return None
+    lo, hi = max(x.start, y.start), min(x.end, y.end)
+    return lo if lo < hi and hi > floor else None
+
+
 def _window_overlap(
     oa: dict[date, list[_Occ]], ob: dict[date, list[_Occ]], floor: datetime, same: bool
 ) -> date | None:
     """Earliest local date two windows overlap, half-open [start, end) like in_window."""
-    hits: list[datetime] = []
-    for day, xs in oa.items():
-        for k in range(-3, 4):  # a dated window lies within its commute day -1 .. +2
-            for y in ob.get(day + timedelta(days=k), ()):
-                for x in xs:
-                    if same and (x.day, x.direction) == (y.day, y.direction):
-                        continue  # the same occurrence when a profile is checked against itself
-                    # a weekly pattern collides in every non-holiday week, so holidays only
-                    # count when a one-off date is involved
-                    if not ((x.real and y.real) or (x.recurring and y.recurring)):
-                        continue
-                    lo, hi = max(x.start, y.start), min(x.end, y.end)
-                    if lo < hi and hi > floor:
-                        hits.append(lo)
+    hits = [
+        lo
+        for day, xs in oa.items()
+        for k in range(-3, 4)  # a dated window lies within its commute day -1 .. +2
+        for y in ob.get(day + timedelta(days=k), ())
+        for x in xs
+        if (lo := _collision(x, y, floor, same)) is not None
+    ]
     return min(hits).astimezone(TZ).date() if hits else None
 
 
