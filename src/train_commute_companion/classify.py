@@ -5,6 +5,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from itertools import pairwise
+from typing import NamedTuple
 
 from train_commute_companion.calendar import floor_to_minute
 from train_commute_companion.model import (
@@ -174,13 +175,21 @@ def _unchanged_track(s: Stop) -> tuple[bool, str]:
     return s.actual_track in (None, s.planned_track), s.actual_track or ""
 
 
+class _Run(NamedTuple):
+    """One copy of a train and the answer it came from."""
+
+    fetched_at: datetime
+    at: datetime  # fetched_at as UTC: two local 02:30s of the DST fold are an hour apart (7.13)
+    cl: ClassifiedLeg
+
+
 def current_run(
     answers: Sequence[ProviderAnswer], train: TrainId, board: str, alight: str
 ) -> tuple[datetime, ClassifiedLeg] | None:
     """The current copy of `train` boarding at `board` over one poll's answers, and the
     fetch time of the answer that showed its arrival (rule 6 times acceptance by it)."""
     runs = [
-        (a.fetched_at, classify_leg(g, alight))
+        _Run(a.fetched_at, a.fetched_at.astimezone(UTC), classify_leg(g, alight))
         for a in _newest_first(answers)
         for c in a.connections
         for g in c.legs
@@ -189,63 +198,67 @@ def current_run(
     if not runs:
         return None
 
-    def rank(r: tuple[datetime, ClassifiedLeg]) -> tuple[bool, bool]:
+    def rank(r: _Run) -> tuple[bool, bool]:
         # never by stop count: two copies that both reach `alight` tie, and max keeps the newest
-        return r[1].kind not in (LegKind.CANCELLED, LegKind.CUT_SHORT), _reaches(r[1].leg, alight)
+        return r.cl.kind not in (LegKind.CANCELLED, LegKind.CUT_SHORT), _reaches(r.cl.leg, alight)
 
     def stopped(c: ClassifiedLeg) -> bool:
         return c.kind is LegKind.CANCELLED or (
             c.kind is LegKind.CUT_SHORT and _explicit_cut(c.leg, alight)
         )
 
-    # by instant: two local 02:30s of the DST fold are an hour apart (7.13)
-    top = runs[0][0].astimezone(UTC)
-    at_top = [r for r in runs if r[0].astimezone(UTC) == top]
+    at_top = [r for r in runs if r.at == runs[0].at]
     # transport is a fact of the newest fetch, whatever copy wins on stops; when its copies
     # disagree, the non-train one counts (6.3: never a train that may be a bus)
-    flags = {r[1].leg.alternative_transport for r in at_top}
+    flags = {r.cl.leg.alternative_transport for r in at_top}
     if len(flags) > 1:
         log.warning("conflicting transport of train %s at one fetch", train.train_number)
-    mode = next(r[1].leg for r in at_top if r[1].leg.alternative_transport is (True in flags))
+    mode = next(r.cl.leg for r in at_top if r.cl.leg.alternative_transport is (True in flags))
     # copies of one fetch that disagree on timing give the worst of each end, in any order
     # (7.3, 7.12): the earliest departure and the latest arrival, least trusted first; a
     # truncated copy still runs, so its departure counts too
     board_stop = min(
-        (r[1].leg.stops[0] for r in at_top), key=lambda s: _worst_first_key(s.departure, 1)
+        (r.cl.leg.stops[0] for r in at_top), key=lambda s: _worst_first_key(s.departure, 1)
     )
-    bad = [r for r in at_top if stopped(r[1])]
+
+    def merged(win: ClassifiedLeg, copies: Iterable[_Run]) -> ClassifiedLeg:
+        g = merge_arrivals(win.leg, (r.cl.leg for r in copies))
+        return classify_leg(replace(g, stops=(board_stop, *g.stops[1:])), alight)
+
+    bad = [r for r in at_top if stopped(r.cl)]
     if bad:
         # rule 7.12: conflicting newest copies never read as running, a missed alarm costs more
         if len(bad) < len(at_top):
             log.warning("conflicting copies of train %s at one fetch", train.train_number)
         # in any order: a cancellation, else the earliest cut
-        seen, win = min(bad, key=lambda r: _cut_at(r[1]))
-        if win.last_served is not None:
-            # the user changes at the cut, or at a stop frozen before it: worst of every copy
-            g = merge_arrivals(win.leg, (r[1].leg for r in at_top))
-            win = classify_leg(replace(g, stops=(board_stop, *g.stops[1:])), alight)
+        run = min(bad, key=lambda r: _cut_at(r.cl))
+        # the user changes at the cut, or at a stop frozen before it: worst of every copy
+        win = run.cl if run.cl.last_served is None else merged(run.cl, at_top)
     else:
         best = max(map(rank, runs))  # a truncated newer copy never reads as a cut short
-        at = next(r[0] for r in runs if rank(r) == best).astimezone(UTC)
-        seen, win = min(
-            (r for r in runs if rank(r) == best and r[0].astimezone(UTC) == at),
-            key=lambda r: _worst_first_key(_arrival_obs(r[1].leg, alight), -1),
+        at = next(r.at for r in runs if rank(r) == best)
+        run = min(
+            (r for r in runs if rank(r) == best and r.at == at),
+            key=lambda r: _worst_first_key(_arrival_obs(r.cl.leg, alight), -1),
         )
         # every stop at the worst of its fetch's copies, truncated ones included; departure
         # time, platform and provenance always from the newest answer
-        g = merge_arrivals(win.leg, (r[1].leg for r in runs if r[0].astimezone(UTC) == at))
-        win = classify_leg(replace(g, stops=(board_stop, *g.stops[1:])), alight)
+        win = merged(run.cl, (r for r in runs if r.at == at))
     # a changed platform from any newest copy is kept: a missed change costs more (7.12)
-    track = min((r[1].leg.board for r in at_top), key=_unchanged_track)
+    track = min((r.cl.leg.board for r in at_top), key=_unchanged_track)
     here = replace(
         win.leg.board, planned_track=track.planned_track, actual_track=track.actual_track
     )
     # every newest copy's messages: works told by one copy are never lost (7.10)
-    said = sorted({r[1].leg.messages for r in (*at_top, (seen, win))})
-    messages = tuple(dict.fromkeys(m for ms in said for m in ms))
-    win = replace(win, leg=replace(win.leg, stops=(here, *win.leg.stops[1:]), messages=messages))
-    leg = replace(win.leg, alternative_transport=mode.alternative_transport, category=mode.category)
-    return seen, replace(win, leg=leg)
+    said = sorted({win.leg.messages, *(r.cl.leg.messages for r in at_top)})
+    leg = replace(
+        win.leg,
+        stops=(here, *win.leg.stops[1:]),
+        messages=tuple(dict.fromkeys(m for ms in said for m in ms)),
+        alternative_transport=mode.alternative_transport,
+        category=mode.category,
+    )
+    return run.fetched_at, replace(win, leg=leg)
 
 
 def _pair(answers: Sequence[ProviderAnswer], inc: TrainId, out: TrainId) -> tuple[Leg, Leg] | None:
