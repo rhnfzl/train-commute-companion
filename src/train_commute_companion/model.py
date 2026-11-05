@@ -380,6 +380,14 @@ def display_name(name: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class ProfileProblem:
+    profile_id: str | None
+    path: str
+    message: str
+    suggestion: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     revision: int
     profiles: tuple[Profile, ...]

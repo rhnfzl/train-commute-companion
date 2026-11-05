@@ -20,6 +20,7 @@ def floor_to_minute(t: datetime) -> datetime:
 
 
 MINUTES_PER_DAY = 1440
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
 def minute_of_day(t: time) -> int:

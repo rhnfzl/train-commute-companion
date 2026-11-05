@@ -74,6 +74,7 @@ from train_commute_companion.model import (
     Observation,
     OccurrenceKey,
     Profile,
+    ProfileProblem,
     Provenance,
     Severity,
     TrainId,
@@ -83,7 +84,7 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.news import Fact, all_good, escalations, severity, unsent
 from train_commute_companion.notify import Notifier, WebhookPort
-from train_commute_companion.profile import ProfileProblem, load_config
+from train_commute_companion.profile import load_config
 from train_commute_companion.providers.base import (
     AuthError,
     MalformedAnswer,

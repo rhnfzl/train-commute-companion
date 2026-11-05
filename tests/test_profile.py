@@ -3,11 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from train_commute_companion.model import Config, Direction
+from train_commute_companion.model import Config, Direction, ProfileProblem
+from train_commute_companion.overlap import find_overlaps
 from train_commute_companion.profile import (
-    ProfileProblem,
     check_lines,
-    find_overlaps,
     load_config,
     parse_profiles,
     slug,

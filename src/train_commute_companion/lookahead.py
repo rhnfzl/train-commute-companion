@@ -43,7 +43,7 @@ from train_commute_companion.model import (
     Signature,
     display_name,
 )
-from train_commute_companion.profile import find_overlaps
+from train_commute_companion.overlap import find_overlaps
 
 # ---- the run
 

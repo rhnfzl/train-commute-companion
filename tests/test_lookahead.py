@@ -63,7 +63,8 @@ from train_commute_companion.model import (
     direction_key,
     split_direction_key,
 )
-from train_commute_companion.profile import find_overlaps, parse_profiles
+from train_commute_companion.overlap import find_overlaps
+from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import PlannedWork, PlannedWorks, ProviderAnswer
 from train_commute_companion.serde import dumps, loads
 from train_commute_companion.view import works_ahead
