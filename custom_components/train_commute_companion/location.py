@@ -109,7 +109,7 @@ class LocationTracker:
         data = self._entry.runtime_data.coordinator.data
         want = {
             p.id: (p.location.entity.lower(), data.location_epochs.get(p.id, 0))
-            for p in (data.profiles if data else ())
+            for p in data.profiles
             if p.location and p.location.source == "ha" and p.location.entity
         }
         old, self._tracked = self._tracked, want
