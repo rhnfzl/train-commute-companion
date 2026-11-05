@@ -153,8 +153,7 @@ def _copies_through(
         n = replace(pending[new], webhook_copied=True)
         c = next((c for c in queue.copies.values() if c.obligation.id == old), None)
         if c is not None:  # the same copy: its webhook-id, receipts and tries stay
-            queue.copies[c.id] = replace(c, obligation=n)
-            queue.held.add(c.id)
+            queue.rewrite(c, n)
             pending[new] = n
         elif was[old].webhook_copied or old in queue.copied:  # it ended: no second one
             pending[new] = n
@@ -179,8 +178,7 @@ def _copies_through(
             fact_key=bundle_key(rest),
             event=replace(o.event, kind=kind, text=text),
         )
-        queue.copies[c.id] = replace(c, obligation=o)
-        queue.held.add(c.id)
+        queue.rewrite(c, o)
         rewritten[o.id] = rest
     owed = {c.obligation.id for c in queue.copies.values()}
     carry = {i: f for i, f in stored.facts.items() if i in owed}

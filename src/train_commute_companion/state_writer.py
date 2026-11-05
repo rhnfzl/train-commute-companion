@@ -2,7 +2,7 @@
 what a failed write could not apply waits here, replayed onto whatever is written next."""
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import fields, replace
 from typing import Any, Protocol
 
@@ -170,6 +170,10 @@ class StateWriter:
         """Alerts with a failed send, written or not (rule 22)."""
         live = [o for o in self.st.obligations if o.id not in self.gone]
         return sum(o.attempts > 0 for o in (*live, *self.held.values(), *self.notes.values()))
+
+    def finish(self, ids: Collection[str]) -> None:
+        """These written alerts ended; a failed write must not bring them back (rule 22)."""
+        self.gone |= set(ids)
 
     def settle(self, o: Obligation, kept: Obligation | None, sent: bool) -> bool:
         """A send's outcome if `o` is sent from memory (where it is now: a write landing during

@@ -98,6 +98,17 @@ class CopyQueue:
             self.held.add(cid)
         return True
 
+    def rewrite(self, c: WebhookCopy, o: Obligation) -> None:
+        """The same copy (webhook-id, receipts, tries) now owing `o`, judged on what the write
+        tried (the held view) until it lands: a failed write must not drop it (rule 22)."""
+        self.copies[c.id] = replace(c, obligation=o)
+        self.held.add(c.id)
+
+    def delivery_written(self, in_memory: Collection[str]) -> None:
+        """A delivery write landed: the marks it wrote end, except those of alerts it did not
+        hold yet (`in_memory`, still sent from memory when the write was made)."""
+        self.copied &= set(in_memory)
+
     def _merge(self, port: WebhookPort, c: WebhookCopy, r: WebhookCopy | None) -> None:
         """A copy's try result, merged into what is there now: `act`, a poll or the look-ahead
         run can change the copies while the POST awaits."""

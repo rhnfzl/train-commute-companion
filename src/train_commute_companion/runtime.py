@@ -577,10 +577,10 @@ class Runtime:
         self._writer.st = outcome(self._writer.st)
         self._archive(self._clock.now())
         w = self._writer
-        w.gone |= finished
+        w.finish(finished)
         mem = set(w.held) | set(w.notes)  # read before a landed write empties `held`
         if w.save(stage=False, op=outcome):
-            self._queue.copied = {i for i in self._queue.copied if i in mem}
+            self._queue.delivery_written(mem)
 
     # --- provider access under the shared budget ---
 
