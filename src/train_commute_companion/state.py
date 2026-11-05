@@ -1,7 +1,7 @@
 """The persisted records of a followed occurrence and of the look-ahead: what the store keeps,
 with only the reads that belong to the data. The rules that change them live elsewhere."""
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
@@ -10,11 +10,14 @@ from typing import Literal, NamedTuple
 from train_commute_companion.model import (
     AdviceRecord,
     DirectionState,
+    EventKind,
     LegState,
     Obligation,
     OccurrenceKey,
+    Severity,
     Signature,
     TrainId,
+    train_ident,
 )
 
 PollFailure = Literal["auth", "rate", "provider", "parse", "timeout"]
@@ -102,6 +105,64 @@ class OccurrenceState:
     # True once `baseline_signature` is this occurrence's own (None then means it started with
     # no baseline); False only in stores written before it existed, hydrated at start
     baseline_frozen: bool = False
+
+
+# `OccurrenceState.alert_keys` holds these entries in one stored mapping, read through the functions
+# below: "sent:<fact key>" -> the severity it was sent at (the delivery ledger);
+# "live:<fact key>" -> "1" for what the latest healthy poll reported: a fact that a healthy poll no
+# longer reports has ended, so its delivery entry goes too and the same fact coming back later is
+# news (7.5); "unclear#<train key>" -> the fingerprint last told (rule 23); and the slots named by
+# `ToldDelay.slot` and `AlertFacts.moved_slot` -> the value last stated (`lifecycle.keep_stated`).
+_LIVE_PREFIX = "live:"
+_SENT_PREFIX = "sent:"
+
+
+def sent_facts(keys: Mapping[str, str]) -> dict[str, Severity]:
+    n = len(_SENT_PREFIX)
+    return {k[n:]: Severity(v) for k, v in keys.items() if k.startswith(_SENT_PREFIX)}
+
+
+def is_sent(keys: Mapping[str, str], fact: str) -> bool:
+    return _SENT_PREFIX + fact in keys
+
+
+def mark_sent(keys: MutableMapping[str, str], fact: str, severity: Severity) -> None:
+    keys[_SENT_PREFIX + fact] = severity.value
+
+
+def live_facts(keys: Mapping[str, str]) -> list[str]:
+    return [k[len(_LIVE_PREFIX) :] for k in keys if k.startswith(_LIVE_PREFIX)]
+
+
+def holds_live(
+    keys: Mapping[str, str], kinds: Iterable[EventKind], train: TrainId | None = None
+) -> bool:
+    """A live fact of one of `kinds` is held; with `train`, one about that train."""
+    heads = tuple(f"{k.value}:" for k in kinds)
+    ident = "" if train is None else f":{train_ident(train)}:"
+    return any(f.startswith(heads) and ident in f for f in live_facts(keys))
+
+
+def mark_live(keys: MutableMapping[str, str], facts: Iterable[str]) -> None:
+    keys.update({_LIVE_PREFIX + f: "1" for f in facts})
+
+
+def mark_sent_live(keys: MutableMapping[str, str]) -> None:
+    """Every delivered fact counts as last reported, without judging its stored severity."""
+    n = len(_SENT_PREFIX)
+    for k in list(keys):
+        if k.startswith(_SENT_PREFIX):
+            keys.setdefault(_LIVE_PREFIX + k[n:], "1")
+
+
+def forget_fact(keys: MutableMapping[str, str], fact: str) -> None:
+    """A live fact ended: it leaves the ledger, so its recurrence is news again (7.5)."""
+    keys.pop(_LIVE_PREFIX + fact)
+    keys.pop(_SENT_PREFIX + fact, None)
+
+
+def unclear_slot(train_key: str) -> str:
+    return f"unclear#{train_key}"
 
 
 @dataclass(frozen=True, slots=True)

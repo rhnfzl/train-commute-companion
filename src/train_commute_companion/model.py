@@ -105,15 +105,6 @@ class TimeObs:
     observed_at: datetime
 
 
-# `alert_keys` entries for the fact keys the latest healthy poll reported: a fact that a healthy
-# poll no longer reports has ended, so its delivery entry goes too and the same fact coming back
-# later is news (7.5)
-LIVE_PREFIX = "live:"
-SENT_PREFIX = (
-    "sent:"  # delivery-ledger entries in `alert_keys`: fact key -> severity it was sent at
-)
-
-
 @dataclass(frozen=True, slots=True, eq=False)
 class TrainId:
     operating_date: date

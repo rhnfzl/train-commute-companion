@@ -60,8 +60,6 @@ from train_commute_companion.lookahead_run import apply_run, lookahead_done, pro
 from train_commute_companion.match import usual_connection
 from train_commute_companion.messages import CHECK_APP, RefusalKind, Refused, no_journey
 from train_commute_companion.model import (
-    LIVE_PREFIX,
-    SENT_PREFIX,
     AlertEvent,
     Config,
     Ctx,
@@ -110,6 +108,8 @@ from train_commute_companion.state import (
     OccurrenceState,
     PollFailure,
     PollRecord,
+    mark_sent,
+    mark_sent_live,
 )
 from train_commute_companion.state_writer import Change, StateWriter
 from train_commute_companion.store import PersistedState, StorageError, Store
@@ -175,9 +175,7 @@ def _restarted(st: PersistedState) -> PersistedState:
     occs = {}
     for k, s in st.occurrences.items():
         keys = dict(s.alert_keys)
-        for x in s.alert_keys:
-            if x.startswith(SENT_PREFIX):
-                keys.setdefault(LIVE_PREFIX + x[len(SENT_PREFIX) :], "1")
+        mark_sent_live(keys)
         occs[k] = frozen(st, replace(s, alert_keys=keys))
     return replace(st, occurrences=occs)
 
@@ -437,7 +435,7 @@ class Runtime:
         ]  # fmt: skip
         obligations = []
         for e in out:
-            keys[SENT_PREFIX + e.key] = e.severity.value
+            mark_sent(keys, e.key, e.severity)
             if twins:  # 7.13: alerts name the service date while two occurrences exist
                 note = f" (service date {s.key.service_date.isoformat()})"
                 e = replace(e, text=e.text + note, facts=replace(alert_facts(e), twin_note=note))

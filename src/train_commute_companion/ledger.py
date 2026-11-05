@@ -31,8 +31,6 @@ from train_commute_companion.lookahead_probe import (
 )
 from train_commute_companion.model import (
     DELAY_NEWS,
-    LIVE_PREFIX,
-    SENT_PREFIX,
     AlertEvent,
     AlertFacts,
     Ctx,
@@ -57,6 +55,9 @@ from train_commute_companion.state import (
     LegProgress,
     LookAheadFact,
     OccurrenceState,
+    holds_live,
+    is_sent,
+    unclear_slot,
 )
 from train_commute_companion.store import PersistedState
 from train_commute_companion.unclear import train_key
@@ -81,7 +82,7 @@ OBSERVED = frozenset(
 )
 # loud warnings with a "next good connection" clause, written against the lock of their time
 _NAMES_LOCK = JOURNEY_WARNINGS | {EventKind.MISSED_FIRST_TRAIN, EventKind.MISSED_TRANSFER}
-_BREAKS = ("cancelled:", "cut_short:", "missing:")
+_BREAKS = (EventKind.CANCELLED, EventKind.CUT_SHORT, EventKind.MISSING)
 _FINISHED_LEG_STATES = (LegState.DONE, LegState.CANCELLED, LegState.RELOCKED)
 
 
@@ -142,10 +143,7 @@ def leg_now(answers: Sequence[ProviderAnswer], x: LegProgress) -> tuple[str, str
 
 def _broken(s: OccurrenceState, t: TrainId | None) -> bool:
     """A live break (cancelled, cut short, missing) is held for train `t`."""
-    ident = "" if t is None else f":{train_ident(t)}:"
-    return any(
-        key.startswith(LIVE_PREFIX + b) and ident in key for key in s.alert_keys for b in _BREAKS
-    )
+    return holds_live(s.alert_keys, _BREAKS, t)
 
 
 def _current_body(
@@ -295,7 +293,7 @@ class LiveLedger:
         if e.kind in (EventKind.NEARLY_ON_TIME, EventKind.BACK_TO_NORMAL):
             return unfinished and not _broken(s, e.train)  # no all-clear for a broken train
         if e.kind in _ONGOING:  # a healthy poll that stopped reporting it ended it
-            return SENT_PREFIX + o.fact_key in s.alert_keys
+            return is_sent(s.alert_keys, o.fact_key)
         if e.kind is EventKind.CANNOT_SEE_TRAIN:
             return k in mem.blind
         if e.kind is EventKind.CAN_SEE_TRAIN_AGAIN:
@@ -318,7 +316,7 @@ class LiveLedger:
         if e.kind in (EventKind.LEAVE_NOW, EventKind.EARLIER_TRAIN_WITHDRAWN):
             return self._advice_holds(e, s)
         if e.kind is EventKind.DATA_UNCLEAR:  # while its values are the latest told for its train
-            told = None if e.train is None else s.alert_keys.get(f"unclear#{train_key(e.train)}")
+            told = None if e.train is None else s.alert_keys.get(unclear_slot(train_key(e.train)))
             return told == alert_facts(e).unclear
         # the answer to a command the user gave is true as said; a new kind must say what holds it
         return e.kind is EventKind.CHOOSE_REFUSED

@@ -16,8 +16,6 @@ from train_commute_companion.lifecycle import (
 )
 from train_commute_companion.messages import all_good_text
 from train_commute_companion.model import (
-    LIVE_PREFIX,
-    SENT_PREFIX,
     AlertEvent,
     ClassifiedLeg,
     Connection,
@@ -35,7 +33,15 @@ from train_commute_companion.model import (
     train_ident,
 )
 from train_commute_companion.providers.base import ProviderAnswer
-from train_commute_companion.state import Journey, LegProgress, OccurrenceState
+from train_commute_companion.state import (
+    Journey,
+    LegProgress,
+    OccurrenceState,
+    forget_fact,
+    live_facts,
+    mark_live,
+    sent_facts,
+)
 from train_commute_companion.transfer import check_transfer
 
 _SILENT = frozenset(
@@ -312,20 +318,17 @@ def all_good(s: OccurrenceState, poll: PollAnswers, ctx: Ctx) -> AlertEvent | No
 
 def forget_ended(keys: dict[str, str], events: Sequence[AlertEvent]) -> None:
     emitted = {e.key for e in events}
-    for k in [k for k in keys if k.startswith(LIVE_PREFIX)]:
-        if k[len(LIVE_PREFIX) :] not in emitted:
-            keys.pop(k)
-            keys.pop(SENT_PREFIX + k[len(LIVE_PREFIX) :], None)
-    keys.update({LIVE_PREFIX + k: "1" for k in emitted})
+    for fact in live_facts(keys):
+        if fact not in emitted:
+            forget_fact(keys, fact)
+    mark_live(keys, emitted)
 
 
 def news_of(
     keys: Mapping[str, str], events: Sequence[AlertEvent], now: datetime
 ) -> list[AlertEvent]:
     """The events not told yet, and the told silent facts that now go loud."""
-    sent = {
-        k[len(SENT_PREFIX) :]: Severity(v) for k, v in keys.items() if k.startswith(SENT_PREFIX)
-    }
+    sent = sent_facts(keys)
     out = list(unsent(sent, events))
     facts = [
         Fact(e.key, e.kind, e.train.planned_departure if e.train else None)

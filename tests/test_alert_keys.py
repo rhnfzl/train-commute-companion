@@ -28,6 +28,15 @@ from train_commute_companion.ledger import states_current
 from train_commute_companion.lifecycle import legacy_facts
 from train_commute_companion.model import AlertEvent, EventKind, Leg, Severity, train_ident
 from train_commute_companion.serde import dumps, loads
+from train_commute_companion.state import (
+    forget_fact,
+    holds_live,
+    is_sent,
+    mark_live,
+    mark_sent,
+    mark_sent_live,
+    sent_facts,
+)
 
 DAY = "2026-10-27"
 
@@ -153,3 +162,21 @@ def test_a_recovery_opens_with_the_retained_prefix_and_keeps_a_colon_in_the_name
         "Office: A: if you are on the 08:12: your 08:12 AAA to RTD train "
         "is back to normal, on time per NS."
     )
+
+
+def test_ledger_entries_keep_their_stored_form():
+    keys: dict[str, str] = {"sent:old": "silent", "kept#slot": "7"}
+    mark_sent(keys, "cancelled:a:b", Severity.LOUD)
+    mark_live(keys, ["cancelled:a:b"])
+    mark_sent_live(keys)
+    assert keys == {
+        "sent:old": "silent",
+        "kept#slot": "7",
+        "sent:cancelled:a:b": "loud",
+        "live:cancelled:a:b": "1",
+        "live:old": "1",
+    }
+    assert sent_facts(keys) == {"old": Severity.SILENT, "cancelled:a:b": Severity.LOUD}
+    assert is_sent(keys, "old") and holds_live(keys, (EventKind.CANCELLED,))
+    forget_fact(keys, "old")
+    assert keys.keys() == {"kept#slot", "sent:cancelled:a:b", "live:cancelled:a:b"}

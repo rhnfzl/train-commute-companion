@@ -8,14 +8,13 @@ from enum import Enum, auto
 from typing import Any
 
 from train_commute_companion.model import (
-    SENT_PREFIX,
     Obligation,
     Severity,
     okey,
     split_direction_key,
 )
 from train_commute_companion.revisions import find_profile, same_route
-from train_commute_companion.state import OccurrenceState
+from train_commute_companion.state import OccurrenceState, is_sent
 from train_commute_companion.store import PersistedState, StorageError, Store
 from train_commute_companion.webhook_queue import CopyQueue
 
@@ -359,7 +358,7 @@ class StateWriter:
             for t in self._told
             if t[0] is None
             or (s := self._st.occurrences.get(t[0])) is not None
-            and SENT_PREFIX + t[1] in s.alert_keys
+            and is_sent(s.alert_keys, t[1])
         }
         self._shadow = self._compose(self._base)
 

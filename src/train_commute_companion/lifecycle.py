@@ -71,6 +71,7 @@ from train_commute_companion.state import (
     LockSource,
     OccurrenceState,
     PollRecord,
+    unclear_slot,
 )
 from train_commute_companion.transfer import check_transfer, transfer_minimum
 from train_commute_companion.unclear import disagreement, newest_copies, train_key
@@ -1470,7 +1471,7 @@ def on_poll(s: OccurrenceState, ctx: Ctx, poll: PollAnswers) -> Transition:
     # rule 23: on top of the merge, copies of one answer that disagree are shown once per values
     for tk, (x, alights, on) in seen.items():
         u = disagreement(newest_copies(pool.answers, x.train, x.board_station), *sorted(alights))
-        slot = f"unclear#{tk}"
+        slot = unclear_slot(tk)
         if u is None or s.alert_keys.get(slot) == u.fingerprint:
             continue
         s = replace(s, alert_keys={**s.alert_keys, slot: u.fingerprint})

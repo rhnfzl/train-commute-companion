@@ -34,7 +34,6 @@ from train_commute_companion.lookahead_probe import (
     split_day_key,
 )
 from train_commute_companion.model import (
-    LIVE_PREFIX,
     AdviceRecord,
     ClassifiedLeg,
     Connection,
@@ -62,11 +61,10 @@ from train_commute_companion.state import (
     LockSource,
     LookAheadLedger,
     OccurrenceState,
+    holds_live,
 )
 from train_commute_companion.store import PersistedState
 from train_commute_companion.transfer import check_transfer, transfer_minimum
-
-_LIVE_ROUTE_CHANGED = f"{LIVE_PREFIX}{EventKind.ROUTE_CHANGED.value}:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,7 +269,7 @@ def occurrence_view(
         s.direction_state,
         resolved,
         s.not_travelling,
-        any(k.startswith(_LIVE_ROUTE_CHANGED) for k in s.alert_keys),
+        holds_live(s.alert_keys, (EventKind.ROUTE_CHANGED,)),
         s.lock.source if s.lock else None,
         s.lock.commitment if s.lock else None,
         legs(lock),
