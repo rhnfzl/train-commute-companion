@@ -42,3 +42,33 @@ def test_replay_names_a_bad_file(tmp_path, capsys):
     f.write_text('profile: p.yaml\nnow: "2026-10-27 07:50"\nuntil: 0950\n')
     assert main(["replay", str(f)]) == 1
     assert "until" in capsys.readouterr().out
+
+
+HEAD = 'profile: p.yaml\nnow: "2026-10-27 07:50"\nuntil: "09:50"\n'
+
+
+@pytest.mark.parametrize(
+    "spec, answer",
+    [
+        (HEAD + 'queries:\n  - {at: "08:00", query: q}\n', ""),  # no answer_file
+        (HEAD + "queries: [1]\n", ""),
+        (HEAD + "queries: 5\n", ""),
+        (HEAD + "events: [1]\n", ""),
+        ("profile: p.yaml\nnow: !!int abc\n", ""),
+        (HEAD + 'queries:\n  - {at: "08:00", query: q, answer_file: a.yaml}\n', "trips: [1]\n"),
+        (
+            HEAD + 'queries:\n  - {at: "08:00", query: q, answer_file: a.yaml}\n',
+            "trips: [{legs: [{from: AAA}]}]\n",
+        ),
+        (
+            HEAD + 'queries:\n  - {at: "08:00", query: q, answer_file: a.yaml}\n',
+            "trips: [{day: 99999999999, legs: []}]\n",
+        ),
+    ],
+)
+def test_a_malformed_replay_file_is_refused_without_a_traceback(tmp_path, capsys, spec, answer):
+    (tmp_path / "a.yaml").write_text(answer)
+    f = tmp_path / "r.yaml"
+    f.write_text(spec)
+    assert main(["replay", str(f)]) == 1
+    assert capsys.readouterr().out.startswith("replay: ")

@@ -177,7 +177,8 @@ def format_event(e: Any) -> str:
 def _read(path: Path) -> Any:
     try:
         return yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+    # ValueError: undecodable text, or an explicit tag such as !!int on text that is not one
+    except (OSError, ValueError, yaml.YAMLError) as e:
         raise ReplayError(f"cannot read {path.name}: {e}") from None
 
 
@@ -191,7 +192,15 @@ class Replay:
 
 
 def load_replay(path: Path) -> Replay:
-    """A replay file parsed into its clock, scripted provider, profile path and events."""
+    """A replay file parsed into its clock, scripted provider, profile path and events. Raises
+    ReplayError, whatever shape the files have."""
+    try:
+        return _parse_replay(path)
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as e:
+        raise ReplayError(f"{path.name}: malformed ({type(e).__name__}: {e})") from e
+
+
+def _parse_replay(path: Path) -> Replay:
     spec = _read(path)
     if not isinstance(spec, dict):
         raise ReplayError(f"{path.name}: not a replay file")
