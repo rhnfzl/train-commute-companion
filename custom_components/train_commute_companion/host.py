@@ -21,8 +21,6 @@ _LOGGER = logging.getLogger(__name__)
 THREAD_NAME = "tcc-runtime"
 JOIN_TIMEOUT_S = 10
 
-AUTORUN = True
-
 
 class RuntimeNotRunning(RuntimeError):
     """`Host.run` found no runtime to ask; a RuntimeError from the call itself is another matter."""
@@ -66,11 +64,8 @@ def _serve(loop: asyncio.AbstractEventLoop) -> None:
 
 
 class RuntimeHost:
-    def __init__(
-        self, build: Callable[[], Parts], *, retired: threading.Event, autorun: bool
-    ) -> None:
+    def __init__(self, build: Callable[[], Parts], *, retired: threading.Event) -> None:
         self._build = build
-        self._autorun = autorun
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._parts: Parts | None = None
@@ -88,9 +83,8 @@ class RuntimeHost:
         async def boot() -> None:
             # built on the runtime thread, so the provider's HTTP client binds to its loop
             self._parts = self._build()
-            if self._autorun:
-                self._task = asyncio.create_task(self._parts.runtime.run_forever())
-                self._task.add_done_callback(_log_crash)
+            self._task = asyncio.create_task(self._parts.runtime.run_forever())
+            self._task.add_done_callback(_log_crash)
 
         await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(boot(), loop))
 
@@ -123,7 +117,7 @@ class RuntimeHost:
         t, task = self._thread, self._task
         if t is None or not t.is_alive() or self.retired.is_set():
             return False
-        return not self._autorun or (task is not None and not task.done())
+        return task is not None and not task.done()
 
     async def stop(self) -> None:
         """Never raises a shutdown timeout: a runtime stuck in a synchronous call is retired (no

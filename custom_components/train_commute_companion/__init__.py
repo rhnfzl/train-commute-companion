@@ -115,7 +115,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         )
         return host_mod.Parts(rt, clock, close)
 
-    host = host_mod.RuntimeHost(build, retired=retired, autorun=host_mod.AUTORUN)
+    host = host_mod.RuntimeHost(build, retired=retired)
 
     tracker: LocationTracker | None = None
 

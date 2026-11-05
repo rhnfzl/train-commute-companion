@@ -220,7 +220,7 @@ async def test_moved_prompt_repair(hass):
 
 
 async def test_view_before_start_keeps_repairs(hass):
-    # AUTORUN: the first refresh can read the view before start; it must not delete issues
+    # the first refresh can read the view before start; it must not delete issues
     reg = ir.async_get(hass)
     for issue_id in ("moved_p1_outbound", "notify_failing", "profile_refused"):
         ir.async_create_issue(
@@ -342,9 +342,12 @@ class YieldingClock:
         await asyncio.sleep(0.01)
 
 
+REAL_RUN_FOREVER = Runtime.run_forever  # the rig idles it, this test wants it
+
+
 async def test_autorun_setup_starts_and_unloads(hass):
     entry, clock, *_ = prepare(hass, PROFILE, "07:50", ())
-    ha_rig.PATCH.setattr(host_mod, "AUTORUN", True)
+    ha_rig.PATCH.setattr(Runtime, "run_forever", REAL_RUN_FOREVER)
     ha_rig.PATCH.setattr(host_mod, "make_clock", lambda: YieldingClock(clock.now()))
     assert await hass.config_entries.async_setup(entry.entry_id)
     coordinator = entry.runtime_data.coordinator

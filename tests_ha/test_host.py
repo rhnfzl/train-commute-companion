@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from ha_rig import PROFILES
+from ha_rig import PROFILES, idle_run
 
 from custom_components.train_commute_companion.host import Parts, RuntimeHost, RuntimeNotRunning
 from train_commute_companion.calendar import TZ
@@ -73,7 +73,7 @@ def no_runtime_thread() -> bool:
 
 @pytest.fixture
 async def host(hass, tmp_path):
-    h = RuntimeHost(builder(tmp_path), retired=threading.Event(), autorun=True)
+    h = RuntimeHost(builder(tmp_path), retired=threading.Event())
     await h.start()
     yield h
     await h.stop()
@@ -91,7 +91,7 @@ async def test_run_awaits_coroutines_and_propagates_errors(hass, host):
 
 async def test_stop_cancels_run_forever_and_joins(hass, tmp_path, caplog):
     closed: list[bool] = []
-    host = RuntimeHost(builder(tmp_path, closed=closed), retired=threading.Event(), autorun=True)
+    host = RuntimeHost(builder(tmp_path, closed=closed), retired=threading.Event())
     await host.start()
     assert host.alive
     t0 = time.monotonic()
@@ -108,7 +108,7 @@ async def test_stop_cancels_run_forever_and_joins(hass, tmp_path, caplog):
 async def test_real_crash_then_stop_leaves_no_task_or_thread(hass, tmp_path):
     closed: list[bool] = []
     host = RuntimeHost(
-        builder(tmp_path, crash=True, closed=closed), retired=threading.Event(), autorun=True
+        builder(tmp_path, crash=True, closed=closed), retired=threading.Event()
     )
     await host.start()
     for _ in range(500):
@@ -126,8 +126,9 @@ async def test_real_crash_then_stop_leaves_no_task_or_thread(hass, tmp_path):
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
-async def test_run_after_the_loop_crashed_finds_no_runtime(hass, tmp_path):
-    host = RuntimeHost(builder(tmp_path), retired=threading.Event(), autorun=False)
+async def test_run_after_the_loop_crashed_finds_no_runtime(hass, tmp_path, monkeypatch):
+    monkeypatch.setattr(Runtime, "run_forever", idle_run)  # no task group left on a closed loop
+    host = RuntimeHost(builder(tmp_path), retired=threading.Event())
     await host.start()
 
     def crash() -> None:
@@ -145,7 +146,7 @@ async def test_build_error_surfaces_from_start(hass):
     def build() -> Parts:
         raise ValueError("bad build")
 
-    host = RuntimeHost(build, retired=threading.Event(), autorun=True)
+    host = RuntimeHost(build, retired=threading.Event())
     with pytest.raises(ValueError, match="bad build"):
         await host.start()
     await host.stop()

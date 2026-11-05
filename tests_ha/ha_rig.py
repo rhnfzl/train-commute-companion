@@ -30,6 +30,7 @@ from custom_components.train_commute_companion.const import DOMAIN
 from custom_components.train_commute_companion.host import RuntimeHost
 from train_commute_companion.model import Connection, WebhookCopy
 from train_commute_companion.replay import ReplayClock
+from train_commute_companion.runtime import Runtime
 from train_commute_companion.store import JsonFileStore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,6 +119,10 @@ def write_profiles(hass: HomeAssistant, text: str) -> None:
     path.write_text(text)
 
 
+async def idle_run(self: Runtime, *, started: bool = False) -> None:
+    await asyncio.Event().wait()
+
+
 def prepare(
     hass: HomeAssistant,
     profile_text: str,
@@ -141,7 +146,7 @@ def prepare(
     async def close() -> None:
         pass
 
-    PATCH.setattr(host_mod, "AUTORUN", False)
+    PATCH.setattr(Runtime, "run_forever", idle_run)  # these tests drive the runtime by hand
     PATCH.setattr(host_mod, "make_clock", lambda: clock)
     PATCH.setattr(host_mod, "make_provider", lambda api_key, c: (provider, close))
     entry = MockConfigEntry(
