@@ -143,5 +143,13 @@ def check_token(token: str) -> None:
 
 
 def url_id(url: str) -> str:
-    """How the store names a URL: never the URL itself, which can carry a route token."""
+    """Legacy address hashes and opaque email IDs. Webhooks use credential-scoped transport_id."""
     return hashlib.sha256(url.encode()).hexdigest()[:16]
+
+
+def transport_id(url: str, secret: str, token: str = "") -> str:
+    """Pin both receiver address and authentication scope without storing their secrets."""
+    scope = json.dumps(
+        ["tcc-webhook-destination-v1", str(httpx.URL(url)), token], separators=(",", ":")
+    ).encode()
+    return "wh1_" + hmac.new(signing_key(secret), scope, hashlib.sha256).hexdigest()

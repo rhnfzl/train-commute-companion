@@ -4,6 +4,7 @@
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
+from enum import StrEnum
 from itertools import pairwise
 from typing import Final, Literal
 
@@ -30,7 +31,8 @@ from train_commute_companion.model import (
     present,
 )
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
-from train_commute_companion.state import BaselineVersion, LookAheadFact
+from train_commute_companion.revisions import baseline_on, baseline_scope
+from train_commute_companion.state import BaselineHistory, BaselineVersion, LookAheadFact
 from train_commute_companion.transfer import check_transfer
 from train_commute_companion.unclear import Unclear, disagreement, newest_copies, train_key
 
@@ -45,7 +47,9 @@ MISSING_REASON: Final = "missing"
 _PATTERN = "pattern:"
 
 
-ProbeTag = Literal["missing", "pattern", "cancelled", "cut_short", "messages", "maintenance", "short"]
+ProbeTag = Literal[
+    "missing", "pattern", "cancelled", "cut_short", "messages", "maintenance", "short"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,12 +148,34 @@ def restored_mark(fingerprint: str) -> str:
     return f"{_RESTORED_MARK}{fingerprint}"
 
 
+class WarningPhase(StrEnum):
+    UNMARKED = "unmarked"
+    WARNED = "warned"
+    ESCALATED = "escalated"
+    RESTORED = "restored"
+    OTHER = "other"
+
+
+def mark_phase(mark: str | None) -> WarningPhase:
+    if mark is None:
+        return WarningPhase.UNMARKED
+    bare = entry_mark(mark)
+    for prefix, phase in (
+        (_WARN_MARK, WarningPhase.WARNED),
+        (_LOUD_MARK, WarningPhase.ESCALATED),
+        (_RESTORED_MARK, WarningPhase.RESTORED),
+    ):
+        if bare.startswith(prefix):
+            return phase
+    return WarningPhase.OTHER
+
+
 def is_warning(mark: str | None) -> bool:
-    return mark is not None and mark.startswith(_WARN_MARK)
+    return mark_phase(mark) is WarningPhase.WARNED
 
 
 def is_restored(mark: str | None) -> bool:
-    return mark is not None and mark.startswith(_RESTORED_MARK)
+    return mark_phase(mark) is WarningPhase.RESTORED
 
 
 def fact_warns(fact: LookAheadFact) -> bool:
@@ -268,9 +294,11 @@ def _base_departures(
     p: Profile, d: Direction, day: date, base: BaselineVersion | None
 ) -> list[datetime | None]:
     sd = service_date(p, d, day)
+    if base is not None and base.commute_weekday != baseline_scope(p, d, sd):
+        base = None
     sig = baseline_usable(p, d, base)
     if sig is None:  # cold start: only leg 1 is known, at the profile's first train
-        first = resolve_local(sd, p.journey(d).first_train, edge="start")
+        first = resolve_local(sd, p.journey_on(d, day).first_train, edge="start")
         return [first] + [None] * len(p.journey(d).transfers)
     return [
         resolve_local(sd + timedelta(days=x.day_offset), x.departure, edge="start")
@@ -281,6 +309,8 @@ def _base_departures(
 def dated_end(p: Profile, d: Direction, sd: date, base: BaselineVersion | None) -> datetime | None:
     """When a journey on service date `sd` can last be followed: its last planned arrival plus
     the 150-min limit (7.12 rule 6), in UTC. None without a usable baseline: unknown."""
+    if base is not None and base.commute_weekday != baseline_scope(p, d, sd):
+        base = None
     sig = baseline_usable(p, d, base)
     if sig is None:
         return None
@@ -306,28 +336,50 @@ def probe_queries(p: Profile, d: Direction, day: date, base: BaselineVersion | N
     st = journey_stations(p, d)
     deps = _base_departures(p, d, day, base)
     first = present(deps[0])  # a journey's first departure is always known
-    whole = Query(st[0], st[-1], _minus_search(first))
+    whole = Query.for_profile(p, st[0], st[-1], _minus_search(first))
     if len(st) == 2:
         return [whole]
-    legs = [Query(st[i], st[i + 1], _minus_search(deps[i] or first)) for i in range(len(st) - 1)]
+    legs = [
+        Query.for_profile(p, st[i], st[i + 1], _minus_search(deps[i] or first))
+        for i in range(len(st) - 1)
+    ]
     return [*legs, whole]
 
 
 def probe_dates(
-    p: Profile, today: date, bases: Mapping[Direction, BaselineVersion | None] | None = None
+    p: Profile,
+    today: date,
+    bases: Mapping[Direction, BaselineVersion | None] | None = None,
+    *,
+    direction: Direction | None = None,
+    histories: Mapping[Direction, BaselineHistory] | None = None,
 ) -> list[date]:
     """The next 3 commute days whose every query date is within 10 days of today. `bases`
     gives leg day offsets (a leg after midnight is queried with its own date)."""
+
+    def base_for(d: Direction, day: date) -> BaselineVersion | None:
+        if histories is not None:
+            return baseline_on(histories.get(d, BaselineHistory()), p, d, service_date(p, d, day))
+        base = (bases or {}).get(d)
+        return (
+            base
+            if base is None or base.commute_weekday == baseline_scope(p, d, service_date(p, d, day))
+            else None
+        )
+
     out: list[date] = []
     for i in range(1, HORIZON_DAYS + 1):
         day = today + timedelta(days=i)
         if not is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays):
             continue
+        directions = Direction if direction is None else (direction,)
+        if all(p.paused_on(service_date(p, d, day)) for d in directions):
+            continue
         latest = max(
             service_date(p, d, day)
             + timedelta(
                 days=max((x.day_offset for x in sig.legs), default=0)
-                if (sig := baseline_usable(p, d, (bases or {}).get(d))) is not None
+                if (sig := baseline_usable(p, d, base_for(d, day))) is not None
                 else 0
             )
             for d in Direction
@@ -611,8 +663,10 @@ def evaluate(
 ) -> list[ProbeResult]:
     """Probe results for one commute day and direction. A probe without its answer gives no
     result (an empty probe is not an observation, look-ahead 16)."""
-    j = p.journey(d)
+    j = p.journey_on(d, day)
     sd = service_date(p, d, day)
+    if base is not None and base.commute_weekday != baseline_scope(p, d, sd):
+        base = None
     st = journey_stations(p, d)
     n = len(st) - 1
     deps = _base_departures(p, d, day, base)

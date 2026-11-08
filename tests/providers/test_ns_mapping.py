@@ -393,3 +393,78 @@ def test_a_transfer_message_with_an_endless_number_states_no_minutes():
     leg["transferMessages"] = [{"type": "TRANSFER_TIME", "message": "1" * 5000}]
     got = map_trips(payload, Q, NOW).connections[0].legs[0]
     assert got.transfer_message_min is None
+
+
+def test_replacement_address_stops_do_not_discard_other_train_journeys():
+    raw = fixture("replacement_address.json")
+    raw["trips"].extend(fixture("on_time_direct.json")["trips"])
+    answer = map_trips(raw, Q, NOW)
+    metro, train = answer.connections
+    assert len(answer.connections) == 2 and train.is_train_only
+    assert train.legs[0].train.train_number == "1234"
+    first, second = metro.legs
+    assert first.alight.code == second.board.code
+    assert first.alight.code.startswith("@place:") and first.alight.uic is None
+    assert first.alight.name == "Metrostation Beurs"
+    assert first.alight.arrival.provenance is Provenance.PLANNED
+    assert first.alight.arrival.value is None
+    assert all(leg.alternative_transport for leg in metro.legs) and not metro.is_train_only
+
+
+@pytest.mark.parametrize("mode", ["BUS", "METRO", "TRAM", "FERRY", "WALK"])
+def test_non_train_address_endpoints_have_stable_distinct_place_identities(mode):
+    raw = fixture("replacement_address.json")
+    for leg in raw["trips"][0]["legs"]:
+        leg.pop("stops")
+        leg["product"]["type"] = mode
+    first = map_trips(raw, Q, NOW).connections[0]
+    again = map_trips(raw, Q, NOW).connections[0]
+    assert first.legs[0].alight.code == first.legs[1].board.code
+    assert first.legs[0].alight.code == again.legs[0].alight.code
+    raw["trips"][0]["legs"][1]["origin"]["lng"] = 4.481
+    changed = map_trips(raw, Q, NOW).connections[0]
+    assert first.legs[0].alight.code != changed.legs[1].board.code
+    raw["trips"][0]["legs"][1]["origin"]["lng"] = 4.480592
+    raw["trips"][0]["legs"][1]["origin"]["name"] = "Another platform at Beurs"
+    renamed = map_trips(raw, Q, NOW).connections[0]
+    assert first.legs[0].alight.code != renamed.legs[1].board.code
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("lat", None),
+        ("lng", None),
+        ("lat", True),
+        ("lat", "51.9"),
+        ("lat", 91),
+        ("lng", -181),
+        ("lat", float("nan")),
+        ("lng", float("inf")),
+        ("lat", 10**400),
+        ("name", ""),
+        ("name", None),
+        ("name", "   "),
+    ],
+)
+@pytest.mark.parametrize("with_stops", [True, False])
+def test_unidentified_non_train_stop_requires_a_name_and_valid_coordinates(
+    field, value, with_stops
+):
+    raw = fixture("replacement_address.json")
+    leg = raw["trips"][0]["legs"][0]
+    if with_stops:
+        leg["stops"][1][field] = value
+    else:
+        leg.pop("stops")
+        leg["destination"][field] = value
+    with pytest.raises(MalformedAnswer):
+        map_trips(raw, Q, NOW)
+
+
+@pytest.mark.parametrize("mode", ["TRAIN", "UNKNOWN", None])
+def test_geographic_fallback_does_not_hide_missing_train_or_unknown_stop_identity(mode):
+    raw = fixture("replacement_address.json")
+    raw["trips"][0]["legs"][0]["product"]["type"] = mode
+    with pytest.raises(MalformedAnswer):
+        map_trips(raw, Q, NOW)

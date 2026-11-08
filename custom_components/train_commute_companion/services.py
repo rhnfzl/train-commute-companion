@@ -1,6 +1,7 @@
 """The three user actions (7.13) as services; the buttons call the same functions."""
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import date, time
 from typing import Any
@@ -13,6 +14,7 @@ from homeassistant.helpers import config_validation as cv
 from train_commute_companion.messages import RefusalKind, Refused, no_journey_text
 from train_commute_companion.model import Direction
 from train_commute_companion.runtime import Runtime
+from train_commute_companion.tasks import DetachedCall
 
 from .const import DOMAIN
 from .data import TccData
@@ -22,6 +24,7 @@ from .host import RuntimeNotRunning
 RUN_TIMEOUT_S = 120
 # calls that outlived their caller: the loop keeps only a weak reference to a task
 _running: set[asyncio.Future[Any]] = set()
+_LOGGER = logging.getLogger(__name__)
 
 BASE = {
     vol.Required("profile"): cv.string,
@@ -62,9 +65,16 @@ async def _call_runtime[T](data: TccData, fn: Callable[[Runtime], Awaitable[T]])
     task = asyncio.ensure_future(data.host.run(fn))
     _running.add(task)
     task.add_done_callback(_running.discard)
+    call = DetachedCall(
+        task,
+        lambda error: _LOGGER.error(
+            "command failed after its caller stopped waiting", exc_info=error
+        ),
+    )
     try:
+        # Keep the deadline on HA's clock; the shared owner tracks caller detachment.
         async with asyncio.timeout(RUN_TIMEOUT_S):
-            return await asyncio.shield(task)
+            return await call.wait(None)
     except TimeoutError:
         raise HomeAssistantError("the companion is not answering; try again") from None
     except RuntimeNotRunning:
@@ -170,6 +180,11 @@ async def _handle_not_travelling(call: ServiceCall) -> None:
 
 
 def async_setup_services(hass: HomeAssistant) -> None:
+    from .arrival_controls import async_setup_arrival_services
+    from .recovery_controls import async_setup_recovery_services
+
+    async_setup_arrival_services(hass)
+    async_setup_recovery_services(hass)
     hass.services.async_register(DOMAIN, "choose", _handle_choose, CHOOSE_SCHEMA)
     hass.services.async_register(DOMAIN, "leaving", _handle_leaving, LEAVING_SCHEMA)
     hass.services.async_register(

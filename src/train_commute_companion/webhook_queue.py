@@ -3,16 +3,23 @@ posted in a task of their own so a slow receiver never holds up a phone send."""
 
 import asyncio
 import logging
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
+from enum import StrEnum
 
 from train_commute_companion.calendar import to_utc
-from train_commute_companion.delivery import JOURNEY_WARNINGS, Ledger, covers, post_copy
-from train_commute_companion.model import Obligation, OccurrenceKey, WebhookCopy
-from train_commute_companion.notify import WebhookPort
+from train_commute_companion.delivery import (
+    JOURNEY_WARNINGS,
+    Ledger,
+    copy_destinations,
+    covers,
+    post_copy,
+)
+from train_commute_companion.model import Obligation, OccurrenceKey, WebhookCopy, alert_facts
+from train_commute_companion.notify import WebhookPort, destination_id
 from train_commute_companion.store import PersistedState
-from train_commute_companion.webhook import event_id, url_id
+from train_commute_companion.webhook import event_id
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +27,14 @@ log = logging.getLogger(__name__)
 # MAX_COPIES are owed (one try a minute cannot keep up with faster alerts)
 GIVE_UP = timedelta(hours=2)
 MAX_COPIES = 200
+
+
+class QueuePhase(StrEnum):
+    IDLE = "idle"
+    RUNNING = "running"
+    RERUN_REQUESTED = "rerun_requested"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
 
 
 class CopyQueue:
@@ -32,37 +47,70 @@ class CopyQueue:
         self,
         port: WebhookPort | None,
         now: Callable[[], datetime],
-        record: Callable[[], None],
+        record: Callable[[Sequence[tuple[Obligation, str]]], None],
         waits: Callable[[Obligation], bool],
         ledger: Callable[[bool], Ledger],
+        audience_written: Callable[[WebhookCopy], bool] = lambda c: True,
     ) -> None:
         self.port, self._now, self._record = port, now, record
         self._waits, self._ledger = waits, ledger
+        self._audience_written = audience_written
         if port is not None:
-            port.on_reserve = record  # the rests are written before a try's request leaves
+            port.on_reserve = lambda: record(
+                ()
+            )  # the rests are written before a try's request leaves
+        self._parked_down: dict[str, datetime] = {}
         self.copies: dict[str, WebhookCopy] = {}
         self.held: set[str] = set()
         self.copied: set[str] = set()
         self._post_task: asyncio.Task[None] | None = None  # the running webhook pass
-        self._post_again = False
+        self.phase = QueuePhase.IDLE
 
     def with_copies(self, st: PersistedState) -> PersistedState:
         """`st` with the owed copies and each URL's rest, as every save writes them."""
         port = self.port
-        down = {} if port is None else {url_id(u): t for u, t in port.down.items()}
+        current_ids = set() if port is None else {destination_id(port, u) for u in port.urls}
+        down = {
+            identity: until
+            for identity, until in self._parked_down.items()
+            if identity not in current_ids
+        }
+        if port is not None:
+            down.update(
+                {
+                    destination_id(port, u): t
+                    for u, t in port.down.items()
+                    if u in port.destination_ids
+                }
+            )
         return replace(st, webhook_copies=tuple(self.copies.values()), webhook_down=down)
 
-    def restore(self, st: PersistedState) -> None:
+    def restore(
+        self, st: PersistedState, *, preserve: Callable[[Obligation], bool] = lambda o: False
+    ) -> None:
         """What a loaded state owed."""
         port = self.port
+        parked = {c.id: c for c in st.webhook_copies if preserve(c.obligation)}
+        if parked:
+            self._parked_down = dict(st.webhook_down)
         if port is not None:
-            self.copies = {c.id: c for c in st.webhook_copies}
+            self.copies = {
+                c.id: c if c.target_ids is not None else replace(c, target_ids=frozenset())
+                for c in st.webhook_copies
+            }
             # a restart keeps each URL's rest and outage: no extra try, no second warning
             saved = st.webhook_down
-            port.down.update({u: saved[url_id(u)] for u in port.urls if url_id(u) in saved})
+            port.down.update(
+                {
+                    u: saved[destination_id(port, u)]
+                    for u in port.urls
+                    if destination_id(port, u) in saved
+                }
+            )
         elif n := len(st.webhook_copies):
+            self.copies = parked
             # nothing could post them, and a later poster would get stale alerts
-            log.info("dropped %d webhook copies: webhooks are off", n)
+            log.info("dropped %d webhook copies: webhooks are off", n - len(parked))
 
     def drop_warnings(self, keys: Collection[OccurrenceKey]) -> None:
         """The journey warnings owed for these occurrences (a skip, rule 5(a))."""
@@ -95,7 +143,13 @@ class CopyQueue:
             )
             self.drop(old.id)
             log.warning("dropped a webhook copy: more than %d owed", MAX_COPIES)
-        self.copies[cid] = WebhookCopy(cid, o)
+        targets = frozenset(destination_id(self.port, u) for u in self.port.urls)
+        if o.target_ids is not None:
+            targets &= o.target_ids
+        pinned = alert_facts(o.event).disruption_targets
+        if pinned is not None:
+            targets &= pinned
+        self.copies[cid] = WebhookCopy(cid, o, target_ids=targets)
         if held:
             self.held.add(cid)
         return True
@@ -140,8 +194,9 @@ class CopyQueue:
             done=cur.done + tuple(u for u in r.done if u not in cur.done),
             first_try=cur.first_try or r.first_try,
             last_try=max(tries, key=to_utc, default=None),
+            target_ids=cur.target_ids if cur.target_ids is not None else r.target_ids,
         )
-        if all(url_id(u) in merged.done for u in port.urls):
+        if all(destination_id(port, u) in merged.done for u in copy_destinations(merged, port)):
             self.drop(c.id)
         else:
             self.copies[c.id] = merged
@@ -149,26 +204,32 @@ class CopyQueue:
     def post_soon(self) -> None:
         """A webhook pass now, or one more round of the running one (copies made meanwhile)."""
         port = self.port
-        if port is None:
+        if port is None or self.phase in (QueuePhase.STOPPING, QueuePhase.STOPPED):
             return
-        if self._post_task is not None and not self._post_task.done():
-            self._post_again = True
+        if self.phase in (QueuePhase.RUNNING, QueuePhase.RERUN_REQUESTED):
+            self.phase = QueuePhase.RERUN_REQUESTED
             return
+        self.phase = QueuePhase.RUNNING
         self._post_task = asyncio.get_running_loop().create_task(self._post_passes(port))
 
     async def _post_passes(self, port: WebhookPort) -> None:
-        again = True
-        while again:
-            self._post_again = False
-            before = dict(self.copies)
-            try:
-                await self._post_copies(port)
-            except Exception:  # a broken pass must not stop the next one
-                log.exception("webhook pass failed")
-            finally:  # a copy that ended or was tried is recorded, also when shutdown cancels
-                if self.copies != before:
-                    self._record()
-            again = self._post_again
+        try:
+            while True:
+                self.phase = QueuePhase.RUNNING
+                before = dict(self.copies)
+                try:
+                    await self._post_copies(port)
+                except Exception:
+                    log.exception("webhook pass failed")
+                finally:
+                    if self.copies != before:
+                        self._record(())
+                if self.phase is not QueuePhase.RERUN_REQUESTED:
+                    break
+        finally:
+            self.phase = (
+                QueuePhase.STOPPED if self.phase is QueuePhase.STOPPING else QueuePhase.IDLE
+            )
 
     async def idle(self) -> None:
         """Waits until no webhook pass runs (a clean shutdown, tests)."""
@@ -176,9 +237,11 @@ class CopyQueue:
             await asyncio.wait({t})
 
     async def stop(self) -> None:
+        self.phase = QueuePhase.STOPPING
         if (t := self._post_task) is not None and not t.done():
             t.cancel()
             await asyncio.wait({t})
+        self.phase = QueuePhase.STOPPED
 
     async def _post_copies(self, port: WebhookPort) -> None:
         """After the phone sends: each owed copy once. Never tried first, oldest first, then
@@ -206,8 +269,14 @@ class CopyQueue:
 
             def started(x: WebhookCopy) -> None:  # the first try is written before it goes out
                 nonlocal cur
-                cur = self.copies[x.id] = x
-                self._record()
+                accepted = tuple(
+                    (x.obligation, destination)
+                    for destination in x.done
+                    if destination not in cur.done
+                )
+                self._merge(port, cur, x)
+                cur = x
+                self._record(accepted)
 
-            r = await post_copy(c, v, port, now, started)
+            r = await post_copy(c, v, port, now, started, audience_written=self._audience_written)
             self._merge(port, cur, r)

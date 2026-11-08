@@ -4,8 +4,10 @@ import math
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import Literal, get_args
 
+from train_commute_companion.calendar import to_utc
 from train_commute_companion.model import LocationSettings, Profile
 
 _EARTH_M = 6_371_000.0
@@ -93,12 +95,26 @@ def station_zones(
     return [Zone(c, *positions[c], float(radius_m)) for c in sorted(codes) if c in positions]
 
 
+class ZoneReportPhase(StrEnum):
+    OUTSIDE = "outside"
+    READY = "ready"
+    THROTTLED = "throttled"
+
+
 @dataclass(frozen=True, slots=True)
 class ZoneTrack:
     """The zone a source last placed the user in, and when each zone last started the timer."""
 
     zone: str | None = None
     reported: Mapping[str, datetime] = field(default_factory=dict)
+
+    def phase_at(self, at: datetime) -> ZoneReportPhase:
+        if self.zone is None:
+            return ZoneReportPhase.OUTSIDE
+        last = self.reported.get(self.zone)
+        if last is None or to_utc(at) - to_utc(last) >= REPORT_EVERY:
+            return ZoneReportPhase.READY
+        return ZoneReportPhase.THROTTLED
 
 
 def seed_zone(zone: str | None, at: datetime) -> ZoneTrack:
@@ -121,10 +137,8 @@ def next_zone(
             events.append((track.zone, "leave"))
         if zone is not None:
             events.append((zone, "enter"))
-    elif zone is not None:
-        last = track.reported.get(zone)
-        if last is None or at - last >= REPORT_EVERY:
-            events.append((zone, "report"))
+    elif zone is not None and track.phase_at(at) is ZoneReportPhase.READY:
+        events.append((zone, "report"))
     # the last event, if any, is this zone's enter or report; a plain leave starts no timer
     started = {zone: at} if zone is not None and events else {}
     return ZoneTrack(zone, {**track.reported, **started}), events

@@ -9,12 +9,14 @@ import signal
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, time
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 import httpx
 
 from train_commute_companion.calendar import Clock, SystemClock
+from train_commute_companion.email import EmailPoster, EmailSettings
 from train_commute_companion.model import present
 from train_commute_companion.providers.base import Provider
 from train_commute_companion.providers.ns import NsProvider
@@ -26,6 +28,7 @@ from train_commute_companion.webhook_send import WebhookPoster, send_webhook_tes
 from . import owntracks
 from .bot import Bot
 from .commands import answer
+from .email_settings import CopyPort, CopyPorts, email_settings
 from .follow import Follower
 from .telegram import TelegramApi, TelegramNotifier
 from .web import health_report, mcp_socket_path, start_readout, start_web, state_dir
@@ -83,6 +86,7 @@ class Settings:
     webhook_secret: str = ""  # empty: unset
     webhook_token: str = ""
     mcp_socket: Path | None = None  # None: MCP off
+    email: EmailSettings | None = None
 
     @staticmethod
     def from_env(env: Mapping[str, str]) -> "Settings":
@@ -125,7 +129,17 @@ class Settings:
             webhook_secret,
             webhook_token,
             mcp_socket_path(env),
+            email_settings(env),
         )
+
+
+class ProcessPhase(StrEnum):
+    NEW = "new"
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+    FAILED = "failed"
 
 
 @dataclass
@@ -135,17 +149,22 @@ class App:
     notifier: TelegramNotifier
     bot: Bot
     follower: Follower
-    webhooks: WebhookPoster | None = None
+    webhooks: CopyPort | None = None
+    phase: ProcessPhase = ProcessPhase.NEW
 
 
 def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncClient) -> App:
     api = TelegramApi(s.bot_token, client)
     notifier = TelegramNotifier(api, s.chat_id, clock.now)
-    webhooks, webhook_test = None, None
+    webhooks: CopyPort | None = None
+    webhook_test = None
     if s.webhook_urls:  # the one client serves NS, Telegram and the webhooks
         hook = (client, s.webhook_urls, s.webhook_secret, clock.now)
         webhooks = WebhookPoster(*hook, token=s.webhook_token)
         webhook_test = functools.partial(send_webhook_tests, *hook, token=s.webhook_token)
+    if s.email is not None:
+        email = EmailPoster(s.email, clock.now)
+        webhooks = CopyPorts(webhooks, email) if webhooks is not None else email
     rt = Runtime(
         profile_path=s.profiles,
         store=JsonFileStore(s.state_dir / "tcc-state.json"),
@@ -155,6 +174,7 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         require_stations=True,  # the list is fetched inside run_forever's start, watchdog running
         lookahead_at=s.lookahead_at,
         webhooks=webhooks,
+        primary_destination=lambda: notifier.destination_id,
     )
     follower = Follower(rt)
     bot = Bot(api, rt, s.chat_id, s.state_dir / "telegram.json", follower, webhook_test)
@@ -169,6 +189,9 @@ def mcp_answer(app: App) -> Callable[[object], dict[str, Any]]:
 async def serve(app: App, port: int) -> int:
     """Returns 1 when any part ends (Docker restarts the container); cancelled, it cleans up
     the same way and re-raises."""
+    if app.phase is not ProcessPhase.NEW:
+        raise RuntimeError("a stopped or running app requires a new owner")
+    app.phase = ProcessPhase.STARTING
     before = asyncio.all_tasks()
     runtime = asyncio.create_task(app.rt.run_forever(), name="runtime")
     server: asyncio.Server | None = None
@@ -186,10 +209,12 @@ async def serve(app: App, port: int) -> int:
             owntracks=owntracks.handler(app.follower) if secret else None,
             secret=secret,
             health_token=app.settings.health_token,
+            today=lambda: (app.rt.view(), app.bot.confirmed),
         )
         if app.settings.mcp_socket is not None:
             readout = await start_readout(app.settings.mcp_socket, mcp_answer(app))
         bot = asyncio.create_task(app.bot.run(), name="telegram")
+        app.phase = ProcessPhase.RUNNING
         done, _ = await asyncio.wait((runtime, bot), return_when=asyncio.FIRST_COMPLETED)
         for t in done:
             if not t.cancelled() and (e := t.exception()) is not None:
@@ -198,7 +223,14 @@ async def serve(app: App, port: int) -> int:
                 log.error("%s stopped", t.get_name())
         return 1
     finally:
-        await _clean_up(app, before, server, readout)
+        app.phase = ProcessPhase.STOPPING
+        try:
+            await _clean_up(app, before, server, readout)
+        except BaseException:
+            app.phase = ProcessPhase.FAILED
+            raise
+        else:
+            app.phase = ProcessPhase.STOPPED
 
 
 async def _clean_up(
@@ -207,6 +239,7 @@ async def _clean_up(
     server: asyncio.Server | None,
     readout: asyncio.Server | None,
 ) -> None:
+    app.notifier.retire()
     for srv in (server, readout):
         if srv is not None:
             srv.close()

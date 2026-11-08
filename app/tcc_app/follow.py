@@ -6,6 +6,7 @@ import logging
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any, Literal
 
 from train_commute_companion.calendar import TZ
@@ -24,6 +25,12 @@ log = logging.getLogger(__name__)
 FUTURE_LIMIT = timedelta(minutes=2)  # a phone clock ahead: a future fix would block later ones
 
 Source = Literal["telegram", "owntracks"]
+
+
+class FollowPhase(StrEnum):
+    ACTIVE = "active"
+    CLOSING = "closing"
+    CLOSED = "closed"
 
 
 def stamp(v: object) -> datetime | None:
@@ -51,8 +58,11 @@ class Follower:
         self._locks: dict[str, asyncio.Lock] = {}  # a lock queues FIFO: arrival order per profile
         self._memory: dict[str, _Memory] = {}
         self._tasks: set[asyncio.Task[None]] = set()
+        self.phase = FollowPhase.ACTIVE
 
     def feed(self, source: Source, fix: Fix) -> None:
+        if self.phase is not FollowPhase.ACTIVE:
+            return
         view = self._rt.view()
         for p in view.profiles:
             if p.location is not None and p.location.source == source:
@@ -69,10 +79,12 @@ class Follower:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def close(self) -> None:
+        self.phase = FollowPhase.CLOSING
         tasks = list(self._tasks)
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        self.phase = FollowPhase.CLOSED
 
     async def _process_fix(self, pid: str, source: Source, fed_epoch: int, fix: Fix) -> None:
         async with self._locks.setdefault(pid, asyncio.Lock()):
@@ -82,6 +94,8 @@ class Follower:
                 log.exception("location fix for %s failed", pid)
 
     async def _apply_fix(self, pid: str, source: Source, fed_epoch: int, fix: Fix) -> None:
+        if self.phase is not FollowPhase.ACTIVE:
+            return
         view = self._rt.view()
         profile = next((p for p in view.profiles if p.id == pid), None)
         loc = profile.location if profile is not None else None

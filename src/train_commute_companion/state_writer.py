@@ -3,13 +3,14 @@ what a failed write could not apply waits here, replayed onto whatever is writte
 
 import logging
 from collections.abc import Callable, Collection, Iterator, Mapping
-from dataclasses import fields, replace
-from enum import Enum, auto
+from dataclasses import dataclass, field, fields, replace
+from enum import Enum, StrEnum, auto
 from typing import Any
 
 from train_commute_companion.model import (
     Obligation,
     Severity,
+    WebhookCopy,
     okey,
     split_direction_key,
 )
@@ -125,6 +126,28 @@ def _prune(st: PersistedState) -> PersistedState:
     return st if snaps == st.config_snapshots else replace(st, config_snapshots=snaps)
 
 
+class WritePhase(StrEnum):
+    DURABLE = "durable"
+    PROPOSED = "proposed"
+    PENDING = "pending"
+    DEGRADED = "degraded"
+
+
+@dataclass(slots=True)
+class _WriteJournal:
+    base: PersistedState | None = None
+    ops: list[Callable[[PersistedState], PersistedState]] = field(default_factory=list)
+    marks: dict[str, Mapping[str, str]] = field(default_factory=dict)
+    held: dict[str, Obligation] = field(default_factory=dict)
+    gone: set[str] = field(default_factory=set)
+    told: set[tuple[str | None, str, Severity]] = field(default_factory=set)
+    shadow: PersistedState | None = None
+
+    @property
+    def pending(self) -> bool:
+        return self.shadow is not None
+
+
 class StateWriter:
     """`st` is what everything runs from, read-only: the last written (or loaded) state, plus a
     candidate proposed since the last commit. Only a commit decides a candidate's fate: written,
@@ -133,7 +156,7 @@ class StateWriter:
     `_marks`), never their decisions. `_durable` is that written state as written. Pending until
     one write lands: `_base` the newest change, retried by the watchdog (a poll's is recomputed
     anyway); `_ops` the changes nothing recomputes (a user action, a look-ahead run, delivery
-    outcomes), replayed onto whatever is written next; `_held` their new alerts, sent from memory
+    outcomes), replayed onto whatever is written next; `_held` their new alerts, held until recipient pins are durable
     and judged on `_shadow` (the last state a write tried); `_gone` obligations finished
     meanwhile; `_told` alerts sent from memory. `_notes`: `storage_failed`, which never uses the
     store. `outbox`: the webhook copies a write takes along, which live apart from the state."""
@@ -153,30 +176,57 @@ class StateWriter:
         )
         self.store_ok = True
         self._durable = self._st
-        self._base: PersistedState | None = None
-        self._ops: list[Callable[[PersistedState], PersistedState]] = []
-        self._marks: dict[str, Mapping[str, str]] = {}
-        self._held: dict[str, Obligation] = {}
-        self._gone: set[str] = set()
-        self._told: set[tuple[str | None, str, Severity]] = set()
-        self._shadow: PersistedState | None = None
+        self._journal = _WriteJournal()
         self._notes: dict[str, Obligation] = {}
 
     @property
     def st(self) -> PersistedState:
         return self._st
 
+    def audience_written(self, o: Obligation) -> bool:
+        """A private send needs its recipient pin in the last successful write."""
+        if o.target_ids is None:
+            return False
+        saved = (
+            *self._durable.obligations,
+            *(x for ledger in self._durable.lookahead.values() for x in ledger.pending),
+            *(copy.obligation for copy in self._durable.webhook_copies),
+        )
+        return any(
+            x.id == o.id
+            and x.target_ids == o.target_ids
+            and x.primary_target_pending == o.primary_target_pending
+            for x in saved
+        )
+
+    def copy_audience_written(self, copy: WebhookCopy) -> bool:
+        """Auxiliary delivery uses only the copy's durably pinned destination IDs."""
+        return copy.target_ids is not None and any(
+            saved.id == copy.id and saved.target_ids == copy.target_ids
+            for saved in self._durable.webhook_copies
+        )
+
     @property
     def waiting(self) -> bool:
         """A change is waiting for a write that lands."""
-        return self._shadow is not None
+        return self.phase is WritePhase.PENDING
+
+    @property
+    def phase(self) -> WritePhase:
+        if self._journal.pending:
+            return WritePhase.PENDING
+        if self._st is not self._durable:
+            return WritePhase.PROPOSED
+        return WritePhase.DURABLE if self.store_ok else WritePhase.DEGRADED
 
     def judged_state(self) -> PersistedState:
         """What the alerts of unwritten changes are judged on: what the last write tried."""
-        return self._st if self._shadow is None else self._shadow
+        return self._st if self._journal.shadow is None else self._journal.shadow
 
     def begin(self, st: PersistedState) -> None:
         """The state a start runs from, as if just written."""
+        if self.phase is WritePhase.PENDING:
+            raise RuntimeError("cannot replace a transaction with pending changes")
         self._st = self._durable = st
 
     def propose(self, st: PersistedState) -> None:
@@ -185,39 +235,41 @@ class StateWriter:
 
     def retry(self) -> None:
         """The waiting changes, written again."""
-        if self._base is not None:
-            self._write(self._base, stage=False)
+        if self._journal.base is not None:
+            self._write(self._journal.base, stage=False)
 
     def undelivered(self) -> int:
         """Alerts with a failed send, written or not (rule 22)."""
-        live = [o for o in self._st.obligations if o.id not in self._gone]
-        return sum(o.attempts > 0 for o in (*live, *self._held.values(), *self._notes.values()))
+        live = [o for o in self._st.obligations if o.id not in self._journal.gone]
+        return sum(
+            o.attempts > 0 for o in (*live, *self._journal.held.values(), *self._notes.values())
+        )
 
     def marks_of(self, k: str) -> Mapping[str, str]:
         """What was told of this occurrence while the store was down (rule 22)."""
-        return self._marks.get(k, {})
+        return self._journal.marks.get(k, {})
 
     def pending(self) -> Iterator[tuple[Obligation, bool]]:
         """Each alert owed a send, and whether it is held in memory, judged as it comes up: a
         write landing during an earlier send may have written it, ended it or removed it."""
-        for o in (*self._st.obligations, *self._held.values(), *self._notes.values()):
-            if o.id in self._gone:
+        for o in (*self._st.obligations, *self._journal.held.values(), *self._notes.values()):
+            if o.id in self._journal.gone:
                 continue  # finished while the store was down (rule 22)
-            mem = o.id in self._held or o.id in self._notes
+            mem = o.id in self._journal.held or o.id in self._notes
             if mem or any(x.id == o.id for x in self._st.obligations):
-                yield o, o.id in self._held
+                yield o, o.id in self._journal.held
 
     def settle(self, o: Obligation, kept: Obligation | None, sent: bool) -> bool:
         """A send's outcome if `o` is sent from memory (where it is now: a write landing during
         the send may have written a held one); False when it is a written alert."""
         if o.id in self._notes:
             self._notes = _with_obligation(self._notes, o.id, kept)
-        elif o.id in self._held:
-            self._held = _with_obligation(self._held, o.id, kept)
+        elif o.id in self._journal.held:
+            self._journal.held = _with_obligation(self._journal.held, o.id, kept)
             if kept is None:
-                self._gone.add(o.id)
+                self._journal.gone.add(o.id)
                 if sent:
-                    self._told.add(_held_id(o))
+                    self._journal.told.add(_held_id(o))
         else:
             return False
         return True
@@ -231,6 +283,24 @@ class StateWriter:
             stage=kind in (Change.RECOMPUTED, Change.ACTION),
         )
 
+    def commit_strict(self, state: PersistedState) -> bool:
+        """Recovery actions apply only after a write. A failed action is never queued for replay."""
+        if self.phase is WritePhase.PENDING:
+            return False
+        try:
+            written = _prune(self._outbox.with_copies(state))
+            self._store.save(written)
+        except StorageError as error:
+            self.store_ok = False
+            log.error("store write failed: %s", error)
+            note = self._storage_note()
+            self._notes[note.id] = note
+            return False
+        self._st = self._durable = written
+        self.store_ok = True
+        self._notes = {}
+        return True
+
     def commit_delivery(
         self,
         st: PersistedState,
@@ -240,8 +310,10 @@ class StateWriter:
         """A delivery pass, `outcome` being what it did to any state: replayed onto whatever is
         written next after a failed write, which must not bring the `finished` alerts back."""
         self._st = st
-        self._gone |= set(finished)
-        mem = set(self._held) | set(self._notes)  # read before a landed write empties `_held`
+        self._journal.gone |= set(finished)
+        mem = set(self._journal.held) | set(
+            self._notes
+        )  # read before a landed write empties `_held`
         if self._write(st, stage=False, op=outcome):
             self._outbox.delivery_written(mem)
 
@@ -260,11 +332,11 @@ class StateWriter:
         configuration runs anyway: nothing else could."""
         # only what this change did: restaging carries other waiting changes it must not replace
         mine = _Delta(self._durable, cand) if op is None and keep else None
-        if self._base is not None and cand is not self._base:
+        if self._journal.base is not None and cand is not self._journal.base:
             cand = self._restage(self._durable, cand)  # what waits on other occurrences too
         if mine is not None:
             op = mine
-            for x in self._ops:  # a newer action supersedes an older one (rule 22)
+            for x in self._journal.ops:  # a newer action supersedes an older one (rule 22)
                 if isinstance(x, _Delta):
                     x.supersede(mine)
         try:
@@ -279,36 +351,35 @@ class StateWriter:
                 self._notes[o.id] = o
             return False
         self._st = self._durable = write
-        self._base, self._ops, self._marks, self._shadow = None, [], {}, None
-        self._held, self._gone, self._told = {}, set(), set()
+        self._journal = _WriteJournal()
         self.store_ok = True
         return True
 
     def _compose(self, cand: PersistedState) -> PersistedState:
         """`cand` with every change still waiting (rule 22): the kept changes replayed, the
         newest poll records and delivery ledger, held alerts in and finished ones out."""
-        if self._shadow is None and not self._held and not self._gone:
+        if self._journal.shadow is None and not self._journal.held and not self._journal.gone:
             return cand
         st = cand
-        for op in self._ops:
+        for op in self._journal.ops:
             st = op(st)
         occs = {}
         for k, s in st.occurrences.items():
             # the running state holds the newest of both; an occurrence it lacks, the marks
             cur = self._st.occurrences.get(k)
             occs[k] = (
-                replace(s, alert_keys=self._marks.get(k, s.alert_keys))
+                replace(s, alert_keys=self._journal.marks.get(k, s.alert_keys))
                 if cur is None
                 else replace(s, alert_keys=cur.alert_keys, poll_records=cur.poll_records)
             )
         known = {o.id for o in self._durable.obligations}
-        taken = {_held_id(o) for o in self._held.values()} | self._told
+        taken = {_held_id(o) for o in self._journal.held.values()} | self._journal.told
         # a held alert whose copy was made is written with its mark (rule 22)
-        held = {k: self._outbox.marked(o) for k, o in self._held.items()}
+        held = {k: self._outbox.marked(o) for k, o in self._journal.held.items()}
         obls = [
             held.get(o.id, o)
             for o in st.obligations
-            if o.id not in self._gone
+            if o.id not in self._journal.gone
             and (o.id in known or o.id in held or _held_id(o) not in taken)
         ]
         ids = {o.id for o in obls}
@@ -316,7 +387,9 @@ class StateWriter:
         ledgers = {
             k: replace(
                 v,
-                pending=tuple(held.get(o.id, o) for o in v.pending if o.id not in self._gone),
+                pending=tuple(
+                    held.get(o.id, o) for o in v.pending if o.id not in self._journal.gone
+                ),
             )
             for k, v in st.lookahead.items()
         }
@@ -333,20 +406,25 @@ class StateWriter:
         held to go from memory."""
         base = self._durable
         if op is not None:
-            self._ops.append(op)
-        if stage or self._base is None:
-            self._base = self._restage(base, cand)
+            self._journal.ops.append(op)
+        if stage or self._journal.base is None:
+            self._journal.base = self._restage(base, cand)
         known = {o.id for o in base.obligations}
-        taken = {_held_id(o) for o in self._held.values()} | self._told
+        taken = {_held_id(o) for o in self._journal.held.values()} | self._journal.told
         for o in cand.obligations:
-            if o.id in known or o.id in self._held or o.id in self._gone or _held_id(o) in taken:
+            if (
+                o.id in known
+                or o.id in self._journal.held
+                or o.id in self._journal.gone
+                or _held_id(o) in taken
+            ):
                 continue  # a recomputed alert already held or sent from memory is not again
-            self._held[o.id] = o
+            self._journal.held[o.id] = o
             taken.add(_held_id(o))
         for k, x in self._st.occurrences.items():  # the newest ledger, computed on the marks
             was = base.occurrences.get(k)
-            if k in self._marks or was is None or was.alert_keys != x.alert_keys:
-                self._marks[k] = x.alert_keys
+            if k in self._journal.marks or was is None or was.alert_keys != x.alert_keys:
+                self._journal.marks[k] = x.alert_keys
         if base.config is None and cand.config is not None:
             base = replace(base, config=cand.config, config_snapshots=cand.config_snapshots)
             self._durable = base
@@ -355,25 +433,25 @@ class StateWriter:
             cur = self._st.occurrences.get(k)
             occs[k] = replace(
                 x,
-                alert_keys=self._marks.get(k, x.alert_keys),
+                alert_keys=self._journal.marks.get(k, x.alert_keys),
                 poll_records=x.poll_records if cur is None else cur.poll_records,
             )
         self._st = replace(base, occurrences=occs)
         # a journey fact told from memory that a healthy poll ended leaves the ledger: its
         # recurrence is news again (7.5), as it is with a working store
-        self._told = {
+        self._journal.told = {
             t
-            for t in self._told
+            for t in self._journal.told
             if t[0] is None
             or (s := self._st.occurrences.get(t[0])) is not None
             and is_sent(s.alert_keys, t[1])
         }
-        self._shadow = self._compose(self._base)
+        self._journal.shadow = self._compose(self._journal.base)
 
     def _restage(self, base: PersistedState, cand: PersistedState) -> PersistedState:
         """The newest change to retry: `cand`, keeping every occurrence an earlier waiting
         change made that `cand` left as written (a poll of another occurrence, a no-op)."""
-        old = self._base
+        old = self._journal.base
         if old is None:
             return cand
 

@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -38,6 +38,7 @@ from train_commute_companion.model import (
     Severity,
     TrainId,
 )
+from train_commute_companion.serde import decode, encode
 
 EXPECTED_KEYS = {
     "config_entry_id", "device_id", "profile_id", "profile_name", "direction", "service_date",
@@ -113,6 +114,7 @@ async def test_silent_payload_has_no_sound(hass, monkeypatch):
         "push": {"interruption-level": "passive"},
         "channel": "Train updates",
         "importance": "low",
+        "tag": calls[0].data["data"]["tag"],
     }
     assert "sound" not in str(calls[0].data)
 
@@ -591,3 +593,101 @@ async def test_the_back_off_counts_from_the_timeout_not_from_the_push(hass, monk
     clock.now += 2  # past the back-off from the push's start, well inside it from the timeout
     assert not await send_from_thread(hass, make_event(key="b"), n)
     assert len(calls) == 1
+
+
+async def test_disruption_receipts_do_not_follow_a_remapped_mobile_service(hass, monkeypatch):
+    from dataclasses import replace
+
+    from train_commute_companion.model import EventKind
+
+    target = "original-hook"
+    monkeypatch.setattr(notifier_mod, "mobile_target", lambda *_: target)
+    original = build(hass)
+    identity = original.destination_id
+    target = "replacement-hook"
+    replacement = build(hass)
+    assert identity != replacement.destination_id
+    assert original.destination_id == identity
+    event = replace(make_event(), kind=EventKind.DISRUPTION)
+    assert not await send_from_thread(hass, event, original)
+
+
+async def test_available_checks_target_and_service_without_sending(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
+    n = build(hass)
+    assert n.available
+    assert not calls
+    hass.services.async_remove("notify", "mobile_app_phone")
+    assert not n.available
+    assert not calls
+
+
+async def test_remapped_target_cannot_receive_an_ordinary_private_alert(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
+    n = build(hass)
+    monkeypatch.setattr(notifier_mod, "mobile_target", lambda *_: "replacement-hook")
+    assert not n.available
+    assert not await send_from_thread(hass, make_event(), n)
+    assert not calls
+
+
+async def test_a_local_push_can_claim_only_one_relay_fallback(hass):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+    fallback = None
+
+    async def send_message(session, entry, message):
+        calls.append(message)
+        entered.set()
+        await release.wait()
+
+    def send_notification(message, callback):
+        nonlocal fallback
+        fallback = callback
+
+    channel = SimpleNamespace(async_send_notification=send_notification, pending_confirms={})
+    entry = SimpleNamespace(title="Phone")
+    task = asyncio.create_task(
+        notifier_mod._push_local(
+            hass,
+            channel,
+            entry,
+            {"message": "Alert"},
+            SimpleNamespace(_send_message=send_message),
+            None,
+            None,
+        )
+    )
+    await asyncio.sleep(0)
+    try:
+        await fallback({"message": "Alert"})
+        await entered.wait()
+        await fallback({"message": "Alert"})
+        await asyncio.sleep(0)
+        assert len(calls) == 1
+        release.set()
+        assert await task
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("severity", [Severity.LOUD, Severity.SILENT])
+async def test_retry_after_notifier_restart_replaces_same_alert(hass, monkeypatch, severity):
+    calls = fake_phone(hass, monkeypatch)
+    event = replace(make_event(severity), created_at=make_event().created_at.astimezone(UTC))
+    assert await send_from_thread(hass, event)
+    restored = decode(AlertEvent, encode(event))
+    assert await send_from_thread(hass, replace(restored, text="Updated wording"))
+    first = calls[0].data["data"]["tag"]
+    assert first.startswith("tcc_")
+    assert calls[1].data["data"]["tag"] == first
+    assert await send_from_thread(hass, replace(event, key="different-fact"))
+    assert calls[2].data["data"]["tag"] != first
+    assert await send_from_thread(
+        hass, event, notifier=HaNotifier(hass, "other-entry", "mobile_app_phone")
+    )
+    assert calls[3].data["data"]["tag"] != first

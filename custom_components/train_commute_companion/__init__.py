@@ -112,6 +112,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
             clock=clock,
             require_stations=True,
             webhooks=webhooks,
+            primary_destination=lambda: notifier.destination_id,
         )
         return host_mod.Parts(rt, clock, close)
 
@@ -133,7 +134,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         except Exception as err:
             raise ConfigEntryNotReady(f"the runtime did not start: {err}") from err
 
-        coordinator = TccCoordinator(hass, entry, host)
+        coordinator = TccCoordinator(hass, entry, host, lambda: notifier.available)
         await coordinator.async_config_entry_first_refresh()
         # HA polls a coordinator only while it has a listener; monitoring must not wait for entities
         entry.async_on_unload(coordinator.async_add_listener(lambda: None))

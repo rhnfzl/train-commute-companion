@@ -1,7 +1,12 @@
 # Private planning, research and design docs. Never pushed.
 private/
+docs/human-html/
 # Subagent-driven-development scratch. Never pushed.
 .superpowers/
+.agent-harness/
+.claude/
+.playwright-mcp/
+docs/agents/
 __pycache__/
 .venv/
 .pytest_cache/

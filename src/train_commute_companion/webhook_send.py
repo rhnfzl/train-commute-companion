@@ -6,17 +6,19 @@ import logging
 from collections.abc import Callable, Collection, Sequence
 from contextvars import ContextVar
 from datetime import datetime, timedelta
+from typing import Literal
 
 import httpx
 
-from train_commute_companion.calendar import to_utc
 from train_commute_companion.model import AlertEvent, Severity
+from train_commute_companion.notify import DestinationReservations
 from train_commute_companion.webhook import (
     WebhookTestResult,
     body,
     headers,
     probe_body,
     probe_id,
+    transport_id,
 )
 
 log = logging.getLogger(__name__)
@@ -92,47 +94,51 @@ class WebhookPoster:
     ) -> None:
         _install_log_filter()
         self._client, self.urls, self._secret, self._now = client, tuple(urls), secret, now
+        self.channels: dict[str, Literal["primary", "email", "webhook"]] = {
+            url: "webhook" for url in self.urls
+        }
         self._token, self._stopped = token, stopped
-        self.down: dict[str, datetime] = {}  # url -> end of its rest, in UTC (WebhookPort)
+        self.destination_ids = {url: transport_id(url, secret, token) for url in self.urls}
+        self._attempts = DestinationReservations()
+        self.down = self._attempts.down
         self.on_reserve: Callable[[], None] = lambda: None
-        self._in_flight: set[str] = set()  # reserved by a first try still in the air
 
     @property
     def failing(self) -> bool:
-        return bool(self.down.keys() - self._in_flight)
+        return self._attempts.failing(self.urls)
 
     def due(self, urls: Collection[str]) -> frozenset[str]:
         if self._stopped():
             return frozenset()
-        t = to_utc(self._now())
-        return frozenset(u for u in urls if u not in self.down or t >= self.down[u])
+        return self._attempts.due(set(urls) & set(self.urls), self._now())
 
     async def post(
         self, event: AlertEvent, msg_id: str, urls: Collection[str]
     ) -> tuple[frozenset[str], frozenset[str]]:
         start = self._now()
         due = self.due(urls)
-        todo = [u for u in urls if u in due]
+        todo = list(dict.fromkeys(u for u in urls if u in due))
         if not todo:
             return frozenset(), frozenset()
         b = body(event)
         hdrs = headers(self._secret, msg_id, int(start.timestamp()), b, self._token)
         was_down = {u for u in todo if u in self.down}
         # reserved before the request: a cut-off try has an unknown result and counts as a try
-        self.down.update(dict.fromkeys(todo, to_utc(start) + timedelta(seconds=REST_S)))
-        first = set(todo) - was_down
-        self._in_flight |= first
-        self.on_reserve()
+        reserved = self._attempts.reserve(todo, start, timedelta(seconds=REST_S))
+        todo = [u for u in todo if u in reserved]
+        accepted: set[str] = set()
         try:
+            self.on_reserve()
             results = await asyncio.gather(*(_try_once(self._client, u, b, hdrs) for u in todo))
+            accepted = {u for u, result in zip(todo, results, strict=True) if _accepted(result)}
         finally:
-            self._in_flight -= first
+            for u in todo:
+                self._attempts.settle(u, u in accepted)
         ok = set()
         for u, r in zip(todo, results, strict=True):
             host = httpx.URL(u).host
             if _accepted(r):
                 ok.add(u)
-                self.down.pop(u, None)
                 if u in was_down:
                     log.info("webhook to %s works again", host)
             elif u in was_down:

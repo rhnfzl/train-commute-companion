@@ -19,6 +19,7 @@ from train_commute_companion.lookahead_probe import (
 )
 from train_commute_companion.model import Direction, Obligation, Profile, direction_key, present
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
+from train_commute_companion.revisions import baseline_on
 from train_commute_companion.state import (
     BaselineHistory,
     LookAheadFact,
@@ -53,13 +54,10 @@ async def probe_direction(
     config = present(st.config)
     today = start.astimezone(TZ).date()
     hist = st.baselines.get(direction_key(p.id, d), BaselineHistory())
-    bases = {
-        x: st.baselines.get(direction_key(p.id, x), BaselineHistory()).in_force(today)
-        for x in Direction
-    }
+    histories = {x: st.baselines.get(direction_key(p.id, x), BaselineHistory()) for x in Direction}
     results: list[ProbeResult] = []
-    for day in probe_dates(p, today, bases):
-        base = hist.in_force(service_date(p, d, day))
+    for day in probe_dates(p, today, direction=d, histories=histories):
+        base = baseline_on(hist, p, d, service_date(p, d, day))
         got = await fetch(probe_queries(p, d, day, base))
         if isinstance(got, str):
             return None
@@ -173,7 +171,7 @@ def _rewrite_withdrawn(
             continue  # only the adoption (dropped at its next try), or none bundled
         day = o.look_ahead[2]
         kind, text = render_message(p, day, rest)
-        b = new_hist.in_force(day)
+        b = baseline_on(new_hist, p, d, day)
         o = replace(
             o,
             baseline_version=b.version if b else None,

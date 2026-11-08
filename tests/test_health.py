@@ -165,3 +165,10 @@ def test_departed_leg_across_the_repeated_hour_is_not_in_the_zone():
         None,
     )
     assert blindness([gone], board_health([], now), now) == (False, "")
+
+
+def test_a_future_leg_observation_is_not_fresh_evidence():
+    from dataclasses import replace
+
+    future = replace(leg(), last_seen_at=NOW + mins(1))
+    assert blindness([future], fresh(), NOW)[0]

@@ -63,7 +63,9 @@ async def test_choose_service_locks_departure(hass):
 async def test_choose_retained_remainder_the_user_rides(hass):  # review-codex-rev11 N3, required
     h = await setup_tcc(hass, PROFILE, now="08:00")
     await drive(h, "08:18")  # auto lock 08:12
-    await h.host.run(lambda rt: rt.report_location("p1", LocationEvent("AAA", "report", at("08:18"))))
+    await h.host.run(
+        lambda rt: rt.report_location("p1", LocationEvent("AAA", "report", at("08:18")))
+    )
     await drive(h, "08:20")  # rule 7: lock now 08:44, 08:12 retained
     pre = await h.host.run(lambda rt: only_occurrence(rt))
     assert pre.lock.legs[0].train.planned_departure == at("08:44")
@@ -245,3 +247,23 @@ async def test_a_cancelled_caller_leaves_the_runtime_call_to_finish(hass):
     release.set()
     await asyncio.gather(*services._running)
     assert finished == [True]
+
+
+async def test_detached_runtime_failure_is_reported_once(hass, caplog):
+    h = await setup_tcc(hass, PROFILE)
+    entered, release = threading.Event(), threading.Event()
+
+    async def action(rt):
+        entered.set()
+        await asyncio.to_thread(release.wait, 5)
+        raise RuntimeError("late command failed")
+
+    caller = asyncio.create_task(services._call_runtime(h.entry.runtime_data, action))
+    await asyncio.to_thread(entered.wait, 5)
+    pending = set(services._running)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    release.set()
+    await asyncio.gather(*pending, return_exceptions=True)
+    assert caplog.text.count("command failed after its caller stopped waiting") == 1

@@ -57,3 +57,46 @@ not_travelling:
       default: false
       selector:
         boolean:
+prepare_recovery:
+  fields:
+    profile: {required: true, selector: {text: {}}}
+    direction: {required: true, selector: {select: {options: [outbound, return]}}}
+    service_date: {required: true, selector: {date: {}}}
+    proposal_id: {required: true, selector: {text: {}}}
+    origin_place_id: {required: true, selector: {text: {}}}
+follow_recovery:
+  fields:
+    profile: {required: true, selector: {text: {}}}
+    direction: {required: true, selector: {select: {options: [outbound, return]}}}
+    service_date: {required: true, selector: {date: {}}}
+    offer_id: {required: true, selector: {text: {}}}
+    acknowledge_planned_times: {required: true, selector: {boolean: {}}}
+    acknowledge_accessibility_unknown: {required: true, selector: {boolean: {}}}
+confirm_recovery_step:
+  fields:
+    profile: {required: true, selector: {text: {}}}
+    direction: {required: true, selector: {select: {options: [outbound, return]}}}
+    service_date: {required: true, selector: {date: {}}}
+    selection_id: {required: true, selector: {text: {}}}
+    revision: {required: true, selector: {number: {min: 0, step: 1, mode: box}}}
+    step_index: {required: true, selector: {number: {min: 0, step: 1, mode: box}}}
+    kind: {required: true, selector: {select: {options: [boarded, arrived, walk_arrived]}}}
+    place_id: {required: true, selector: {text: {}}}
+    action_id: {selector: {text: {}}}
+stop_recovery:
+  fields:
+    profile: {required: true, selector: {text: {}}}
+    direction: {required: true, selector: {select: {options: [outbound, return]}}}
+    service_date: {required: true, selector: {date: {}}}
+    selection_id: {required: true, selector: {text: {}}}
+    revision: {required: true, selector: {number: {min: 0, step: 1, mode: box}}}
+confirm_arrival:
+  fields:
+    profile: {required: true, selector: {text: {}}}
+    direction: {required: true, selector: {select: {options: [outbound, return]}}}
+    service_date: {required: true, selector: {date: {}}}
+    destination: {required: true, selector: {text: {}}}
+    arrived_at: {required: true, selector: {text: {}}}
+    expected_revision: {required: true, selector: {number: {min: 0, step: 1, mode: box}}}
+    action_id: {required: true, selector: {text: {}}}
+    original_planned_arrival: {selector: {text: {}}}

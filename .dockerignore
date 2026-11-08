@@ -3,6 +3,11 @@
 private
 tests*
 .superpowers
+.agent-harness
+.claude
+.playwright-mcp
+docs/agents
+docs/human-html
 __pycache__
 .pytest_cache
 .mypy_cache

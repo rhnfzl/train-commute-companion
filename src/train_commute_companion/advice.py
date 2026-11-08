@@ -13,7 +13,9 @@ from train_commute_companion.classify import (
 )
 from train_commute_companion.lifecycle import catch_from_state, make_event
 from train_commute_companion.match import current_arrival, train_only_now, usual_connection
+from train_commute_companion.messages import crowd_text
 from train_commute_companion.model import (
+    AdvicePhase,
     AdviceRecord,
     AlertEvent,
     Connection,
@@ -202,14 +204,19 @@ def advice_query(
     if not _advice_applies(s, ctx):
         return None
     a = s.advice
-    out = a is not None and a.advised_train is not None and not a.withdrawn
+    out = a is not None and a.active
     if not out and not waiting_is_bad(s, ctx, answer, usual_planned_arrival):
         return None
     at = catch_from_state(s, ctx.profile.journey(ctx.direction).buffer_min, ctx.now).not_before
     if at >= answer.query.at.astimezone(UTC):
         return None
     d = ctx.direction
-    return Query(ctx.profile.origin(d), ctx.profile.destination(d), at.astimezone(ctx.now.tzinfo))
+    return Query.for_profile(
+        ctx.profile,
+        ctx.profile.origin(d),
+        ctx.profile.destination(d),
+        at.astimezone(ctx.now.tzinfo),
+    )
 
 
 def still_advised(
@@ -292,6 +299,7 @@ def leave_now_text(c: Connection, tz: tzinfo | None) -> str:
     return (
         f"leave now, an earlier train {first.board.code} to {c.legs[-1].alight.code}"
         f" leaves at {shown:%H:%M} and gets you there sooner than your usual journey"
+        + crowd_text(c.legs)
     )
 
 
@@ -312,7 +320,7 @@ def advise(
     advised = record.advised_train
     if best is not None:
         train = best[1].legs[0].train
-        if advised == train and not record.withdrawn:
+        if advised == train and record.active:
             return record, []  # already told
         # renewed after a withdrawal: a new episode with its own delivery identity (7.6)
         text = leave_now_text(best[1], ctx.now.tzinfo)
@@ -320,10 +328,10 @@ def advise(
             ctx, EventKind.LEAVE_NOW, Severity.LOUD, text, train, ctx.now.isoformat()
         )
         return AdviceRecord(train, ctx.now, False, delivered=False), [event]
-    if advised is None or record.withdrawn or bad:
+    if not record.active or advised is None or bad:
         return record, []
-    if not record.delivered:  # never told: nothing to withdraw, its LEAVE_NOW is not sent
-        return replace(record, withdrawn=True), []
+    if record.phase is AdvicePhase.PENDING:
+        return record.withdraw(), []
     return _withdraw(s, ctx, answer, record, advised)
 
 
@@ -351,7 +359,7 @@ def _withdraw(
         advised,
         "" if record.sent_at is None else record.sent_at.isoformat(),  # the episode it ends
     )
-    return replace(record, withdrawn=True), [event]
+    return record.withdraw(), [event]
 
 
 def usual_arrival(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> datetime | None:

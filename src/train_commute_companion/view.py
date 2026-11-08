@@ -2,13 +2,17 @@
 follows, built by pure functions, so a shell never reaches into runtime state."""
 
 import copy
+import hashlib
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from itertools import pairwise
+from typing import Literal
 
 from train_commute_companion.calendar import TZ
 from train_commute_companion.classify import pair_transfer
+from train_commute_companion.disruptions import disruptions_fresh
 from train_commute_companion.health import BoardHealth, board_health
 from train_commute_companion.lifecycle import (
     find_next_good,
@@ -39,6 +43,7 @@ from train_commute_companion.model import (
     AdviceRecord,
     ClassifiedLeg,
     Connection,
+    CrowdForecast,
     Ctx,
     Direction,
     DirectionState,
@@ -54,8 +59,15 @@ from train_commute_companion.model import (
     TransferState,
     direction_key,
 )
-from train_commute_companion.providers.base import ProviderAnswer
+from train_commute_companion.providers.base import ActiveDisruption, ProviderAnswer, Query
+from train_commute_companion.recovery import (
+    RecoveryItinerary,
+    payload,
+)
+from train_commute_companion.recovery_candidates import recovery_candidates
+from train_commute_companion.recovery_state import RecoveryOffer, SelectedRecovery
 from train_commute_companion.revisions import find_profile, occurrence_ctx, profile_for
+from train_commute_companion.serde import encode
 from train_commute_companion.state import (
     BaselineHistory,
     Commitment,
@@ -67,6 +79,7 @@ from train_commute_companion.state import (
 )
 from train_commute_companion.store import PersistedState
 from train_commute_companion.transfer import check_transfer, transfer_minimum
+from train_commute_companion.vehicle import VehicleSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +97,10 @@ class LegView:
     arrival_delay_min: int | None
     state: LegKind | Observation  # the observation when not seen, else the kind (6.2)
     progress: LegState
+    crowd_forecast: CrowdForecast | None = None
+    boarding_notes: tuple[str, ...] = ()
+    alighting_notes: tuple[str, ...] = ()
+    exit_side: Literal["left", "right"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +109,66 @@ class TransferView:
     state: TransferState
     margin_min: int | None
     minimum: int
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryPlanView:
+    checked_at: datetime
+    itinerary: RecoveryItinerary
+    source_query: Query | None = None
+    occurrence: OccurrenceKey | None = None
+    generation: int = 0
+    route_revision: int = 0
+
+    @property
+    def proposal_id(self) -> str:
+        query = self.source_query
+        anchors = (
+            None
+            if query is None
+            else (query.origin, query.destination, query.via, query.require_accessible)
+        )
+        services = [
+            step.service_key
+            or (
+                step.mode,
+                step.operator,
+                step.service_reference,
+                None if step.mode == "WALK" else step.planned_departure,
+                (step.origin.physical_id, step.origin.latitude, step.origin.longitude),
+                (
+                    step.destination.physical_id,
+                    step.destination.latitude,
+                    step.destination.longitude,
+                ),
+            )
+            for step in self.itinerary.steps
+        ]
+        identity = encode(
+            (self.occurrence, self.generation, self.route_revision, anchors, services)
+        )
+        return hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:32]
+
+    @property
+    def selectable(self) -> bool:
+        return (
+            self.source_query is not None
+            and self.occurrence is not None
+            and all(
+                step.mode == "WALK" or step.service_key is not None for step in self.itinerary.steps
+            )
+        )
+
+    def fields(self) -> dict[str, object]:
+        return {
+            "proposal_id": self.proposal_id,
+            "selectable": self.selectable,
+            "source_query": encode(self.source_query),
+            "checked_at": self.checked_at.isoformat(),
+            "itinerary": payload(self.itinerary),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +187,13 @@ class OccurrenceView:
     next_good: Connection | None
     advice: AdviceRecord | None
     health: BoardHealth
+    disruptions: tuple[ActiveDisruption, ...] = ()
+    disruptions_checked_at: datetime | None = None
+    disruptions_coverage: str = "unknown"
+    replacement_plans: tuple[RecoveryPlanView, ...] = ()
+    recovery_offer: RecoveryOffer | None = None
+    selected_recovery: SelectedRecovery | None = None
+    train_context: VehicleSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +317,26 @@ def _leg_view(x: LegProgress, cl: ClassifiedLeg | None, ob: Observation) -> LegV
         arrival_delay_min=cl.arr_delay_min,
         state=state,
         progress=x.state,
+        crowd_forecast=cl.leg.crowd_forecast,
+        boarding_notes=board.accessibility_notes,
+        alighting_notes=() if stop is None else stop.accessibility_notes,
+        exit_side=None if stop is None else stop.exit_side,
+    )
+
+
+def _replacement_plans(
+    answers: Sequence[ProviderAnswer], ctx: Ctx, generation: int = 0, route_revision: int = 0
+) -> tuple[RecoveryPlanView, ...]:
+    return tuple(
+        RecoveryPlanView(
+            candidate.checked_at,
+            candidate.itinerary,
+            candidate.source_query,
+            ctx.schedule.key,
+            generation,
+            route_revision,
+        )
+        for candidate in recovery_candidates(answers, ctx)
     )
 
 
@@ -264,7 +368,9 @@ def occurrence_view(
         t = check_transfer(inc, out, station, ctx.profile.transfer_min)
         transfers.append(TransferView(station, t.state, t.margin_min, t.minimum))
 
-    resolved = is_resolved(s)
+    resolved = is_resolved(s) and not (
+        s.selected_recovery is not None and s.selected_recovery.status == "active"
+    )
     next_good = None
     if pool is not None and not resolved:
         x = None if s.lock is None else unfinished_leg(s.lock)
@@ -273,8 +379,13 @@ def occurrence_view(
         elif x is not None:  # as `left_note` names it (7.7, rule 7)
             next_good = next_good_instead_of(s, ctx, pool, s.lock, s.lock.legs.index(x))[1]
 
+    coverage = "complete" if disruptions_fresh(s, ctx.now) else "unknown"
     return OccurrenceView(
         key=s.key,
+        selected_recovery=s.selected_recovery,
+        disruptions=tuple(n.item for n in s.disruptions.values() if n.active and n.relevant),
+        disruptions_checked_at=s.disruptions_checked_at,
+        disruptions_coverage=coverage,
         profile_name=ctx.profile.name,
         direction_state=s.direction_state,
         resolved=resolved,
@@ -285,9 +396,16 @@ def occurrence_view(
         legs=legs(lock),
         transfers=tuple(transfers),
         retained=tuple(legs(j.legs) for j in s.retained),
-        next_good=next_good,
-        advice=s.advice,
+        next_good=None
+        if s.selected_recovery is not None and s.selected_recovery.status == "active"
+        else next_good,
+        advice=None
+        if s.selected_recovery is not None and s.selected_recovery.status == "active"
+        else s.advice,
         health=board_health(s.poll_records, ctx.now),
+        replacement_plans=()
+        if resolved or s.not_travelling
+        else _replacement_plans(answers, ctx, s.generation, s.route_revision),
     )
 
 
@@ -305,7 +423,10 @@ def works_ahead(ledger: LookAheadLedger, today: date) -> tuple[WorksDay, ...]:
 
 
 def moved(
-    profiles: Sequence[Profile], baselines: Mapping[str, BaselineHistory]
+    profiles: Sequence[Profile],
+    baselines: Mapping[str, BaselineHistory],
+    *,
+    today: date | None = None,
 ) -> tuple[Moved, ...]:
     """Directions whose newest confirmed baseline starts on another first train than the file."""
     out = []
@@ -313,6 +434,39 @@ def moved(
         for d in Direction:
             hist = baselines.get(direction_key(p.id, d))
             confirmed = [v for v in (hist.versions if hist else ()) if v.confirmed]
+            if not confirmed:
+                continue
+            if p.journey(d).first_train_by_weekday:
+                active = p.days | {
+                    day.isoweekday() for day in p.extra_dates if today is None or day >= today
+                }
+                fragments = []
+                for weekday in sorted(active):
+                    candidates = [
+                        version for version in confirmed if version.commute_weekday == weekday
+                    ]
+                    if not candidates:
+                        continue
+                    version = max(candidates, key=lambda x: (x.effective_from, x.version))
+                    commute = date(2026, 10, 26) + timedelta(days=weekday - 1)
+                    mine = p.journey_on(d, commute).first_train
+                    adopted = version.signature.legs[0].departure
+                    if adopted != mine:
+                        fragments.append(
+                            f"{commute:%A}: NS moved your {mine:%H:%M} to {adopted:%H:%M} from {version.effective_from.isoformat()}"
+                        )
+                if fragments:
+                    out.append(
+                        Moved(
+                            p.id,
+                            d,
+                            f"{p.name}.{d.value}: "
+                            + "; ".join(fragments)
+                            + "; update your profile?",
+                        )
+                    )
+                continue
+            confirmed = [version for version in confirmed if version.commute_weekday is None]
             if not confirmed:
                 continue
             v = max(confirmed, key=lambda x: (x.effective_from, x.version))
@@ -392,7 +546,7 @@ def runtime_view(
         directions=_direction_infos(st, profiles),
         occurrences=tuple(occurrences),
         works={k: works_ahead(v, today) for k, v in st.lookahead.items()},
-        moved=moved(cfg.profiles if cfg else (), st.baselines),
+        moved=moved(cfg.profiles if cfg else (), st.baselines, today=today),
         refusal=refusal,
         store_ok=store_ok,
         key_rejected=key_rejected,

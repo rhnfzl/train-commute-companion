@@ -1,9 +1,13 @@
 """Telegram Bot API client and the notifier that sends alerts through it (spec 9 step 3)."""
 
+import asyncio
+import hashlib
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any
 
 import httpx
@@ -15,6 +19,45 @@ log = logging.getLogger(__name__)
 BACKOFF = timedelta(seconds=60)
 TEXT_LIMIT = 4096  # sendMessage's limit
 DATA_LIMIT = 64  # callback_data bytes
+
+AlertKey = tuple[str, str, str]
+Payload = tuple[str, bool, str]
+
+
+class PayloadPhase(StrEnum):
+    QUEUED = "queued"
+    PARTIAL = "partial"
+    COMPLETE = "complete"
+
+
+@dataclass(frozen=True, slots=True)
+class MessageProgress:
+    payload: Payload
+    count: int
+    accepted: int = 0
+
+    @property
+    def phase(self) -> PayloadPhase:
+        if self.accepted == self.count:
+            return PayloadPhase.COMPLETE
+        return PayloadPhase.PARTIAL if self.accepted else PayloadPhase.QUEUED
+
+    def accept(self, index: int) -> "MessageProgress":
+        if self.phase is PayloadPhase.COMPLETE or index != self.accepted:
+            raise ValueError("a message receipt must accept the next unsent part")
+        return replace(self, accepted=self.accepted + 1)
+
+
+class SendPhase(StrEnum):
+    IDLE = "idle"
+    SENDING = "sending"
+    RETIRED = "retired"
+
+
+class DestinationPhase(StrEnum):
+    UNCONFIGURED = "unconfigured"
+    RESTING = "resting"
+    READY = "ready"
 
 
 class TelegramError(Exception):
@@ -101,11 +144,40 @@ class TelegramNotifier:
         # per alert (profile, direction, key: the key alone is shared by two profiles' alerts)
         self._key_until: dict[tuple[str, str, str], datetime] = {}  # one bad message's backoff
         # per alert: the payload (text, silent, markup) and how many of its parts were accepted
-        self._parts_done: dict[tuple[str, str, str], tuple[tuple[str, bool, str], int]] = {}
+        self._parts_done: dict[AlertKey, MessageProgress] = {}
+        self._sending = asyncio.Lock()
+        self.phase = SendPhase.IDLE
+
+    @property
+    def destination_id(self) -> str | None:
+        if self._chat is None:
+            return None
+        return "telegram:" + hashlib.sha256(f"{self._api.bot_id}:{self._chat}".encode()).hexdigest()
 
     async def send(self, event: AlertEvent) -> bool:
+        async with self._sending:
+            if self.phase is SendPhase.RETIRED:
+                return False
+            self.phase = SendPhase.SENDING
+            try:
+                return await self._send_event(event)
+            finally:
+                if self.phase is not SendPhase.RETIRED:
+                    self.phase = SendPhase.IDLE
+
+    def retire(self) -> None:
+        self.phase = SendPhase.RETIRED
+
+    def destination_phase(self, now: datetime) -> DestinationPhase:
+        if self._chat is None:
+            return DestinationPhase.UNCONFIGURED
+        if self._until is not None and now < self._until:
+            return DestinationPhase.RESTING
+        return DestinationPhase.READY
+
+    async def _send_event(self, event: AlertEvent) -> bool:
         now = self._now().astimezone(UTC)
-        if self._chat is None or (self._until is not None and now < self._until):
+        if self.destination_phase(now) is not DestinationPhase.READY:
             return False
         key = (event.profile_id, event.direction.value if event.direction else "", event.key)
         key_until = self._key_until.get(key)
@@ -114,9 +186,14 @@ class TelegramNotifier:
         silent = event.severity is Severity.SILENT
         markup = alert_buttons(event)
         payload = (event.text, silent, json.dumps(markup, sort_keys=True))
-        done_for, done = self._parts_done.get(key, (payload, 0))
         parts = split_text(event.text)
-        for i in range(done if done_for == payload else 0, len(parts)):
+        progress = self._parts_done.get(key)
+        if progress is None or progress.payload != payload:
+            progress = MessageProgress(payload, len(parts))
+        while progress.phase is not PayloadPhase.COMPLETE:
+            if self.phase is SendPhase.RETIRED:
+                return False
+            i = progress.accepted
             params: dict[str, Any] = {
                 "chat_id": self._chat, "text": parts[i], "disable_notification": silent
             }  # fmt: skip
@@ -127,7 +204,8 @@ class TelegramNotifier:
             except TelegramError as e:
                 self._failed(key, e, now)
                 return False
-            self._parts_done[key] = (payload, i + 1)
+            progress = progress.accept(i)
+            self._parts_done[key] = progress
         self._parts_done.pop(key, None)
         self._key_until.pop(key, None)
         return True

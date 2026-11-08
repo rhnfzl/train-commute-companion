@@ -28,6 +28,14 @@ async def test_first_fix_seeds_then_enter_and_leave_reach_the_core(app):
     assert "UT" in only_occurrence(app.rt).zone_reports  # 10.4: Telegram produces a zone event
 
 
+async def test_closed_follower_does_not_restart_location_tracking(app):
+    await feed(app, *FAR, "08:20")
+    spied(app)
+    await app.follower.close()
+    await feed(app, *UT, "08:24")
+    assert spied(app) == []
+
+
 def _shared(lat: float, lon: float, when: str, chat: int, uid: int) -> dict:
     msg = {"message_id": uid, "date": int(at(when).timestamp()), "chat": {"id": chat}}
     return {"update_id": uid, "message": {**msg, "location": {"latitude": lat, "longitude": lon}}}

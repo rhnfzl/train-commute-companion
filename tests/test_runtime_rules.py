@@ -6,6 +6,7 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 
 import pytest
 import runtime_seam as seam
@@ -1034,19 +1035,23 @@ async def test_advice_dropped_while_the_store_fails_is_advised_again(tmp_path, r
     assert leave and leave[-1] in rt.events_log and "17:22" in leave[-1].text
 
 
-async def test_advice_sent_while_the_store_fails_is_withdrawn_later(tmp_path):
+async def test_advice_held_for_audience_write_is_sent_then_withdrawn_once(tmp_path):
     rig = Rig(tmp_path, "16:54")  # rule 22, 7.6
     rig.store.fail = True
     rig.provider.world = cancelled_usual_world()
-    await rig.rt.start()  # the LEAVE_NOW goes from memory
-    assert EventKind.LEAVE_NOW in kinds(rig.rt.events_log)
+    await rig.rt.start()
+    assert EventKind.LEAVE_NOW not in kinds(rig.rt.events_log)
+    assert any(o.event.kind is EventKind.LEAVE_NOW for o in seam.held(rig.rt).values())
     rig.store.fail = False
     await rig.rt.watchdog_once()
     assert rig.store.load().occurrences["p1|return|2026-10-27"].advice.delivered
+    assert kinds(rig.rt.events_log).count(EventKind.LEAVE_NOW) == 1
     rig.clock.set("16:56")
     rig.provider.world = running_usual_world()
     await rig.rt.poll_once()
-    assert EventKind.EARLIER_TRAIN_WITHDRAWN in kinds(rig.rt.events_log)
+    assert kinds(rig.rt.events_log).count(EventKind.EARLIER_TRAIN_WITHDRAWN) == 1
+    await rig.rt.watchdog_once()
+    assert kinds(rig.rt.events_log).count(EventKind.EARLIER_TRAIN_WITHDRAWN) == 1
 
 
 async def test_held_all_good_dropped_once_a_train_is_cancelled(tmp_path):
@@ -1207,7 +1212,9 @@ async def test_no_station_list_runs_the_saved_configuration_and_waits_on_edits(t
     await rt.reload_if_changed()
     assert rt.config.profiles[0].name == "office_a"
     assert kinds(rt.events_log).count(EventKind.PROFILE_REFUSED) == 1
-    await rt.reload_if_changed()  # retried only once per poll interval: no second request or warning
+    await (
+        rt.reload_if_changed()
+    )  # retried only once per poll interval: no second request or warning
     assert kinds(rt.events_log).count(EventKind.PROFILE_REFUSED) == 1
 
     async def up() -> frozenset[str]:
@@ -1217,6 +1224,44 @@ async def test_no_station_list_runs_the_saved_configuration_and_waits_on_edits(t
     rig.clock.jump(2)
     await rt.reload_if_changed()
     assert rt.config.profiles[0].name == "office_x" and saved == [frozenset({"AAA", "UT", "RTD"})]
+
+
+async def test_pending_station_validation_survives_a_transient_profile_read_error(
+    tmp_path, monkeypatch
+):
+    from train_commute_companion.providers.base import ProviderError
+
+    rig = await started(tmp_path)
+
+    async def down():
+        raise ProviderError("station endpoint down")
+
+    rig.provider.stations = down
+    rig.rt = rig.new(require_stations=True)
+    await rig.rt.start()
+    rig.write("pending_edit")
+    await rig.rt.reload_if_changed()
+    assert rig.rt.config.profiles[0].name == "office_a"
+    read = Path.read_text
+    unreadable = True
+
+    def intermittently_readable(path, *args, **kwargs):
+        if path == rig.path and unreadable:
+            raise PermissionError("temporary profile read failure")
+        return read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", intermittently_readable)
+    rig.clock.jump(2)
+    await rig.rt.reload_if_changed()
+    unreadable = False
+
+    async def up():
+        return frozenset({"AAA", "UT", "RTD"})
+
+    rig.provider.stations = up
+    rig.clock.jump(2)
+    await rig.rt.reload_if_changed()
+    assert rig.rt.config.profiles[0].name == "pending_edit"
 
 
 async def test_run_forever_leaves_no_task_when_start_raises(tmp_path):

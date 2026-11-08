@@ -1,0 +1,53 @@
+{
+  "trips": [
+    {
+      "status": "NORMAL",
+      "legs": [
+        {
+          "travelType": "PUBLIC_TRANSIT",
+          "product": {"number": "927436", "categoryCode": "MTR", "type": "METRO"},
+          "origin": {
+            "name": "Metrostation Capelsebrug", "uicCode": "8400002",
+            "plannedDateTime": "2026-11-07T13:16:00+0100"
+          },
+          "destination": {
+            "name": "Metrostation Beurs", "type": "ADDRESS", "lat": 51.918422, "lng": 4.480592,
+            "plannedDateTime": "2026-11-07T13:26:00+0100"
+          },
+          "stops": [
+            {
+              "name": "Metrostation Capelsebrug", "uicCode": "8400002",
+              "plannedDepartureDateTime": "2026-11-07T13:16:00+0100"
+            },
+            {
+              "name": "Metrostation Beurs", "lat": 51.918422, "lng": 4.480592,
+              "plannedArrivalDateTime": "2026-11-07T13:26:00+0100"
+            }
+          ]
+        },
+        {
+          "travelType": "PUBLIC_TRANSIT",
+          "product": {"number": "928200", "categoryCode": "MTS", "type": "METRO"},
+          "origin": {
+            "name": "Metrostation Beurs", "type": "ADDRESS", "lat": 51.918422, "lng": 4.480592,
+            "plannedDateTime": "2026-11-07T13:31:00+0100"
+          },
+          "destination": {
+            "name": "Rotterdam Centraal, Rotterdam Centraal", "stationCode": "RTD", "uicCode": "8400530",
+            "plannedDateTime": "2026-11-07T13:34:00+0100"
+          },
+          "stops": [
+            {
+              "name": "Metrostation Beurs", "lat": 51.918422, "lng": 4.480592,
+              "plannedDepartureDateTime": "2026-11-07T13:31:00+0100"
+            },
+            {
+              "name": "Rotterdam Centraal, Rotterdam Centraal", "uicCode": "8400530",
+              "plannedArrivalDateTime": "2026-11-07T13:34:00+0100"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

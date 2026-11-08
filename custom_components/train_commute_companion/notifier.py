@@ -1,10 +1,13 @@
 """The HA delivery port: a bus event for automations, then a companion-app push."""
 
 import asyncio
+import hashlib
+import json
 import logging
 import threading
 import time
 from collections.abc import Callable
+from enum import StrEnum
 from types import ModuleType
 from typing import Any, cast
 
@@ -14,7 +17,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from train_commute_companion.model import AlertEvent, Direction, Severity
+from train_commute_companion.calendar import to_utc
+from train_commute_companion.model import AlertEvent, Direction, EventKind, Severity
 from train_commute_companion.notify import event_fields
 
 from .const import (
@@ -32,6 +36,40 @@ _LOGGER = logging.getLogger(__name__)
 
 MOBILE_APP = "mobile_app"
 _MEMORY_CAP = 1000
+
+
+class PushPhase(StrEnum):
+    WAITING = "waiting"
+    RELAYING = "relaying"
+    ACCEPTED = "accepted"
+    REFUSED = "refused"
+
+
+class NotifierPhase(StrEnum):
+    READY = "ready"
+    RESTING = "resting"
+    UNAVAILABLE = "unavailable"
+    RETIRED = "retired"
+
+
+class PushReceipt:
+    """Only one fallback may own a pending push, and only its first receipt settles it."""
+
+    def __init__(self, future: asyncio.Future[bool]) -> None:
+        self.phase = PushPhase.WAITING
+        self.future = future
+
+    def claim_relay(self) -> bool:
+        if self.phase is not PushPhase.WAITING:
+            return False
+        self.phase = PushPhase.RELAYING
+        return True
+
+    def settle(self, accepted: bool) -> None:
+        if self.phase in (PushPhase.ACCEPTED, PushPhase.REFUSED):
+            return
+        self.phase = PushPhase.ACCEPTED if accepted else PushPhase.REFUSED
+        self.future.set_result(accepted)
 
 
 def notify_payload(
@@ -186,10 +224,8 @@ async def _push_local(
     """Waits for the phone's confirmation or for HA's fallback through the relay to finish."""
     session = async_get_clientsession(hass)
     done: asyncio.Future[bool] = hass.loop.create_future()
-
-    def settle(ok: bool) -> None:
-        if not done.done():
-            done.set_result(ok)
+    receipt = PushReceipt(done)
+    settle = receipt.settle
 
     relays: set[asyncio.Task[None]] = set()
     relay_timed_out = False
@@ -210,8 +246,10 @@ async def _push_local(
 
     async def fallback(d: dict[str, Any]) -> None:
         # HA calls this from its own timer or channel teardown, independent of our task
-        if done.done() or (retired is not None and retired.is_set()):
+        if retired is not None and retired.is_set():
             settle(False)
+            return
+        if not receipt.claim_relay():
             return
         t = hass.async_create_task(relay(d))
         relays.add(t)
@@ -235,9 +273,10 @@ async def _push_local(
         if not done.done():
             # nobody waits any more: HA must not relay this push later on our behalf
             settle(False)
-            if channel.pending_confirms.pop(confirm_id, None) is not None and unsub is not None:
-                unsub()
-            for t in relays:
+        if channel.pending_confirms.pop(confirm_id, None) is not None and unsub is not None:
+            unsub()
+        for t in relays:
+            if not t.done():
                 t.cancel()
     if not ok and relay_timed_out:
         raise TimeoutError(f"remote fallback push to {entry.title} timed out")
@@ -254,6 +293,7 @@ class HaNotifier:
         retired: threading.Event | None = None,
     ) -> None:
         self.hass = hass
+        self._receipt_target = mobile_target(hass, service)
         # set once the host gives this runtime up: a runtime that outlived its stop never delivers
         self.retired = retired or threading.Event()
         self.entry_id = entry_id
@@ -263,6 +303,35 @@ class HaNotifier:
         # this notifier's work on hass.loop (sends and relay fallbacks), cancelled on unload
         self._tasks: set[asyncio.Task[None]] = set()
         self._timed_out_at: float | None = None
+
+    @property
+    def available(self) -> bool:
+        """Read on HA's loop without sending a message or changing recipient identity."""
+        return self.phase in (NotifierPhase.READY, NotifierPhase.RESTING)
+
+    @property
+    def phase(self) -> NotifierPhase:
+        if self.retired.is_set():
+            return NotifierPhase.RETIRED
+        if (
+            self._receipt_target is None
+            or mobile_target(self.hass, self.service) != self._receipt_target
+            or not self.hass.services.has_service("notify", self.service)
+        ):
+            return NotifierPhase.UNAVAILABLE
+        if (
+            self._timed_out_at is not None
+            and time.monotonic() - self._timed_out_at < NOTIFY_BACKOFF_S
+        ):
+            return NotifierPhase.RESTING
+        return NotifierPhase.READY
+
+    @property
+    def destination_id(self) -> str | None:
+        target = self._receipt_target
+        if target is None:
+            return None
+        return "ha-mobile:" + hashlib.sha256(f"{self.entry_id}:{target}".encode()).hexdigest()
 
     async def send(self, event: AlertEvent) -> bool:
         """Runs on the runtime thread; the work happens on `hass.loop`."""
@@ -280,6 +349,7 @@ class HaNotifier:
     async def async_stop(self) -> None:
         """On hass.loop, once `retired` is set: cancels and awaits this notifier's sends and
         fallbacks, so nothing reaches the phone after unload."""
+        self.retired.set()
         tasks = list(self._tasks)
         for t in tasks:
             t.cancel()
@@ -296,6 +366,10 @@ class HaNotifier:
             self._tasks.discard(me)
 
     async def _deliver(self, event: AlertEvent) -> bool:
+        if event.kind in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED) and (
+            mobile_target(self.hass, self.service) != self._receipt_target
+        ):
+            return False  # A remapped service needs a new runtime and its own receipt identity.
         # the key names neither profile nor direction: two profiles on one train are two facts
         fact = (event.profile_id, event.direction, event.key, event.severity, event.created_at)
         if fact not in self._fired:
@@ -309,12 +383,22 @@ class HaNotifier:
             self.hass.bus.async_fire(
                 EVENT_ALERT, event_data(event, self.entry_id, device.id if device else None)
             )
-        if (
-            self._timed_out_at is not None
-            and time.monotonic() - self._timed_out_at < NOTIFY_BACKOFF_S
-        ):
+        if self.phase is not NotifierPhase.READY:
             return False
         payload = notify_payload(event.severity, event.text, self.loud_style)
+        # Retries replace the same displayed alert, including after a runtime restart.
+        identity = (
+            self.entry_id,
+            event.profile_id,
+            event.direction,
+            event.key,
+            event.severity,
+            to_utc(event.created_at).isoformat(),
+        )
+        payload["data"]["tag"] = (
+            "tcc_"
+            + hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
+        )
         ok, timed_out = await _push(self.hass, self.service, payload, self.retired, self._tasks)
         if timed_out:
             self._timed_out_at = time.monotonic()  # the wait itself must not eat the back-off

@@ -1,6 +1,7 @@
 """Shared entity base, the occurrence picker, the health state and the entity lifecycle."""
 
 from collections.abc import Callable
+from enum import StrEnum
 
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
@@ -15,6 +16,12 @@ from train_commute_companion.view import OccurrenceView, RuntimeView
 
 from .const import DOMAIN
 from .coordinator import TccCoordinator
+from .reconciliation import ViewPhase, view_phase
+
+
+class EntityPhase(StrEnum):
+    PENDING = "pending"
+    PRESENT = "present"
 
 
 def unique_id(
@@ -95,20 +102,24 @@ def sync_entities(
 ) -> Callable[[], None]:
     """Adds entities whose unique ID is new and removes this entry's no longer wanted ones."""
     entry = coordinator.config_entry
-    added: set[str] = set()
+    states: dict[str, EntityPhase] = {}
 
     @callback
     def update() -> None:
         view = coordinator.data
         want = wanted(view)
-        if new := [make for uid, make in want.items() if uid not in added]:
-            added.update(uid for uid in want if uid not in added)
-            async_add_entities([make() for make in new])
+        if new := {
+            uid: make for uid, make in want.items() if states.get(uid) is not EntityPhase.PRESENT
+        }:
+            states.update(dict.fromkeys(new, EntityPhase.PENDING))
+            async_add_entities([make() for make in new.values()])
+            states.update(dict.fromkeys(new, EntityPhase.PRESENT))
         # a view read before the runtime has a config would otherwise delete every entity
-        if not view.started or not view.directions:
+        if view_phase(view) is not ViewPhase.READY:
             return
         # not from the registry: a removed device already took its entries (5.4)
-        added.intersection_update(want)
+        for uid in states.keys() - want.keys():
+            del states[uid]
         registry = er.async_get(coordinator.hass)
         for e in er.async_entries_for_config_entry(registry, entry.entry_id):
             if e.domain == platform and e.platform == DOMAIN and e.unique_id not in want:

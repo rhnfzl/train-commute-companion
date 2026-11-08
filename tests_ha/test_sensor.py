@@ -4,7 +4,7 @@ from datetime import date, datetime
 
 import pytest
 import runtime_seam as seam
-from builders import AMS, make_leg, only_occurrence
+from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from ha_rig import B_ONLY, PROFILE, PROFILES, drive, jump, rebound, setup_tcc, write_profiles
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -25,6 +25,24 @@ from train_commute_companion.runtime import Runtime
 from train_commute_companion.view import DirectionInfo, OccurrenceView, RuntimeView
 
 pytestmark = pytest.mark.usefixtures("tcc_freezer")
+
+
+async def test_boarding_metadata_is_exposed_without_accessibility_guarantees(hass):
+    original = ONE_TRANSFER[0]
+    first, last = original.legs
+    first = replace(
+        first,
+        stops=(
+            replace(first.board, accessibility_notes=("Book assistance",)),
+            replace(first.alight, exit_side="right"),
+        ),
+    )
+    h = await setup_tcc(hass, PROFILE, world=(make_connection([first, last]),))
+    await drive(h, "08:00")
+    attributes = hass.states.get("sensor.office_a_outbound_leg_1").attributes
+    assert attributes["boarding_notes"] == ("Book assistance",)
+    assert attributes["exit_side"] == "right"
+    assert "accessible" not in attributes
 
 
 def profile(name: str) -> str:

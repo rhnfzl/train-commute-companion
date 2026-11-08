@@ -60,7 +60,7 @@ from train_commute_companion.webhook import (
     body,
     event_id,
     probe_id,
-    url_id,
+    transport_id,
 )
 from train_commute_companion.webhook_queue import GIVE_UP, MAX_COPIES
 from train_commute_companion.webhook_send import WebhookPoster, send_webhook_tests
@@ -565,40 +565,44 @@ async def test_two_profiles_on_one_train_get_two_posts(tmp_path):  # Review Focu
     assert sorted(rig.end.ids(EventKind.CANCELLED)[-2:]) == sorted(event_id(o.id) for o in owed)
 
 
-async def test_copies_survive_failed_writes_and_held_phone_success(tmp_path):  # rule 22
+async def test_new_copies_wait_for_pins_then_survive_failed_receipt_writes(tmp_path):
     rig = await wstarted(tmp_path)
-    rig.end.status = 503
     rig.store.fail = True
     text = rig.store.text
-    await cancel(rig)  # the cancellation is held in memory; the phone took it
+    await cancel(rig)
     (c,) = copies(rig, EventKind.CANCELLED)
     assert c.id in seam.held_copies(rig.rt)
-    assert not any(o.event.kind is EventKind.CANCELLED for o in seam.held(rig.rt).values())
-    rig.end.status = 200
+    assert any(o.event.kind is EventKind.CANCELLED for o in seam.held(rig.rt).values())
+    assert not rig.end.of(EventKind.CANCELLED)
+    assert not any(e.kind is EventKind.CANCELLED for e in rig.notifier.attempts)
     await tick(rig)
-    assert len(rig.end.of(EventKind.CANCELLED)) == 1 and copies(rig, EventKind.CANCELLED) == []
-    alert(rig, "second")  # made and posted while every write fails
-    await seam.deliver(rig.rt)  # (a watchdog's retried write would reset the unwritten alert)
-    assert len(rig.end.of(EventKind.KEY_REJECTED)) == 1 and rig.store.text == text
-    rig.end.status = 503
-    alert(rig, "third")
-    await seam.deliver(rig.rt)
-    assert [x.obligation.event.text for x in copies(rig, EventKind.KEY_REJECTED)] == [
-        "App: alert third."
-    ]
+    assert not rig.end.of(EventKind.CANCELLED) and rig.store.text == text
+    # Recovery writes the original audience before either destination sees the held fact.
     rig.store.fail = False
     await rig.rt.watchdog_once()
-    assert stored_copies(rig) == tuple(seam.owed_copies(rig.rt).values()) != ()
-    phone = len(rig.notifier.attempts)
-    await rig.restart()
+    assert len(rig.end.of(EventKind.CANCELLED)) == 1 and copies(rig, EventKind.CANCELLED) == []
+    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 1
+    # Once its pin is durable, a receipt write can fail without repeating an accepted copy.
+    rig.end.status = 503
+    alert(rig, "pinned")
+    await seam.deliver(rig.rt)
+    (pending,) = copies(rig, EventKind.KEY_REJECTED)
+    assert pending.target_ids is not None
+    rig.store.fail = True
+    text = rig.store.text
     rig.end.status = 200
     await tick(rig)
+    assert [p["text"] for p in rig.end.of(EventKind.KEY_REJECTED)] == ["App: alert pinned."]
+    assert not copies(rig, EventKind.KEY_REJECTED) and rig.store.text == text
+    rig.store.fail = False
+    await rig.rt.watchdog_once()
+    phone = kinds(rig.notifier.attempts).count(EventKind.KEY_REJECTED)
+    await rig.restart()
+    await tick(rig)
     assert len(rig.end.of(EventKind.CANCELLED)) == 1
-    assert [p["text"] for p in rig.end.of(EventKind.KEY_REJECTED)] == [
-        "App: alert second.",
-        "App: alert third.",
-    ]
-    assert len(rig.notifier.attempts) == phone and seam.owed_copies(rig.rt) == {}
+    assert [p["text"] for p in rig.end.of(EventKind.KEY_REJECTED)] == ["App: alert pinned."]
+    assert kinds(rig.notifier.attempts).count(EventKind.KEY_REJECTED) == phone
+    assert seam.owed_copies(rig.rt) == {}
 
 
 async def test_a_pass_cancelled_during_a_post_keeps_the_new_copy(tmp_path):  # rule 22
@@ -843,7 +847,7 @@ async def test_rewrite_during_an_accepted_first_post_ends_the_copy(tmp_path, two
         }
         return
     cur = seam.owed_copies(rig.rt)[c.id]
-    assert cur.done == (url_id(URL),) and cur.first_try == cur.last_try == t0
+    assert cur.done == (transport_id(URL, SECRET),) and cur.first_try == cur.last_try == t0
     assert "NS moved your" not in cur.obligation.event.text
     assert stored_copies(rig) == tuple(seam.owed_copies(rig.rt).values())
 
@@ -874,7 +878,11 @@ async def test_retired_phone_pending_bundle_keeps_its_webhook_history(tmp_path, 
     else:
         c = seam.owed_copies(rig.rt)[cid]  # the same copy: webhook-id, receipts and first try kept
         assert c.obligation.id == n.id and c.first_try == before.first_try
-        assert c.done == before.done == ((url_id(URL),) if receivers != "all_failed" else ())
+        assert (
+            c.done
+            == before.done
+            == ((transport_id(URL, SECRET),) if receivers != "all_failed" else ())
+        )
     rig.notifier.fails = lambda e: False
     if receivers == "one_of_two_accepted":
         b.status = 200
@@ -986,7 +994,7 @@ async def test_store_never_holds_a_webhook_url(tmp_path):
     rig.ends[HOST].status = 200
     await tick(rig)
     (c,) = stored_copies(rig)
-    assert c.done == (url_id(secret_url),)
+    assert c.done == (transport_id(secret_url, SECRET),)
     assert "route-token-123" not in rig.store.text and HOST not in rig.store.text
 
 
@@ -1217,8 +1225,11 @@ async def test_carried_bundle_keeps_an_acceptance_the_store_missed(tmp_path):  #
     await seam.lookahead_direction(
         rig.rt, rig.rt.config.profiles[0], OUT, PlannedWorks((), "complete")
     )
+    rig.end.status = 503
+    await seam.deliver(rig.rt)  # Establish the audience durably; both destinations still owe it.
     rig.store.fail = True
-    await seam.deliver(rig.rt)  # the receiver takes the bundle; the delivery write fails
+    rig.end.status = 200
+    await tick(rig)  # The pinned receiver takes the bundle; its receipt write fails.
     o = bundle_of(rig)
     assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)] and seam.owed_copies(rig.rt) == {}
     rig.store.fail = False
@@ -1279,7 +1290,7 @@ async def test_background_write_keeps_the_mark_of_an_in_flight_phone_send(tmp_pa
 
 
 async def test_background_write_keeps_the_mark_of_a_held_in_flight_phone_send(tmp_path):
-    # rule 22: the bundle is held after a failed write; a background write lands meanwhile
+    # A held bundle first writes its audience, then background delivery records its receipt.
     rig = await mixed_rig(tmp_path, sync=False)
     phone = asyncio.Event()
     entered = asyncio.Event()
@@ -1300,16 +1311,18 @@ async def test_background_write_keeps_the_mark_of_a_held_in_flight_phone_send(tm
     await asyncio.wait_for(rig.end.entered.wait(), 2)  # a webhook pass is in flight
     await rig.rt.watchdog_once()  # queues a second round of it
     rig.store.fail = True
-    run = asyncio.create_task(rig.rt.lookahead_once())
-    await asyncio.wait_for(entered.wait(), 2)  # the bundle is held, its copy made
+    await rig.rt.lookahead_once()
+    assert not entered.is_set()  # A new private audience cannot send before its pin is durable.
     (o,) = [
         x
         for x in seam.held(rig.rt).values()
         if x.look_ahead == ("p1", OUT, WED) and "adopt:" in x.fact_key
     ]
     rig.store.fail = False
+    run = asyncio.create_task(rig.rt.watchdog_once())
+    await asyncio.wait_for(entered.wait(), 2)  # Recovery writes the pin before the phone send.
     rig.end.gate.set()
-    # the queued round takes the bundle and its write lands while the phone send waits
+    # The queued round takes the pinned bundle while the phone send waits.
     await asyncio.wait_for(rig.rt.webhooks_idle(), 2)
     assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)] and seam.owed_copies(rig.rt) == {}
     assert rig.store.seen[o.id].webhook_copied  # written with its mark: a restart posts none
@@ -1356,7 +1369,7 @@ async def test_a_try_cut_off_by_shutdown_rests_the_url_across_a_restart(tmp_path
     alert(rig, 1)
     task = asyncio.create_task(rig.rt.watchdog_once())
     await asyncio.wait_for(rig.end.entered.wait(), 2)
-    assert url_id(rig.poster.urls[0]) in stored_down(rig)  # before the cut
+    assert transport_id(rig.poster.urls[0], SECRET) in stored_down(rig)  # before the cut
     await seam.stop_webhooks(rig.rt)  # shutdown during the POST
     await task
     rig.end.gate = None
@@ -1375,7 +1388,7 @@ async def test_a_cut_off_second_try_saves_its_rest(tmp_path):
     alert(rig, 1)
     await rig.rt.watchdog_once()
     first = rig.end.times[0]
-    assert stored_down(rig) == {url_id(URL): first + timedelta(seconds=60)}
+    assert stored_down(rig) == {transport_id(URL, SECRET): first + timedelta(seconds=60)}
     rig.end.status = 200
     rig.end.entered.clear()
     rig.end.gate = asyncio.Event()
@@ -1385,7 +1398,7 @@ async def test_a_cut_off_second_try_saves_its_rest(tmp_path):
     await seam.stop_webhooks(rig.rt)  # shutdown during the second POST
     await task
     rig.end.gate = None
-    assert stored_down(rig) == {url_id(URL): first + timedelta(seconds=120)}
+    assert stored_down(rig) == {transport_id(URL, SECRET): first + timedelta(seconds=120)}
     rig.clock.t = first + timedelta(seconds=61)  # 20:01:01
     await rig.restart()
     await rig.rt.watchdog_once()
@@ -1395,6 +1408,17 @@ async def test_a_cut_off_second_try_saves_its_rest(tmp_path):
     rig.clock.t = first + timedelta(seconds=120)
     await rig.rt.watchdog_once()
     assert len(rig.end.times) == 3
+
+
+async def test_webhook_ignores_another_channels_shared_rest():
+    now = datetime(2026, 10, 27, 20, 0, tzinfo=AMS)
+    async with httpx.AsyncClient() as client:
+        poster = WebhookPoster(client, (URL,), SECRET, lambda: now)
+        poster.down["email:opaque"] = now + timedelta(seconds=60)
+        assert not poster.failing
+        assert poster.due([URL, "email:opaque", URL2]) == frozenset({URL})
+        poster.down[URL] = now + timedelta(seconds=60)
+        assert poster.failing
 
 
 async def test_post_reserves_only_the_urls_it_tries(caplog):

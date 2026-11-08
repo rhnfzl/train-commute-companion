@@ -1,0 +1,28 @@
+{
+  "payload": {
+    "treinen": [
+      {
+        "treinNummer": 579,
+        "ritId": "579",
+        "lat": 52.089043,
+        "lng": 5.110265,
+        "snelheid": 0.0,
+        "richting": 149.81,
+        "horizontaleNauwkeurigheid": 427.77777,
+        "type": "IC",
+        "bron": "OBIS"
+      },
+      {
+        "treinNummer": 1776,
+        "ritId": "1776",
+        "lat": 52.089375,
+        "lng": 5.110552,
+        "snelheid": 11.187,
+        "richting": 151.399,
+        "horizontaleNauwkeurigheid": 155.55556,
+        "type": "IC",
+        "bron": "OBIS"
+      }
+    ]
+  }
+}

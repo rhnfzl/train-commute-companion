@@ -3,9 +3,9 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Protocol
+from typing import Literal, Protocol, Self
 
-from train_commute_companion.model import Connection, Stop
+from train_commute_companion.model import Connection, Profile, Stop
 
 
 class ProviderError(Exception):
@@ -14,6 +14,10 @@ class ProviderError(Exception):
 
 class AuthError(ProviderError):
     pass
+
+
+class DoorToDoorNotAllowed(ProviderError):
+    """The API key cannot request journeys from or to a non-station location."""
 
 
 class RateLimited(ProviderError):
@@ -36,6 +40,13 @@ class Query:
     destination: str
     at: datetime
     via: str | None = None
+    require_accessible: bool = False
+
+    @classmethod
+    def for_profile(
+        cls, profile: Profile, origin: str, destination: str, at: datetime, via: str | None = None
+    ) -> Self:
+        return cls(origin, destination, at, via, profile.accessibility.require_accessible)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +86,20 @@ class PlannedWorks:
     coverage: Literal["complete", "unknown"]
 
 
+@dataclass(frozen=True, slots=True)
+class ActiveDisruption:
+    id: str
+    title: str
+    stations: frozenset[str]
+    url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveDisruptions:
+    items: tuple[ActiveDisruption, ...]
+    coverage: Literal["complete", "unknown"]
+
+
 class Provider(Protocol):
     @property
     def positions(self) -> Mapping[str, tuple[float, float]]:
@@ -90,6 +115,10 @@ class Provider(Protocol):
     async def planned_works(self) -> PlannedWorks:
         """Raises ProviderError on a failed request, so 429/5xx feed shared backoff;
         an unreadable answer is coverage `unknown`."""
+        ...
+
+    async def active_disruptions(self) -> ActiveDisruptions:
+        """The active feed. Unknown coverage must never establish an incident has cleared."""
         ...
 
     async def stations(self) -> frozenset[str]:

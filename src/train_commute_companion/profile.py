@@ -2,22 +2,27 @@
 
 import re
 from collections.abc import Mapping, Sequence
-from datetime import date, time
+from datetime import date, time, timedelta
 from typing import Any, cast, get_args
 
 import yaml
 
 from train_commute_companion.calendar import MINUTES_PER_DAY, WEEKDAYS, minute_of_day
 from train_commute_companion.model import (
+    AccessibilitySettings,
     AlertSettings,
     Config,
     Direction,
     LocationSettings,
     LocationSource,
+    NotificationCategory,
+    NotificationChannel,
     Profile,
     ProfileProblem,
     UsualJourney,
+    WorksDigestSettings,
 )
+from train_commute_companion.notification_policy import validate_channels
 from train_commute_companion.overlap import overlap_pairs
 from train_commute_companion.transfer import FALLBACK_MIN
 
@@ -30,7 +35,7 @@ _DATE_MIN, _DATE_MAX = date(2, 1, 1), date(9998, 12, 31)
 
 
 class _Loader(yaml.SafeLoader):
-    """Leaves YAML timestamps as text, so _dates is the one place that turns text into dates."""
+    """Leaves YAML timestamps as text, so _date validates every configured date."""
 
 
 def _as_text(loader: _Loader, node: yaml.Node) -> str:
@@ -160,7 +165,15 @@ def _journey(
     n = len(c.errors)
     c.keys(
         raw,
-        ("first_train", "transfers", "window", "buffer_min", "earlier_train_advice", "day_offset"),
+        (
+            "first_train",
+            "first_train_by_weekday",
+            "transfers",
+            "window",
+            "buffer_min",
+            "earlier_train_advice",
+            "day_offset",
+        ),
         name,
     )
     if "day_offset" in raw and not allow_offset:
@@ -179,9 +192,19 @@ def _journey(
     window = _window(c, raw.get("window"), name, first)
     if first and window and buf is not None:
         _check_window(c, name, first, window, buf)
+    raw_weekdays = raw.get("first_train_by_weekday", {})
+    weekday_times: dict[str, time] = {}
+    if not isinstance(raw_weekdays, dict):
+        c.err(f"{name}.first_train_by_weekday", "must map mon through sun to quoted HH:MM times")
+    else:
+        c.keys(raw_weekdays, WEEKDAYS, f"{name}.first_train_by_weekday")
+        for weekday, value in raw_weekdays.items():
+            parsed = c.time(value, f"{name}.first_train_by_weekday.{weekday}")
+            if parsed is not None and weekday in WEEKDAYS:
+                weekday_times[weekday] = parsed
     if len(c.errors) > n or first is None or window is None or buf is None or advice is None:
         return None
-    return UsualJourney(first, tuple(transfers), window, buf, advice, offset)
+    return UsualJourney(first, tuple(transfers), window, buf, advice, offset, weekday_times)
 
 
 def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
@@ -198,10 +221,16 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "earlier_train_min_saving_min",
             "latest_acceptable_arrival",
             "quiet_hours",
+            "disabled_categories",
+            "channels",
+            "compensation_reminder",
         ),
         "alerts",
     )
     d = AlertSettings()
+    compensation = raw.get("compensation_reminder", False)
+    if not isinstance(compensation, bool):
+        c.err("alerts.compensation_reminder", "must be true or false")
     thr = c.integer(
         raw.get("earlier_train_threshold_min", d.earlier_train_threshold_min),
         "alerts.earlier_train_threshold_min",
@@ -222,9 +251,48 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             quiet = (a, b) if a and b else None
         else:
             c.err("alerts.quiet_hours", 'must be two times or null, for example ["19:52", "07:12"]')
+    disabled = raw.get("disabled_categories", [])
+    categories = get_args(NotificationCategory)
+    if not isinstance(disabled, list) or any(
+        not isinstance(value, str) or value not in categories for value in disabled
+    ):
+        c.err(
+            "alerts.disabled_categories", f"must be a list containing only {', '.join(categories)}"
+        )
+        disabled = []
+    raw_channels = raw.get("channels", {})
+    channels: dict[NotificationCategory, frozenset[NotificationChannel]] = {}
+    if not isinstance(raw_channels, dict):
+        c.err("alerts.channels", "must map alert categories to non-empty channel lists")
+    else:
+        for category, selected in raw_channels.items():
+            path = f"alerts.channels.{category}"
+            if category not in categories:
+                c.err(path, "unknown alert category")
+            elif (
+                not isinstance(selected, list)
+                or not selected
+                or any(
+                    not isinstance(value, str) or value not in get_args(NotificationChannel)
+                    for value in selected
+                )
+            ):
+                c.err(path, "must be a non-empty list containing only primary, email, webhook")
+            else:
+                channels[cast(NotificationCategory, category)] = frozenset(
+                    cast(list[NotificationChannel], selected)
+                )
     if len(c.errors) > n or thr is None or sav is None:
         return None
-    return AlertSettings(thr, sav, late, quiet)
+    return AlertSettings(
+        thr,
+        sav,
+        late,
+        quiet,
+        frozenset(cast(list[NotificationCategory], disabled)),
+        channels,
+        compensation,
+    )
 
 
 def _location(c: _ProfileErrors, raw: object) -> tuple[bool, LocationSettings | None]:
@@ -255,27 +323,51 @@ def _location(c: _ProfileErrors, raw: object) -> tuple[bool, LocationSettings | 
     return True, LocationSettings(source, ent, dict(zones), radius)
 
 
+def _date(c: _ProfileErrors, value: object, path: str) -> date | None:
+    try:
+        if not (isinstance(value, str) and _DATE_RE.match(value)):
+            raise ValueError(value)
+        day = date.fromisoformat(value)
+    except ValueError:
+        c.err(path, f"not a YYYY-MM-DD date: {value!r}")
+        return None
+    if not _DATE_MIN <= day <= _DATE_MAX:
+        c.err(path, f"{value} is outside {_DATE_MIN} .. {_DATE_MAX}")
+        return None
+    return day
+
+
 def _dates(c: _ProfileErrors, raw: object) -> frozenset[date] | None:
     if not isinstance(raw, list):
         c.err("extra_dates", "must be a list of YYYY-MM-DD dates, [] for none")
         return None
     out: set[date] = set()
-    ok = True
+    before = len(c.errors)
     for i, v in enumerate(raw):
-        try:
-            if not (isinstance(v, str) and _DATE_RE.match(v)):
-                raise ValueError(v)
-            d = date.fromisoformat(v)
-        except ValueError:
-            c.err(f"extra_dates[{i}]", f"not a YYYY-MM-DD date: {v!r}")
-            ok = False
-            continue
-        if _DATE_MIN <= d <= _DATE_MAX:
+        if (d := _date(c, v, f"extra_dates[{i}]")) is not None:
             out.add(d)
-        else:
-            c.err(f"extra_dates[{i}]", f"{v} is outside {_DATE_MIN} .. {_DATE_MAX}")
-            ok = False
-    return frozenset(out) if ok else None
+    return frozenset(out) if len(c.errors) == before else None
+
+
+def _pauses(c: _ProfileErrors, raw: object) -> tuple[tuple[date, date], ...]:
+    if not isinstance(raw, list):
+        c.err("pauses", "must be a list of start/end date ranges, [] for none")
+        return ()
+    out: list[tuple[date, date]] = []
+    for i, value in enumerate(raw):
+        path = f"pauses[{i}]"
+        if not isinstance(value, dict):
+            c.err(path, "must be a mapping with start and end dates")
+            continue
+        c.keys(value, ("start", "end"), path)
+        start = _date(c, value.get("start"), f"{path}.start")
+        end = _date(c, value.get("end"), f"{path}.end")
+        if start is not None and end is not None:
+            if end < start:
+                c.err(f"{path}.end", "must be on or after start")
+            else:
+                out.append((start, end))
+    return tuple(out)
 
 
 def _days(c: _ProfileErrors, rd: object) -> set[int]:
@@ -323,6 +415,7 @@ _PROFILE_KEYS = (
     "traveller",
     "days",
     "extra_dates",
+    "pauses",
     "skip_public_holidays",
     "home_station",
     "work_station",
@@ -331,7 +424,33 @@ _PROFILE_KEYS = (
     "transfer_min",
     "alerts",
     "location",
+    "accessibility",
+    "works_digest",
 )
+
+
+def _accessibility(c: _ProfileErrors, raw: object) -> AccessibilitySettings | None:
+    if not isinstance(raw, dict):
+        c.err("accessibility", "must be a mapping")
+        return None
+    c.keys(raw, ("require_accessible",), "accessibility")
+    required = c.boolean(raw.get("require_accessible", False), "accessibility.require_accessible")
+    return None if required is None else AccessibilitySettings(required)
+
+
+def _works_digest(c: _ProfileErrors, raw: object) -> WorksDigestSettings | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        c.err("works_digest", "must be null or a mapping with day and time")
+        return None
+    c.keys(raw, ("day", "time"), "works_digest")
+    day = raw.get("day")
+    at = c.time(raw.get("time"), "works_digest.time")
+    if not isinstance(day, str) or day not in WEEKDAYS:
+        c.err("works_digest.day", "must be one of " + ", ".join(WEEKDAYS))
+        return None
+    return None if at is None else WorksDigestSettings(WEEKDAYS.index(day) + 1, at)
 
 
 def _name(c: _ProfileErrors, raw: object) -> str | None:
@@ -363,6 +482,7 @@ def _profile(
     rd = raw.get("days", [])
     days = _days(c, rd)
     extra = _dates(c, raw.get("extra_dates", []))
+    pauses = _pauses(c, raw.get("pauses", []))
     if not days and extra == frozenset() and isinstance(rd, list):
         c.err("days", "no days and no extra_dates: the profile would never run")
     skip = c.boolean(raw.get("skip_public_holidays", True), "skip_public_holidays")
@@ -373,6 +493,8 @@ def _profile(
     tm = _transfer_min(c, raw)
     alerts = _alerts(c, raw.get("alerts"))
     loc_ok, loc = _location(c, raw.get("location"))
+    accessibility = _accessibility(c, raw.get("accessibility", {}))
+    digest = _works_digest(c, raw.get("works_digest"))
     if c.errors or not (
         out
         and ret
@@ -380,6 +502,7 @@ def _profile(
         and work
         and alerts
         and loc_ok
+        and accessibility is not None
         and extra is not None
         and skip is not None
         and name
@@ -400,6 +523,9 @@ def _profile(
         tm,
         alerts,
         loc,
+        pauses,
+        accessibility,
+        digest,
     ), []
 
 
@@ -454,7 +580,10 @@ def _duplicates(items: Sequence[object]) -> list[ProfileProblem]:
 
 
 def parse_profiles(
-    text: str, known_stations: frozenset[str] | None
+    text: str,
+    known_stations: frozenset[str] | None,
+    *,
+    available_channels: frozenset[NotificationChannel] | None = None,
 ) -> tuple[list[Profile], list[ProfileProblem]]:
     data, errors = _load_yaml(text)
     if errors:
@@ -473,6 +602,19 @@ def parse_profiles(
     for i, raw in enumerate(items):
         p, errs = _profile(raw, i, known_stations)
         errors += errs
+        if p is not None and available_channels is not None:
+            unavailable = validate_channels((p,), available_channels)
+            errors += [
+                ProfileProblem(
+                    e.profile_id,
+                    e.path.replace("profiles[0]", f"profiles[{i}]", 1),
+                    e.message,
+                    e.suggestion,
+                )
+                for e in unavailable
+            ]
+            if unavailable:
+                p = None
         if p:
             profiles.append(p)
     errors += _duplicates(items)
@@ -488,9 +630,14 @@ def parse_profiles(
 
 
 def load_config(
-    text: str, known_stations: frozenset[str] | None, previous: Config | None, today: date
+    text: str,
+    known_stations: frozenset[str] | None,
+    previous: Config | None,
+    today: date,
+    *,
+    available_channels: frozenset[NotificationChannel] | None = None,
 ) -> tuple[Config | None, list[ProfileProblem]]:
-    profiles, errors = parse_profiles(text, known_stations)
+    profiles, errors = parse_profiles(text, known_stations, available_channels=available_channels)
     pairs = overlap_pairs(profiles, today)
     errors = errors + [e for _, _, e in pairs]
     if previous is not None:
@@ -513,6 +660,13 @@ def _times(p: Profile) -> list[tuple[str, time]]:
         j = p.journey(d)
         out.append((f"{d.value}.first_train", j.first_train))
         out += [(f"{d.value}.window[{i}]", t) for i, t in enumerate(j.window)]
+        for weekday, first in j.first_train_by_weekday.items():
+            out.append((f"{d.value}.first_train_by_weekday.{weekday}", first))
+            dated = p.journey_on(d, date(2026, 10, 26) + timedelta(days=WEEKDAYS.index(weekday)))
+            out += [
+                (f"{d.value}.first_train_by_weekday.{weekday}.window[{i}]", t)
+                for i, t in enumerate(dated.window)
+            ]
     if p.alerts.latest_acceptable_arrival:
         out.append(("alerts.latest_acceptable_arrival", p.alerts.latest_acceptable_arrival))
     out += [(f"alerts.quiet_hours[{i}]", t) for i, t in enumerate(p.alerts.quiet_hours or ())]

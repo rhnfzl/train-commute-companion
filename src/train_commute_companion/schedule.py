@@ -33,7 +33,7 @@ def _local(naive: datetime, edge: str) -> datetime:
 def dated_schedule(
     p: Profile, d: Direction, commute_day: date, baseline_first_train: time | None
 ) -> DatedSchedule:
-    j = p.journey(d)
+    j = p.journey_on(d, commute_day)
     service_date = commute_day + timedelta(days=j.day_offset)
     eff = effective_first_train(j, baseline_first_train)
     # clock differences, so an adoption moves the window by the same amount
@@ -77,6 +77,6 @@ def schedules_active(
                 if is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays):
                     base = first(p, d, day) if first else baselines.get((p.id, d))
                     s = dated_schedule(p, d, day, base)
-                    if in_window(s, at):
+                    if not p.paused_on(s.key.service_date) and in_window(s, at):
                         out.append(s)
     return out

@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import timedelta
+from enum import StrEnum
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -14,6 +16,7 @@ from train_commute_companion.view import RuntimeView
 
 from .const import CONF_NOTIFY, DOMAIN, REFRESH_S
 from .host import RuntimeHost
+from .reconciliation import ViewPhase, view_phase
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,10 +25,27 @@ RELOAD_AFTER_TIMEOUTS = 4
 MOVED_PREFIX = "moved_"
 
 
+class WatchdogPhase(StrEnum):
+    RESPONSIVE = "responsive"
+    WAITING = "waiting"
+    RELOAD_DUE = "reload_due"
+
+
+class AuthPhase(StrEnum):
+    CLEAR = "clear"
+    REAUTH_OPEN = "reauth_open"
+
+
 class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
     config_entry: ConfigEntry  # always passed to __init__ below
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, host: RuntimeHost) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        host: RuntimeHost,
+        notification_available: Callable[[], bool] = lambda: True,
+    ) -> None:
         super().__init__(
             hass,
             _LOGGER,
@@ -34,8 +54,15 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
             update_interval=timedelta(seconds=REFRESH_S),
         )
         self.host = host
+        self._notification_available = notification_available
         self._timeouts = 0
-        self._reauth_started = False
+        self._auth_phase = AuthPhase.CLEAR
+
+    @property
+    def watchdog_phase(self) -> WatchdogPhase:
+        if not self.host.alive or self._timeouts >= RELOAD_AFTER_TIMEOUTS:
+            return WatchdogPhase.RELOAD_DUE
+        return WatchdogPhase.WAITING if self._timeouts else WatchdogPhase.RESPONSIVE
 
     def _reload(self) -> None:
         self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
@@ -51,7 +78,7 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
         except TimeoutError:
             self._timeouts += 1
             # >=: keeps asking while a reload has not replaced this coordinator yet
-            if self._timeouts >= RELOAD_AFTER_TIMEOUTS:
+            if self.watchdog_phase is WatchdogPhase.RELOAD_DUE:
                 self._reload()
             raise UpdateFailed("runtime not answering") from None
         self._timeouts = 0
@@ -61,7 +88,7 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
 
     def _sync_devices(self, view: RuntimeView) -> None:
         """Removes the device (and so the entities) of a profile the view no longer has."""
-        if not view.started or not view.directions:  # a view without a config knows no profile yet
+        if view_phase(view) is not ViewPhase.READY:
             return
         present = {d.profile_id for d in view.directions}
         registry = dr.async_get(self.hass)
@@ -71,17 +98,17 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
                 registry.async_remove_device(device.id)
 
     def _sync_issues(self, view: RuntimeView) -> None:
-        """Repairs come only from the view, so each one clears itself once the view does."""
-        if not view.started:
+        """Keep repairs current from the runtime view and the local phone configuration."""
+        if view_phase(view) is ViewPhase.STARTING:
             # a view read before start knows no issue yet; deleting would drop a user's ignore
             return
         hass = self.hass
         if not view.key_rejected:
-            self._reauth_started = False
-        elif not self._reauth_started:
+            self._auth_phase = AuthPhase.CLEAR
+        elif self._auth_phase is AuthPhase.CLEAR:
             # once per outage; HA also folds it into a reauth flow that is already open
-            self._reauth_started = True
             self.config_entry.async_start_reauth(hass)
+            self._auth_phase = AuthPhase.REAUTH_OPEN
         if view.refusal is not None:
             ir.async_create_issue(
                 hass,
@@ -114,7 +141,7 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
         for issue_id in stale:
             ir.async_delete_issue(hass, DOMAIN, issue_id)
 
-        if view.undelivered > 0:
+        if view.undelivered > 0 or not self._notification_available():
             ir.async_create_issue(
                 hass,
                 DOMAIN,

@@ -53,6 +53,98 @@ from train_commute_companion.runtime import Runtime, fresh_state
 from train_commute_companion.state import BaselineHistory, LockSource
 from train_commute_companion.store import PersistedState, StorageError
 
+
+async def test_running_runtime_cannot_reconcile_a_second_time(tmp_path):
+    rig = await started(tmp_path)
+    before = rig.rt.state
+    with pytest.raises(RuntimeError, match="start|running"):
+        await rig.rt.start()
+    assert rig.rt.state == before
+
+
+async def test_rejected_runner_does_not_stop_a_started_runtime(tmp_path):
+    rig = await started(tmp_path)
+
+    async def idle(seconds):
+        await asyncio.Event().wait()
+
+    rig.clock.sleep = idle
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(rig.rt.run_forever(), 1)
+    assert rig.rt.started
+
+
+async def test_only_one_runner_can_own_a_started_runtime(tmp_path):
+    rig = await started(tmp_path)
+    entered = asyncio.Event()
+
+    async def idle(seconds):
+        entered.set()
+        await asyncio.Event().wait()
+
+    rig.clock.sleep = idle
+    owner = asyncio.create_task(rig.rt.run_forever(started=True))
+    await entered.wait()
+    try:
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(rig.rt.run_forever(started=True), 0.05)
+        assert rig.rt.started and not owner.done()
+    finally:
+        owner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await owner
+
+
+async def test_started_runner_requires_real_startup_and_cannot_reuse_stopped_owner(tmp_path):
+    rig = Rig(tmp_path)
+
+    async def idle(seconds):
+        await asyncio.Event().wait()
+
+    rig.clock.sleep = idle
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(rig.rt.run_forever(started=True), 0.05)
+    assert not rig.rt.started
+    await rig.rt.start()
+    owner = asyncio.create_task(rig.rt.run_forever(started=True))
+    await asyncio.sleep(0)
+    owner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(rig.rt.run_forever(started=True), 0.05)
+
+
+async def test_late_profile_read_cannot_replace_a_newer_reload(tmp_path, monkeypatch):
+    rig = await started(tmp_path)
+    path = rig.rt._path
+    read = Path.read_text
+    entered, release = threading.Event(), threading.Event()
+    first = True
+
+    def delayed(self, *args, **kwargs):
+        nonlocal first
+        text = read(self, *args, **kwargs)
+        if self == path and first:
+            first = False
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("test did not release old profile read")
+        return text
+
+    monkeypatch.setattr(Path, "read_text", delayed)
+    path.write_text(PROFILE.replace("NAME", "Older edit"))
+    older = asyncio.create_task(rig.rt.reload())
+    assert await asyncio.to_thread(entered.wait, 2)
+    try:
+        path.write_text(PROFILE.replace("NAME", "Newest edit"))
+        await rig.rt.reload()
+    finally:
+        release.set()
+        await older
+    assert rig.rt.config.profiles[0].name == "Newest edit"
+
+
 # --- request budget ---
 
 
@@ -401,14 +493,15 @@ async def test_watchdog_before_a_lock_reads_the_newest_usual_copy(tmp_path):
 # --- store ---
 
 
-async def test_store_write_failure_sends_from_memory_and_storage_failed(tmp_path):
+async def test_store_write_failure_holds_new_private_alert_and_sends_storage_failed(tmp_path):
     rig = await started(tmp_path)
     rig.store.fail = True
     rig.clock.set("07:52")
     rig.provider.world = [make_connection([L1X, L2]), LATER]
     await rig.rt.poll_once()
     got = kinds(rig.rt.events_log)
-    assert EventKind.CANCELLED in got and got.count(EventKind.STORAGE_FAILED) == 1
+    assert EventKind.CANCELLED not in got and got.count(EventKind.STORAGE_FAILED) == 1
+    assert any(o.event.kind is EventKind.CANCELLED for o in seam.held(rig.rt).values())
     rig.clock.set("07:54")
     await rig.rt.poll_once()
     await rig.rt.watchdog_once()
@@ -416,6 +509,7 @@ async def test_store_write_failure_sends_from_memory_and_storage_failed(tmp_path
     rig.store.fail = False
     await rig.rt.watchdog_once()  # the retried write lands
     saved = rig.store.load()
+    assert kinds(rig.rt.events_log).count(EventKind.CANCELLED) == 1
     assert saved.occurrences["p1|outbound|2026-10-27"].lock.legs[0].train == LATER.legs[0].train
     rig.store.fail = True
     rig.clock.set("07:56")
@@ -423,7 +517,7 @@ async def test_store_write_failure_sends_from_memory_and_storage_failed(tmp_path
     assert kinds(rig.rt.events_log).count(EventKind.STORAGE_FAILED) == 2  # a new outage
 
 
-async def test_failed_poll_write_is_not_active_and_alerts_go_once_from_memory(tmp_path):
+async def test_failed_poll_write_is_not_active_and_alert_waits_for_audience_write(tmp_path):
     rig = await started(tmp_path)  # rule 22
     written = rig.rt.state
     rig.store.fail = True
@@ -432,14 +526,15 @@ async def test_failed_poll_write_is_not_active_and_alerts_go_once_from_memory(tm
     await rig.rt.poll_once()
     assert rig.occ().lock == written.occurrences["p1|outbound|2026-10-27"].lock
     assert rig.rt.state.obligations == written.obligations
-    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 1
-    for hhmm in ("07:54", "07:56"):  # recomputed from the written state: not sent again
+    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 0
+    for hhmm in ("07:54", "07:56"):  # recomputed while the original private alert remains held
         rig.clock.set(hhmm)
         await rig.rt.poll_once()
         await rig.rt.watchdog_once()
-    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 1
+    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 0
     rig.store.fail = False
     await rig.rt.watchdog_once()  # the unwritten change is written and becomes active
+    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 1
     assert rig.occ().lock.legs[0].train == LATER.legs[0].train
     assert rig.store.load().occurrences["p1|outbound|2026-10-27"] == rig.occ()
     rig.clock.set("07:58")
@@ -506,17 +601,20 @@ async def test_failed_reload_write_keeps_following_the_written_journey(tmp_path,
     rig.provider.error = lambda q: ProviderError("down")
     rig.clock.set("08:00")
     await rig.rt.watchdog_once()  # the written journey is still watched
-    assert EventKind.CANNOT_SEE_TRAIN in kinds(rig.notifier.attempts)
+    assert EventKind.CANNOT_SEE_TRAIN not in kinds(rig.notifier.attempts)
+    assert any(o.event.kind is EventKind.CANNOT_SEE_TRAIN for o in seam.held(rig.rt).values())
     rig.provider.error = lambda q: None
     rig.clock.set("08:02")
     rig.provider.world = [make_connection([L1X, L2]), LATER]
     await rig.rt.poll_once()  # and polled, under the written settings
     assert len(rig.provider.calls) > asked
-    cancelled = [e for e in rig.notifier.attempts if e.kind is EventKind.CANCELLED]
-    assert len(cancelled) == 1 and cancelled[0].text.startswith("Office A")
+    assert EventKind.CANCELLED not in kinds(rig.notifier.attempts)
+    held = [o for o in seam.held(rig.rt).values() if o.event.kind is EventKind.CANCELLED]
+    assert held and all(o.event.text.startswith("Office A") for o in held)
     rig.store.fail = False
     await rig.rt.reload_if_changed()  # once the store is back the edit is applied
     assert rig.rt.config.revision == 2 and rig.store.load().config.revision == 2
+    assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 1
 
 
 async def test_failed_lookahead_write_changes_nothing_active(tmp_path):
@@ -566,7 +664,7 @@ async def test_unwritten_relock_is_recomputed_after_a_reload_written_first(tmp_p
     assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 1
 
 
-async def test_unwritten_adoption_is_sent_from_memory_and_written_later(tmp_path):
+async def test_unwritten_adoption_waits_for_its_audience_then_is_sent_once(tmp_path):
     rig = Rig(tmp_path, "05:40")
     rig.provider.world = every_day()
     await rig.rt.start()
@@ -578,7 +676,8 @@ async def test_unwritten_adoption_is_sent_from_memory_and_written_later(tmp_path
     rig.store.fail = True  # the outbound run's write fails, then the later runs' writes too
     await rig.rt.lookahead_once()
     adopted = [e for e in rig.rt.events_log if e.kind is EventKind.TIMETABLE_ADOPTED]
-    assert len(adopted) == 1
+    assert not adopted
+    assert any(o.event.kind is EventKind.TIMETABLE_ADOPTED for o in seam.held(rig.rt).values())
     assert len(rig.store.load().baselines["p1|outbound"].versions) == 1
     rig.store.fail = False
     await rig.rt.watchdog_once()
@@ -616,7 +715,8 @@ async def test_held_alarm_survives_a_recovery_written_through_a_rename(tmp_path)
     rig.clock.set("07:52")
     rig.provider.world = [make_connection([L1X, L2]), LATER]
     await rig.rt.poll_once()
-    assert any(e.kind is EventKind.CANCELLED for e in rig.notifier.attempts)
+    assert not any(e.kind is EventKind.CANCELLED for e in rig.notifier.attempts)
+    assert any(o.event.kind is EventKind.CANCELLED for o in seam.held(rig.rt).values())
     rig.store.fail = False
     rig.write("office_c")
     rig.clock.jump(1)
@@ -632,7 +732,7 @@ async def test_held_alarm_survives_a_recovery_written_through_a_rename(tmp_path)
     assert EventKind.CANCELLED in kinds(rig.notifier.attempts[n:])
 
 
-async def test_recurring_delay_is_told_again_while_the_store_fails(tmp_path):
+async def test_recurring_delay_waits_for_audience_then_sends_only_current_episode(tmp_path):
     rig = await started(tmp_path)  # 7.5, rule 22: a fact that ended and came back is news again
     rig.store.fail = True
     late = make_connection([
@@ -645,7 +745,14 @@ async def test_recurring_delay_is_told_again_while_the_store_fails(tmp_path):
         await rig.rt.poll_once()
         await rig.rt.watchdog_once()
     told = [e.kind for e in rig.notifier.attempts if "1234" in e.key]
-    assert told[-3:] == [EventKind.DELAYED, EventKind.BACK_TO_NORMAL, EventKind.DELAYED]
+    assert EventKind.DELAYED not in told and EventKind.BACK_TO_NORMAL not in told
+    rig.store.fail = False
+    await rig.rt.watchdog_once()
+    told = [e.kind for e in rig.notifier.attempts if "1234" in e.key]
+    assert told.count(EventKind.DELAYED) == 1 and EventKind.BACK_TO_NORMAL not in told
+    await rig.rt.watchdog_once()
+    told = [e.kind for e in rig.notifier.attempts if "1234" in e.key]
+    assert told.count(EventKind.DELAYED) == 1
 
 
 def _choice(c: Connection) -> Choose:

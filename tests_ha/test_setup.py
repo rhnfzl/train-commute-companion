@@ -681,3 +681,13 @@ async def test_ha_logs_never_show_the_webhook_path(hass, caplog):  # Review Focu
     assert any(warned in r.getMessage() for r in caplog.records)  # the records were captured
     for record in caplog.records:
         assert "route-token-123" not in record.getMessage() and SECRET not in record.getMessage()
+
+
+async def test_invalid_phone_target_raises_repair_without_any_delivery_attempt(hass):
+    stray = async_mock_service(hass, "notify", "mobile_app_fake")
+    ha_rig.PATCH.setattr(ha_rig, "NOTIFY", "mobile_app_fake")
+    h = await setup_tcc(hass, PROFILE)
+    coordinator = h.entry.runtime_data.coordinator
+    assert coordinator.data.undelivered == 0
+    assert ir.async_get(hass).async_get_issue(DOMAIN, "notify_failing") is not None
+    assert not stray and not h.pushes

@@ -3,6 +3,7 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
+from enum import StrEnum
 
 from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.classify import classify_leg, current_run, find_leg
@@ -46,6 +47,9 @@ from train_commute_companion.transfer import check_transfer
 
 _SILENT = frozenset(
     {
+        EventKind.DISRUPTION,
+        EventKind.DISRUPTION_CLEARED,
+        EventKind.CROWD_CHANGE,
         EventKind.CAN_SEE_TRAIN_AGAIN,
         EventKind.ALL_GOOD,
         EventKind.NEARLY_ON_TIME,
@@ -54,10 +58,23 @@ _SILENT = frozenset(
         EventKind.TIMETABLE_ADOPTED,
         EventKind.EARLIER_TRAIN_WITHDRAWN,
         EventKind.OFFLINE,
+        EventKind.WORKS_DIGEST,
     }
 )
 
 Delays = tuple[int | None, int | None]  # (departure, arrival) delay a message last stated
+
+
+class AnnouncementPhase(StrEnum):
+    UNANNOUNCED = "unannounced"
+    SILENT = "silent"
+    LOUD = "loud"
+
+
+def announcement_phase(sent: Severity | None) -> AnnouncementPhase:
+    if sent is None:
+        return AnnouncementPhase.UNANNOUNCED
+    return AnnouncementPhase.LOUD if sent is Severity.LOUD else AnnouncementPhase.SILENT
 
 
 def segment_key(leg: Leg) -> str:
@@ -177,7 +194,7 @@ def escalations(ledger: Mapping[str, Severity], facts: Sequence[Fact], now: date
     tomorrow = now.astimezone(TZ).date() + timedelta(days=1)
     out = []
     for f in facts:
-        if ledger.get(f.key) is not Severity.SILENT:
+        if announcement_phase(ledger.get(f.key)) is not AnnouncementPhase.SILENT:
             continue
         minutes = (
             None
@@ -200,7 +217,7 @@ def unsent(ledger: Mapping[str, Severity], events: Sequence[AlertEvent]) -> list
     """Ongoing facts repeat on every poll with the same key; only a key not yet sent is news."""
     out: dict[str, AlertEvent] = {}
     for e in events:
-        if e.key not in ledger:
+        if announcement_phase(ledger.get(e.key)) is AnnouncementPhase.UNANNOUNCED:
             out.setdefault(e.key, e)
     return list(out.values())
 
@@ -333,7 +350,7 @@ def news_of(
     facts = [
         Fact(e.key, e.kind, e.train.planned_departure if e.train else None)
         for e in events
-        if sent.get(e.key) is Severity.SILENT
+        if announcement_phase(sent.get(e.key)) is AnnouncementPhase.SILENT
     ]
     loud = set(escalations(sent, facts, now))
     # a known fact that turned loud itself (an arrival now past the limit) goes once more
@@ -341,6 +358,6 @@ def news_of(
     out += [
         replace(e, severity=Severity.LOUD)
         for e in {e.key: e for e in events}.values()
-        if e.key in loud and sent.get(e.key) is Severity.SILENT
+        if e.key in loud and announcement_phase(sent.get(e.key)) is AnnouncementPhase.SILENT
     ]
     return out

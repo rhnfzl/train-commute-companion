@@ -3,7 +3,9 @@
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
+from enum import StrEnum
 
+from train_commute_companion.compensation import reference_from_connection
 from train_commute_companion.model import (
     Connection,
     DirectionState,
@@ -46,10 +48,21 @@ def progress_of(leg: Leg) -> LegProgress:
     )
 
 
-def journey_of(c: Connection, source: LockSource, commitment: Commitment) -> Journey:
+def journey_of(
+    c: Connection,
+    source: LockSource,
+    commitment: Commitment,
+    checked_at: datetime | None = None,
+) -> Journey:
     last = c.legs[-1]
     arrival = last.alight.planned_arrival or last.train.planned_departure
-    return Journey(tuple(progress_of(x) for x in c.legs), source, commitment, arrival)
+    return Journey(
+        tuple(progress_of(x) for x in c.legs),
+        source,
+        commitment,
+        arrival,
+        reference_from_connection(c, checked_at),
+    )
 
 
 def unfinished_leg(j: Journey) -> LegProgress | None:
@@ -69,14 +82,22 @@ def rides(j: Journey | None, train: TrainId, now: datetime | None) -> bool:
     return first is not None and first.train == train and may_be_on(first, now)
 
 
-def _lock_refused(old: Journey | None, new: Journey, expect: Journey | None) -> bool:
+class LockDecision(StrEnum):
+    APPLY = "apply"
+    STALE = "stale"
+    USER_CHOICE = "user_choice"
+
+
+def lock_decision(old: Journey | None, new: Journey, expect: Journey | None) -> LockDecision:
     if expect is not None and old != expect:
-        return True
+        return LockDecision.STALE
     if old is None or old.source is not LockSource.CHOOSE:
-        return False
-    return new.source in _YIELDS_TO_CHOICE or (
+        return LockDecision.APPLY
+    if new.source in _YIELDS_TO_CHOICE or (
         new.source in _NEEDS_EXPECT_OVER_CHOICE and expect is None
-    )
+    ):
+        return LockDecision.USER_CHOICE
+    return LockDecision.APPLY
 
 
 def _merged_legs(old: Journey | None, new: Journey) -> tuple[LegProgress, ...]:
@@ -113,7 +134,7 @@ def write_lock(
     `now` decides whether a replaced train has departed, so it is retained (7.12 rule 7); None
     judges by leg state only, for a caller that already knows the replaced train is not ridden."""
     old = s.lock
-    if _lock_refused(old, new, expect):
+    if lock_decision(old, new, expect) is not LockDecision.APPLY:
         return None
     legs = _merged_legs(old, new)
     retained = s.retained
@@ -122,6 +143,11 @@ def write_lock(
     state = s.direction_state
     return replace(
         s,
+        original_plan=(
+            new.plan
+            if old is None and s.generation == 0 and s.original_plan is None
+            else s.original_plan
+        ),
         lock=replace(new, legs=legs),
         retained=retained,
         generation=s.generation + 1,

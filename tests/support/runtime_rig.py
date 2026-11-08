@@ -21,6 +21,7 @@ from train_commute_companion.model import (
     SignatureLeg,
 )
 from train_commute_companion.providers.base import (
+    ActiveDisruptions,
     PlannedWorks,
     ProviderAnswer,
     Query,
@@ -128,6 +129,9 @@ class Provider:
         self.error: Callable[[Query], Exception | None] = lambda q: None
         self.hook: Callable[[Query], object] | None = None
         self.works_calls = 0
+        self.disruption_calls = 0
+        self.disruptions = ActiveDisruptions((), "complete")
+        self.disruption_error: Exception | None = None
         self.window: timedelta | None = None
 
     async def trips(self, q: Query) -> ProviderAnswer:
@@ -149,6 +153,12 @@ class Provider:
         self.works_calls += 1
         return PlannedWorks((), "complete")
 
+    async def active_disruptions(self) -> ActiveDisruptions:
+        self.disruption_calls += 1
+        if self.disruption_error:
+            raise self.disruption_error
+        return self.disruptions
+
     async def stations(self) -> frozenset[str]:
         return frozenset()
 
@@ -169,6 +179,9 @@ class StationsProvider:
 
     async def planned_works(self) -> PlannedWorks:
         return await self.inner.planned_works()
+
+    async def active_disruptions(self) -> ActiveDisruptions:
+        return await self.inner.active_disruptions()
 
     async def stations(self) -> frozenset[str]:
         return self.codes

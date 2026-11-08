@@ -7,6 +7,18 @@ on:
 permissions: {}
 
 jobs:
+  windows-storage:
+    name: Windows storage
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+      - run: uv run --locked --extra app pytest -q tests/test_store.py tests/test_delivery_transitions.py tests/test_writer_transitions.py
+
   tests:
     name: Tests
     runs-on: ubuntu-latest
@@ -21,9 +33,9 @@ jobs:
       - run: uv run --locked --extra app mypy src app/tcc_app
       # the published floors, which the locked environment above never installs
       - run: >-
-          uv run --isolated --no-project --python 3.12 --with '.[app]' --with httpx==0.27.0
+          uv run --no-cache --isolated --no-project --python 3.12 --with '.[app]' --with httpx==0.27.0
           --with PyYAML==6.0.1 --with mcp==2.3.0 --with pytest --with pytest-asyncio pytest -q tests tests_app
-      - run: uv run --locked ruff check src tests tests_ha tests_app custom_components app
+      - run: uv run --locked ruff check src tests tests_ha tests_app tests_live custom_components app
       - run: uv run --locked --python 3.14 --group ha pytest tests_ha -q
         env:
           UV_PROJECT_ENVIRONMENT: .venv-ha

@@ -17,7 +17,7 @@ def save_state(rt) -> None:
 
 
 def held(rt):
-    return rt._writer._held
+    return rt._writer._journal.held
 
 
 def owed_copies(rt):

@@ -15,7 +15,11 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
+from train_commute_companion.calendar_export import CalendarExportError, export_ics, export_id
+from train_commute_companion.route_export import export_preview
 from train_commute_companion.view import RuntimeView
+
+from .today import render as render_today
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +29,14 @@ READ_TIMEOUT_S = 10.0
 MCP_REQUEST_MAX = 4096
 MCP_REPLY_MAX = 1_048_576
 MCP_TIMEOUT_S = 5.0
+TODAY_HEADERS = (
+    "Cache-Control: no-store\r\n"
+    "Referrer-Policy: no-referrer\r\n"
+    "X-Frame-Options: DENY\r\n"
+    "X-Content-Type-Options: nosniff\r\n"
+    "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; "
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
 
 
 def health_report(
@@ -124,6 +136,13 @@ def _authorized(header: str | None, secret: str) -> bool:
     return hmac.compare_digest(decoded.partition(b":")[2], secret.encode())
 
 
+def _today_authorized(header: str | None, token: str) -> bool:
+    scheme, _, given = (header or "").partition(" ")
+    return (
+        scheme.lower() == "bearer" and hmac.compare_digest(given.encode(), token.encode())
+    ) or _authorized(header, token)
+
+
 def _response(
     status: int, body: bytes = b"", content_type: str = "application/json", extra: str = ""
 ) -> bytes:
@@ -156,6 +175,7 @@ async def start_web(
     secret: str | None = None,
     host: str = "0.0.0.0",
     health_token: str | None = None,
+    today: Callable[[], tuple[RuntimeView, bool]] | None = None,
 ) -> asyncio.Server:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -164,7 +184,68 @@ async def start_web(
             except _Refused as e:
                 writer.write(_response(e.status))
             else:
-                if method == "GET" and path == "/health":
+                if method == "GET" and (
+                    path == "/today" or path.startswith(("/calendar/", "/preview/"))
+                ):
+                    if not health_token or today is None:
+                        writer.write(_response(404, extra=TODAY_HEADERS))
+                    elif not _today_authorized(headers.get("authorization"), health_token):
+                        writer.write(
+                            _response(
+                                401,
+                                b"Authentication required.",
+                                "text/plain; charset=utf-8",
+                                TODAY_HEADERS + '\r\nWWW-Authenticate: Basic realm="tcc-today"',
+                            )
+                        )
+                    else:
+                        view, confirmed = today()
+                        if path == "/today":
+                            writer.write(
+                                _response(
+                                    200,
+                                    render_today(view, confirmed).encode(),
+                                    "text/html; charset=utf-8",
+                                    TODAY_HEADERS,
+                                )
+                            )
+                        else:
+                            preview = path.startswith("/preview/")
+                            prefix, extension = (
+                                ("preview", "html") if preview else ("calendar", "ics")
+                            )
+                            occurrence = next(
+                                (
+                                    o
+                                    for o in view.occurrences
+                                    if path == f"/{prefix}/{export_id(o.key)}.{extension}"
+                                ),
+                                None,
+                            )
+                            try:
+                                if occurrence is None:
+                                    raise CalendarExportError("unknown journey")
+                                calendar = (
+                                    export_preview(occurrence, exported_at=view.at)
+                                    if preview
+                                    else export_ics(occurrence, exported_at=view.at)
+                                )
+                            except CalendarExportError:
+                                writer.write(_response(404, extra=TODAY_HEADERS))
+                            else:
+                                filename = occurrence.key.service_date.isoformat() + "." + extension
+                                writer.write(
+                                    _response(
+                                        200,
+                                        calendar,
+                                        "text/html; charset=utf-8"
+                                        if preview
+                                        else "text/calendar; charset=utf-8",
+                                        TODAY_HEADERS
+                                        + f'\r\nContent-Disposition: attachment; filename="{filename}"',
+                                    )
+                                )
+                elif method == "GET" and path == "/health":
                     status, report = health_for(headers, *health(), health_token)
                     writer.write(_response(status, json.dumps(report).encode()))
                 elif method == "POST" and path == "/owntracks" and owntracks and secret:

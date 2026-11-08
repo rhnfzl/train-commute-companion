@@ -13,6 +13,12 @@ import custom_components.train_commute_companion  # noqa: F401
 from custom_components.train_commute_companion.const import DOMAIN
 
 
+@pytest.fixture
+def hass_config_dir(tmp_path) -> str:
+    """Profile and state files must not be shared by test instances or pytest processes."""
+    return str(tmp_path)
+
+
 @pytest.fixture(autouse=True)
 def auto_enable_custom_integrations(enable_custom_integrations):
     yield

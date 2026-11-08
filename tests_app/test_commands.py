@@ -237,6 +237,10 @@ def test_next_connection_matches_the_status_line():
     assert ng["legs"] == [{
         "train_number": "2345", "board": "AAA", "alight": "RTD", "planned_departure": "08:44",
         "departure": "08:44", "planned_arrival": "09:24", "arrival": "09:24", "platform": None,
+        "crowd_forecast": None,
+        "boarding_notes": [],
+        "alighting_notes": [],
+        "exit_side": None,
     }]  # fmt: skip
     status = render_status(v, True).splitlines()
     assert "  next good connection: 08:44 from AAA" in r["text"].splitlines()
