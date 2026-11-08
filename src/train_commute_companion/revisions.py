@@ -15,7 +15,12 @@ from train_commute_companion.model import (
     direction_key,
 )
 from train_commute_companion.schedule import dated_schedule
-from train_commute_companion.state import BaselineHistory, OccurrenceState
+from train_commute_companion.state import (
+    BaselineBinding,
+    BaselineHistory,
+    BaselineVersion,
+    OccurrenceState,
+)
 from train_commute_companion.store import PersistedState
 
 
@@ -63,11 +68,90 @@ def profile_for(st: PersistedState, s: OccurrenceState) -> Profile | None:
     return effective_profile(st.config_snapshots, st.config, s)
 
 
+def commute_day_for(p: Profile, d: Direction, service_day: date) -> date:
+    return service_day - timedelta(days=p.journey(d).day_offset)
+
+
+def baseline_scope(p: Profile, d: Direction, service_day: date) -> int | None:
+    return (
+        commute_day_for(p, d, service_day).isoweekday()
+        if p.journey(d).first_train_by_weekday
+        else None
+    )
+
+
+def baseline_on(
+    history: BaselineHistory, p: Profile, d: Direction, service_day: date
+) -> BaselineVersion | None:
+    return history.in_force(service_day, baseline_scope(p, d, service_day))
+
+
+def route_geometry_same(old: Profile, new: Profile, d: Direction) -> bool:
+    a, b = old.journey(d), new.journey(d)
+    return (old.origin(d), old.destination(d), a.transfers, a.day_offset) == (
+        new.origin(d),
+        new.destination(d),
+        b.transfers,
+        b.day_offset,
+    )
+
+
+def changed_weekdays(old: Profile, new: Profile, d: Direction) -> frozenset[int]:
+    monday = date(2026, 10, 26)
+    return frozenset(
+        index + 1
+        for index in range(7)
+        if old.journey_on(d, monday + timedelta(days=index)).first_train
+        != new.journey_on(d, monday + timedelta(days=index)).first_train
+    )
+
+
+def migrate_baselines(
+    old: Profile, new: Profile, d: Direction, history: BaselineHistory, today: date
+) -> BaselineHistory:
+    """Retain actual learned signatures only where the configured departure is unchanged."""
+    a, b = old.journey(d), new.journey(d)
+    floor = max(history.floor, history.latest or 0)
+    if not route_geometry_same(old, new, d):
+        return BaselineHistory((), floor)
+    scoped_old, scoped_new = bool(a.first_train_by_weekday), bool(b.first_train_by_weekday)
+    if not scoped_old and not scoped_new:
+        base = history.in_force(today)
+        if a.first_train == b.first_train or (
+            base is not None and base.signature.legs[0].departure == b.first_train
+        ):
+            return history
+        return BaselineHistory((), floor)
+    if scoped_old and not scoped_new:
+        return BaselineHistory((), floor)
+    changed = changed_weekdays(old, new, d)
+    if scoped_old:
+        retained = tuple(v for v in history.versions if v.commute_weekday not in changed)
+        return history if retained == history.versions else BaselineHistory(retained, floor)
+    versions = []
+    retired_floor = floor
+    for weekday in range(1, 8):
+        if weekday in changed:
+            continue
+        for version in sorted(history.versions, key=lambda v: v.version):
+            if version.commute_weekday is None and version.confirmed:
+                floor += 1
+                versions.append(replace(version, version=floor, commute_weekday=weekday))
+    return BaselineHistory(tuple(versions), retired_floor)
+
+
 def signature_for(
     st: PersistedState, p: Profile, d: Direction, sd: date, version: int | None = None
 ) -> Signature | None:
     hist = st.baselines.get(direction_key(p.id, d), BaselineHistory())
-    v = next((x for x in hist.versions if x.version == version), None) or hist.in_force(sd)
+    v = next(
+        (
+            x
+            for x in hist.versions
+            if x.version == version and x.commute_weekday == baseline_scope(p, d, sd)
+        ),
+        None,
+    ) or baseline_on(hist, p, d, sd)
     n = len(p.journey(d).transfers) + 1
     return v.signature if v is not None and len(v.signature.legs) == n else None
 
@@ -81,7 +165,7 @@ def occurrence_ctx(st: PersistedState, s: OccurrenceState, now: datetime) -> Ctx
     own = s.baseline_signature
     if own is not None and len(own.legs) == len(p.journey(d).transfers) + 1:
         sig: Signature | None = own
-    elif s.baseline_frozen:
+    elif s.baseline_binding is not BaselineBinding.UNHYDRATED:
         sig = None  # it started with no baseline: a later one never moves it (rule 19)
     else:
         sig = signature_for(st, p, d, s.key.service_date, s.baseline_version)
@@ -93,7 +177,7 @@ def frozen(st: PersistedState, s: OccurrenceState) -> OccurrenceState:
     """The occurrence with its own schedule fixed from the history it runs on now, before
     anything replaces that history (rules 10, 19). Unchanged when already fixed or when its
     profile is unknown."""
-    if s.baseline_frozen:
+    if s.baseline_binding is not BaselineBinding.UNHYDRATED:
         return s
     if s.baseline_signature is not None:
         return replace(s, baseline_frozen=True)

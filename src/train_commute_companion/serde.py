@@ -4,7 +4,7 @@ added with a default loads from a file written before it existed (a missing key 
 import json
 from collections.abc import Mapping
 from dataclasses import MISSING, fields, is_dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from enum import Enum
 from types import NoneType, UnionType
 from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
@@ -17,6 +17,8 @@ def encode(obj: object) -> Any:
         return obj
     if isinstance(obj, Enum):
         return obj.value
+    if isinstance(obj, timedelta):
+        return (obj.days * 86400 + obj.seconds) * 1_000_000 + obj.microseconds
     if isinstance(obj, date | time):  # datetime is a date; isoformat keeps the offset (and fold)
         return obj.isoformat()
     if is_dataclass(obj) and not isinstance(obj, type):
@@ -77,6 +79,13 @@ def decode(tp: Any, v: Any) -> Any:
     if isinstance(tp, type):
         if issubclass(tp, Enum):
             return tp(v)
+        if tp is timedelta:
+            if isinstance(v, bool) or not isinstance(v, int):
+                raise _bad(tp, v)
+            try:
+                return timedelta(microseconds=v)
+            except OverflowError:
+                raise _bad(tp, v) from None
         if tp is datetime:
             if not isinstance(v, str):
                 raise _bad(tp, v)

@@ -4,6 +4,7 @@ latest healthy answers, read through an explicit view. Pure apart from reading t
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
+from enum import StrEnum
 
 from train_commute_companion.advice import (
     leave_now_text,
@@ -11,16 +12,17 @@ from train_commute_companion.advice import (
     usual_arrival,
     waiting_is_bad,
 )
-from train_commute_companion.calendar import TZ, hhmm
+from train_commute_companion.calendar import TZ, hhmm, to_utc
 from train_commute_companion.classify import current_run, find_leg
 from train_commute_companion.delivery import JOURNEY_WARNINGS, covers
-from train_commute_companion.health import WatchedLeg
+from train_commute_companion.health import FRESH_FOR, WatchedLeg
 from train_commute_companion.lifecycle import (
     PollAnswers,
     left_note,
     merged_pool,
     origin_answer,
 )
+from train_commute_companion.lifecycle_lock import progress_of
 from train_commute_companion.lookahead import render_message
 from train_commute_companion.lookahead_probe import (
     LOUD_FACT,
@@ -31,13 +33,16 @@ from train_commute_companion.lookahead_probe import (
     latest_mark,
     split_fact_key,
 )
+from train_commute_companion.messages import crowd_text
 from train_commute_companion.model import (
     DELAY_NEWS,
     AlertEvent,
+    AlertSettings,
     Ctx,
     Direction,
     EventKind,
     LegState,
+    NotificationChannel,
     Obligation,
     OccurrenceKey,
     Severity,
@@ -50,7 +55,15 @@ from train_commute_companion.model import (
     train_ident,
 )
 from train_commute_companion.news import all_good
+from train_commute_companion.notification_policy import (
+    CHANNELS,
+    channel_enabled,
+    channels_for,
+    enabled,
+    routing_ready,
+)
 from train_commute_companion.providers.base import ProviderAnswer
+from train_commute_companion.recovery_state import ORIGINAL_ROUTINE
 from train_commute_companion.revisions import find_profile, occurrence_ctx, profile_for, same_route
 from train_commute_companion.state import (
     BaselineHistory,
@@ -67,6 +80,7 @@ from train_commute_companion.unclear import train_key
 # ongoing facts a poll restates while they last: a held one holds while its key is live (rule 5)
 _ONGOING = frozenset(
     {
+        EventKind.CROWD_CHANGE,
         EventKind.DELAYED,
         EventKind.TRANSFER_AT_RISK,
         EventKind.PLATFORM_CHANGE,
@@ -88,6 +102,18 @@ _BREAKS = (EventKind.CANCELLED, EventKind.CUT_SHORT, EventKind.MISSING)
 _FINISHED_LEG_STATES = (LegState.DONE, LegState.CANCELLED, LegState.RELOCKED)
 
 
+class EpisodeTransition(StrEnum):
+    UNCHANGED = "unchanged"
+    ENTERED = "entered"
+    EXITED = "exited"
+
+
+@dataclass(frozen=True, slots=True)
+class BlindnessChange:
+    transition: EpisodeTransition
+    since: datetime | None = None
+
+
 @dataclass(slots=True)
 class PollMemory:
     """Per occurrence, what the runtime remembers of its polls and never stores."""
@@ -100,6 +126,26 @@ class PollMemory:
     before: dict[str, tuple[WatchedLeg, ...]] = field(default_factory=dict)
     # per train: what the last healthy poll showed of it (rule 13)
     seen: dict[str, dict[TrainId, WatchedLeg]] = field(default_factory=dict)
+
+    def observe_blind(self, key: str, blind: bool, now: datetime) -> BlindnessChange:
+        since = self.blind.get(key)
+        if blind and since is None:
+            self.blind[key] = now
+            return BlindnessChange(EpisodeTransition.ENTERED, now)
+        if not blind and since is not None:
+            self.blind.pop(key)
+            return BlindnessChange(EpisodeTransition.EXITED, since)
+        return BlindnessChange(EpisodeTransition.UNCHANGED, since)
+
+    def observe_offline(self, key: str, offline: bool) -> EpisodeTransition:
+        was_offline = key in self.offline
+        if offline == was_offline:
+            return EpisodeTransition.UNCHANGED
+        if offline:
+            self.offline.add(key)
+            return EpisodeTransition.ENTERED
+        self.offline.discard(key)
+        return EpisodeTransition.EXITED
 
     def forget(self, k: str) -> None:
         for held in (self.boards, self.blind, self.before, self.seen):
@@ -139,9 +185,55 @@ def leg_now(answers: Sequence[ProviderAnswer], x: LegProgress) -> tuple[str, str
     return hhmm(t), f" (platform {track})" if track else ""
 
 
+def _crowd_now(
+    answers: Sequence[ProviderAnswer], watched: Sequence[LegProgress], now: datetime
+) -> str:
+    legs = []
+    for x in watched:
+        fetched = [
+            to_utc(a.fetched_at)
+            for a in answers
+            if any(
+                g.train == x.train and g.board.code == x.board_station
+                for c in a.connections
+                for g in c.legs
+            )
+        ]
+        if not fetched or to_utc(now) - max(fetched) >= FRESH_FOR:
+            return ""
+        run = current_run(answers, x.train, x.board_station, x.alight_stop)
+        if run is None:
+            return ""
+        legs.append(run[1].leg)
+    return crowd_text(legs)
+
+
 def _broken(s: OccurrenceState, t: TrainId | None) -> bool:
     """A live break (cancelled, cut short, missing) is held for train `t`."""
     return holds_live(s.alert_keys, _BREAKS, t)
+
+
+def _named_crowd_now(
+    answers: Sequence[ProviderAnswer], named: tuple[str, ...], now: datetime
+) -> str:
+    for answer in sorted(answers, key=lambda a: to_utc(a.fetched_at), reverse=True):
+        for connection in answer.connections:
+            if tuple(train_ident(g.train) for g in connection.legs) == named:
+                return _crowd_now(answers, [progress_of(g) for g in connection.legs], now)
+    return ""
+
+
+def _with_crowd_note(event: AlertEvent, note: str) -> AlertEvent:
+    facts = alert_facts(event)
+    if not facts.next_clause:
+        return event
+    head = event.text.removesuffix(facts.twin_note).removesuffix(facts.next_clause)
+    clause = facts.next_clause.removesuffix(".").removesuffix(facts.crowd_note) + note + "."
+    return replace(
+        event,
+        text=head + clause + facts.twin_note,
+        facts=replace(facts, next_clause=clause, crowd_note=note),
+    )
 
 
 def _current_body(
@@ -187,7 +279,9 @@ class LiveLedger:
         judged: Callable[[], PersistedState],
         memory: PollMemory,
         now: Callable[[], datetime],
+        available_channels: Callable[[], frozenset[NotificationChannel]] = lambda: CHANNELS,
     ) -> None:
+        self._available_channels = available_channels
         self._written, self._judged, self._memory, self._now = written, judged, memory, now
 
     @property
@@ -200,11 +294,74 @@ class LiveLedger:
     def _occurrence(self, key: OccurrenceKey) -> OccurrenceState | None:
         return self._state.occurrences.get(okey(key))
 
+    def _alerts(self, o: Obligation) -> AlertSettings:
+        p = find_profile(self._state.config, o.event.profile_id)
+        return AlertSettings() if p is None else p.alerts
+
+    def selected_channels(self, o: Obligation) -> frozenset[NotificationChannel]:
+        return channels_for(self._alerts(o), o.event.kind, look_ahead=o.look_ahead is not None)
+
+    def channel_enabled(self, o: Obligation, channel: NotificationChannel) -> bool:
+        return channel_enabled(
+            self._alerts(o), o.event.kind, channel, look_ahead=o.look_ahead is not None
+        )
+
+    def routing_ready(self, o: Obligation) -> bool:
+        return routing_ready(
+            self._alerts(o),
+            o.event.kind,
+            self._available_channels(),
+            look_ahead=o.look_ahead is not None,
+        )
+
+    def notification_enabled(self, o: Obligation) -> bool:
+        state = None if o.occurrence is None else self._occurrence(o.occurrence)
+        if (
+            state is not None
+            and state.selected_recovery is not None
+            and state.selected_recovery.status == "active"
+            and o.event.kind in ORIGINAL_ROUTINE
+        ):
+            return False
+        p = find_profile(self._state.config, o.event.profile_id)
+        return p is None or enabled(p.alerts, o.event.kind, look_ahead=o.look_ahead is not None)
+
+    def destination_allowed(self, o: Obligation, destination: str) -> bool:
+        from train_commute_companion.disruptions import destination_allowed
+
+        if o.event.kind not in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED):
+            return True
+        s = None if o.occurrence is None else self._occurrence(o.occurrence)
+        notice = None if s is None else s.disruptions.get(alert_facts(o.event).disruption_id)
+        return notice is not None and destination_allowed(notice, o.event, destination)
+
     def skipped(self, key: OccurrenceKey) -> bool:
         s = self._occurrence(key)
         return s is not None and s.not_travelling
 
     def fact_holds(self, o: Obligation) -> bool:
+        if o.event.kind is EventKind.COMPENSATION_REMINDER:
+            facts = alert_facts(o.event)
+            record = self._state.journey_records.get(facts.arrival_record)
+            profile = find_profile(self._state.config, o.event.profile_id)
+            return (
+                profile is not None
+                and profile.alerts.compensation_reminder
+                and record is not None
+                and record.revision == facts.arrival_revision
+                and record.reminder_created
+                and record.delay_minutes is not None
+                and record.delay_minutes >= 30
+            )
+        if o.event.kind is EventKind.WORKS_DIGEST:
+            from train_commute_companion.works_digest import profile_token
+
+            profile = find_profile(self._state.config, o.event.profile_id)
+            return (
+                profile is not None
+                and profile.works_digest is not None
+                and o.digest_token == profile_token(profile)
+            )
         if o.look_ahead is not None:
             return self._look_ahead_route_holds(o, o.look_ahead) and self._look_ahead_holds(
                 o, o.look_ahead[2]
@@ -279,6 +436,40 @@ class LiveLedger:
         """Rule 5(b): the message's fact, regenerated from the current state and the latest
         healthy answers."""
         e, k, mem = o.event, okey(s.key), self._memory
+        if e.kind in (EventKind.RECOVERY_UPDATE, EventKind.RECOVERY_MONITORING):
+            selected = s.selected_recovery
+            facts = alert_facts(e)
+            return (
+                selected is not None
+                and selected.status == "active"
+                and selected.id == facts.recovery_selection
+                and selected.revision == facts.recovery_revision
+                and f"{selected.monitoring_issue}:{selected.monitoring_revision}"
+                == facts.recovery_issue
+                and (
+                    selected.monitoring_issue != "current"
+                    or timedelta() <= to_utc(self._now()) - to_utc(selected.checked_at) < FRESH_FOR
+                )
+            )
+        if e.kind in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED):
+            from train_commute_companion.disruptions import context_enabled, disruptions_fresh
+
+            facts = alert_facts(e)
+            notice = s.disruptions.get(facts.disruption_id)
+            context = self._ctx(s)
+            current = find_profile(self._state.config, s.key.profile_id)
+            return (
+                notice is not None
+                and notice.relevant
+                and notice.instance == facts.disruption_instance
+                and notice.revision == facts.disruption_revision
+                and notice.active == (e.kind is EventKind.DISRUPTION)
+                and disruptions_fresh(s, self._now())
+                and context is not None
+                and context_enabled(s, context)
+                and current is not None
+                and not current.paused_on(s.key.service_date)
+            )
         legs = [x for j in (*((s.lock,) if s.lock else ()), *s.retained) for x in j.legs]
         unfinished = any(x.train == e.train and x.state not in _FINISHED_LEG_STATES for x in legs)
         # the delay memory still says what the message stated
@@ -362,6 +553,26 @@ class LiveLedger:
         return p is not None and _in_quiet(p.alerts.quiet_hours, now)
 
     def current(self, o: Obligation) -> AlertEvent:
+        event = self._current(o)
+        state = None if o.occurrence is None else self._occurrence(o.occurrence)
+        if (
+            state is not None
+            and state.selected_recovery is not None
+            and state.selected_recovery.status == "active"
+            and o.look_ahead is None
+            and event.kind
+            not in (
+                EventKind.CHOOSE_REFUSED,
+                EventKind.KEY_REJECTED,
+                EventKind.PROFILE_REFUSED,
+                EventKind.STORAGE_FAILED,
+            )
+            and not event.kind.value.startswith("recovery_")
+        ):
+            event = replace(event, text="Original train monitoring: " + event.text)
+        return event
+
+    def _current(self, o: Obligation) -> AlertEvent:
         if o.look_ahead is not None:
             # rule 5(b): a bundle names only its facts that still hold, from the current profile
             live, p = self._live_facts(o), find_profile(self._state.config, o.look_ahead[0])
@@ -382,6 +593,25 @@ class LiveLedger:
         if s is None or e.train is None:
             return e
         ctx, answers = self._ctx(s), self._memory.boards.get(okey(s.key), ())
+        if e.kind in DELAY_NEWS:
+            facts = alert_facts(e)
+            watched = [
+                x
+                for j in (*((s.lock,) if s.lock else ()), *s.retained)
+                for x in j.legs
+                if x.train == e.train
+            ]
+            note = _crowd_now(answers, watched[:1], self._now())
+            text = (
+                e.text.removesuffix(facts.twin_note)
+                .removesuffix(".")
+                .removesuffix(facts.crowd_note)
+            )
+            return replace(
+                e,
+                text=text + note + "." + facts.twin_note,
+                facts=replace(facts, crowd_note=note),
+            )
         if ctx is None or not answers:
             return e
         body = _current_body(e, e.train, s, ctx, answers)
@@ -396,14 +626,20 @@ class LiveLedger:
         clause is replaced: the lock's first train as the next good connection while nothing
         of it has left, else the train now followed and every onward leg still ahead."""
         s = None if o.occurrence is None else self._state.occurrences.get(okey(o.occurrence))
-        if e.kind not in _NAMES_LOCK or e.train is None or s is None or s.lock is None:
+        if e.kind not in _NAMES_LOCK or e.train is None or s is None:
             return e
         f = alert_facts(e)
-        live = [x for x in s.lock.legs if x.state not in (LegState.CANCELLED, LegState.RELOCKED)]
-        if not live or e.train in {x.train for x in live} or f.on:
-            return e  # a retained warning already names its own next connection (rule 7)
-        if f.named and tuple(train_ident(x.train) for x in live)[-len(f.named) :] == f.named:
+        answers = self._memory.boards.get(okey(s.key), ())
+        if f.on:
+            return _with_crowd_note(e, _named_crowd_now(answers, f.named, self._now()))
+        if s.lock is None:
             return e
+        live = [x for x in s.lock.legs if x.state not in (LegState.CANCELLED, LegState.RELOCKED)]
+        if not live or e.train in {x.train for x in live}:
+            return e
+        if f.named and tuple(train_ident(x.train) for x in live)[-len(f.named) :] == f.named:
+            note = _crowd_now(answers, live[-len(f.named) :], self._now())
+            return _with_crowd_note(e, note)
         head = e.text.removesuffix(f.twin_note).removesuffix(f.next_clause)
         answers = self._memory.boards.get(okey(s.key), ())
         ahead = [x for x in live if x.state in (LegState.PENDING, LegState.BOARDING)]
@@ -418,4 +654,15 @@ class LiveLedger:
                 for t, pl in (leg_now(answers, x),)
             )
             nxt = f"Now following your {now} train{onward}."
-        return replace(e, text=f"{head.rstrip()} {nxt}{f.twin_note}")
+        note = _crowd_now(answers, live, self._now())
+        nxt = nxt.removesuffix(".") + note + "."
+        return replace(
+            e,
+            text=f"{head.rstrip()} {nxt}{f.twin_note}",
+            facts=replace(
+                f,
+                next_clause=" " + nxt,
+                named=tuple(train_ident(x.train) for x in live),
+                crowd_note=note,
+            ),
+        )

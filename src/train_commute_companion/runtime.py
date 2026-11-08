@@ -10,7 +10,9 @@ from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
+from train_commute_companion import works_digest
 from train_commute_companion.advice import (
     advice_query,
     advise,
@@ -20,9 +22,22 @@ from train_commute_companion.budget import POLL_DEADLINE, POLL_EVERY_S, RequestG
 from train_commute_companion.calendar import TZ, Clock, resolve_local, to_utc
 from train_commute_companion.choice import ChoiceTarget, choice_target, named_connections
 from train_commute_companion.classify import current_run, evidence, find_leg
+from train_commute_companion.compensation import ArrivalError, arrival_text, confirm
+from train_commute_companion.compensation_state import JourneyRecord
 from train_commute_companion.delivery import (
+    BindingPhase,
+    binding_phase,
     deliver,
     pending_journey_warnings,
+)
+from train_commute_companion.disruptions import (
+    LEGACY_PRIMARY,
+    PENDING_PRIMARY,
+    context_enabled,
+    disruptions_received,
+    disruptions_told,
+    notice_events,
+    update_disruptions,
 )
 from train_commute_companion.health import (
     WatchedLeg,
@@ -32,6 +47,7 @@ from train_commute_companion.health import (
 )
 from train_commute_companion.ledger import (
     OBSERVED,
+    EpisodeTransition,
     LiveLedger,
     PollMemory,
 )
@@ -42,6 +58,7 @@ from train_commute_companion.lifecycle import (
     apply_action,
     is_resolved,
     location_queries,
+    make_event,
     merged_pool,
     on_location,
     on_poll,
@@ -51,6 +68,7 @@ from train_commute_companion.lifecycle import (
     whole_day_keys,
 )
 from train_commute_companion.lifecycle_end import may_archive, on_tick
+from train_commute_companion.lifecycle_lock import unfinished_leg
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import forget_pending, rebase_on_edit, reset_on_edit
 from train_commute_companion.lookahead_probe import service_date
@@ -59,14 +77,18 @@ from train_commute_companion.match import usual_connection
 from train_commute_companion.messages import CHECK_APP, RefusalKind, Refused, no_journey
 from train_commute_companion.model import (
     AlertEvent,
+    AlertFacts,
+    AlertSettings,
     Config,
     Ctx,
     Direction,
     DirectionState,
     EventKind,
     Leaving,
+    LegKind,
     LegState,
     LocationSettings,
+    NotificationChannel,
     NotTravelling,
     Obligation,
     Observation,
@@ -80,18 +102,24 @@ from train_commute_companion.model import (
     direction_key,
     display_name,
     okey,
+    present,
 )
 from train_commute_companion.news import all_good, forget_ended, news_of, severity
-from train_commute_companion.notify import Notifier, WebhookPort
+from train_commute_companion.notification_policy import channels_for, routing_ready
+from train_commute_companion.notify import Notifier, WebhookPort, destination_id
 from train_commute_companion.profile import load_config
 from train_commute_companion.providers.base import (
+    ActiveDisruptions,
     PlannedWorks,
     Pool,
     Provider,
     ProviderAnswer,
     Query,
 )
+from train_commute_companion.recovery_runtime import RecoveryController
+from train_commute_companion.recovery_state import ORIGINAL_ROUTINE, RecoveryOffer, SelectedRecovery
 from train_commute_companion.revisions import (
+    baseline_on,
     effective_profile,
     find_profile,
     frozen,
@@ -99,6 +127,19 @@ from train_commute_companion.revisions import (
     profile_for,
     same_route,
     signature_for,
+)
+from train_commute_companion.runtime_state import (
+    AuthEpisode,
+    AuthPhase,
+    OccurrenceRequest,
+    PendingEditPhase,
+    ReloadControl,
+    ReloadPhase,
+    ResultPhase,
+    RouteDecision,
+    RuntimeLifecycle,
+    RuntimePhase,
+    route_decision,
 )
 from train_commute_companion.schedule import schedules_active
 from train_commute_companion.state import (
@@ -112,6 +153,9 @@ from train_commute_companion.state import (
 )
 from train_commute_companion.state_writer import Change, StateWriter
 from train_commute_companion.store import PersistedState, StorageError, Store
+from train_commute_companion.tasks import RefreshTask
+from train_commute_companion.vehicle import VehicleProvider, VehicleWatch
+from train_commute_companion.vehicle_monitor import VehicleMonitor
 from train_commute_companion.view import RuntimeView, runtime_view
 from train_commute_companion.webhook_queue import CopyQueue
 
@@ -175,7 +219,7 @@ def _advice_told(st: PersistedState, told: Sequence[tuple[Obligation, bool]]) ->
             continue
         if a.advised_train != o.event.train or to_utc(a.sent_at) != to_utc(o.event.created_at):
             continue  # an older episode's message
-        a = replace(a, delivered=True) if sent else replace(a, withdrawn=True)
+        a = a.accept_delivery() if sent else a.withdraw()
         occs[k] = replace(s, advice=a)
     return replace(st, occurrences=occs)
 
@@ -190,7 +234,22 @@ def _restarted(st: PersistedState) -> PersistedState:
         keys = dict(s.alert_keys)
         mark_sent_live(keys)
         occs[k] = frozen(st, replace(s, alert_keys=keys))
-    return replace(st, occurrences=occs)
+
+    def primary_only(obligation: Obligation) -> Obligation:
+        if obligation.target_ids is not None:
+            return obligation
+        # Old state proves no auxiliary authentication scope. Keep only deferred phone binding.
+        return replace(obligation, target_ids=frozenset(), primary_target_pending=True)
+
+    return replace(
+        st,
+        occurrences=occs,
+        obligations=tuple(primary_only(o) for o in st.obligations),
+        lookahead={
+            key: replace(ledger, pending=tuple(primary_only(o) for o in ledger.pending))
+            for key, ledger in st.lookahead.items()
+        },
+    )
 
 
 async def every(clock: Clock, seconds: float, step: Callable[[], Awaitable[None]]) -> None:
@@ -278,7 +337,11 @@ class Runtime:
         on_stations: Callable[[frozenset[str]], object] | None = None,
         lookahead_at: time = LOOKAHEAD_AT,
         webhooks: WebhookPort | None = None,
+        primary_destination: Callable[[], str | None] | None = None,
     ) -> None:
+        # Omitted only for legacy clients and replay rigs. Shells supply actual recipient IDs.
+        self._primary_destination = primary_destination or (lambda: LEGACY_PRIMARY)
+        self._target_pins: dict[str, Obligation] = {}
         self._path = profile_path
         self._queue = CopyQueue(
             webhooks,
@@ -286,11 +349,12 @@ class Runtime:
             self._save_rest,
             self._waits,
             lambda held: self._held_ledger if held else self._ledger,
+            lambda copy: self._writer.copy_audience_written(copy),
         )
         self._writer = StateWriter(store, self._queue, self._storage_note)
         self._lookahead_at = lookahead_at
-        self._refusal: str | None = None
-        self._started = False
+        self._reload = ReloadControl()
+        self._lifecycle = RuntimeLifecycle()
         self._store = store
         self._provider = provider
         self.events_log: list[AlertEvent] = []
@@ -298,30 +362,63 @@ class Runtime:
         self._clock = clock
         self.known_stations = known_stations
         self._gate = RequestGate(provider, clock.now)
-        self._refused_told: str | None = None
         self._mtime: int | None = None
-        self._auth_outage = False
-        self._auth_told: set[str] = set()
+        self._auth = AuthEpisode()
         self._memory = PollMemory()
+        self._vehicle_monitor = (
+            VehicleMonitor(provider, self._gate, clock.now, self._vehicle_watches)
+            if isinstance(provider, VehicleProvider)
+            else None
+        )
+        self._vehicle_refresh = RefreshTask(self._refresh_vehicles, coalesce=True)
+        self._digest_refresh = RefreshTask(self.works_digest_once, coalesce=False)
+        self._digest_attempts: dict[str, datetime] = {}
         self._sending = asyncio.Lock()
-        # set while start() reconciles: messages stored before it wait for the fresh poll
-        self._reconcile_started_at: datetime | None = None
 
         def read() -> PersistedState:
             return self._writer.st
 
-        self._ledger = LiveLedger(read, read, self._memory, clock.now)
-        self._held_ledger = LiveLedger(read, self._writer.judged_state, self._memory, clock.now)
+        self._ledger = LiveLedger(
+            read, read, self._memory, clock.now, lambda: self.available_channels
+        )
+        self._held_ledger = LiveLedger(
+            read,
+            self._writer.judged_state,
+            self._memory,
+            clock.now,
+            lambda: self.available_channels,
+        )
         # an edit waiting for the station list retries it under the shared budget
         self._require_stations = require_stations
         self._on_stations = on_stations
-        self._unchecked = False
         self._stations_tried: datetime | None = None
         # profile id -> location source epoch, bumped on every accepted location change (8):
         # an event read under an older epoch is dropped, even after a switch back (A, B, A)
         self._loc_epoch: dict[str, int] = {}
+        self._recovery = RecoveryController(
+            self._writer,
+            self._gate,
+            clock.now,
+            self._ctx,
+            self.view,
+            self._recovery_notice,
+            self._deliver,
+        )
 
     # --- configuration and context ---
+
+    @property
+    def available_channels(self) -> frozenset[NotificationChannel]:
+        channels: set[NotificationChannel] = {"primary"}
+        if self._queue.port is not None:
+            channels.update(self._queue.port.channels.values())
+        return frozenset(channels)
+
+    def _routing_ready_in(self, state: PersistedState, o: Obligation) -> bool:
+        p = find_profile(state.config, o.event.profile_id)
+        return p is None or routing_ready(
+            p.alerts, o.event.kind, self.available_channels, look_ahead=o.look_ahead is not None
+        )
 
     @property
     def config(self) -> Config | None:
@@ -334,7 +431,7 @@ class Runtime:
     @property
     def refusal(self) -> str | None:
         """Why the last reload refused the file (or waits for the station list); None if not."""
-        return self._refusal
+        return self._reload.refusal
 
     @property
     def store_ok(self) -> bool:
@@ -342,11 +439,11 @@ class Runtime:
 
     @property
     def key_rejected(self) -> bool:
-        return self._auth_outage
+        return self._auth.phase is AuthPhase.REJECTED
 
     @property
     def started(self) -> bool:
-        return self._started
+        return self._lifecycle.phase is RuntimePhase.RUNNING
 
     @property
     def requests(self) -> int:
@@ -365,19 +462,189 @@ class Runtime:
         """A frozen snapshot for shells (5.4): nothing in it changes as the runtime goes on. It
         shows the written state (rule 22); an unsent alert counts whether written or not."""
         now = self._clock.now()
-        return runtime_view(
+        snapshot = runtime_view(
             self._writer.st,
             self._memory.boards,
             now,
-            started=self._started,
-            refusal=self._refusal,
+            started=self.started,
+            refusal=self.refusal,
             store_ok=self._writer.store_ok,
-            key_rejected=self._auth_outage,
+            key_rejected=self.key_rejected,
             undelivered=self._writer.undelivered(),
             requests=self.requests,
             location_epochs=self._loc_epoch,
             positions=self._provider.positions,
         )
+        snapshot = replace(
+            snapshot,
+            occurrences=tuple(
+                replace(
+                    o,
+                    recovery_offer=self._recovery.offer_for(o.key),
+                    replacement_plans=self._recovery.plans_for(o.key) or o.replacement_plans,
+                )
+                for o in snapshot.occurrences
+            ),
+        )
+        if self._vehicle_monitor is None:
+            return snapshot
+        watches = {
+            okey(state.key): self._vehicle_watch(state, now)
+            for state in self._writer.st.occurrences.values()
+        }
+        return replace(
+            snapshot,
+            occurrences=tuple(
+                replace(occurrence, train_context=self._vehicle_monitor.snapshot(watch, now))
+                if (watch := watches.get(okey(occurrence.key))) is not None
+                else occurrence
+                for occurrence in snapshot.occurrences
+            ),
+        )
+
+    def _vehicle_watch(self, state: OccurrenceState, now: datetime) -> VehicleWatch | None:
+        if state.not_travelling or is_resolved(state) or state.lock is None:
+            return None
+        health = board_health(state.poll_records, now)
+        watched = unfinished_leg(state.lock)
+        if (
+            not health.fresh
+            or health.consecutive_failures
+            or watched is None
+            or watched.state not in (LegState.PENDING, LegState.RIDING)
+        ):
+            return None
+        answers = self._memory.boards.get(okey(state.key), ())
+        run = current_run(answers, watched.train, watched.board_station, watched.alight_stop)
+        if (
+            run is None
+            or run[1].kind not in (LegKind.OK, LegKind.DELAYED)
+            or run[1].leg.alternative_transport
+        ):
+            return None
+        checked = max(
+            (
+                answer.fetched_at
+                for answer in answers
+                if any(
+                    leg.train == watched.train and leg.board.code == watched.board_station
+                    for connection in answer.connections
+                    for leg in connection.legs
+                )
+            ),
+            key=to_utc,
+            default=None,
+        )
+        return (
+            None if checked is None else VehicleWatch(watched.train, watched.board_station, checked)
+        )
+
+    def _vehicle_watches(self) -> tuple[VehicleWatch, ...]:
+        now = self._clock.now()
+        return tuple(
+            watch
+            for state in self._writer.st.occurrences.values()
+            if (watch := self._vehicle_watch(state, now)) is not None
+        )
+
+    def _refresh_vehicles_soon(self) -> None:
+        if self._vehicle_monitor is None or self._lifecycle.phase in (
+            RuntimePhase.STOPPING,
+            RuntimePhase.STOPPED,
+            RuntimePhase.FAILED,
+        ):
+            return
+        self._vehicle_refresh.request()
+
+    @property
+    def _vehicle_task(self) -> asyncio.Task[None] | None:
+        return self._vehicle_refresh.task
+
+    async def _refresh_vehicles(self) -> None:
+        monitor = self._vehicle_monitor
+        if monitor is None:
+            return
+        try:
+            await monitor.refresh(self._vehicle_watches())
+        except Exception:
+            log.exception("optional train context refresh failed")
+
+    async def vehicle_context_idle(self) -> None:
+        await self._vehicle_refresh.idle()
+
+    async def stop_vehicle_context(self) -> None:
+        await self._vehicle_refresh.stop()
+
+    def _refresh_digest_soon(self) -> None:
+        if self._lifecycle.phase not in (
+            RuntimePhase.STOPPING,
+            RuntimePhase.STOPPED,
+            RuntimePhase.FAILED,
+        ):
+            self._digest_refresh.request()
+
+    @property
+    def _digest_task(self) -> asyncio.Task[None] | None:
+        return self._digest_refresh.task
+
+    async def works_digest_once(self) -> None:
+        """Optional weekly checks share the NS budget and never block live polling."""
+        config = self._writer.st.config
+        if config is None or self._writer.waiting:
+            return
+        for profile in config.profiles:
+            start = self._clock.now()
+            decision = works_digest.digest_decision(
+                profile,
+                start,
+                self._writer.st.works_digest_weeks.get(profile.id),
+                self._digest_attempts.get(profile.id),
+            )
+            if decision.phase is not works_digest.DigestPhase.DUE:
+                continue
+            week = present(decision.week)
+            self._digest_attempts[profile.id] = start
+            token = works_digest.profile_token(profile)
+            deadline = to_utc(start) + timedelta(seconds=works_digest.TIME_LIMIT_S)
+
+            async def fetch(
+                queries: Sequence[Query], bound: datetime = deadline
+            ) -> tuple[ProviderAnswer, ...] | PollFailure:
+                return await self._gate.all_trips(queries, False, None, deadline=bound)
+
+            try:
+                rows = await works_digest.check_week(
+                    self._writer.st, profile, start, self._fetch_works, fetch, self._clock.now
+                )
+                current = find_profile(self._writer.st.config, profile.id)
+                now = self._clock.now()
+                if (
+                    current is None
+                    or works_digest.profile_token(current) != token
+                    or works_digest.due_week(
+                        current, now, self._writer.st.works_digest_weeks.get(profile.id)
+                    )
+                    != week
+                ):
+                    continue
+                message = works_digest.obligation(
+                    profile, present(self._writer.st.config).revision, week, start, rows
+                )
+                candidate = replace(
+                    self._writer.st,
+                    works_digest_weeks={**self._writer.st.works_digest_weeks, profile.id: week},
+                    obligations=(*self._writer.st.obligations, message),
+                )
+                if self._writer.commit_strict(candidate):
+                    await self._deliver()
+            except Exception:
+                log.exception("optional weekly planned-works digest failed")
+
+    async def works_digest_idle(self) -> None:
+        await self._digest_refresh.idle()
+
+    async def stop_works_digest(self) -> None:
+        await self._digest_refresh.stop()
 
     # --- the serialised writer: state, ledger and obligations in one save (rule 5, 22) ---
 
@@ -435,6 +702,8 @@ class Runtime:
         `polled`: the events are everything a healthy poll reports, so a reported fact it no
         longer reports has ended and leaves the ledger (a recurrence is news again).
         `occs`: the occurrences its alerts are told beside."""
+        if s.selected_recovery is not None and s.selected_recovery.status == "active":
+            events = tuple(e for e in events if e.kind not in ORIGINAL_ROUTINE)
         keys = dict(s.alert_keys)
         if polled:
             forget_ended(keys, events)
@@ -471,6 +740,22 @@ class Runtime:
             occs[k] = s
             obligations += new
         st = replace(st, occurrences=occs, obligations=tuple(obligations))
+        records = dict(st.journey_records)
+        for k, state in occs.items():
+            profile = self._profile_for(state)
+            if profile is None:
+                continue
+            previous = records.get(k)
+            if previous is None:
+                records[k] = JourneyRecord(
+                    state.key,
+                    profile.destination(state.key.direction),
+                    state.original_plan,
+                    state.route_revision,
+                )
+            elif previous.plan is None and state.original_plan is not None:
+                records[k] = replace(previous, plan=state.original_plan)
+        st = replace(st, journey_records=records)
         self._writer.commit(self._archived(st, now), kind)
 
     def _archived(self, st: PersistedState, now: datetime) -> PersistedState:
@@ -485,7 +770,18 @@ class Runtime:
                 continue
             occs[k] = s
         # snapshots are pruned on write
-        return replace(st, occurrences=occs)
+        held = {
+            alert_facts(o.event).arrival_record
+            for o in (*st.obligations, *(copy.obligation for copy in st.webhook_copies))
+        }
+        records = {
+            key: record
+            for key, record in st.journey_records.items()
+            if key in occs
+            or key in held
+            or (now.astimezone(TZ).date() - record.key.service_date).days <= 120
+        }
+        return replace(st, occurrences=occs, journey_records=records)
 
     async def _deliver(self) -> None:
         """Every pending obligation, revalidated right before sending (rule 5). Merges by id,
@@ -505,10 +801,15 @@ class Runtime:
             "",
         )
 
-    def _save_rest(self) -> None:
+    def _save_rest(self, accepted: Sequence[tuple[Obligation, str]] = ()) -> None:
         """Writes the webhook rests now, synchronously, before a try's request leaves (rule 22:
         a failed write takes the same path as any other)."""
-        self._record_delivery(set(), {}, (), True)
+        accepted = tuple(
+            (o, target)
+            for o, target in accepted
+            if o.event.kind in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED)
+        )
+        self._record_delivery(set(), {}, (), True, accepted=accepted)
 
     async def webhooks_idle(self) -> None:
         """Waits until no webhook pass runs (a clean shutdown, tests)."""
@@ -517,8 +818,9 @@ class Runtime:
     def _waits(self, o: Obligation) -> bool:
         """Not judged yet: written before this start (judged once the reconcile ran, rule 11),
         or judged on observations while its occurrence has no healthy answer (rule 5b)."""
-        started = self._reconcile_started_at
-        if started is not None and to_utc(o.event.created_at) < to_utc(started):
+        if not self._routing_ready_in(self._writer.st, o):
+            return True
+        if self._lifecycle.holds(o.event.created_at):
             return True
         k = None if o.occurrence is None else okey(o.occurrence)
         return (
@@ -527,22 +829,109 @@ class Runtime:
             and k not in self._memory.boards
         )
 
+    def _pin_targets(self, o: Obligation, ledger: LiveLedger) -> Obligation:
+        remembered = self._target_pins.get(o.id)
+        if binding_phase(o) is BindingPhase.UNBOUND and remembered is not None:
+            o = replace(
+                o,
+                target_ids=remembered.target_ids,
+                primary_target_pending=remembered.primary_target_pending,
+                event=replace(
+                    o.event,
+                    facts=replace(
+                        alert_facts(o.event),
+                        disruption_targets=alert_facts(remembered.event).disruption_targets,
+                    ),
+                ),
+            )
+        selected = ledger.selected_channels(o)
+        primary = self._primary_destination()
+        facts = alert_facts(o.event)
+        source_targets = facts.disruption_targets
+        event = o.event
+        if source_targets is not None and PENDING_PRIMARY in source_targets and primary is not None:
+            source_targets = (source_targets - {PENDING_PRIMARY}) | {primary}
+            event = replace(event, facts=replace(facts, disruption_targets=source_targets))
+        if binding_phase(o) is BindingPhase.UNBOUND:
+            targets = frozenset(
+                destination_id(self._queue.port, u)
+                for u in (() if self._queue.port is None else self._queue.port.urls)
+                if self._queue.port is not None and self._queue.port.channels[u] in selected
+            )
+            if primary is not None and "primary" in selected:
+                targets |= {primary}
+            if source_targets is not None:
+                targets &= source_targets
+            pending = (
+                "primary" in selected
+                and primary is None
+                and (source_targets is None or PENDING_PRIMARY in source_targets)
+            )
+            pinned = replace(o, event=event, target_ids=targets, primary_target_pending=pending)
+            self._target_pins[o.id] = pinned
+            return pinned
+        if binding_phase(o) is BindingPhase.PRIMARY_PENDING and (
+            primary is not None or "primary" not in selected
+        ):
+            targets = present(o.target_ids) | (
+                {primary} if primary is not None and "primary" in selected else set()
+            )
+            pinned = replace(o, event=event, target_ids=targets, primary_target_pending=False)
+            self._target_pins[o.id] = pinned
+            return pinned
+        if remembered is not None:
+            self._target_pins[o.id] = o
+        return o
+
     async def _deliver_pass(self) -> None:
         finished: set[str] = set()
         kept: dict[str, Obligation] = {}
-        told: list[tuple[Obligation, bool]] = []  # finished LEAVE_NOW, sent (else dropped)
+        told: list[tuple[Obligation, bool]] = []  # finished advice/context, sent (else dropped)
+        accepted: list[tuple[Obligation, str]] = []
         copies = False  # the webhook copies changed
         try:
             for o, held in self._writer.pending():
                 if self._waits(o):
                     continue
-                copies |= self._queue.stage(o, held)
-                # a fresh clock per message: a slow send must not leave the next one judged early
                 v = self._held_ledger if held else self._ledger
-                r, sent = await deliver(o, v, self._notifier, self._clock.now())
+                pinned = self._pin_targets(o, v)
+                staged = self._queue.stage(pinned, held)
+                copies |= staged
+                if pinned != o:
+                    o = pinned
+                    self._writer.settle(o, o, False)
+                    # Persist the audience before a request can disclose the alert to a recipient.
+                    self._record_delivery(
+                        finished, {**kept, o.id: o}, told, copies, accepted=accepted
+                    )
+                    finished.clear()
+                    kept.clear()
+                    told.clear()
+                    accepted.clear()
+                    copies = False
+                # a fresh clock per message: a slow send must not leave the next one judged early
+                destination = self._primary_destination()
+                r, sent = await deliver(
+                    o,
+                    v,
+                    self._notifier,
+                    self._clock.now(),
+                    destination,
+                    audience_written=self._writer.audience_written(o),
+                )
+                if (
+                    sent
+                    and destination is not None
+                    and o.event.kind in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED)
+                ):
+                    accepted.append((o, destination))
                 if r is not None:
                     r = self._queue.after_send(r)
-                if r is None and o.event.kind is EventKind.LEAVE_NOW:
+                if r is None and o.event.kind in (
+                    EventKind.LEAVE_NOW,
+                    EventKind.DISRUPTION,
+                    EventKind.DISRUPTION_CLEARED,
+                ):
                     told.append((o, sent))
                 if self._writer.settle(o, r, sent):
                     continue
@@ -551,7 +940,7 @@ class Runtime:
                 elif r != o:
                     kept[o.id] = r
         finally:  # each acknowledged send is recorded, also when shutdown cancels the pass
-            self._record_delivery(finished, kept, told, copies)
+            self._record_delivery(finished, kept, told, copies, accepted=accepted)
 
     def _record_delivery(
         self,
@@ -559,10 +948,15 @@ class Runtime:
         kept: Mapping[str, Obligation],
         told: Sequence[tuple[Obligation, bool]],
         copies: bool = False,
+        *,
+        accepted: Sequence[tuple[Obligation, str]] = (),
     ) -> None:
-        if not finished and not kept and not told and not copies:
+        if not finished and not kept and not told and not copies and not accepted:
             return
 
+        # Failed writes replay this outcome after the caller resumes and changes its accumulators.
+        finished, kept, told, accepted = set(finished), dict(kept), tuple(told), tuple(accepted)
+        receipt_time = self._clock.now()
         marks = set(self._queue.copied)  # written too: a phone send in flight is not in `kept` yet
 
         def outcome(st: PersistedState) -> PersistedState:
@@ -572,22 +966,50 @@ class Runtime:
                 for k, v in st.lookahead.items()
             }
             st = _advice_told(st, told)
+            st = disruptions_told(st, told)
+            st = disruptions_received(st, accepted)
             obligations = _survivors(st.obligations, finished, kept, marks)
-            return replace(st, obligations=obligations, lookahead=ledgers)
+            st = replace(st, obligations=obligations, lookahead=ledgers)
+            return self._receipt_followups(st, receipt_time) if accepted else st
 
         st = self._archived(outcome(self._writer.st), self._clock.now())
         self._writer.commit_delivery(st, outcome, finished)
+        if self._writer.store_ok:
+            self._target_pins.clear()
+
+    def _receipt_followups(self, st: PersistedState, now: datetime) -> PersistedState:
+        """A late accepted start can owe its own clearance, even after the phone's clear ended."""
+        occurrences, obligations = dict(st.occurrences), list(st.obligations)
+        for key, occurrence in tuple(occurrences.items()):
+            context = occurrence_ctx(st, occurrence, now)
+            if context is None:
+                continue
+            events = tuple(
+                e
+                for e in notice_events(occurrence, context)
+                if e.kind is EventKind.DISRUPTION_CLEARED
+            )
+            if events:
+                updated, owed = self._record(occurrence, events, now, False, occurrences)
+                occurrences[key] = updated
+                obligations.extend(owed)
+        return replace(st, occurrences=occurrences, obligations=tuple(obligations))
+
+    def _disruption_audience(self, settings: AlertSettings) -> frozenset[str]:
+        selected = channels_for(settings, EventKind.DISRUPTION)
+        primary = self._primary_destination()
+        return frozenset(
+            () if "primary" not in selected else (primary or PENDING_PRIMARY,)
+        ) | frozenset(
+            destination_id(self._queue.port, u)
+            for u in (() if self._queue.port is None else self._queue.port.urls)
+            if self._queue.port is not None and self._queue.port.channels[u] in selected
+        )
 
     def _track_key_rejection(self, error: PollFailure | None, who: str, now: datetime) -> None:
         """`key_rejected` once per outage and again when each window opens while it lasts."""
-        if error is None:
-            self._auth_outage, self._auth_told = False, set()
-            return
-        if error != "auth" or (self._auth_outage and who in self._auth_told):
-            return
-        self._auth_outage = True
-        self._auth_told.add(who)
-        self._app_warning(EventKind.KEY_REJECTED, "your NS key was rejected.", now, who)
+        if self._auth.observe(error, who):
+            self._app_warning(EventKind.KEY_REJECTED, "your NS key was rejected.", now, who)
 
     # --- polling ---
 
@@ -608,7 +1030,12 @@ class Runtime:
                 hist = self._writer.st.baselines.get(
                     direction_key(sch.key.profile_id, sch.key.direction)
                 )
-                v = hist.in_force(sch.key.service_date) if hist else None
+                profile = find_profile(cfg, sch.key.profile_id)
+                v = (
+                    baseline_on(hist, profile, sch.key.direction, sch.key.service_date)
+                    if hist is not None and profile is not None
+                    else None
+                )
                 fresh = fresh_state(sch.key, cfg.revision, v.version if v else None)
                 own = v.signature if v else None
                 occs[k] = replace(
@@ -623,6 +1050,9 @@ class Runtime:
         self._create_occurrences(self._clock.now())
         await self._poll_occurrences()
         await self._deliver()
+        self._refresh_vehicles_soon()
+        self._refresh_digest_soon()
+        self._recovery.refresh_soon()
 
     async def _poll_occurrences(self) -> None:
         for k in sorted(self._writer.st.occurrences):
@@ -630,6 +1060,44 @@ class Runtime:
                 await self._poll_occurrence(k)
             except Exception:  # one failing occurrence must not starve the others (rule 12)
                 log.exception("poll of %s failed", k)
+        await self._poll_active_disruptions()
+
+    def _disruption_context(self, state: OccurrenceState, now: datetime) -> Ctx | None:
+        context = self._ctx(state, now)
+        current = find_profile(self._writer.st.config, state.key.profile_id)
+        if context is None or current is None or current.paused_on(state.key.service_date):
+            return None
+        return context if context_enabled(state, context) else None
+
+    async def _poll_active_disruptions(self) -> None:
+        if not self._writer.store_ok:
+            return  # an auxiliary proposal must not replace an unwritten train safety decision
+        now = self._clock.now()
+        if not any(
+            self._disruption_context(s, now) is not None
+            for s in self._writer.st.occurrences.values()
+        ):
+            return
+        got = await self._gate.listing(self._provider.active_disruptions, "active disruptions")
+        if not self._writer.store_ok:
+            return
+        if got == "auth":
+            self._track_key_rejection("auth", "active disruptions", self._clock.now())
+        feed = got if isinstance(got, ActiveDisruptions) else ActiveDisruptions((), "unknown")
+        changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
+        for key, state in self._writer.st.occurrences.items():
+            context = self._disruption_context(state, self._clock.now())
+            if context is None:
+                continue
+            transition = update_disruptions(
+                state,
+                context,
+                feed,
+                self._memory.boards.get(key, ()),
+                audience=self._disruption_audience(context.profile.alerts),
+            )
+            changes[key] = (transition.state, transition.events)
+        self._apply(changes)
 
     async def _poll_occurrence(self, k: str) -> None:
         s = self._writer.st.occurrences.get(k)
@@ -648,7 +1116,11 @@ class Runtime:
         error = got if isinstance(got, str) else None
         answers = () if isinstance(got, str) else got
         advice_error: PollFailure | None = None
-        if error is None and (usual := origin_answer(answers, ctx)) is not None:
+        if (
+            error is None
+            and not (s.selected_recovery is not None and s.selected_recovery.status == "active")
+            and (usual := origin_answer(answers, ctx)) is not None
+        ):
             # 7.6: an earlier catchable train is before the time the poll asked from; a failed
             # search leaves advice to the poll's own answers and never fails the poll
             q = advice_query(s, ctx, usual, usual_arrival(s, ctx, usual))
@@ -675,6 +1147,9 @@ class Runtime:
         current = s.generation == gen
         if current:  # a choice since the poll started makes the answer stale
             st, events = self._judge_poll(k, s.lock is None, st, events, ctx, poll)
+        context = self._disruption_context(st, now)
+        if context is not None:
+            events += notice_events(st, context)
         self._apply({k: (st, events)}, polled=current and bool(answers))
 
     def _judge_poll(
@@ -791,7 +1266,9 @@ class Runtime:
                     Provenance.REPORTED, Provenance.REPORTED, None,
                 )  # fmt: skip
                 out.append(replace(base, riding_or_watched=riding))
-        if s.lock is None and not s.retained and k in self._memory.before:  # before a lock (rule 13)
+        if (
+            s.lock is None and not s.retained and k in self._memory.before
+        ):  # before a lock (rule 13)
             head, *onward = self._memory.before[k]  # any usual leg (rule 13)
             out += [replace(head, departure=ctx.schedule.first_departure), *onward]
         elif s.lock is None and not s.retained:  # never answered yet: by board age only
@@ -833,12 +1310,12 @@ class Runtime:
                 created_at=now,
             )
 
-        if blind and k not in self._memory.blind:
-            self._memory.blind[k] = now
+        change = self._memory.observe_blind(k, blind, now)
+        if change.transition is EpisodeTransition.ENTERED:
             text = f"cannot see your train in NS data ({reason}), {CHECK_APP}."
             out.append(event(EventKind.CANNOT_SEE_TRAIN, text, now.isoformat()))
-        elif not blind and k in self._memory.blind:
-            since = self._memory.blind.pop(k)
+        elif change.transition is EpisodeTransition.EXITED:
+            since = present(change.since)
             text = "your train is visible in NS data again."
             out.append(event(EventKind.CAN_SEE_TRAIN_AGAIN, text, since.isoformat()))
         zone = timedelta(minutes=30)
@@ -846,13 +1323,12 @@ class Runtime:
             x.riding_or_watched or timedelta(0) <= to_utc(x.departure) - to_utc(now) <= zone
             for x in legs
         )
-        if s.poll_records and offline(health, near) and k not in self._memory.offline:
-            self._memory.offline.add(k)
+        unavailable = offline(health, near)
+        wanted = unavailable if s.poll_records else unavailable and k in self._memory.offline
+        if self._memory.observe_offline(k, wanted) is EpisodeTransition.ENTERED:
             out.append(
                 event(EventKind.OFFLINE, f"NS data is unavailable, {CHECK_APP}.", now.isoformat())
             )
-        elif not offline(health, near):
-            self._memory.offline.discard(k)
         return out
 
     async def watchdog_once(self) -> None:
@@ -877,6 +1353,179 @@ class Runtime:
         elif self._writer.st.occurrences != before:
             self._writer.commit(self._writer.st, Change.TICK)
         await self._deliver()
+
+    def _recovery_notice(
+        self,
+        stored: PersistedState,
+        state: OccurrenceState,
+        old: SelectedRecovery | None,
+        selected: SelectedRecovery,
+    ) -> PersistedState:
+        if selected.status != "active":
+            return stored
+        changed = old is None or (old.monitoring_issue, old.revision) != (
+            selected.monitoring_issue,
+            selected.revision,
+        )
+        if not changed or (
+            selected.monitoring_issue == "current"
+            and (old is None or old.monitoring_issue == "current")
+        ):
+            return stored
+        context = self._ctx(state, self._clock.now())
+        if context is None:
+            return stored
+        kind = (
+            EventKind.RECOVERY_UPDATE
+            if selected.monitoring_issue == "changed"
+            else EventKind.RECOVERY_MONITORING
+        )
+        text = (
+            selected.monitoring_error
+            or "NS recovery monitoring is current again. Progress still needs your confirmations."
+        )
+        event = make_event(
+            context,
+            kind,
+            Severity.SILENT if selected.monitoring_issue == "current" else Severity.LOUD,
+            text,
+            key_facts=f"recovery:{selected.id}:{selected.revision}:{selected.monitoring_issue}:{selected.monitoring_revision}",
+            stated=AlertFacts(
+                recovery_selection=selected.id,
+                recovery_revision=selected.revision,
+                recovery_issue=f"{selected.monitoring_issue}:{selected.monitoring_revision}",
+            ),
+        )
+        recorded, obligations = self._record(
+            state, (event,), self._clock.now(), False, stored.occurrences
+        )
+        return replace(
+            stored,
+            occurrences={**stored.occurrences, okey(state.key): recorded},
+            obligations=(*stored.obligations, *obligations),
+        )
+
+    def arrival_records(self) -> tuple[JourneyRecord, ...]:
+        """Saved destinations and explicit arrivals, including archived occurrences."""
+        return tuple(
+            sorted(
+                self._writer.st.journey_records.values(),
+                key=lambda record: (
+                    record.key.service_date,
+                    record.key.profile_id,
+                    record.key.direction.value,
+                ),
+                reverse=True,
+            )
+        )
+
+    async def confirm_arrival(
+        self,
+        key: OccurrenceKey,
+        destination: str,
+        arrived_at: datetime,
+        *,
+        expected_revision: int,
+        action_id: str,
+        original_planned_arrival: datetime | None = None,
+    ) -> JourneyRecord | Refused:
+        stored = self._writer.st
+        record = stored.journey_records.get(okey(key))
+        if record is None:
+            return Refused("No saved journey reference exists for that service date.")
+        try:
+            updated = confirm(
+                record,
+                destination,
+                arrived_at,
+                now=self._clock.now(),
+                expected_revision=expected_revision,
+                action_id=action_id,
+                original_planned_arrival=original_planned_arrival,
+            )
+        except ArrivalError as error:
+            return Refused(str(error))
+        if updated == record:
+            return record
+        obligations = stored.obligations
+        profile = find_profile(stored.config, key.profile_id)
+        if profile is not None and updated.reminder_due(profile.alerts.compensation_reminder):
+            now = self._clock.now()
+            event = AlertEvent(
+                profile.id,
+                profile.name,
+                key.direction,
+                key.service_date,
+                None,
+                EventKind.COMPENSATION_REMINDER,
+                Severity.SILENT,
+                None,
+                arrival_text(updated),
+                f"arrival:{okey(key)}:{updated.revision}",
+                now,
+                AlertFacts(arrival_record=okey(key), arrival_revision=updated.revision),
+            )
+            obligation = replace(
+                self._obligation(event, None, now), expires_at=now + timedelta(days=7)
+            )
+            obligations = (*obligations, obligation)
+            updated = updated.queue_reminder()
+        candidate = replace(
+            stored,
+            journey_records={**stored.journey_records, okey(key): updated},
+            obligations=obligations,
+        )
+        if not self._writer.commit_strict(candidate):
+            return Refused("Arrival was not saved. Free storage and review this action again.")
+        await self._deliver()
+        return updated
+
+    async def prepare_recovery(
+        self, key: OccurrenceKey, proposal_id: str, origin_place_id: str
+    ) -> RecoveryOffer | Refused:
+        return await self._recovery.prepare(key, proposal_id, origin_place_id)
+
+    async def select_recovery(
+        self,
+        key: OccurrenceKey,
+        offer_id: str,
+        *,
+        acknowledge_planned_times: bool = False,
+        acknowledge_accessibility_unknown: bool = False,
+    ) -> SelectedRecovery | Refused:
+        return self._recovery.select(
+            key,
+            offer_id,
+            acknowledge_planned_times=acknowledge_planned_times,
+            acknowledge_accessibility_unknown=acknowledge_accessibility_unknown,
+        )
+
+    async def confirm_recovery_step(
+        self,
+        key: OccurrenceKey,
+        selection_id: str,
+        revision: int,
+        step_index: int,
+        kind: str,
+        place_id: str | None,
+        action_id: str,
+    ) -> SelectedRecovery | Refused:
+        return self._recovery.confirm(
+            key, selection_id, revision, step_index, kind, place_id, action_id
+        )
+
+    async def stop_recovery(
+        self, key: OccurrenceKey, selection_id: str, revision: int
+    ) -> SelectedRecovery | Refused:
+        state = self._writer.st.occurrences.get(okey(key))
+        if state is None or state.selected_recovery is None:
+            return Refused("No selected recovery is available.")
+        return self._recovery.confirm(
+            key, selection_id, revision, state.selected_recovery.index, "stop", None, uuid4().hex
+        )
+
+    async def recovery_idle(self) -> None:
+        await self._recovery.idle()
 
     # --- user actions and location ---
 
@@ -913,7 +1562,21 @@ class Runtime:
             ctx = self._ctx(s, now)
             if ctx is not None:
                 t = apply_action(s, ctx, action)
-                changes[k] = (t.state, t.events)
+                changed = t.state
+                if isinstance(action, NotTravelling):
+                    self._recovery.invalidate(key)
+                    recovery = changed.selected_recovery
+                    if recovery is not None and recovery.status == "active":
+                        changed = replace(
+                            changed,
+                            selected_recovery=replace(
+                                recovery,
+                                status="stopped",
+                                ended_at=now,
+                                revision=recovery.revision + 1,
+                            ),
+                        )
+                changes[k] = (changed, t.events)
         self._apply(changes, kind=Change.ACTION)
         await self._deliver()
         return None
@@ -980,7 +1643,7 @@ class Runtime:
         occ = target.occ
         k = okey(occ.key)
         # rule 21: what the choice is judged on must still hold when it is written
-        mark = (occ.generation, occ.route_revision, occ.baseline_version)
+        request = OccurrenceRequest.capture(occ)
         answers = await self._fetch_choice(target, k)
         if isinstance(answers, Refused):
             return answers
@@ -991,7 +1654,7 @@ class Runtime:
         now_occ = self._writer.st.occurrences.get(k)
         if now_occ is None or is_resolved(now_occ):
             return gone
-        if (now_occ.generation, now_occ.route_revision, now_occ.baseline_version) != mark:
+        if request.phase_for(now_occ) is ResultPhase.STALE:
             return Refused("your journey changed while NS answered; try again", RefusalKind.RETRY)
         choices = [Choose(occ.key.service_date, c, answers) for c in ranked]
         d = occ.key.direction
@@ -1008,7 +1671,11 @@ class Runtime:
         end = ctx.schedule.window_end
         deadline = to_utc(self._clock.now()) + POLL_DEADLINE
         asks: list[Sequence[Query]] = [
-            (Query(t.station, ctx.profile.destination(ctx.direction), t.when),)
+            (
+                Query.for_profile(
+                    ctx.profile, t.station, ctx.profile.destination(ctx.direction), t.when
+                ),
+            )
         ]
         if t.station != ctx.profile.origin(ctx.direction):
             asks.insert(0, queries_needed(t.occ, ctx))
@@ -1065,7 +1732,9 @@ class Runtime:
             if s is None or ctx is None or is_resolved(s) or stale(ctx):
                 continue
             gen, p, d = s.generation, ctx.profile, ctx.direction
-            got = await self._gate.trips(Query(p.origin(d), p.destination(d), now), True, None)
+            got = await self._gate.trips(
+                Query.for_profile(p, p.origin(d), p.destination(d), now), True, None
+            )
             qs = location_queries(s, ctx, event)  # the locked trains, from where they leave
             more = await self._gate.all_trips(qs, True, None) if qs else ()
             failed = got if isinstance(got, str) else None
@@ -1094,26 +1763,36 @@ class Runtime:
 
     def _refuse(self, errors: Sequence[ProfileProblem] | str, now: datetime) -> None:
         reason = errors if isinstance(errors, str) else _reasons(errors)
-        self._refusal = reason
-        if not self._writer.store_ok and reason == self._refused_told:
+        self._reload.reject(reason)
+        if not self._writer.store_ok and reason == self._reload.announced:
             return  # the same file retried while its write fails (rule 22): told once
-        self._refused_told = reason
+        self._reload.announced = reason
         self._app_warning(EventKind.PROFILE_REFUSED, f"profile change refused: {reason}.", now)
 
     async def reload(self) -> None:
+        request = self._reload.begin()
         now = self._clock.now()
         applied: Config | None = None
         try:
             # off the loop (rule 12); a view taken during the read keeps the old refusal
             text = await asyncio.to_thread(self._path.read_text, encoding="utf-8")
-            self._refusal = None
         except (OSError, UnicodeDecodeError) as e:
+            if not self._reload.current(request):
+                return
             self._refuse(f"cannot read {self._path.name} ({e})", now)
         else:
+            if not self._reload.current(request):
+                return
+            self._reload.refusal = None
             old, today = self._writer.st.config, now.astimezone(TZ).date()
             if self._require_stations and self.known_stations is None:
                 await self._fetch_stations()
-            cfg, errors = load_config(text, self.known_stations, old, today)
+                if not self._reload.current(request):
+                    return
+                old = self._writer.st.config
+            cfg, errors = load_config(
+                text, self.known_stations, old, today, available_channels=self.available_channels
+            )
             unchecked = self._require_stations and self.known_stations is None
             if unchecked and cfg is not None and cfg is not old:
                 # 5.3: an edit (or a first configuration, even one with a refused profile) whose
@@ -1124,12 +1803,12 @@ class Runtime:
                 )
                 if errors:
                     reason = f"{_reasons(errors)}; {reason}"
-                if not self._unchecked:
+                if request.pending is not PendingEditPhase.STATIONS:
                     self._refuse(reason, now)
-                self._refusal = reason
-                self._unchecked = True
+                self._reload.reject(reason, waiting_stations=True)
             else:
-                self._unchecked = False
+                self._reload.phase = ReloadPhase.READY
+                self._reload.pending = PendingEditPhase.NONE
                 if errors:
                     self._refuse(errors, now)
                 if cfg is not None and cfg is not old:
@@ -1157,6 +1836,7 @@ class Runtime:
                 self._on_stations(got)
 
     def _apply_config(self, new: Config, now: datetime) -> None:
+        self._recovery.invalidate()
         old, today = self._writer.st.config, now.astimezone(TZ).date()
         was = {p.id: p.location for p in (old.profiles if old else ())}
         now_loc = {p.id: p.location for p in new.profiles}
@@ -1170,9 +1850,12 @@ class Runtime:
             s = frozen(self._writer.st, s)
             route = find_profile(snaps.get(s.route_revision) or old, s.key.profile_id)
             p = find_profile(new, s.key.profile_id)
-            if route is not None and p is not None and same_route(route, p):
+            decision = route_decision(
+                s, route is not None and p is not None and same_route(route, p)
+            )
+            if decision is RouteDecision.ADOPT:
                 rev = new.revision
-            elif s.lock is not None or s.retained or is_resolved(s):
+            elif decision is RouteDecision.RETAIN:
                 rev = s.route_revision  # locked or riding: runs on its route revision (rule 10)
             else:  # not locked yet: created again from the new route when its window opens
                 self._memory.forget(k)  # what was seen of the old route is no evidence for it
@@ -1193,7 +1876,9 @@ class Runtime:
             mtime: int | None = (await asyncio.to_thread(self._path.stat)).st_mtime_ns
         except OSError:
             mtime = None
-        if mtime != self._mtime or (self._unchecked and self._stations_due()):  # tried again
+        if mtime != self._mtime or (
+            self._reload.pending is PendingEditPhase.STATIONS and self._stations_due()
+        ):
             self._mtime = mtime
             await self.reload()
         elif self._require_stations and self.known_stations is None and self._stations_due():
@@ -1259,15 +1944,20 @@ class Runtime:
 
     async def start(self) -> None:
         now = self._clock.now()
-        # stored messages wait for the reconcile poll (rules 5, 11)
-        self._reconcile_started_at = now
+        self._lifecycle.begin(now, asyncio.current_task())
         try:
             await self._load_and_reconcile(now)
-        finally:
-            self._reconcile_started_at = None
-        self._apply({})
-        await self._deliver()
-        self._started = True
+            self._lifecycle.reconciled()
+            self._apply({})
+            await self._deliver()
+            self._lifecycle.running()
+        except BaseException:
+            self._lifecycle.phase = RuntimePhase.FAILED
+            self._lifecycle.reconcile_started_at = None
+            raise
+        self._refresh_vehicles_soon()
+        self._refresh_digest_soon()
+        self._recovery.refresh_soon()
 
     async def _load_and_reconcile(self, now: datetime) -> None:
         lost = None
@@ -1278,7 +1968,7 @@ class Runtime:
         st = self._writer.st
         if loaded is not None:
             st = _restarted(loaded)
-            self._queue.restore(loaded)
+            self._queue.restore(loaded, preserve=lambda o: not self._routing_ready_in(loaded, o))
         self._writer.begin(replace(st, started_before=True))
         if lost is not None:  # rule 22: fresh state, loud, and a write clears "state lost"
             self._app_warning(EventKind.STORAGE_FAILED, f"saved state was lost ({lost}).", now)
@@ -1295,6 +1985,8 @@ class Runtime:
         """Starts (unless `started`) with the watchdog already running, so a slow reconcile is
         watched too (rule 12); every loop keeps fixed start times, a slow step eats into its own
         interval instead of adding to it (7.1)."""
+        owner = present(asyncio.current_task())
+        self._lifecycle.claim_runner(started, owner)
         c = self._clock
 
         async def daily() -> None:
@@ -1320,6 +2012,7 @@ class Runtime:
 
         async def main() -> None:
             if not started:
+                self._lifecycle.initialize(owner, present(asyncio.current_task()))
                 await self.start()
             await _run_together(
                 every(c, POLL_EVERY_S, self.poll_once),
@@ -1332,4 +2025,14 @@ class Runtime:
         try:
             await _run_together(main(), every(c, WATCHDOG_EVERY_S, self.watchdog_once))
         finally:
-            await self._queue.stop()
+            self._lifecycle.phase = RuntimePhase.STOPPING
+            try:
+                try:
+                    await self._queue.stop()
+                finally:
+                    await self.stop_vehicle_context()
+                    await self.stop_works_digest()
+                    await self._recovery.stop()
+                    self._lifecycle.phase = RuntimePhase.STOPPED
+            finally:
+                self._lifecycle.release_runner(owner)

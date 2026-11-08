@@ -41,6 +41,16 @@ class View:
     covered: bool = False
     live: bool = True
     quiet: bool = False
+    enabled: bool = True
+
+    def channel_enabled(self, o, channel):
+        return True
+
+    def routing_ready(self, o):
+        return True
+
+    def notification_enabled(self, o: Obligation) -> bool:
+        return self.enabled
 
     def skipped(self, key: OccurrenceKey) -> bool:
         return self.skip
@@ -185,6 +195,8 @@ class Port:
 
     def __init__(self, urls: tuple[str, ...], accept: set[str], rest: set[str] | None = None):
         self.urls, self.accept, self.rest = urls, accept, rest or set()
+        self.channels = dict.fromkeys(urls, "webhook")
+        self.destination_ids = {u: url_id(u) for u in urls}
         self.calls: list[tuple[AlertEvent, str, tuple[str, ...]]] = []
         self.down: dict[str, datetime] = {}
         self.on_reserve = lambda: None
@@ -203,7 +215,7 @@ A, B = "https://hooks.example.invalid/tcc", "https://hooks2.example.invalid/tcc"
 
 async def test_post_copy_follows_revalidation():
     o = ob(EventKind.DELAYED, Severity.SILENT)
-    c = WebhookCopy(event_id(o.id), o)
+    c = WebhookCopy(event_id(o.id), o, target_ids=frozenset({url_id(A), url_id(B)}))
     port = Port((A, B), {A})
     assert await post_copy(c, View(holds=False), port, NOW) is None  # drop
     assert await post_copy(c, View(quiet=True), port, NOW) is c  # hold
@@ -216,7 +228,10 @@ async def test_post_copy_follows_revalidation():
             return replace(o.event, text=now_text)
 
     r = await post_copy(c, Current(), port, NOW)
-    assert [(e.text, i, us) for e, i, us in port.calls] == [(now_text, event_id(o.id), (A, B))]
+    assert [(e.text, i, us) for e, i, us in port.calls] == [
+        (now_text, event_id(o.id), (A,)),
+        (now_text, event_id(o.id), (B,)),
+    ]
     assert r is not None and r.done == (url_id(A),) and r.first_try == r.last_try == NOW
     later = NOW + timedelta(minutes=1)
     port.accept = set()
@@ -229,3 +244,13 @@ async def test_post_copy_follows_revalidation():
     resting = Port((A, B), {A, B}, rest={A, B})
     same = await post_copy(c, View(), resting, NOW)  # nothing tried: the clock does not start
     assert same is c and same.first_try is None and same.last_try is None
+
+
+async def test_legacy_copy_cannot_acquire_unknown_webhook_or_email_destination():
+    o = ob(EventKind.DELAYED, Severity.LOUD)
+    c = WebhookCopy(event_id(o.id), o)
+    port = Port((A, "email:opaque"), set())
+    port.channels["email:opaque"] = "email"
+    progress = []
+    result = await post_copy(c, View(), port, NOW, progress.append)
+    assert result is None and port.calls == [] and progress == []

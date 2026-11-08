@@ -1,0 +1,68 @@
+# Run from examples/ with: docker compose -f compose.household.yaml up -d --build
+# Each app owns one traveller. Never share a bot token or a data volume.
+services:
+  alice:
+    build: ..
+    image: train-commute-companion:local
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    env_file: [./config/household/alice/.env]
+    environment:
+      TCC_STATE_DIR: /data
+      TCC_PROFILES: /config/profiles.yaml
+    volumes:
+      - ./config/household/alice/profiles:/config:ro
+      - alice-data:/data
+    ports: ["127.0.0.1:8081:8080"]
+    networks: [alice]
+  bob:
+    build: ..
+    image: train-commute-companion:local
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    env_file: [./config/household/bob/.env]
+    environment:
+      TCC_STATE_DIR: /data
+      TCC_PROFILES: /config/profiles.yaml
+    volumes:
+      - ./config/household/bob/profiles:/config:ro
+      - bob-data:/data
+    ports: ["127.0.0.1:8082:8080"]
+    networks: [bob]
+  # A local MCP client starts its own traveller's relay. Neither relay reads app secrets.
+  alice-mcp:
+    image: train-commute-companion:local
+    profiles: [mcp]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      TCC_STATE_DIR: /data
+    volumes: ["alice-data:/data:ro"]
+    network_mode: none
+    healthcheck:
+      disable: true
+    command: [python, -m, tcc_app.mcp_server]
+  bob-mcp:
+    image: train-commute-companion:local
+    profiles: [mcp]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      TCC_STATE_DIR: /data
+    volumes: ["bob-data:/data:ro"]
+    network_mode: none
+    healthcheck:
+      disable: true
+    command: [python, -m, tcc_app.mcp_server]
+volumes:
+  alice-data:
+  bob-data:
+networks:
+  alice:
+  bob:

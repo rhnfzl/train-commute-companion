@@ -1,0 +1,61 @@
+{
+  "bron": "DVS",
+  "ritnummer": 579,
+  "station": "UT",
+  "type": "VIRM",
+  "vervoerder": "NS",
+  "spoor": "12",
+  "materieeldelen": [
+    {
+      "materieelnummer": 8657,
+      "type": "VIRMm1 VI",
+      "faciliteiten": [
+        "WIFI",
+        "TOILET",
+        "STILTE",
+        "FIETS",
+        "STROOM"
+      ],
+      "zitplaatsen": {
+        "zitplaatsEersteKlas": 120,
+        "zitplaatsTweedeKlas": 425,
+        "klapstoelEersteKlas": 3,
+        "klapstoelTweedeKlas": 3,
+        "fietsplekken": 6
+      },
+      "bakken": [
+        {},
+        {},
+        {},
+        {},
+        {},
+        {}
+      ]
+    }
+  ],
+  "ingekort": false,
+  "lengte": 6,
+  "lengteInMeters": 161,
+  "perronVoorzieningen": [
+    {
+      "type": "PERRONLETTER",
+      "paddingLeft": 71,
+      "width": 1722,
+      "description": "M"
+    },
+    {
+      "type": "TRAP",
+      "paddingLeft": 807,
+      "width": 0,
+      "description": ""
+    },
+    {
+      "type": "ROLTRAP",
+      "paddingLeft": 1141,
+      "width": 0,
+      "description": ""
+    }
+  ],
+  "bakbord": 6,
+  "rijrichting": "RECHTS"
+}

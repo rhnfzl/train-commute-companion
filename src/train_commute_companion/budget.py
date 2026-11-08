@@ -6,6 +6,7 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import StrEnum
 
 from train_commute_companion.calendar import to_utc
 from train_commute_companion.providers.base import (
@@ -29,18 +30,31 @@ BACKOFF_MIN = (2, 4, 8)
 BACKOFF_AUTH_MIN = (2, 5, 15, 30)
 
 
+class BudgetPhase(StrEnum):
+    OPEN = "open"
+    COOLDOWN = "cooldown"
+    LIVE_ONLY = "live_only"
+
+
 @dataclass(frozen=True, slots=True)
 class RequestBudget:
     cooldown_until: datetime | None = None
     backoff_step: int = 0
     reason: PollFailure = "rate"  # which table the step counts in; a skip reports it (7.11)
 
-    def allow(self, now: datetime, live: bool) -> bool:
+    def phase(self, now: datetime) -> BudgetPhase:
         if self.cooldown_until is None:
-            return True
-        # live journeys first: look-ahead waits one more poll interval after a cooldown
-        extra = timedelta(0) if live else timedelta(seconds=POLL_EVERY_S)
-        return to_utc(now) >= to_utc(self.cooldown_until) + extra
+            return BudgetPhase.OPEN
+        elapsed = to_utc(now) - to_utc(self.cooldown_until)
+        if elapsed < timedelta():
+            return BudgetPhase.COOLDOWN
+        if elapsed < timedelta(seconds=POLL_EVERY_S):
+            return BudgetPhase.LIVE_ONLY
+        return BudgetPhase.OPEN
+
+    def allow(self, now: datetime, live: bool) -> bool:
+        phase = self.phase(now)
+        return phase is BudgetPhase.OPEN or live and phase is BudgetPhase.LIVE_ONLY
 
     def on_result(
         self, error: BaseException | None, now: datetime, window_end: datetime | None

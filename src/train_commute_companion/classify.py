@@ -251,12 +251,27 @@ def current_run(
     )
     # every newest copy's messages: works told by one copy are never lost (7.10)
     said = sorted({win.leg.messages, *(r.cl.leg.messages for r in at_top)})
+    forecasts = {r.cl.leg.crowd_forecast for r in at_top}
+    fresh_stops = []
+    for stop in (here, *win.leg.stops[1:]):
+        copies = [s for r in at_top for s in r.cl.leg.stops if s.code == stop.code]
+        sides = {s.exit_side for s in copies}
+        fresh_stops.append(
+            replace(
+                stop,
+                accessibility_notes=tuple(
+                    sorted({n for s in copies for n in s.accessibility_notes})
+                ),
+                exit_side=next(iter(sides)) if len(sides) == 1 else None,
+            )
+        )
     leg = replace(
         win.leg,
-        stops=(here, *win.leg.stops[1:]),
+        stops=tuple(fresh_stops),
         messages=tuple(dict.fromkeys(m for ms in said for m in ms)),
         alternative_transport=mode.alternative_transport,
         category=mode.category,
+        crowd_forecast=next(iter(forecasts)) if len(forecasts) == 1 else None,
     )
     return run.fetched_at, replace(win, leg=leg)
 

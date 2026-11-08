@@ -36,13 +36,23 @@ def _changes(legs: Sequence[Leg]) -> str:
     return f", change at {' then '.join(names)}" if names else ""
 
 
+def crowd_text(legs: Sequence[Leg]) -> str:
+    if not any(x.crowd_forecast is not None for x in legs):
+        return ""
+    if len(legs) == 1:
+        return f", crowd forecast: {legs[0].crowd_forecast} per NS"
+    forecasts = [f"{x.board.code}-{x.alight.code} {x.crowd_forecast or 'unknown'}" for x in legs]
+    return f", crowd forecasts per NS: {', '.join(forecasts)}"
+
+
 def all_good_text(legs: Sequence[Leg]) -> str:
     first, last = legs[0], legs[-1]
     when = _when(first)
     text = f"your {when} to {last.alight.name} is on time per NS"
     text += _changes(legs)
     track = first.board.actual_track or first.board.planned_track
-    return text + (f", platform {track}." if track else ".")
+    text += f", platform {track}" if track else ""
+    return text + crowd_text(legs) + "."
 
 
 def no_journey_text(name: str) -> str:

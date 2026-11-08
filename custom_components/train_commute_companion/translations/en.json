@@ -6,11 +6,13 @@
         "description": "Enter your NS API key and where your profiles file is.",
         "data": {
           "api_key": "NS API key",
-          "profiles_path": "Profiles file"
+          "profiles_path": "Profiles file",
+          "guided_setup": "Create a profile with station-name forms"
         },
         "data_description": {
           "api_key": "Your NS API key from the NS API portal.",
-          "profiles_path": "Full path to your profiles file. Copy the starter file there first."
+          "profiles_path": "Full file path. Guided setup creates a new file; otherwise select your existing profiles file.",
+          "guided_setup": "Use an unused profiles-file path inside the Home Assistant config folder. Leave off to use an existing YAML file."
         }
       },
       "notify": {
@@ -43,6 +45,82 @@
         "data_description": {
           "api_key": "Your NS API key from the NS API portal."
         }
+      },
+      "reconfigure": {
+        "title": "Replace your NS key",
+        "description": "Validate a replacement key before saving it. Your profiles and notification settings stay in place.",
+        "data": {
+          "api_key": "NS API key"
+        },
+        "data_description": {
+          "api_key": "Your replacement key from the NS API portal."
+        }
+      },
+      "profile": {
+        "title": "Your commute",
+        "description": "Choose transfer stations in travel order. Existing advanced settings stay in the file. {report}",
+        "data": {
+          "name": "Profile name",
+          "home_station": "Home station",
+          "work_station": "Work station",
+          "days": "Travel days",
+          "skip_public_holidays": "Skip Dutch public holidays",
+          "require_accessible": "Ask NS for accessible journeys (assistance can require booking)",
+          "disabled_categories": "Disable alert categories on every destination (health warnings remain enabled)",
+          "outbound_time": "Outbound first train (HH:MM)",
+          "return_time": "Return first train (HH:MM)",
+          "outbound_transfers": "Outbound transfer stations, in travel order",
+          "return_transfers": "Return transfer stations, in travel order",
+          "outbound_buffer": "Minutes from your door to the outbound platform",
+          "return_buffer": "Minutes from your door to the return platform"
+        }
+      },
+      "profile_details": {
+        "title": "Transfer time and holidays",
+        "description": "Transfer stations: {stations}.\nExisting holiday ranges: {pauses}.\nKeep existing ranges unless you want to add, replace or remove them. Start and end dates are included. {report}",
+        "data": {
+          "pause_action": "Holiday ranges",
+          "pause_start": "Holiday starts",
+          "pause_end": "Holiday ends",
+          "channel_journey": "Journey changes destinations",
+          "channel_transfers": "Connections destinations",
+          "channel_advice": "Departure advice destinations",
+          "channel_delays": "Delays destinations",
+          "channel_platforms": "Platform changes destinations",
+          "channel_crowding": "Crowd forecasts destinations",
+          "channel_planned_works": "Planned works destinations",
+          "channel_disruptions": "Active disruptions destinations",
+          "channel_routine": "Routine and compensation reminder destinations",
+          "edit_weekday_times": "Set different departure times by weekday",
+          "compensation_reminder": "Remind me to check NS compensation after a confirmed delay"
+        },
+        "data_description": {
+          "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility."
+        }
+      },
+      "profile_error": {
+        "title": "Profile was not saved",
+        "description": "{report}\nClose this editor and reopen it after correcting the problem. No profile changes were saved."
+      },
+      "profile_weekdays": {
+        "title": "Departure times by weekday",
+        "description": "Default outbound: {outbound_default}. Default return: {return_default}. Leave a field blank to use its default. Use HH:MM. Overnight returns use the weekday your commute starts. {report}",
+        "data": {
+          "outbound_mon": "Monday outbound",
+          "outbound_tue": "Tuesday outbound",
+          "outbound_wed": "Wednesday outbound",
+          "outbound_thu": "Thursday outbound",
+          "outbound_fri": "Friday outbound",
+          "outbound_sat": "Saturday outbound",
+          "outbound_sun": "Sunday outbound",
+          "return_mon": "Monday return",
+          "return_tue": "Tuesday return",
+          "return_wed": "Wednesday return",
+          "return_thu": "Thursday return",
+          "return_fri": "Friday return",
+          "return_sat": "Saturday return",
+          "return_sun": "Sunday return"
+        }
       }
     },
     "error": {
@@ -51,7 +129,10 @@
       "file_missing": "No profiles file at {path}. Copy the starter file there first (examples/profiles.yaml in the repository).",
       "file_unreadable": "The profiles file cannot be read. Check its permissions.",
       "path_not_allowed": "Home Assistant may not read this path. Put the file in the config folder or allow its folder in allowlist_external_dirs.",
-      "send_failed": "The test notification to notify.{service} did not arrive. Check the companion app or pick another target."
+      "send_failed": "The test notification to notify.{service} did not arrive. Check the companion app or pick another target.",
+      "invalid_profile": "The profile is not valid. Review the report above.",
+      "file_changed": "The file changed or already exists. Reopen the editor to use its current contents.",
+      "save_failed": "The file could not be saved. Check its folder permissions. Existing contents were not replaced."
     },
     "abort": {
       "no_mobile_app": "No phone with the Home Assistant companion app was found. Install the app, sign in, then try again.",
@@ -66,7 +147,10 @@
         "menu_options": {
           "validate": "Check the profiles file",
           "settings": "Change settings",
-          "webhooks": "Webhooks"
+          "webhooks": "Webhooks",
+          "profiles": "Add or edit profiles",
+          "recovery": "Recovery journeys and confirmations",
+          "arrival": "Confirm or correct arrival"
         }
       },
       "validate": {
@@ -109,6 +193,139 @@
           "webhook_secret": "At least 16 characters. Give the same secret to the receiver.",
           "webhook_token": "Optional. Only for receivers that want a token, such as OpenClaw. Sent to every URL."
         }
+      },
+      "profiles": {
+        "title": "Profiles",
+        "description": "Select a profile to edit, or add another commute. Advanced settings remain unchanged.",
+        "data": {
+          "profile": "Profile"
+        }
+      },
+      "profile": {
+        "title": "Your commute",
+        "description": "Choose transfer stations in travel order. Existing advanced settings stay in the file. {report}",
+        "data": {
+          "name": "Profile name",
+          "home_station": "Home station",
+          "work_station": "Work station",
+          "days": "Travel days",
+          "skip_public_holidays": "Skip Dutch public holidays",
+          "require_accessible": "Ask NS for accessible journeys (assistance can require booking)",
+          "disabled_categories": "Disable alert categories on every destination (health warnings remain enabled)",
+          "outbound_time": "Outbound first train (HH:MM)",
+          "return_time": "Return first train (HH:MM)",
+          "outbound_transfers": "Outbound transfer stations, in travel order",
+          "return_transfers": "Return transfer stations, in travel order",
+          "outbound_buffer": "Minutes from your door to the outbound platform",
+          "return_buffer": "Minutes from your door to the return platform"
+        }
+      },
+      "profile_details": {
+        "title": "Transfer time and holidays",
+        "description": "Transfer stations: {stations}.\nExisting holiday ranges: {pauses}.\nKeep existing ranges unless you want to add, replace or remove them. Start and end dates are included. {report}",
+        "data": {
+          "pause_action": "Holiday ranges",
+          "pause_start": "Holiday starts",
+          "pause_end": "Holiday ends",
+          "channel_journey": "Journey changes destinations",
+          "channel_transfers": "Connections destinations",
+          "channel_advice": "Departure advice destinations",
+          "channel_delays": "Delays destinations",
+          "channel_platforms": "Platform changes destinations",
+          "channel_crowding": "Crowd forecasts destinations",
+          "channel_planned_works": "Planned works destinations",
+          "channel_disruptions": "Active disruptions destinations",
+          "channel_routine": "Routine and compensation reminder destinations",
+          "edit_weekday_times": "Set different departure times by weekday",
+          "compensation_reminder": "Remind me to check NS compensation after a confirmed delay"
+        },
+        "data_description": {
+          "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility."
+        }
+      },
+      "profile_error": {
+        "title": "Profile was not saved",
+        "description": "{report}\nClose this editor and reopen it after correcting the problem. No profile changes were saved."
+      },
+      "profile_weekdays": {
+        "title": "Departure times by weekday",
+        "description": "Default outbound: {outbound_default}. Default return: {return_default}. Leave a field blank to use its default. Use HH:MM. Overnight returns use the weekday your commute starts. {report}",
+        "data": {
+          "outbound_mon": "Monday outbound",
+          "outbound_tue": "Tuesday outbound",
+          "outbound_wed": "Wednesday outbound",
+          "outbound_thu": "Thursday outbound",
+          "outbound_fri": "Friday outbound",
+          "outbound_sat": "Saturday outbound",
+          "outbound_sun": "Sunday outbound",
+          "return_mon": "Monday return",
+          "return_tue": "Tuesday return",
+          "return_wed": "Wednesday return",
+          "return_thu": "Thursday return",
+          "return_fri": "Friday return",
+          "return_sat": "Saturday return",
+          "return_sun": "Sunday return"
+        }
+      },
+      "recovery": {
+        "title": "Recovery journeys",
+        "description": "Select a proposed route or confirm one step of your selected recovery. No location or timetable event confirms travel automatically. {report}",
+        "data": {
+          "choice": "Journey or action"
+        }
+      },
+      "recovery_origin": {
+        "title": "Confirm your exact starting place",
+        "description": "Select the physical place where you are now. Stops at one station can require a walk between them. Preparation refreshes the route from NS.\n\n{itinerary}\n\n{report}",
+        "data": {
+          "origin_place_id": "My exact physical place",
+          "confirm_location": "I am physically at the selected place now"
+        }
+      },
+      "recovery_offer": {
+        "title": "Follow this refreshed recovery",
+        "description": "Source checked: {checked}. Starting place: {origin}. This remains a proposal until saved. Accessibility and assistance are not verified.\n\n{itinerary}\n\n{report}",
+        "data": {
+          "confirm_location": "I am still physically at the starting place shown above",
+          "planned_times": "I accept that planned times do not confirm live running or a safe connection",
+          "accessibility_unknown": "I accept that accessibility and assistance are not verified",
+          "intent_id": "Reviewed journey"
+        }
+      },
+      "recovery_action": {
+        "title": "Confirm this recovery action",
+        "description": "{action}\n\n{place}\n\nConfirm only what you have physically done. This action is bound to the displayed journey and step. A previous action cannot confirm a later step.\n\n{report}",
+        "data": {
+          "confirmed": "The statement above is true, or I want to stop this recovery",
+          "intent_id": "Reviewed action"
+        }
+      },
+      "arrival": {
+        "title": "Select a saved journey",
+        "description": "Choose the journey whose actual arrival you want to confirm or correct. Saved records can remain after active monitoring ends. Train forecasts never confirm your arrival.",
+        "data": {
+          "journey": "Saved journey"
+        }
+      },
+      "arrival_details": {
+        "title": "Confirm your actual arrival",
+        "description": "Journey: {journey}\n\nExpected destination code: {destination}\n\n{reference}\n\nPrevious confirmed arrival: {previous}. Choose your actual arrival date and time. Times are reviewed in Europe/Amsterdam before saving. A repeated autumn hour requires an explicit offset choice.\n\n{report}",
+        "data": {
+          "destination": "Destination station code",
+          "arrived_at": "Actual arrival",
+          "original_planned_arrival": "Planned arrival",
+          "arrival_offset": "Which occurrence of the repeated arrival hour?",
+          "plan_offset": "Which occurrence of the repeated planned hour?"
+        }
+      },
+      "arrival_review": {
+        "title": "Review your arrival",
+        "description": "Journey: {journey}\n\nDestination: {destination}\n\nActual arrival: {arrival}\n\nOriginal planned arrival: {planned}\n\nConfirm only if you personally arrived at this destination at this time. This saves your statement, not an independently verified arrival or compensation claim. Select Edit details to correct the entry.\n\n{report}",
+        "data": {
+          "intent_id": "Arrival being confirmed",
+          "confirmed": "I confirm this destination and my actual arrival time",
+          "edit": "Edit details instead of saving"
+        }
       }
     },
     "error": {
@@ -119,11 +336,28 @@
       "bad_webhook_url": "Each line must be an http or https URL without a user name or password.",
       "weak_webhook_secret": "The secret must be at least 16 characters, or a valid whsec_ value.",
       "weak_webhook_token": "The token must be at least 16 characters of plain ASCII, without spaces.",
-      "webhook_test_failed": "A test send was not accepted: {failed}. Check the receiver, its secret and its token, then save again."
+      "webhook_test_failed": "A test send was not accepted: {failed}. Check the receiver, its secret and its token, then save again.",
+      "invalid_profile": "The profile is not valid. Review the report above.",
+      "file_changed": "The file changed or already exists. Reopen the editor to use its current contents.",
+      "save_failed": "The file could not be saved. Check its folder permissions. Existing contents were not replaced.",
+      "invalid_auth": "NS rejected this key. Reconfigure the integration with a valid key.",
+      "cannot_connect": "The station list could not be retrieved from NS. Try again.",
+      "recovery_refused": "The action was refused. Read the current journey and prepare again if needed.",
+      "recovery_acknowledgement": "Confirm the physical place and required limits before continuing.",
+      "arrival_refused": "The arrival was not accepted. Read the reason and review this journey again.",
+      "arrival_acknowledgement": "Confirm your personal arrival only after reviewing the destination, time and plan.",
+      "arrival_time": "Choose a valid Amsterdam date and time. For a repeated autumn hour, select its offset.",
+      "settings_changed": "The settings changed while this form was open. Review the current settings and try again."
     },
     "abort": {
       "validated": "Checked. Nothing was changed.",
-      "no_mobile_app": "No phone with the Home Assistant companion app was found."
+      "no_mobile_app": "No phone with the Home Assistant companion app was found.",
+      "profile_saved": "Profile saved. The running companion reloads valid profile changes automatically.",
+      "recovery_unavailable": "No usable recovery or active recovery action is available. The companion must be running.",
+      "recovery_selected": "Recovery selected. Use the bound recovery buttons to confirm boarding and arrival. No profile settings were changed.",
+      "recovery_action_saved": "Recovery action saved. The next step has its own confirmation. No profile settings were changed.",
+      "arrival_unavailable": "No saved journey is available, or the companion is not running.",
+      "arrival_saved": "Arrival saved. {result}"
     }
   },
   "selector": {
@@ -260,6 +494,138 @@
         "whole_day": {
           "name": "Whole day",
           "description": "Both directions of the commute day."
+        }
+      }
+    },
+    "prepare_recovery": {
+      "name": "Prepare a recovery route",
+      "description": "Refresh a proposal from the exact physical starting place the user confirms.",
+      "fields": {
+        "profile": {
+          "name": "Profile"
+        },
+        "direction": {
+          "name": "Direction"
+        },
+        "service_date": {
+          "name": "Service date"
+        },
+        "proposal_id": {
+          "name": "Displayed proposal ID"
+        },
+        "origin_place_id": {
+          "name": "Confirmed physical origin ID"
+        }
+      }
+    },
+    "follow_recovery": {
+      "name": "Follow a prepared recovery",
+      "description": "Select the exact refreshed offer after acknowledging planned times and unverified accessibility.",
+      "fields": {
+        "profile": {
+          "name": "Profile"
+        },
+        "direction": {
+          "name": "Direction"
+        },
+        "service_date": {
+          "name": "Service date"
+        },
+        "offer_id": {
+          "name": "Prepared offer ID"
+        },
+        "acknowledge_planned_times": {
+          "name": "Accept planned-only times"
+        },
+        "acknowledge_accessibility_unknown": {
+          "name": "Accept unverified accessibility"
+        }
+      }
+    },
+    "confirm_recovery_step": {
+      "name": "Confirm a recovery step",
+      "description": "Record an explicit boarding or arrival observation for one bound selection, revision and step.",
+      "fields": {
+        "profile": {
+          "name": "Profile"
+        },
+        "direction": {
+          "name": "Direction"
+        },
+        "service_date": {
+          "name": "Service date"
+        },
+        "selection_id": {
+          "name": "Selected recovery ID"
+        },
+        "revision": {
+          "name": "Displayed revision"
+        },
+        "step_index": {
+          "name": "Displayed step index"
+        },
+        "kind": {
+          "name": "Explicit observation"
+        },
+        "place_id": {
+          "name": "Observed physical place ID"
+        },
+        "action_id": {
+          "name": "Stable observation ID"
+        }
+      }
+    },
+    "stop_recovery": {
+      "name": "Stop a recovery",
+      "description": "Stop the bound selection without changing original train safety monitoring.",
+      "fields": {
+        "profile": {
+          "name": "Profile"
+        },
+        "direction": {
+          "name": "Direction"
+        },
+        "service_date": {
+          "name": "Service date"
+        },
+        "selection_id": {
+          "name": "Selected recovery ID"
+        },
+        "revision": {
+          "name": "Displayed revision"
+        }
+      }
+    },
+    "confirm_arrival": {
+      "name": "Confirm or correct actual arrival",
+      "description": "Record your explicit arrival against a saved journey revision. Include UTC offsets. This does not submit a compensation claim.",
+      "fields": {
+        "profile": {
+          "name": "Profile ID or current profile name"
+        },
+        "direction": {
+          "name": "Direction"
+        },
+        "service_date": {
+          "name": "Service date"
+        },
+        "destination": {
+          "name": "Saved destination station code"
+        },
+        "arrived_at": {
+          "name": "Actual arrival timestamp",
+          "description": "Full ISO date and time with UTC offset."
+        },
+        "expected_revision": {
+          "name": "Saved journey revision"
+        },
+        "action_id": {
+          "name": "Stable observation ID",
+          "description": "Reuse only when retrying the identical observation."
+        },
+        "original_planned_arrival": {
+          "name": "Original planned arrival timestamp",
+          "description": "Supply only when no original plan was saved. Include the date and UTC offset."
         }
       }
     }

@@ -132,7 +132,9 @@ async def test_station_list_down_at_restart_recovers_station_zones(hass):  # 8, 
     assert await spied(h) == []
     down = False
     await drive(h, "08:02")
-    await h.host.run(lambda rt: rt.reload_if_changed())  # the 10 s file watch, with the file unchanged
+    await h.host.run(
+        lambda rt: rt.reload_if_changed()
+    )  # the 10 s file watch, with the file unchanged
     await h.entry.runtime_data.coordinator.async_refresh()  # the view carries the new positions
     set_person(hass, 52.0, 5.0)
     assert await spied(h) == [("AAA", "enter")]
@@ -516,3 +518,15 @@ async def test_a_runtime_error_from_the_core_is_logged_not_taken_for_a_stopped_r
     set_person(hass, 52.05, 5.05)
     await hass.async_block_till_done()
     assert "location event for" in caplog.text
+
+
+async def test_stopped_location_owner_ignores_queued_sync(hass):
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *HOME)
+    await start_tracker(h)
+    tracker = h.entry.runtime_data.tracker
+    await tracker.stop()
+    tracker._sync()
+    assert tracker._tracked == {}
+    assert tracker._unsub_state is None
+    assert tracker._unsub_data is None

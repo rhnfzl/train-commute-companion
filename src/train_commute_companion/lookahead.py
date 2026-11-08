@@ -54,6 +54,14 @@ from train_commute_companion.model import (
     display_name,
 )
 from train_commute_companion.overlap import find_overlaps
+from train_commute_companion.revisions import (
+    baseline_on,
+    baseline_scope,
+    changed_weekdays,
+    commute_day_for,
+    migrate_baselines,
+    route_geometry_same,
+)
 from train_commute_companion.state import (
     BaselineHistory,
     BaselineVersion,
@@ -133,16 +141,27 @@ def overlaps_next(
     current: BaselineHistory,
     others: Sequence[Profile],
     bases: Mapping[tuple[str, Direction], BaselineHistory],
+    *,
+    scope: int | None = None,
 ) -> bool:
     """Rule 19: every occurrence from `start` on gets the baseline in force on its own service
     date, with `agreed` adopted for `p` and `d` from `start`, so a window opened under an
     older version that runs past an adoption boundary is compared too."""
-    own = tuple(v for v in current.versions if v.effective_from < start)
-    hs = {**bases, (p.id, d): BaselineHistory((*own, BaselineVersion(0, agreed, start, True)))}
+    own = tuple(
+        v for v in current.versions if v.commute_weekday != scope or v.effective_from < start
+    )
+    hs = {
+        **bases,
+        (p.id, d): BaselineHistory((*own, BaselineVersion(0, agreed, start, True, scope))),
+    }
 
     def first(x: Profile, dx: Direction, commute_day: date) -> time | None:
         h = hs.get((x.id, dx))
-        v = None if h is None else h.in_force(commute_day + timedelta(x.journey(dx).day_offset))
+        v = (
+            None
+            if h is None
+            else baseline_on(h, x, dx, commute_day + timedelta(x.journey(dx).day_offset))
+        )
         return None if v is None else v.signature.legs[0].departure
 
     return bool(find_overlaps([p, *others], start, first))
@@ -251,10 +270,14 @@ class _Draft:
 
 
 def _seed_or_confirm(
-    draft: _Draft, results: Sequence[ProbeResult], wholes: Mapping[date, ProbeResult], today: date
+    draft: _Draft,
+    results: Sequence[ProbeResult],
+    wholes: Mapping[date, ProbeResult],
+    today: date,
+    scope: int | None = None,
 ) -> None:
     """Cold start: seed, shorter provisional, confirmation (7.10)."""
-    if any(v.confirmed for v in draft.versions):
+    if any(v.phase_on(today).confirmed and v.commute_weekday == scope for v in draft.versions):
         return
     for sd, r in sorted(wholes.items()):
         # works seen by any leg probe of that date also keep it out (7.10)
@@ -262,15 +285,19 @@ def _seed_or_confirm(
         if not r.clean or r.connection is None or not all(x.clean for x in same_day):
             continue
         sig = signature_of(r.connection, sd)
-        prov = max(draft.versions, key=lambda v: v.version, default=None)
+        prov = max(
+            (v for v in draft.versions if v.commute_weekday == scope),
+            key=lambda v: v.version,
+            default=None,
+        )
         if prov is None or (
             sig != prov.signature and signature_minutes(sig) < signature_minutes(prov.signature)
         ):
-            v = BaselineVersion(draft.history()._next(), sig, today, False)
+            v = BaselineVersion(draft.history()._next(), sig, today, False, scope)
             draft.versions.append(v)
             draft.add_entry(day_key(sd, None), seed_mark(v.version))
         elif sig == prov.signature and _seed_day(draft.per_date, prov.version) != sd:
-            draft.versions[draft.versions.index(prov)] = replace(prov, confirmed=True)
+            draft.versions[draft.versions.index(prov)] = prov.confirm()
             break
 
 
@@ -306,12 +333,18 @@ def _agreed_signature(
 
 
 def _cancel_waiting(
-    draft: _Draft, agreed: Signature | None, in_force_today: BaselineVersion | None, today: date
+    draft: _Draft,
+    agreed: Signature | None,
+    in_force_today: BaselineVersion | None,
+    today: date,
+    scope: int | None = None,
 ) -> None:
     """A waiting version is cancelled when the run agrees with the version in force."""
     if agreed is None or in_force_today is None or agreed != in_force_today.signature:
         return
-    for w in [v for v in draft.versions if v.effective_from > today]:
+    for w in [
+        v for v in draft.versions if not v.phase_on(today).current and v.commute_weekday == scope
+    ]:
         draft.retire(w, "your usual timetable stays as it was; ignore the earlier change")
 
 
@@ -324,29 +357,41 @@ def _adopt(
     today: date,
     others: Sequence[Profile],
     bases: Mapping[tuple[str, Direction], BaselineHistory],
+    scope: int | None = None,
 ) -> tuple[BaselineVersion | None, str | None]:
     """Unanimous adoption of the whole signature, after confirmation only: the version
     adopted, or the refusal that blocked it."""
-    if agreed is None or not any(v.confirmed for v in draft.versions):
+    if agreed is None or not any(
+        v.phase_on(today).confirmed and v.commute_weekday == scope for v in draft.versions
+    ):
         return None, None
     current = draft.history()
-    if all((b := current.in_force(sd)) is not None and b.signature == agreed for sd in expected):
+    if all(
+        (b := baseline_on(current, p, d, sd)) is not None and b.signature == agreed
+        for sd in expected
+    ):
         return None, None
-    old = current.in_force(expected[0]) or current.in_force(today)
-    old_first = old.signature.legs[0].departure if old is not None else p.journey(d).first_train
+    old = baseline_on(current, p, d, expected[0]) or current.in_force(today, scope)
+    old_first = (
+        old.signature.legs[0].departure
+        if old is not None
+        else p.journey_on(d, commute_day_for(p, d, expected[0])).first_train
+    )
     new_first = agreed.legs[0].departure
     if agreed.legs[0].day_offset != 0:
         return None, (
             f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} on another day;"
             " update your profile"
         )
-    if overlaps_next(p, d, agreed, expected[0], current, others, bases):
+    if overlaps_next(p, d, agreed, expected[0], current, others, bases, scope=scope):
         return None, (
             f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)}, which overlaps"
             " another window; update your profile"
         )
-    adopted = BaselineVersion(current._next(), agreed, expected[0], True)
-    for w in [v for v in draft.versions if v.effective_from > today]:
+    adopted = BaselineVersion(current._next(), agreed, expected[0], True, scope)
+    for w in [
+        v for v in draft.versions if not v.phase_on(today).current and v.commute_weekday == scope
+    ]:
         if w.effective_from >= adopted.effective_from:  # it would override this one
             draft.retire(w, "ignore the earlier change; I follow the newer NS time")
     draft.versions.append(adopted)
@@ -383,7 +428,7 @@ def _probe_facts(
     d: Direction,
     results: Sequence[ProbeResult],
     final: BaselineHistory,
-    adopted: BaselineVersion | None,
+    adopted: Mapping[int | None, BaselineVersion],
     today: date,
 ) -> set[date]:
     """Per probe: warnings, already told, restored (look-ahead 23-27). Returns the dates with a
@@ -392,8 +437,12 @@ def _probe_facts(
     for r in results:
         sd = r.service_date
         key = day_key(sd, r.leg_index)
-        base = final.in_force(sd)
-        conf = base if base is not None and base.confirmed and baseline_usable(p, d, base) else None
+        base = baseline_on(final, p, d, sd)
+        conf = (
+            base
+            if base is not None and base.phase_on(sd).confirmed and baseline_usable(p, d, base)
+            else None
+        )
         exp = _expected(conf, r.leg_index) if conf is not None else None
         last, since = latest_mark(draft.per_date.get(key, ()), WORKS_MARKS)
         if r.works or _changed(r, exp):
@@ -413,7 +462,7 @@ def _probe_facts(
                 unsure.add(sd)
         elif is_warning(last):
             draft.add_owned_entry(sd, key, restored_mark(r.fingerprint))
-            if adopted is not None and last == warn_mark(r.fingerprint):
+            if baseline_scope(p, d, sd) in adopted and last == warn_mark(r.fingerprint):
                 continue  # the warned change is what this run adopted: told by the adoption
             what = _leg_name(r, p)
             draft.add_fact(
@@ -485,12 +534,12 @@ class _MessageBuilder:
         )
 
     def in_force_version(self, sd: date) -> int | None:
-        b = self.final.in_force(sd)
+        b = baseline_on(self.final, self.p, self.d, sd)
         return b.version if b else None
 
     def journey_end(self, sd: date) -> datetime | None:
         # 7.12 rule 5(b): the latest of the baseline's end and every journey probed for `sd`
-        base_end = dated_end(self.p, self.d, sd, self.final.in_force(sd))
+        base_end = dated_end(self.p, self.d, sd, baseline_on(self.final, self.p, self.d, sd))
         if base_end is None or sd in self.unsure:
             return None
         ends = [probed_end(r) for r in self.results if r.service_date == sd]
@@ -498,7 +547,7 @@ class _MessageBuilder:
 
 
 def _fact_messages(
-    draft: _Draft, w: _MessageBuilder, adopted: BaselineVersion | None
+    draft: _Draft, w: _MessageBuilder, adopted: Mapping[int | None, BaselineVersion]
 ) -> list[AlertEvent]:
     """One message per direction and date, no cap, with what a retire left after them."""
     events: list[AlertEvent] = []
@@ -509,7 +558,12 @@ def _fact_messages(
         fact_key = bundle_key(b.facts)
         severity = Severity.LOUD if any(f.loud for f in b.facts) else Severity.SILENT
         event = w.dated_event(sd, kind, severity, text, fact_key)
-        version = adopted.version if is_adopt and adopted is not None else w.in_force_version(sd)
+        scoped_adoption = adopted.get(baseline_scope(w.p, w.d, sd))
+        version = (
+            scoped_adoption.version
+            if is_adopt and scoped_adoption is not None
+            else w.in_force_version(sd)
+        )
         # 7.12 rule 5(b): expires when the journey on that date ended, which can be after
         # midnight (a 23:40 journey with a 00:05 transfer), never at the end of its date: the
         # latest of the baseline's end and every affected journey probed for that date, as
@@ -613,13 +667,38 @@ def run_lookahead(
         dict(ledger.facts),
     )
 
-    _seed_or_confirm(draft, results, wholes, today)
-    in_force_today = draft.history().in_force(today)
-    expected = [service_date(p, d, day) for day in probe_dates(p, today, {d: in_force_today})]
+    histories = {
+        dx: draft.history() if dx is d else bases.get((p.id, dx), BaselineHistory())
+        for dx in Direction
+    }
+    expected_all = [
+        service_date(p, d, day) for day in probe_dates(p, today, direction=d, histories=histories)
+    ]
+    scopes = {baseline_scope(p, d, sd) for sd in (*expected_all, *wholes)}
+    adopted: dict[int | None, BaselineVersion] = {}
+    refusals = []
     n = len(p.journey(d).transfers) + 1
-    agreed, pattern_refusal = _agreed_signature(results, wholes, expected, n + 1 if n > 1 else 1)
-    _cancel_waiting(draft, agreed, in_force_today, today)
-    adopted, adopt_refusal = _adopt(draft, p, d, agreed, expected, today, others, bases)
+    for scope in sorted(scopes, key=lambda x: -1 if x is None else x):
+        scoped_results = [r for r in results if baseline_scope(p, d, r.service_date) == scope]
+        scoped_wholes = {sd: r for sd, r in wholes.items() if baseline_scope(p, d, sd) == scope}
+        _seed_or_confirm(draft, scoped_results, scoped_wholes, today, scope)
+        expected = [sd for sd in expected_all if baseline_scope(p, d, sd) == scope]
+        in_force_today = draft.history().in_force(today, scope)
+        agreed, pattern_refusal = _agreed_signature(
+            scoped_results, scoped_wholes, expected, n + 1 if n > 1 else 1
+        )
+        _cancel_waiting(draft, agreed, in_force_today, today, scope)
+        version, adopt_refusal = _adopt(draft, p, d, agreed, expected, today, others, bases, scope)
+        if version is not None:
+            adopted[scope] = version
+        for reason in (pattern_refusal, adopt_refusal):
+            if reason:
+                prefix = (
+                    ""
+                    if scope is None
+                    else f"{date(2026, 10, 26) + timedelta(days=scope - 1):%A}: "
+                )
+                refusals.append(prefix + reason)
     final = draft.history()
     unsure = _probe_facts(draft, p, d, results, final, adopted, today)
 
@@ -627,7 +706,7 @@ def run_lookahead(
     events = [
         *_fact_messages(draft, w, adopted),
         *_unclear_messages(draft, w),
-        *_refusal_messages(draft, w, [x for x in (pattern_refusal, adopt_refusal) if x], today),
+        *_refusal_messages(draft, w, refusals, today),
     ]
     success = bool(results) and all(r.works_known for r in results)
     new_ledger = LookAheadLedger(
@@ -650,19 +729,7 @@ def rebase_on_edit(
 ) -> BaselineHistory:
     """Rule 10: a change of stations, transfers, first train or day offset re-seeds the
     direction's baseline, except setting `first_train` to the baseline in force."""
-    a, b = old.journey(d), new.journey(d)
-    same_route = (old.origin(d), old.destination(d), a.transfers, a.day_offset) == (
-        new.origin(d),
-        new.destination(d),
-        b.transfers,
-        b.day_offset,
-    )
-    if same_route and a.first_train == b.first_train:
-        return history
-    base = history.in_force(today)
-    if same_route and base is not None and base.signature.legs[0].departure == b.first_train:
-        return history
-    return BaselineHistory((), max(history.latest or 0, history.floor))
+    return migrate_baselines(old, new, d, history, today)
 
 
 def reset_on_edit(
@@ -676,6 +743,22 @@ def reset_on_edit(
     """Rule 10: a route edit that re-seeds the direction also forgets its per-date facts, so a
     warning about the new route is told again instead of matching one about the old route
     (whose pending messages rule 5 drops). Call it with the same arguments as rebase_on_edit."""
+    if (
+        old.journey(d).first_train_by_weekday
+        and new.journey(d).first_train_by_weekday
+        and route_geometry_same(old, new, d)
+    ):
+        changed = changed_weekdays(old, new, d)
+        if not changed:
+            return ledger
+        return replace(
+            ledger,
+            per_date={
+                key: values
+                for key, values in ledger.per_date.items()
+                if commute_day_for(old, d, split_day_key(key)[0]).isoweekday() not in changed
+            },
+        )
     if rebase_on_edit(old, new, d, history, today) is history:
         return ledger
     return replace(ledger, per_date={})
@@ -687,5 +770,7 @@ def forget_pending(ledger: LookAheadLedger) -> LookAheadLedger:
     fact that was never delivered. Only marks owned by a dropped message go; a mark of a
     delivered one stays."""
     drop = {o.id for o in ledger.pending}
-    per_date = {k: tuple(x for x in v if entry_owner(x) not in drop) for k, v in ledger.per_date.items()}
+    per_date = {
+        k: tuple(x for x in v if entry_owner(x) not in drop) for k, v in ledger.per_date.items()
+    }
     return replace(ledger, per_date=per_date)

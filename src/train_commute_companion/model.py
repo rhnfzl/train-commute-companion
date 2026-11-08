@@ -1,7 +1,7 @@
 """Core value types. All times are timezone-aware (Europe/Amsterdam)."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 from typing import Literal
@@ -63,6 +63,11 @@ class Severity(StrEnum):
 
 
 class EventKind(StrEnum):
+    RECOVERY_UPDATE = "recovery_update"
+    RECOVERY_MONITORING = "recovery_monitoring"
+    DISRUPTION = "disruption"
+    DISRUPTION_CLEARED = "disruption_cleared"
+    CROWD_CHANGE = "crowd_change"
     CANCELLED = "cancelled"
     TRANSFER_BROKEN = "transfer_broken"
     TRANSFER_AT_RISK = "transfer_at_risk"
@@ -86,6 +91,8 @@ class EventKind(StrEnum):
     BACK_TO_NORMAL = "back_to_normal"
     RESTORED = "restored"
     WORKS_AHEAD = "works_ahead"
+    WORKS_DIGEST = "works_digest"
+    COMPENSATION_REMINDER = "compensation_reminder"
     TIMETABLE_ADOPTED = "timetable_adopted"
     EARLIER_TRAIN_WITHDRAWN = "earlier_train_withdrawn"
     OFFLINE = "offline"
@@ -142,6 +149,15 @@ class Stop:
     # the arrival side's platforms; `planned_track`/`actual_track` are the departure side's
     planned_arrival_track: str | None = None
     actual_arrival_track: str | None = None
+    accessibility_notes: tuple[str, ...] = ()
+    exit_side: Literal["left", "right"] | None = None
+    physical_id: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+CrowdForecast = Literal["low", "medium", "high"]
+TransportMode = Literal["TRAIN", "BUS", "METRO", "TRAM", "FERRY", "WALK"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +174,10 @@ class Leg:
     transfer_time_to_next: int | None
     transfer_message_min: int | None
     cross_platform: bool | None
+    crowd_forecast: CrowdForecast | None = None
+    transport_mode: TransportMode | None = None
+    operator: str | None = None
+    service_reference: str | None = None
 
     @property
     def board(self) -> Stop:
@@ -258,6 +278,18 @@ class AlertFacts:
     next_clause: str = ""  # the text that names it, right after the warning itself
     unclear: str = ""  # the fingerprint of the values a data-unclear message states
     twin_note: str = ""  # the 7.13 service date note closing the text, while there are twins
+    recovery_selection: str = ""
+    recovery_revision: int = 0
+    recovery_issue: str = ""
+    crowd_slot: str = ""
+    crowd_forecast: CrowdForecast | None = None
+    crowd_note: str = ""
+    disruption_id: str = ""
+    disruption_revision: int = 0
+    disruption_instance: str = ""
+    disruption_targets: frozenset[str] | None = None
+    arrival_record: str = ""
+    arrival_revision: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,6 +343,14 @@ def alert_facts(e: AlertEvent) -> AlertFacts:
     return legacy_facts(e) if e.facts is None else e.facts
 
 
+class AdvicePhase(StrEnum):
+    EMPTY = "empty"
+    PENDING = "pending"
+    DELIVERED = "delivered"
+    WITHDRAWN_UNSENT = "withdrawn_unsent"
+    WITHDRAWN_DELIVERED = "withdrawn_delivered"
+
+
 @dataclass(frozen=True, slots=True)
 class AdviceRecord:
     advised_train: TrainId | None
@@ -322,6 +362,28 @@ class AdviceRecord:
     # the episode's LEAVE_NOW reached the user; pending until then. An undelivered episode that
     # stops holding is ended silently (`withdrawn` with this False), so it can start again.
     delivered: bool = field(kw_only=True)
+
+    @property
+    def phase(self) -> AdvicePhase:
+        if self.withdrawn:
+            return (
+                AdvicePhase.WITHDRAWN_DELIVERED if self.delivered else AdvicePhase.WITHDRAWN_UNSENT
+            )
+        if self.advised_train is None:
+            return AdvicePhase.EMPTY
+        return AdvicePhase.DELIVERED if self.delivered else AdvicePhase.PENDING
+
+    @property
+    def active(self) -> bool:
+        return self.phase in (AdvicePhase.PENDING, AdvicePhase.DELIVERED)
+
+    def withdraw(self) -> "AdviceRecord":
+        return replace(self, withdrawn=True)
+
+    def accept_delivery(self) -> "AdviceRecord":
+        if self.advised_train is None:
+            raise ValueError("advice episode is missing")
+        return replace(self, delivered=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,6 +414,23 @@ class UsualJourney:
     buffer_min: int
     earlier_train_advice: bool
     day_offset: int
+    first_train_by_weekday: Mapping[str, time] = field(default_factory=dict)
+
+
+NotificationChannel = Literal["primary", "email", "webhook"]
+
+
+NotificationCategory = Literal[
+    "journey",
+    "transfers",
+    "advice",
+    "delays",
+    "platforms",
+    "crowding",
+    "planned_works",
+    "disruptions",
+    "routine",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -360,6 +439,11 @@ class AlertSettings:
     earlier_train_min_saving_min: int = 5
     latest_acceptable_arrival: time | None = None
     quiet_hours: tuple[time, time] | None = None
+    disabled_categories: frozenset[NotificationCategory] = frozenset()
+    channels: Mapping[NotificationCategory, frozenset[NotificationChannel]] = field(
+        default_factory=dict
+    )
+    compensation_reminder: bool = False
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]
@@ -371,6 +455,17 @@ class LocationSettings:
     entity: str | None
     zones: Mapping[str, str]
     station_radius_m: int = 150  # last and defaulted, so stored configs still decode
+
+
+@dataclass(frozen=True, slots=True)
+class AccessibilitySettings:
+    require_accessible: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class WorksDigestSettings:
+    day: int
+    time: time
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,9 +483,34 @@ class Profile:
     transfer_min: Mapping[str, int]
     alerts: AlertSettings
     location: LocationSettings | None
+    pauses: tuple[tuple[date, date], ...] = ()
+    accessibility: AccessibilitySettings = field(default_factory=AccessibilitySettings)
+    works_digest: WorksDigestSettings | None = None
+
+    def paused_on(self, service_date: date) -> bool:
+        return any(start <= service_date <= end for start, end in self.pauses)
 
     def journey(self, d: Direction) -> UsualJourney:
         return self.outbound if d is Direction.OUTBOUND else self.return_
+
+    def journey_on(self, d: Direction, commute_day: date) -> UsualJourney:
+        """Resolve the commute weekday before applying a return's service-day offset."""
+        journey = self.journey(d)
+        key = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[commute_day.weekday()]
+        first = journey.first_train_by_weekday.get(key, journey.first_train)
+        delta = (first.hour * 60 + first.minute) - (
+            journey.first_train.hour * 60 + journey.first_train.minute
+        )
+
+        def shifted(value: time) -> time:
+            minute = (value.hour * 60 + value.minute + delta) % 1440
+            return time(minute // 60, minute % 60)
+
+        return replace(
+            journey,
+            first_train=first,
+            window=(shifted(journey.window[0]), shifted(journey.window[1])),
+        )
 
     def origin(self, d: Direction) -> str:
         return self.home_station if d is Direction.OUTBOUND else self.work_station
@@ -468,17 +588,22 @@ class Obligation:
     expires_at: datetime | None
     attempts: int
     webhook_copied: bool = False  # its webhook copy was made (stored before: made next pass)
+    target_ids: frozenset[str] | None = None
+    primary_target_pending: bool = False
+    digest_token: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class WebhookCopy:
     """A durable webhook copy of an alert, apart from its phone obligation: a receiver can
     never change phone delivery. `id` is `webhook.event_id(obligation.id)`; `done` holds the
-    `url_id` of every URL that accepted it, never a URL; `last_try` is the latest pass in which
-    some URL was really tried."""
+    opaque authentication-scoped ID of each destination that accepted it, never a URL or secret.
+    `last_try` is the latest pass with an actual try. `target_ids` pins original recipients;
+    None is legacy state whose unknown auxiliary audience cannot be rebound."""
 
     id: str
     obligation: Obligation
     done: tuple[str, ...] = ()
     first_try: datetime | None = None
     last_try: datetime | None = None
+    target_ids: frozenset[str] | None = None

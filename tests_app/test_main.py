@@ -197,6 +197,18 @@ async def test_runtime_crash_ends_serve_with_1(tmp_path, tg):
     assert asyncio.all_tasks() - before == set()
 
 
+async def test_stopped_app_requires_a_new_owner_before_serving_again(tmp_path, tg):
+    app = make_app(tmp_path, tg, TickClock(at("07:50")))
+
+    async def stopped():
+        raise RuntimeError("runtime ended")
+
+    app.rt.run_forever = stopped
+    assert await serve(app, free_port()) == 1
+    with pytest.raises(RuntimeError, match="start|stopped|owner"):
+        await serve(app, free_port())
+
+
 async def test_cancel_closes_server_and_parts(tmp_path, tg):  # Review Focus 5
     clock = TickClock(at("07:50"))
     app = make_app(tmp_path, tg, clock)

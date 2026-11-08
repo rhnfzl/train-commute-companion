@@ -107,9 +107,7 @@ async def test_stop_cancels_run_forever_and_joins(hass, tmp_path, caplog):
 
 async def test_real_crash_then_stop_leaves_no_task_or_thread(hass, tmp_path):
     closed: list[bool] = []
-    host = RuntimeHost(
-        builder(tmp_path, crash=True, closed=closed), retired=threading.Event()
-    )
+    host = RuntimeHost(builder(tmp_path, crash=True, closed=closed), retired=threading.Event())
     await host.start()
     for _ in range(500):
         if not host.alive:
@@ -151,3 +149,46 @@ async def test_build_error_surfaces_from_start(hass):
         await host.start()
     await host.stop()
     assert no_runtime_thread()
+
+
+async def test_retired_owner_cannot_start_a_second_runtime(hass, tmp_path):
+    retired = threading.Event()
+    retired.set()
+    host = RuntimeHost(builder(tmp_path), retired=retired)
+    try:
+        with pytest.raises(RuntimeNotRunning, match="retired"):
+            await host.start()
+        assert host._thread is None
+    finally:
+        await host.stop()
+
+
+async def test_thread_start_failure_closes_the_unowned_loop(hass, tmp_path, monkeypatch):
+    from custom_components.train_commute_companion import host as host_mod
+
+    host = RuntimeHost(builder(tmp_path), retired=threading.Event())
+    loop = asyncio.new_event_loop()
+    original_start = threading.Thread.start
+
+    def fail_start(thread):
+        if thread.name == host_mod.THREAD_NAME:
+            raise RuntimeError("thread unavailable")
+        return original_start(thread)
+
+    monkeypatch.setattr(host_mod.asyncio, "new_event_loop", lambda: loop)
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    try:
+        with pytest.raises(RuntimeError, match="thread unavailable"):
+            await host.start()
+        assert loop.is_closed()
+    finally:
+        if not loop.is_closed():
+            loop.close()
+
+
+async def test_running_owner_rejects_double_start_without_replacing_thread(hass, host):
+    thread = host._thread
+    with pytest.raises(RuntimeNotRunning, match="already started"):
+        await host.start()
+    assert host._thread is thread
+    assert host.alive

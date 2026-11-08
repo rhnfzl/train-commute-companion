@@ -21,6 +21,7 @@ from train_commute_companion.model import (
     TimeObs,
     direction_key,
 )
+from train_commute_companion.vehicle import snapshot_payload
 from train_commute_companion.view import (
     LegView,
     OccurrenceView,
@@ -72,10 +73,29 @@ def _status_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
             "others": [],
             "extra_legs": [],
             "retained": [],
+            "active_disruptions": [],
+            "disruptions_checked_at": None,
+            "disruptions_coverage": "unknown",
+            "recovery_offer": None,
+            "selected_recovery": None,
+            "original_train_state": None,
         }
     info = next(i for i in view.directions if i.profile_id == pid and i.direction is d)
     return {
         "service_date": occ.key.service_date.isoformat(),
+        "original_train_state": occ.direction_state.value,
+        "recovery_offer": occ.recovery_offer.fields() if occ.recovery_offer else None,
+        "selected_recovery": (
+            occ.selected_recovery.fields(view.at) if occ.selected_recovery else None
+        ),
+        "active_disruptions": [
+            {"id": d.id, "title": d.title, "stations": sorted(d.stations), "url": d.url}
+            for d in occ.disruptions
+        ],
+        "disruptions_checked_at": _to_primitive(occ.disruptions_checked_at),
+        "disruptions_coverage": occ.disruptions_coverage,
+        "replacement_plans": [plan.fields() for plan in occ.replacement_plans],
+        "train_context": None if occ.train_context is None else snapshot_payload(occ.train_context),
         "route_changed": occ.route_changed,
         "others": [
             {
@@ -152,12 +172,24 @@ def _next_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
         "platform": conn.legs[0].board.actual_track or conn.legs[0].board.planned_track,
         "arrival": _to_primitive(_leg_time(last, last.arrival, last.planned_arrival)),
         "transfers": len(conn.legs) - 1,
+        "crowd_forecast": conn.legs[0].crowd_forecast,
+        "boarding_notes": list(conn.legs[0].board.accessibility_notes),
+        "alighting_notes": list(last.accessibility_notes),
+        "exit_side": last.exit_side,
     }
 
 
 DIRECTION_SPECS: dict[str, Spec[str, Direction]] = {
     "status": (
-        lambda v, p, d: o.direction_state.value if (o := _occ(v, p, d)) else "none",
+        lambda v, p, d: (
+            (
+                "recovery_active"
+                if o.selected_recovery is not None and o.selected_recovery.status == "active"
+                else o.direction_state.value
+            )
+            if (o := _occ(v, p, d))
+            else "none"
+        ),
         _status_attrs,
         None,
     ),

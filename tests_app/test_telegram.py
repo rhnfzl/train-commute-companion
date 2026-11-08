@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -47,6 +48,33 @@ async def test_loud_and_silent_map_to_disable_notification(tg, clock):
     assert [m["disable_notification"] for m in tg.sent] == [False, True]
     assert tg.sent[0]["text"] == event(Severity.LOUD).text and tg.sent[0]["chat_id"] == CHAT
     assert all("parse_mode" not in m for m in tg.sent)
+
+
+async def test_notifier_has_only_one_in_flight_send_owner(clock):
+    entered, release = asyncio.Event(), asyncio.Event()
+    active = peak = 0
+
+    async def receiver(request):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        entered.set()
+        try:
+            await release.wait()
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+        finally:
+            active -= 1
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(receiver)) as client:
+        sender = TelegramNotifier(TelegramApi(TOKEN, client), CHAT, clock.now)
+        first = asyncio.create_task(sender.send(event(key="first")))
+        await entered.wait()
+        second = asyncio.create_task(sender.send(event(key="second")))
+        await asyncio.sleep(0)
+        release.set()
+        assert await first
+        assert await second
+    assert peak == 1
 
 
 async def test_journey_alert_has_leaving_and_not_travelling_buttons(tg, clock):

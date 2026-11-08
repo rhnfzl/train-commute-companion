@@ -1,0 +1,553 @@
+{
+  "state": {
+    "baselines": {
+      "p1": {
+        "floor": 4,
+        "versions": [
+          {
+            "commute_weekday": null,
+            "confirmed": true,
+            "effective_from": "2026-10-01",
+            "signature": {
+              "legs": [
+                {
+                  "alight": "UT",
+                  "board": "AAA",
+                  "day_offset": 0,
+                  "departure": "08:12:00",
+                  "duration_min": 28
+                },
+                {
+                  "alight": "RTD",
+                  "board": "UT",
+                  "day_offset": 0,
+                  "departure": "08:46:00",
+                  "duration_min": 38
+                }
+              ]
+            },
+            "version": 1
+          },
+          {
+            "commute_weekday": null,
+            "confirmed": true,
+            "effective_from": "2026-11-01",
+            "signature": {
+              "legs": [
+                {
+                  "alight": "UT",
+                  "board": "AAA",
+                  "day_offset": 0,
+                  "departure": "08:12:00",
+                  "duration_min": 28
+                },
+                {
+                  "alight": "RTD",
+                  "board": "UT",
+                  "day_offset": 0,
+                  "departure": "08:46:00",
+                  "duration_min": 38
+                }
+              ]
+            },
+            "version": 2
+          }
+        ]
+      }
+    },
+    "config": {
+      "profiles": [
+        {
+          "accessibility": {
+            "require_accessible": false
+          },
+          "alerts": {
+            "channels": {},
+            "compensation_reminder": false,
+            "disabled_categories": [],
+            "earlier_train_min_saving_min": 5,
+            "earlier_train_threshold_min": 10,
+            "latest_acceptable_arrival": "10:00:00",
+            "quiet_hours": [
+              "22:00:00",
+              "07:00:00"
+            ]
+          },
+          "days": [
+            2,
+            3
+          ],
+          "extra_dates": [
+            "2026-12-24"
+          ],
+          "home_station": "AAA",
+          "id": "p1",
+          "location": {
+            "entity": "tracker",
+            "source": "ha",
+            "station_radius_m": 150,
+            "zones": {
+              "UT": "zone.ut"
+            }
+          },
+          "name": "office_a",
+          "outbound": {
+            "buffer_min": 10,
+            "day_offset": 0,
+            "earlier_train_advice": false,
+            "first_train": "08:12:00",
+            "first_train_by_weekday": {},
+            "transfers": [
+              "UT"
+            ],
+            "window": [
+              "07:12:00",
+              "10:12:00"
+            ]
+          },
+          "pauses": [],
+          "return_": {
+            "buffer_min": 5,
+            "day_offset": 0,
+            "earlier_train_advice": true,
+            "first_train": "17:52:00",
+            "first_train_by_weekday": {},
+            "transfers": [
+              "UT"
+            ],
+            "window": [
+              "16:52:00",
+              "19:52:00"
+            ]
+          },
+          "skip_public_holidays": true,
+          "transfer_min": {
+            "UT": 4
+          },
+          "traveller": "me",
+          "work_station": "RTD",
+          "works_digest": null
+        }
+      ],
+      "revision": 2
+    },
+    "config_snapshots": {
+      "1": {
+        "profiles": [],
+        "revision": 1
+      },
+      "2": {
+        "profiles": [
+          {
+            "accessibility": {
+              "require_accessible": false
+            },
+            "alerts": {
+              "channels": {},
+              "compensation_reminder": false,
+              "disabled_categories": [],
+              "earlier_train_min_saving_min": 5,
+              "earlier_train_threshold_min": 10,
+              "latest_acceptable_arrival": "10:00:00",
+              "quiet_hours": [
+                "22:00:00",
+                "07:00:00"
+              ]
+            },
+            "days": [
+              2,
+              3
+            ],
+            "extra_dates": [
+              "2026-12-24"
+            ],
+            "home_station": "AAA",
+            "id": "p1",
+            "location": {
+              "entity": "tracker",
+              "source": "ha",
+              "station_radius_m": 150,
+              "zones": {
+                "UT": "zone.ut"
+              }
+            },
+            "name": "office_a",
+            "outbound": {
+              "buffer_min": 10,
+              "day_offset": 0,
+              "earlier_train_advice": false,
+              "first_train": "08:12:00",
+              "first_train_by_weekday": {},
+              "transfers": [
+                "UT"
+              ],
+              "window": [
+                "07:12:00",
+                "10:12:00"
+              ]
+            },
+            "pauses": [],
+            "return_": {
+              "buffer_min": 5,
+              "day_offset": 0,
+              "earlier_train_advice": true,
+              "first_train": "17:52:00",
+              "first_train_by_weekday": {},
+              "transfers": [
+                "UT"
+              ],
+              "window": [
+                "16:52:00",
+                "19:52:00"
+              ]
+            },
+            "skip_public_holidays": true,
+            "transfer_min": {
+              "UT": 4
+            },
+            "traveller": "me",
+            "work_station": "RTD",
+            "works_digest": null
+          }
+        ],
+        "revision": 2
+      }
+    },
+    "journey_records": {},
+    "lookahead": {
+      "p1": {
+        "facts": {},
+        "last_applied": null,
+        "last_run": "2026-10-26T06:00:00+01:00",
+        "pending": [
+          {
+            "attempts": 2,
+            "baseline_version": 3,
+            "digest_token": null,
+            "event": {
+              "created_at": "2026-10-26T06:00:00+01:00",
+              "direction": "outbound",
+              "facts": null,
+              "key": "k",
+              "kind": "delayed",
+              "leg_index": 1,
+              "profile_id": "p1",
+              "profile_name": "office_a",
+              "service_date": "2026-11-03",
+              "severity": "silent",
+              "text": "t",
+              "train": {
+                "operating_date": "2026-10-27",
+                "planned_departure": "2026-10-27T08:12:00+01:00",
+                "train_number": "1234"
+              }
+            },
+            "expires_at": "2026-10-26T06:00:00+01:00",
+            "fact_key": "f",
+            "id": "o",
+            "look_ahead": [
+              "p1",
+              "outbound",
+              "2026-11-03"
+            ],
+            "occurrence": null,
+            "primary_target_pending": false,
+            "route_revision": 1,
+            "target_ids": null,
+            "webhook_copied": true
+          }
+        ],
+        "per_date": {
+          "2026-11-03|j": [
+            "a",
+            "b"
+          ]
+        },
+        "started_baseline": 2,
+        "started_revision": 1
+      }
+    },
+    "obligations": [
+      {
+        "attempts": 2,
+        "baseline_version": 3,
+        "digest_token": null,
+        "event": {
+          "created_at": "2026-10-26T06:00:00+01:00",
+          "direction": "outbound",
+          "facts": null,
+          "key": "k",
+          "kind": "delayed",
+          "leg_index": 1,
+          "profile_id": "p1",
+          "profile_name": "office_a",
+          "service_date": "2026-11-03",
+          "severity": "silent",
+          "text": "t",
+          "train": {
+            "operating_date": "2026-10-27",
+            "planned_departure": "2026-10-27T08:12:00+01:00",
+            "train_number": "1234"
+          }
+        },
+        "expires_at": "2026-10-26T06:00:00+01:00",
+        "fact_key": "f",
+        "id": "o",
+        "look_ahead": [
+          "p1",
+          "outbound",
+          "2026-11-03"
+        ],
+        "occurrence": null,
+        "primary_target_pending": false,
+        "route_revision": 1,
+        "target_ids": null,
+        "webhook_copied": true
+      }
+    ],
+    "occurrences": {
+      "k": {
+        "advice": {
+          "advised_train": {
+            "operating_date": "2026-10-27",
+            "planned_departure": "2026-10-27T08:50:00+01:00",
+            "train_number": "5678"
+          },
+          "delivered": true,
+          "sent_at": "2026-10-27T08:00:00+01:00",
+          "usual_arrival": null,
+          "withdrawn": false
+        },
+        "alert_keys": {
+          "a": "b"
+        },
+        "all_good_evaluated": false,
+        "at_station": false,
+        "baseline_frozen": false,
+        "baseline_signature": null,
+        "baseline_version": null,
+        "cancellation_history": [
+          {
+            "accept_first_seen": null,
+            "accept_value": null,
+            "accepted_at": "2026-10-27T08:50:00+01:00",
+            "alight_frozen": false,
+            "alight_stop": "UT",
+            "board_station": "AAA",
+            "intended_alight": "UT",
+            "onward_from": "2026-10-27T08:44:00+01:00",
+            "served_endpoint": "UT",
+            "state": "riding",
+            "train": {
+              "operating_date": "2026-10-27",
+              "planned_departure": "2026-10-27T08:12:00+01:00",
+              "train_number": "1234"
+            },
+            "watch_until": null
+          },
+          {
+            "accept_first_seen": null,
+            "accept_value": null,
+            "accepted_at": null,
+            "alight_frozen": false,
+            "alight_stop": "RTD",
+            "board_station": "UT",
+            "intended_alight": "RTD",
+            "onward_from": null,
+            "served_endpoint": "RTD",
+            "state": "pending",
+            "train": {
+              "operating_date": "2026-10-27",
+              "planned_departure": "2026-10-27T08:50:00+01:00",
+              "train_number": "5678"
+            },
+            "watch_until": null
+          }
+        ],
+        "direction_state": "riding",
+        "disruptions": {},
+        "disruptions_checked_at": null,
+        "disruptions_coverage": "unknown",
+        "errand_deadline": null,
+        "generation": 1,
+        "key": {
+          "direction": "outbound",
+          "profile_id": "p1",
+          "service_date": "2026-10-27"
+        },
+        "lock": {
+          "commitment": "intended",
+          "legs": [
+            {
+              "accept_first_seen": null,
+              "accept_value": null,
+              "accepted_at": null,
+              "alight_frozen": false,
+              "alight_stop": "UT",
+              "board_station": "AAA",
+              "intended_alight": "UT",
+              "onward_from": null,
+              "served_endpoint": "UT",
+              "state": "riding",
+              "train": {
+                "operating_date": "2026-10-27",
+                "planned_departure": "2026-10-27T08:12:00+01:00",
+                "train_number": "1234"
+              },
+              "watch_until": null
+            },
+            {
+              "accept_first_seen": null,
+              "accept_value": null,
+              "accepted_at": null,
+              "alight_frozen": false,
+              "alight_stop": "RTD",
+              "board_station": "UT",
+              "intended_alight": "RTD",
+              "onward_from": null,
+              "served_endpoint": "RTD",
+              "state": "pending",
+              "train": {
+                "operating_date": "2026-10-27",
+                "planned_departure": "2026-10-27T08:50:00+01:00",
+                "train_number": "5678"
+              },
+              "watch_until": null
+            }
+          ],
+          "plan": {
+            "checked_at": null,
+            "destination": "RTD",
+            "planned_arrival": "2026-10-27T09:24:00+01:00",
+            "planned_departure": "2026-10-27T08:12:00+01:00",
+            "source": "ns"
+          },
+          "planned_final_arrival": "2026-10-27T09:24:00+01:00",
+          "source": "auto"
+        },
+        "missing_sent": false,
+        "not_travelling": false,
+        "original_plan": null,
+        "poll_records": [
+          {
+            "at": "2026-10-27T08:00:00+01:00",
+            "error": "rate",
+            "ok": false
+          }
+        ],
+        "retained": [
+          {
+            "commitment": "intended",
+            "legs": [
+              {
+                "accept_first_seen": null,
+                "accept_value": null,
+                "accepted_at": "2026-10-27T08:50:00+01:00",
+                "alight_frozen": false,
+                "alight_stop": "UT",
+                "board_station": "AAA",
+                "intended_alight": "UT",
+                "onward_from": "2026-10-27T08:44:00+01:00",
+                "served_endpoint": "UT",
+                "state": "riding",
+                "train": {
+                  "operating_date": "2026-10-27",
+                  "planned_departure": "2026-10-27T08:12:00+01:00",
+                  "train_number": "1234"
+                },
+                "watch_until": null
+              },
+              {
+                "accept_first_seen": null,
+                "accept_value": null,
+                "accepted_at": null,
+                "alight_frozen": false,
+                "alight_stop": "RTD",
+                "board_station": "UT",
+                "intended_alight": "RTD",
+                "onward_from": null,
+                "served_endpoint": "RTD",
+                "state": "pending",
+                "train": {
+                  "operating_date": "2026-10-27",
+                  "planned_departure": "2026-10-27T08:50:00+01:00",
+                  "train_number": "5678"
+                },
+                "watch_until": null
+              }
+            ],
+            "plan": {
+              "checked_at": null,
+              "destination": "RTD",
+              "planned_arrival": "2026-10-27T09:24:00+01:00",
+              "planned_departure": "2026-10-27T08:12:00+01:00",
+              "source": "ns"
+            },
+            "planned_final_arrival": "2026-10-27T09:24:00+01:00",
+            "source": "auto"
+          }
+        ],
+        "route_revision": 1,
+        "selected_recovery": null,
+        "settings_revision": 1,
+        "tap_at": "2026-10-27T08:05:00+01:00",
+        "travelling": false,
+        "zone_reports": {
+          "UT": "2026-10-27T08:51:00+01:00"
+        }
+      }
+    },
+    "started_before": true,
+    "webhook_copies": [
+      {
+        "done": [
+          "ab12"
+        ],
+        "first_try": "2026-10-26T06:00:00+01:00",
+        "id": "tcc_x",
+        "last_try": "2026-10-26T06:00:00+01:00",
+        "obligation": {
+          "attempts": 2,
+          "baseline_version": 3,
+          "digest_token": null,
+          "event": {
+            "created_at": "2026-10-26T06:00:00+01:00",
+            "direction": "outbound",
+            "facts": null,
+            "key": "k",
+            "kind": "delayed",
+            "leg_index": 1,
+            "profile_id": "p1",
+            "profile_name": "office_a",
+            "service_date": "2026-11-03",
+            "severity": "silent",
+            "text": "t",
+            "train": {
+              "operating_date": "2026-10-27",
+              "planned_departure": "2026-10-27T08:12:00+01:00",
+              "train_number": "1234"
+            }
+          },
+          "expires_at": "2026-10-26T06:00:00+01:00",
+          "fact_key": "f",
+          "id": "o",
+          "look_ahead": [
+            "p1",
+            "outbound",
+            "2026-11-03"
+          ],
+          "occurrence": null,
+          "primary_target_pending": false,
+          "route_revision": 1,
+          "target_ids": null,
+          "webhook_copied": true
+        },
+        "target_ids": null
+      }
+    ],
+    "webhook_down": {},
+    "works_digest_weeks": {}
+  },
+  "version": 2,
+  "write_counter": 7
+}

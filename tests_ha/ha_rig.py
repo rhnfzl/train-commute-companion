@@ -251,7 +251,14 @@ HOOKS = {"webhook_urls": [URL], "webhook_secret": SECRET, "webhook_token": ""}
 async def open_webhooks(hass, entry):
     r = await hass.config_entries.options.async_init(entry.entry_id)
     assert r["type"] is FlowResultType.MENU
-    assert r["menu_options"] == ["validate", "settings", "webhooks"]
+    assert r["menu_options"] == [
+        "profiles",
+        "validate",
+        "settings",
+        "webhooks",
+        "recovery",
+        "arrival",
+    ]
     r = await hass.config_entries.options.async_configure(
         r["flow_id"], {"next_step_id": "webhooks"}
     )

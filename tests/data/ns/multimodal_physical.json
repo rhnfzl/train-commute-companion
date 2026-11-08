@@ -1,0 +1,330 @@
+{
+  "trips": [
+    {
+      "status": "ALTERNATIVE_TRANSPORT",
+      "legs": [
+        {
+          "travelType": "PUBLIC_TRANSIT",
+          "partCancelled": false,
+          "cancelled": false,
+          "changePossible": true,
+          "reachable": true,
+          "product": {
+            "number": "1736",
+            "categoryCode": "IC",
+            "operatorName": "NS",
+            "type": "TRAIN"
+          },
+          "origin": {
+            "name": "Utrecht Centraal",
+            "lng": 5.11027765274048,
+            "lat": 52.0888900756836,
+            "uicCode": "8400621",
+            "stationCode": "UT",
+            "type": "STATION",
+            "plannedDateTime": "2026-11-07T11:58:00+0100",
+            "actualDateTime": "2026-11-07T11:58:00+0100",
+            "plannedTrack": "8",
+            "actualTrack": "8"
+          },
+          "destination": {
+            "name": "Gouda",
+            "lng": 4.70444440841675,
+            "lat": 52.0175018310547,
+            "uicCode": "8400258",
+            "stationCode": "GD",
+            "type": "STATION",
+            "plannedDateTime": "2026-11-07T12:16:00+0100",
+            "actualDateTime": "2026-11-07T12:16:00+0100",
+            "plannedTrack": "8",
+            "actualTrack": "8",
+            "exitSide": "RIGHT"
+          },
+          "stops": [
+            {
+              "uicCode": "8400621",
+              "name": "Utrecht Centraal",
+              "lat": 52.0888900756836,
+              "lng": 5.11027765274048,
+              "plannedDepartureDateTime": "2026-11-07T11:58:00+0100",
+              "actualDepartureDateTime": "2026-11-07T11:58:00+0100",
+              "actualDepartureTrack": "8",
+              "plannedDepartureTrack": "8",
+              "plannedArrivalTrack": "8",
+              "actualArrivalTrack": "8",
+              "cancelled": false,
+              "passing": false
+            },
+            {
+              "uicCode": "8400258",
+              "name": "Gouda",
+              "lat": 52.0175018310547,
+              "lng": 4.70444440841675,
+              "plannedArrivalDateTime": "2026-11-07T12:16:00+0100",
+              "actualArrivalDateTime": "2026-11-07T12:16:00+0100",
+              "actualDepartureTrack": "8",
+              "plannedDepartureTrack": "8",
+              "plannedArrivalTrack": "8",
+              "actualArrivalTrack": "8",
+              "cancelled": false,
+              "passing": false
+            }
+          ]
+        },
+        {
+          "travelType": "WALK",
+          "partCancelled": false,
+          "cancelled": false,
+          "changePossible": true,
+          "reachable": true,
+          "product": {
+            "type": "WALK"
+          },
+          "origin": {
+            "name": "Gouda",
+            "lng": 4.70444440841675,
+            "lat": 52.0175018310547,
+            "uicCode": "8400258",
+            "stationCode": "GD",
+            "type": "STATION",
+            "plannedDateTime": "2026-11-07T12:16:00+0100",
+            "actualDateTime": "2026-11-07T12:16:00+0100"
+          },
+          "destination": {
+            "name": "Gouda, NSbushalte,Bloemendaalzijde,Burg.Jamessingel Rtd",
+            "lng": 4.70597,
+            "lat": 52.018418,
+            "uicCode": "8400258",
+            "stationCode": "GD",
+            "type": "STATION",
+            "plannedDateTime": "2026-11-07T12:21:00+0100",
+            "actualDateTime": "2026-11-07T12:21:00+0100"
+          },
+          "stops": [
+            {
+              "uicCode": "8400258",
+              "name": "Gouda",
+              "lat": 52.0175018310547,
+              "lng": 4.70444440841675,
+              "plannedDepartureDateTime": "2026-11-07T12:16:00+0100",
+              "actualDepartureDateTime": "2026-11-07T12:16:00+0100",
+              "cancelled": false,
+              "passing": false
+            },
+            {
+              "uicCode": "8400258",
+              "name": "Gouda, NSbushalte,Bloemendaalzijde,Burg.Jamessingel Rtd",
+              "lat": 52.018418,
+              "lng": 4.70597,
+              "plannedArrivalDateTime": "2026-11-07T12:21:00+0100",
+              "actualArrivalDateTime": "2026-11-07T12:21:00+0100",
+              "cancelled": false,
+              "passing": false
+            }
+          ]
+        },
+        {
+          "travelType": "PUBLIC_TRANSIT",
+          "partCancelled": false,
+          "cancelled": false,
+          "changePossible": true,
+          "reachable": true,
+          "product": {
+            "number": "931374",
+            "categoryCode": "BSN",
+            "operatorName": "NS",
+            "type": "BUS"
+          },
+          "origin": {
+            "name": "Gouda, NSbushalte,Bloemendaalzijde,Burg.Jamessingel Rtd",
+            "lng": 4.70597,
+            "lat": 52.018418,
+            "uicCode": "8400258",
+            "stationCode": "GD",
+            "type": "STATION",
+            "plannedDateTime": "2026-11-07T12:30:00+0100"
+          },
+          "destination": {
+            "name": "A. van Rijckevorselplein",
+            "lng": 4.558771,
+            "lat": 51.921352,
+            "uicCode": "8400002",
+            "type": "ADDRESS",
+            "plannedDateTime": "2026-11-07T13:05:00+0100"
+          },
+          "stops": [
+            {
+              "uicCode": "8400258",
+              "name": "Gouda, NSbushalte,Bloemendaalzijde,Burg.Jamessingel Rtd",
+              "lat": 52.018418,
+              "lng": 4.70597,
+              "plannedDepartureDateTime": "2026-11-07T12:30:00+0100",
+              "cancelled": false,
+              "passing": false
+            },
+            {
+              "uicCode": "8400002",
+              "name": "A. van Rijckevorselplein",
+              "lat": 51.921352,
+              "lng": 4.558771,
+              "plannedArrivalDateTime": "2026-11-07T13:05:00+0100",
+              "cancelled": false,
+              "passing": false
+            }
+          ]
+        },
+        {
+          "travelType": "WALK",
+          "partCancelled": false,
+          "cancelled": false,
+          "changePossible": true,
+          "reachable": true,
+          "product": {
+            "type": "WALK"
+          },
+          "origin": {
+            "name": "A. van Rijckevorselplein",
+            "lng": 4.558771,
+            "lat": 51.921352,
+            "uicCode": "8400002",
+            "type": "ADDRESS",
+            "plannedDateTime": "2026-11-07T13:05:00+0100"
+          },
+          "destination": {
+            "name": "Metrostation Capelsebrug",
+            "lng": 4.5579,
+            "lat": 51.921253,
+            "uicCode": "8400002",
+            "type": "ADDRESS",
+            "plannedDateTime": "2026-11-07T13:10:00+0100"
+          },
+          "stops": [
+            {
+              "uicCode": "8400002",
+              "name": "A. van Rijckevorselplein",
+              "lat": 51.921352,
+              "lng": 4.558771,
+              "plannedDepartureDateTime": "2026-11-07T13:05:00+0100",
+              "cancelled": false,
+              "passing": false
+            },
+            {
+              "uicCode": "8400002",
+              "name": "Metrostation Capelsebrug",
+              "lat": 51.921253,
+              "lng": 4.5579,
+              "plannedArrivalDateTime": "2026-11-07T13:10:00+0100",
+              "cancelled": false,
+              "passing": false
+            }
+          ]
+        },
+        {
+          "travelType": "PUBLIC_TRANSIT",
+          "partCancelled": false,
+          "cancelled": false,
+          "changePossible": true,
+          "reachable": true,
+          "product": {
+            "number": "927436",
+            "categoryCode": "MTS",
+            "operatorName": "NS",
+            "type": "METRO"
+          },
+          "origin": {
+            "name": "Metrostation Capelsebrug",
+            "lng": 4.5579,
+            "lat": 51.921253,
+            "uicCode": "8400002",
+            "type": "ADDRESS",
+            "plannedDateTime": "2026-11-07T13:16:00+0100"
+          },
+          "destination": {
+            "name": "Metrostation Beurs",
+            "lng": 4.480592,
+            "lat": 51.918422,
+            "type": "ADDRESS",
+            "plannedDateTime": "2026-11-07T13:26:00+0100"
+          },
+          "stops": [
+            {
+              "uicCode": "8400002",
+              "name": "Metrostation Capelsebrug",
+              "lat": 51.921253,
+              "lng": 4.5579,
+              "plannedDepartureDateTime": "2026-11-07T13:16:00+0100",
+              "cancelled": false,
+              "passing": false
+            },
+            {
+              "uicCode": "8400529",
+              "name": "Rotterdam Blaak",
+              "lat": 51.9202766418457,
+              "lng": 4.48888874053955,
+              "plannedDepartureDateTime": "2026-11-07T13:24:00+0100",
+              "plannedArrivalDateTime": "2026-11-07T13:24:00+0100",
+              "cancelled": false,
+              "passing": false
+            },
+            {
+              "name": "Metrostation Beurs",
+              "lat": 51.918422,
+              "lng": 4.480592,
+              "plannedArrivalDateTime": "2026-11-07T13:26:00+0100",
+              "cancelled": false,
+              "passing": false
+            }
+          ]
+        },
+        {
+          "travelType": "PUBLIC_TRANSIT",
+          "partCancelled": false,
+          "cancelled": false,
+          "changePossible": true,
+          "reachable": true,
+          "product": {
+            "number": "928200",
+            "categoryCode": "MTR",
+            "operatorName": "NS",
+            "type": "METRO"
+          },
+          "origin": {
+            "name": "Metrostation Beurs",
+            "lng": 4.480592,
+            "lat": 51.918422,
+            "type": "ADDRESS",
+            "plannedDateTime": "2026-11-07T13:31:00+0100"
+          },
+          "destination": {
+            "name": "Rotterdam Centraal, Rotterdam Centraal",
+            "lng": 4.469868,
+            "lat": 51.924651,
+            "uicCode": "8400530",
+            "stationCode": "RTD",
+            "type": "STATION",
+            "plannedDateTime": "2026-11-07T13:34:00+0100"
+          },
+          "stops": [
+            {
+              "name": "Metrostation Beurs",
+              "lat": 51.918422,
+              "lng": 4.480592,
+              "plannedDepartureDateTime": "2026-11-07T13:31:00+0100",
+              "cancelled": false,
+              "passing": false
+            },
+            {
+              "uicCode": "8400530",
+              "name": "Rotterdam Centraal, Rotterdam Centraal",
+              "lat": 51.924651,
+              "lng": 4.469868,
+              "plannedArrivalDateTime": "2026-11-07T13:34:00+0100",
+              "cancelled": false,
+              "passing": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

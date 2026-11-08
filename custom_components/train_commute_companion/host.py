@@ -8,6 +8,7 @@ import logging
 import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, cast, overload
 
 import httpx
@@ -25,6 +26,14 @@ JOIN_TIMEOUT_S = 10
 
 class RuntimeNotRunning(RuntimeError):
     """`Host.run` found no runtime to ask; a RuntimeError from the call itself is another matter."""
+
+
+class HostPhase(StrEnum):
+    NEW = "new"
+    STARTING = "starting"
+    RUNNING = "running"
+    RETIRED = "retired"
+    STOPPED = "stopped"
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,22 +81,41 @@ class RuntimeHost:
         self._parts: Parts | None = None
         self._task: asyncio.Task[None] | None = None
         self._drain: concurrent.futures.Future[None] | None = None
+        self.phase = HostPhase.NEW
         # set by stop(); the store and notifier built for this host refuse to write or deliver
         self.retired = retired
 
     async def start(self) -> None:
+        if self.retired.is_set() or self.phase in (HostPhase.RETIRED, HostPhase.STOPPED):
+            raise RuntimeNotRunning("a retired runtime owner cannot be started")
+        if self.phase is not HostPhase.NEW:
+            raise RuntimeNotRunning("this runtime owner has already started")
+        self.phase = HostPhase.STARTING
         loop = asyncio.new_event_loop()
         self._loop = loop
         self._thread = threading.Thread(target=_serve, args=(loop,), name=THREAD_NAME, daemon=True)
-        self._thread.start()
+        try:
+            self._thread.start()
+        except BaseException:
+            self.retired.set()
+            self.phase = HostPhase.STOPPED
+            self._loop = self._thread = None
+            loop.close()
+            raise
 
         async def boot() -> None:
             # built on the runtime thread, so the provider's HTTP client binds to its loop
             self._parts = self._build()
             self._task = asyncio.create_task(self._parts.runtime.run_forever())
             self._task.add_done_callback(_log_crash)
+            if not self.retired.is_set():
+                self.phase = HostPhase.RUNNING
 
-        await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(boot(), loop))
+        try:
+            await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(boot(), loop))
+        except BaseException:
+            await self.stop()
+            raise
 
     @overload
     async def run[T](self, fn: Callable[[Runtime], Awaitable[T]]) -> T: ...
@@ -98,7 +126,12 @@ class RuntimeHost:
     async def run[T](self, fn: Callable[[Runtime], Awaitable[T] | T]) -> T:
         """`fn` on the runtime's loop. Cancelling the caller cancels the call there."""
         loop, parts = self._loop, self._parts
-        if loop is None or parts is None or self.retired.is_set():
+        if (
+            self.phase is not HostPhase.RUNNING
+            or loop is None
+            or parts is None
+            or self.retired.is_set()
+        ):
             raise RuntimeNotRunning("the runtime is not running")
 
         async def call() -> T:
@@ -124,8 +157,10 @@ class RuntimeHost:
         """Never raises a shutdown timeout: a runtime stuck in a synchronous call is retired (no
         writes, no deliveries) and keeps its references, so a later stop can still finish it."""
         self.retired.set()
+        self.phase = HostPhase.RETIRED
         loop, thread = self._loop, self._thread
         if loop is None or thread is None:
+            self.phase = HostPhase.STOPPED
             return
 
         async def drain() -> None:
@@ -165,3 +200,4 @@ class RuntimeHost:
                     await asyncio.to_thread(thread.join, JOIN_TIMEOUT_S)
         if not thread.is_alive():
             self._loop = self._thread = None  # idempotent: a later stop finds nothing to do
+            self.phase = HostPhase.STOPPED

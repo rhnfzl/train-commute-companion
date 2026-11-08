@@ -7,6 +7,7 @@ profiles:
     traveller: "me"           # fixed in v1, the only allowed value
     days: [tue, wed]          # weekdays: mon tue wed thu fri sat sun
     extra_dates: []           # optional one-off dates, YYYY-MM-DD
+    pauses: []                # optional inclusive ranges: [{start: "2026-12-21", end: "2027-01-03"}]
     skip_public_holidays: true  # skip Dutch public holidays on the weekdays above
     home_station: "AAA"       # NS station code of the home side
     work_station: "RTD"       # NS station code of the work side

@@ -41,7 +41,7 @@ def _occurrences(
                         day,
                         d,
                         recurring,
-                        real,
+                        real and not p.paused_on(s.key.service_date),
                         s.window_start.astimezone(UTC),
                         s.window_end.astimezone(UTC),
                     )
@@ -75,6 +75,10 @@ def _window_overlap(
     return min(hits).astimezone(TZ).date() if hits else None
 
 
+def _has_unpaused_journey(p: Profile, day: date) -> bool:
+    return any(not p.paused_on(day + timedelta(days=p.journey(d).day_offset)) for d in Direction)
+
+
 def overlap_pairs(
     profiles: Sequence[Profile], today: date, first: FirstTrain | None = None
 ) -> list[tuple[Profile, Profile, ProfileProblem]]:
@@ -99,7 +103,10 @@ def overlap_pairs(
                 d
                 for x, y in ((a, b), (b, a))
                 for d in x.extra_dates
-                if d >= today and is_commute_day(d, y.days, y.extra_dates, y.skip_public_holidays)
+                if d >= today
+                and _has_unpaused_journey(x, d)
+                and _has_unpaused_journey(y, d)
+                and is_commute_day(d, y.days, y.extra_dates, y.skip_public_holidays)
             ),
             default=None,
         )

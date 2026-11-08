@@ -27,7 +27,7 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.providers.base import ProviderAnswer
 from train_commute_companion.state import (
-    Commitment,
+    ArchivePhase,
     Journey,
     LegProgress,
     OccurrenceState,
@@ -50,12 +50,8 @@ def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transi
     now = to_utc(ctx.now)
     events: list[AlertEvent] = []
     lock = s.lock
-    if (
-        lock is not None
-        and lock.commitment is Commitment.PROVISIONAL
-        and s.errand_deadline is not None
-        and now >= to_utc(s.errand_deadline)
-    ):
+    if s.provisional_expired(now):
+        lock = present(lock)
         f = first_open(lock)
         retained = s.retained
         if f < len(lock.legs) and may_be_on(lock.legs[f], now):
@@ -164,14 +160,4 @@ def _journey_end(
 def may_archive(s: OccurrenceState, now: datetime, pending_journey_warnings: int) -> bool:
     """Rule 6: the occurrence may be archived. The caller counts the occurrence's undelivered
     journey warnings in its ledger; none may remain."""
-    if pending_journey_warnings > 0:
-        return False
-    if s.not_travelling:
-        return True
-    if s.direction_state is not DirectionState.DONE or s.retained:
-        return False
-    if s.lock is None:
-        return True
-    w = s.lock.legs[-1].watch_until
-    limit = to_utc(s.lock.planned_final_arrival) + FOLLOW_LIMIT
-    return w is None or to_utc(now) >= min(to_utc(w), limit)
+    return s.archive_phase(now, pending_journey_warnings) is ArchivePhase.READY

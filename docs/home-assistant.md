@@ -12,11 +12,17 @@ It needs Home Assistant 2026.10 or newer and the Home Assistant companion app on
 ## Set up
 
 1. Get an NS API key from the NS API portal.
-2. Copy `examples/profiles.yaml` from the repository to `<config>/train_commute_companion/profiles.yaml`. Replace the placeholder station `AAA` with your own NS station codes, and set your own first trains, transfer stations and days. Quote every time (`"08:12"`).
-3. Go to Settings, Devices and services, Add integration, Train Commute Companion. Enter the key and the path of the file. If you keep the file outside the config folder, allow its folder in `allowlist_external_dirs`.
+2. For guided setup, use an unused profiles-file path inside the config folder. For existing YAML, select your configured file.
+3. Add Train Commute Companion under Settings, Devices and services. Enter the key and file path. Enable guided setup to create a profile.
 4. Pick your phone and the loud alert style (below). Two test notifications go out, one loud and one silent. Confirm that both arrived.
 
 Only one NS key is set up per Home Assistant instance.
+
+### Delivery retries
+
+Alerts retry until accepted or no longer relevant. Each alert has a stable notification tag, so a retry replaces its displayed notification where the companion app supports replacement. iOS critical notifications cannot be replaced. Tags survive runtime restarts and do not contain profile names or message text.
+
+A crash after phone-provider acceptance but before saving the receipt can still trigger another push. Replacement does not guarantee a single sound or automation event. Telegram cannot deduplicate these retries; email and webhook handling depends on the receiver. Alerts are never marked delivered before acceptance, because that could lose an alert.
 
 ### Loud alert style
 
@@ -48,6 +54,8 @@ Per profile and direction (`outbound`, `return`):
 Per profile: a health sensor and a "not travelling today" button.
 
 Entity IDs come from the profile `name`, for example `sensor.office_a_outbound_status`. Sensor states are plain text; a value that does not apply is `none`.
+
+The [dashboard example](dashboard.md) shows journey details, data freshness and the action buttons with standard Home Assistant cards.
 
 ### Services
 
@@ -92,3 +100,33 @@ A receiver that fails or is down never holds back a phone alert. It shows only a
 Location is optional and only adds alerts. See [Location with Home Assistant](location-ha.md).
 
 Phone location is not always reliable. In stations, tunnels, or with battery saving on, your position can be late or wrong. Location only helps the companion. It never hides a warning about your train.
+
+## Replace an NS API key
+
+Open Settings, Devices and services, then the integration's menu and choose Reconfigure. Enter the replacement key.
+
+The companion checks the key with NS before saving it. A rejected key leaves the running setup unchanged. A valid replacement reloads monitoring with the same profiles and notification settings. Saving the current key again does not reload it.
+
+## Download diagnostics
+
+Use Download diagnostics in the integration's menu when reporting a problem. The report contains runtime health, request and failure counts, and journey-state summaries.
+
+It excludes API keys, webhook secrets and URLs, phone names, profile names, station codes, travel times and location coordinates. A refused profile is reported as a flag; its error text is excluded because it can contain private configuration.
+
+Diagnostics describe the latest runtime snapshot. `available: false` means the runtime or its coordinator is unavailable, so other values can be stale.
+
+## Holiday pauses and crowd forecasts
+
+[Holiday pauses](holiday-pauses.md) stop new journeys during a configured date range. [Crowd forecasts](crowd-forecasts.md) explain the forecast attributes and silent crowd updates.
+
+## Edit profiles visually
+
+Use Configure, Add or edit profiles to add or change routes with full station names, personal transfer minimums and holiday ranges. Guided setup can create your first profile without copying YAML. See [the profile editor guide](profile-editor.md).
+
+## Active disruption context
+
+For replacement buses, walks and metro journeys, use the integration's Configure > Recovery flow. It requires an exact starting-place confirmation and reviewed uncertainty acknowledgements. [Replacement transport](replacement-transport.md) describes progress controls, stale actions and monitoring limits.
+
+Configure > Arrival records an explicitly reviewed destination arrival. The profile details form can enable an optional reminder to check NS compensation rules. [Arrival records](compensation-reminders.md) explains corrections, retention and evidence limits.
+
+[Active disruption context](disruptions.md) adds route-related incident notices and source-coverage attributes. These do not replace train-level safety warnings.

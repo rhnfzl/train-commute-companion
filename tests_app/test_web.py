@@ -203,6 +203,7 @@ async def _exchange(sock, data: bytes, read: bool = True) -> bytes:
 async def test_bad_requests_get_a_fixed_error_and_never_stall_the_loop(
     sock, monkeypatch, caplog
 ):  # RF 4
+    normal_timeout = web.MCP_TIMEOUT_S
     monkeypatch.setattr(web, "MCP_TIMEOUT_S", 0.05)
     turns = 0
 
@@ -263,6 +264,7 @@ async def test_bad_requests_get_a_fixed_error_and_never_stall_the_loop(
     assert len(got) < 900_000  # aborted: the rest of the reply was dropped, not sent
 
     current = real
+    monkeypatch.setattr(web, "MCP_TIMEOUT_S", normal_timeout)
     reply = await ask_readout(sock, {"tool": "get_status", "profile": "p1"})
     assert reply["text"].endswith("Data: NS")
     counter.cancel()

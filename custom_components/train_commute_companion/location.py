@@ -5,6 +5,7 @@ import asyncio
 import logging
 from collections.abc import Coroutine
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -36,6 +37,11 @@ from .coordinator import TccCoordinator
 from .host import RuntimeHost, RuntimeNotRunning
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class TrackerPhase(StrEnum):
+    STOPPED = "stopped"
+    TRACKING = "tracking"
 
 
 def _fix(state: State) -> tuple[float, float] | None:
@@ -89,12 +95,17 @@ class LocationTracker:
         self._tasks: set[asyncio.Task[None]] = set()
         self._locks: dict[str, asyncio.Lock] = {}  # a lock queues FIFO: arrival order per profile
         self._tracks: dict[str, ZoneTrack] = {}
+        self._phase = TrackerPhase.STOPPED
 
     def start(self) -> None:
+        if self._phase is TrackerPhase.TRACKING:
+            return
+        self._phase = TrackerPhase.TRACKING
         self._unsub_data = self._coordinator.async_add_listener(self._sync)
         self._sync()
 
     async def stop(self) -> None:
+        self._phase = TrackerPhase.STOPPED
         for unsub in (self._unsub_state, self._unsub_data):
             if unsub is not None:
                 unsub()
@@ -110,6 +121,8 @@ class LocationTracker:
     @callback
     def _sync(self) -> None:
         """Follows the profiles of the coordinator's view, removed ones that still run included."""
+        if self._phase is not TrackerPhase.TRACKING:
+            return
         data = self._coordinator.data
         want = {
             p.id: (p.location.entity.lower(), data.location_epochs.get(p.id, 0))
@@ -196,6 +209,8 @@ class LocationTracker:
         acc: float | None,
         seed: bool,
     ) -> None:
+        if self._phase is not TrackerPhase.TRACKING or self._gen.get(pid) is not gen:
+            return
         data = self._coordinator.data
         profile = next((p for p in data.profiles if p.id == pid), None)
         if profile is None or profile.location is None:

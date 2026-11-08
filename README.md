@@ -20,6 +20,12 @@ Data: NS. You bring your own NS API key; none is bundled. This project is not ma
 - **Tells you what changed.** Delays, cancellations, platform changes, a train cut short, a new route, a transfer at risk or broken, and a train you missed.
 - **Suggests what to do.** When your train no longer works, it names the best train you can still catch.
 - **Looks ahead.** Before the day, it warns you about planned works on your route.
+- **Summarizes the week.** An optional [works digest](docs/weekly-works-digest.md) checks seven calendar days and labels unknown coverage.
+- **Tracks replacement transport.** Follow reviewed bus, walk and metro plans with explicit boarding and arrival confirmations. [Replacement transport](docs/replacement-transport.md).
+- **Shows crowd forecasts.** NS forecasts appear with your trains and alternatives; changed forecasts can send silent updates. [Crowd forecasts](docs/crowd-forecasts.md).
+- **Pauses for holidays.** Set an inclusive date range and monitoring resumes afterward. [Holiday pauses](docs/holiday-pauses.md).
+- **Uses weekday departure times.** Set different first trains within one profile while preserving already-followed journeys. [Weekday schedules](docs/weekday-schedules.md).
+- **Shows train context.** Optional NS composition, listed capacity and candidate vehicle coordinates include source limits. [Train context](docs/train-context.md).
 - **Loud only when it matters.** Alerts you must not miss ring; small updates arrive silently.
 - **Says when NS is unclear.** When NS gives two different answers about the same train, you get both, so you can decide.
 
@@ -29,17 +35,24 @@ Data: NS. You bring your own NS API key; none is bundled. This project is not ma
 | --- | --- | --- |
 | Home Assistant (HACS) | Alerts on your phone through the companion app, sensors and buttons | [docs/home-assistant.md](docs/home-assistant.md) |
 | Docker | Alerts and buttons in a private Telegram chat | [docs/docker.md](docs/docker.md) |
+| Household | A separate Docker companion and private bot for each traveller | [docs/household.md](docs/household.md) |
 | Webhooks | Each alert as signed JSON to your own URL, from Docker or Home Assistant | [docs/webhooks.md](docs/webhooks.md) |
+| Email | Optional encrypted SMTP copies alongside Telegram in Docker | [docs/email.md](docs/email.md) |
+| Today | Private read-only journey and service status in a browser, from Docker | [docs/docker.md](docs/docker.md#today-web-status) |
 | MCP | Three read-only tools (status, next connections, planned works) for a local MCP client | [docs/mcp.md](docs/mcp.md) |
 
 Location (optional) helps it know when you leave and where you are: [Home Assistant](docs/location-ha.md), [OwnTracks](docs/location-owntracks.md), [Telegram](docs/location-telegram.md).
+
+Profiles can request [accessible journeys](docs/accessibility.md) and disable [notification categories](docs/notification-preferences.md). These settings also appear in the Home Assistant profile form.
+
+Save an [explicit arrival](docs/compensation-reminders.md) to compare it with the original plan and optionally check NS compensation rules. The companion does not decide eligibility. Today also offers deliberate calendar and offline route-preview downloads.
 
 ## Quick start (Home Assistant)
 
 1. In HACS, add `https://github.com/rhnfzl/train-commute-companion` as a custom repository of type Integration, or use the button above.
 2. Download Train Commute Companion and restart Home Assistant.
-3. Copy [examples/profiles.yaml](examples/profiles.yaml) to `<config>/train_commute_companion/profiles.yaml` and fill in your own stations and trains.
-4. Add the integration under Settings, Devices and services, and enter your NS API key.
+3. Add the integration under Settings, Devices and services, and enter your NS API key.
+4. Enable guided setup to choose stations and trains in forms, or select an existing [profiles file](examples/profiles.yaml).
 
 The full guide is in [docs/home-assistant.md](docs/home-assistant.md).
 
@@ -60,8 +73,8 @@ tcc check-profile profiles.yaml
 uv run --extra app pytest -q        # core and app tests (the extra installs the MCP SDK)
 uv run --extra app mypy src app/tcc_app
 # the published floors: Python 3.12, httpx 0.27, PyYAML 6.0.1 and mcp 2.3
-uv run --isolated --no-project --python 3.12 --with '.[app]' --with httpx==0.27.0 --with PyYAML==6.0.1 --with mcp==2.3.0 --with pytest --with pytest-asyncio pytest -q tests tests_app
-uv run ruff check src tests tests_ha tests_app custom_components app
+uv run --no-cache --isolated --no-project --python 3.12 --with '.[app]' --with httpx==0.27.0 --with PyYAML==6.0.1 --with mcp==2.3.0 --with pytest --with pytest-asyncio pytest -q tests tests_app
+uv run ruff check src tests tests_ha tests_app tests_live custom_components app
 
 # Home Assistant integration: Python 3.14.2+, in its own environment
 export UV_PROJECT_ENVIRONMENT=.venv-ha
@@ -70,6 +83,8 @@ uv run --python 3.14 --group ha mypy --explicit-package-bases --namespace-packag
 ```
 
 The [Validate workflow](.github/workflows/validate.yml) runs these same commands, and a release runs them before it publishes. Each night it also runs `tests_ha` against the newest Home Assistant test package, because the integration calls private `mobile_app` code.
+
+[Live NS checks](docs/live-testing.md) run separately with your own key and capture alerts locally.
 
 ## License
 

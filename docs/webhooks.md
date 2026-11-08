@@ -121,7 +121,8 @@ Your phone is the channel that counts: an alert is delivered once the phone has 
 - A receiver that stays down gets at most one try per 60 seconds. Its tries go to the owed copies in turn, so after an outage alerts can arrive out of order: order them by `created_at`. When alerts come faster than one a minute, at most 200 copies are kept: the oldest copy never tried is dropped first, else the oldest copy, with one warning in the log each.
 - The log shows one warning per outage, naming the receiver's host only, and one line when it works again.
 - A restart, or a timeout after the receiver accepted, can send an alert again with the same `webhook-id`.
-- Turning webhooks off (no URLs) drops the copies still owed; they are not sent when you turn webhooks on again.
+- New copies record their original destination IDs. Adding a URL does not send older copies to it. Old stores without target IDs retain their existing webhook retry behavior.
+- Turning every auxiliary destination off drops the copies still owed. With email still enabled, some copies can remain. Removing a URL stops attempts while it is absent; re-adding the same URL can resume a copy still pending for that original destination.
 - In Docker, `webhooks_failing` means "the last try to some webhook failed". It clears only on the next success, and it shows only in the full `/health` report, with `TCC_HEALTH_TOKEN`.
 
 ## Test sends
@@ -137,3 +138,18 @@ The payload carries your profile names, stations and times, and a receiver may b
 - Generate the secret with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 - Redirects are never followed: a receiver that answers with a redirect counts as failed.
 - The bearer token goes to every configured URL, so use it only with receivers you run.
+
+## Receiver identity and credential rotation
+
+Queued alerts stay bound to the original receiver address, Bearer token, and signing key.
+Changing either credential creates a new receiver scope even when the URL stays the same.
+The state stores only an opaque keyed fingerprint for that scope. It does not store the URL, Bearer token, or signing key.
+
+Credential rotation can abandon old queued copies. The replacement scope receives newly staged alerts and new disruption incidents.
+It does not inherit an old incident's start receipt or receive that incident's clearance.
+Copies already accepted by an unchanged scope retain their receipts across restart.
+
+Older URL-only recipient pins do not prove an authentication scope and cannot match a configured webhook receiver.
+Copies with no recipient pins are also skipped. Pending phone obligations from that older state keep only their phone path.
+This conservative migration prevents old private journey facts from reaching a new account at the same URL.
+Run the normal webhook setup test after configuring replacement credentials.

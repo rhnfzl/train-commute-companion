@@ -14,6 +14,7 @@ from train_commute_companion.view import RuntimeView
 from .coordinator import TccCoordinator
 from .data import TccConfigEntry, TccData
 from .entity import TccEntity, shown_and_others, sync_entities, unique_id
+from .recovery_button import wanted_recovery_buttons
 from .services import do_choose, do_leaving, do_not_travelling
 
 PER_DIRECTION = ("leaving", "not_travelling", "choose_next")
@@ -83,6 +84,7 @@ def wanted(
         for key in PER_DIRECTION:
             add(i.profile_id, i.profile_name, key, i.direction)
         add(i.profile_id, i.profile_name, "not_travelling_today")  # same ID from both directions
+    out.update(wanted_recovery_buttons(coordinator, data, view))
     return out
 
 

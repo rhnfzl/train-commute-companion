@@ -1,0 +1,340 @@
+{
+  "state": {
+    "baselines": {},
+    "config": {
+      "profiles": [
+        {
+          "accessibility": {
+            "require_accessible": false
+          },
+          "alerts": {
+            "channels": {},
+            "compensation_reminder": false,
+            "disabled_categories": [],
+            "earlier_train_min_saving_min": 5,
+            "earlier_train_threshold_min": 10,
+            "latest_acceptable_arrival": null,
+            "quiet_hours": null
+          },
+          "days": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "extra_dates": [],
+          "home_station": "AAA",
+          "id": "p1",
+          "location": null,
+          "name": "NAME",
+          "outbound": {
+            "buffer_min": 10,
+            "day_offset": 0,
+            "earlier_train_advice": false,
+            "first_train": "08:12:00",
+            "first_train_by_weekday": {},
+            "transfers": [
+              "UT"
+            ],
+            "window": [
+              "07:12:00",
+              "10:12:00"
+            ]
+          },
+          "pauses": [],
+          "return_": {
+            "buffer_min": 5,
+            "day_offset": 0,
+            "earlier_train_advice": true,
+            "first_train": "17:52:00",
+            "first_train_by_weekday": {},
+            "transfers": [],
+            "window": [
+              "16:52:00",
+              "19:52:00"
+            ]
+          },
+          "skip_public_holidays": true,
+          "transfer_min": {
+            "UT": 4
+          },
+          "traveller": "me",
+          "work_station": "RTD",
+          "works_digest": null
+        }
+      ],
+      "revision": 1
+    },
+    "config_snapshots": {
+      "1": {
+        "profiles": [
+          {
+            "accessibility": {
+              "require_accessible": false
+            },
+            "alerts": {
+              "channels": {},
+              "compensation_reminder": false,
+              "disabled_categories": [],
+              "earlier_train_min_saving_min": 5,
+              "earlier_train_threshold_min": 10,
+              "latest_acceptable_arrival": null,
+              "quiet_hours": null
+            },
+            "days": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "extra_dates": [],
+            "home_station": "AAA",
+            "id": "p1",
+            "location": null,
+            "name": "NAME",
+            "outbound": {
+              "buffer_min": 10,
+              "day_offset": 0,
+              "earlier_train_advice": false,
+              "first_train": "08:12:00",
+              "first_train_by_weekday": {},
+              "transfers": [
+                "UT"
+              ],
+              "window": [
+                "07:12:00",
+                "10:12:00"
+              ]
+            },
+            "pauses": [],
+            "return_": {
+              "buffer_min": 5,
+              "day_offset": 0,
+              "earlier_train_advice": true,
+              "first_train": "17:52:00",
+              "first_train_by_weekday": {},
+              "transfers": [],
+              "window": [
+                "16:52:00",
+                "19:52:00"
+              ]
+            },
+            "skip_public_holidays": true,
+            "transfer_min": {
+              "UT": 4
+            },
+            "traveller": "me",
+            "work_station": "RTD",
+            "works_digest": null
+          }
+        ],
+        "revision": 1
+      }
+    },
+    "journey_records": {
+      "p1|outbound|2026-10-27": {
+        "confirmations": [],
+        "destination": "RTD",
+        "key": {
+          "direction": "outbound",
+          "profile_id": "p1",
+          "service_date": "2026-10-27"
+        },
+        "plan": {
+          "checked_at": "2026-10-27T08:05:00+01:00",
+          "destination": "RTD",
+          "planned_arrival": "2026-10-27T09:24:00+01:00",
+          "planned_departure": "2026-10-27T08:12:00+01:00",
+          "source": "ns"
+        },
+        "reminder_created": false,
+        "revision": 0,
+        "route_revision": 1
+      }
+    },
+    "lookahead": {},
+    "obligations": [
+      {
+        "attempts": 2,
+        "baseline_version": null,
+        "digest_token": null,
+        "event": {
+          "created_at": "2026-10-27T08:05:00+01:00",
+          "direction": "outbound",
+          "facts": {
+            "arrival_record": "",
+            "arrival_revision": 0,
+            "back_on_plan": false,
+            "crowd_forecast": null,
+            "crowd_note": "",
+            "crowd_slot": "",
+            "delays": [],
+            "disruption_id": "",
+            "disruption_instance": "",
+            "disruption_revision": 0,
+            "disruption_targets": null,
+            "moved_slot": "",
+            "named": [],
+            "next_clause": "",
+            "on": "",
+            "recovery_issue": "",
+            "recovery_revision": 0,
+            "recovery_selection": "",
+            "subject": "",
+            "told": [],
+            "twin_note": "",
+            "unclear": ""
+          },
+          "key": "all_good:2026-10-27:1234@2026-10-27T08:12:00+01:00:your 08:12 to RTD is on time per NS, change at UT.",
+          "kind": "all_good",
+          "leg_index": null,
+          "profile_id": "p1",
+          "profile_name": "NAME",
+          "service_date": "2026-10-27",
+          "severity": "silent",
+          "text": "Name: your 08:12 to RTD is on time per NS, change at UT.",
+          "train": {
+            "operating_date": "2026-10-27",
+            "planned_departure": "2026-10-27T08:12:00+01:00",
+            "train_number": "1234"
+          }
+        },
+        "expires_at": null,
+        "fact_key": "all_good:2026-10-27:1234@2026-10-27T08:12:00+01:00:your 08:12 to RTD is on time per NS, change at UT.",
+        "id": "p1|outbound|all_good:2026-10-27:1234@2026-10-27T08:12:00+01:00:your 08:12 to RTD is on time per NS, change at UT.|silent|2026-10-27T08:05:00+01:00",
+        "look_ahead": null,
+        "occurrence": {
+          "direction": "outbound",
+          "profile_id": "p1",
+          "service_date": "2026-10-27"
+        },
+        "primary_target_pending": false,
+        "route_revision": 1,
+        "target_ids": [
+          "phone:historical"
+        ],
+        "webhook_copied": false
+      }
+    ],
+    "occurrences": {
+      "p1|outbound|2026-10-27": {
+        "advice": {
+          "advised_train": null,
+          "delivered": false,
+          "sent_at": null,
+          "usual_arrival": "2026-10-27T09:24:00+01:00",
+          "withdrawn": false
+        },
+        "alert_keys": {
+          "delayed:2026-10-27:1234@2026-10-27T08:12:00+01:00:08:12 AAA to UT#a": "0",
+          "delayed:2026-10-27:1234@2026-10-27T08:12:00+01:00:08:12 AAA to UT#d": "0",
+          "delayed:2026-10-27:5678@2026-10-27T08:50:00+01:00:08:50 UT to RTD#a": "0",
+          "delayed:2026-10-27:5678@2026-10-27T08:50:00+01:00:08:50 UT to RTD#d": "0"
+        },
+        "all_good_evaluated": true,
+        "at_station": false,
+        "baseline_frozen": true,
+        "baseline_signature": null,
+        "baseline_version": null,
+        "cancellation_history": [],
+        "direction_state": "locked",
+        "disruptions": {},
+        "disruptions_checked_at": "2026-10-27T08:05:00+01:00",
+        "disruptions_coverage": "complete",
+        "errand_deadline": null,
+        "generation": 1,
+        "key": {
+          "direction": "outbound",
+          "profile_id": "p1",
+          "service_date": "2026-10-27"
+        },
+        "lock": {
+          "commitment": "intended",
+          "legs": [
+            {
+              "accept_first_seen": null,
+              "accept_value": null,
+              "accepted_at": null,
+              "alight_frozen": false,
+              "alight_stop": "UT",
+              "board_station": "AAA",
+              "intended_alight": "UT",
+              "onward_from": "2026-10-27T08:44:00+01:00",
+              "served_endpoint": "UT",
+              "state": "boarding",
+              "train": {
+                "operating_date": "2026-10-27",
+                "planned_departure": "2026-10-27T08:12:00+01:00",
+                "train_number": "1234"
+              },
+              "watch_until": null
+            },
+            {
+              "accept_first_seen": null,
+              "accept_value": null,
+              "accepted_at": null,
+              "alight_frozen": false,
+              "alight_stop": "RTD",
+              "board_station": "UT",
+              "intended_alight": "RTD",
+              "onward_from": "2026-10-27T09:28:00+01:00",
+              "served_endpoint": "RTD",
+              "state": "pending",
+              "train": {
+                "operating_date": "2026-10-27",
+                "planned_departure": "2026-10-27T08:50:00+01:00",
+                "train_number": "5678"
+              },
+              "watch_until": null
+            }
+          ],
+          "plan": {
+            "checked_at": "2026-10-27T08:05:00+01:00",
+            "destination": "RTD",
+            "planned_arrival": "2026-10-27T09:24:00+01:00",
+            "planned_departure": "2026-10-27T08:12:00+01:00",
+            "source": "ns"
+          },
+          "planned_final_arrival": "2026-10-27T09:24:00+01:00",
+          "source": "auto"
+        },
+        "missing_sent": false,
+        "not_travelling": false,
+        "original_plan": {
+          "checked_at": "2026-10-27T08:05:00+01:00",
+          "destination": "RTD",
+          "planned_arrival": "2026-10-27T09:24:00+01:00",
+          "planned_departure": "2026-10-27T08:12:00+01:00",
+          "source": "ns"
+        },
+        "poll_records": [
+          {
+            "at": "2026-10-27T08:05:00+01:00",
+            "error": null,
+            "ok": true
+          },
+          {
+            "at": "2026-10-27T08:05:00+01:00",
+            "error": null,
+            "ok": true
+          }
+        ],
+        "retained": [],
+        "route_revision": 1,
+        "selected_recovery": null,
+        "settings_revision": 1,
+        "tap_at": null,
+        "travelling": false,
+        "zone_reports": {}
+      }
+    },
+    "started_before": true,
+    "webhook_copies": [],
+    "webhook_down": {},
+    "works_digest_weeks": {}
+  },
+  "version": 2,
+  "write_counter": 1
+}

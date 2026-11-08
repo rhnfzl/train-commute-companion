@@ -292,6 +292,111 @@ async def test_test_without_webhooks_is_as_today(app):
     assert app.texts() == [bot_mod.LOUD_TEST, bot_mod.SILENT_TEST]  # no webhook reply
 
 
+async def test_older_delivery_test_cannot_replace_newer_proof(app, monkeypatch):
+    started, release = asyncio.Event(), asyncio.Event()
+    send = app.bot._send
+    first = True
+
+    async def delayed(text, **params):
+        nonlocal first
+        if text == bot_mod.LOUD_TEST and first:
+            first = False
+            started.set()
+            await release.wait()
+        await send(text, **params)
+
+    monkeypatch.setattr(app.bot, "_send", delayed)
+    older = asyncio.create_task(app.bot._test_pair())
+    await started.wait()
+    await app.bot._test_pair()
+    newer_button = app.tg.sent[-1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    release.set()
+    await older
+    older_button = app.tg.sent[-1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    await app.bot.handle(tap(older_button))
+    assert not app.bot.confirmed
+    await app.bot.handle(tap(newer_button, uid=2))
+    assert app.bot.confirmed
+
+
+async def test_delivery_proof_waits_for_storage_and_can_retry(app, monkeypatch):
+    await app.bot._test_pair()
+    button = app.tg.sent[-1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    save = bot_mod.save_state
+
+    def failed_save(path, state):
+        raise OSError("read-only volume")
+
+    monkeypatch.setattr(bot_mod, "save_state", failed_save)
+    await app.bot.handle(tap(button))
+    assert not app.bot.confirmed
+    assert "Setup is complete" not in app.texts()[-1]
+    monkeypatch.setattr(bot_mod, "save_state", save)
+    await app.bot.handle(tap(button, uid=2))
+    assert app.bot.confirmed
+    assert load_state(app.path).confirmed_for == "123:1000001"
+
+
+async def test_cursor_dispatches_unique_ordered_updates_without_rewinding(app):
+    app.bot.state.offset = 4
+    updates = [
+        app.msg("/status", uid=7),
+        app.msg("/status", uid=5),
+        app.msg("/status", uid=5),
+        app.msg("/skip day", uid=3),
+        app.msg("/skip day", uid=True),
+        app.msg("/skip day", uid=-1),
+    ]
+    before = snapshot(app)
+    await app.bot._commit_and_dispatch(updates)
+    await asyncio.gather(*app.bot._tasks)
+    assert app.bot.state.offset == 8
+    assert load_state(app.path).offset == 8
+    assert len(app.tg.sent) == 2
+    assert snapshot(app) == before
+
+
+async def test_closed_bot_rejects_new_actions(app):
+    before = snapshot(app)
+    await app.bot.close()
+    await app.bot.handle(app.msg("/skip day"))
+    assert snapshot(app) == before
+    assert not app.tg.sent
+
+
+async def test_callback_waiting_for_ack_cannot_act_after_bot_closes(app, monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+    call = app.bot._api.call
+    before = snapshot(app)
+
+    async def delayed(method, params, timeout=20):
+        if method == "answerCallbackQuery":
+            entered.set()
+            await release.wait()
+        return await call(method, params, timeout)
+
+    monkeypatch.setattr(app.bot._api, "call", delayed)
+    callback = asyncio.create_task(app.bot.handle(tap("s|p1|outbound|2026-10-27")))
+    await entered.wait()
+    await app.bot.close()
+    release.set()
+    await callback
+    assert snapshot(app) == before
+
+
+async def test_future_command_cannot_change_current_journey(app):
+    before = snapshot(app)
+    await app.bot.handle(app.msg("/skip day", sent=app.rt.now() + timedelta(days=1)))
+    assert snapshot(app) == before
+    assert not app.tg.sent
+
+
+def test_negative_saved_cursor_is_not_trusted(tmp_path):
+    path = tmp_path / "telegram.json"
+    save_state(path, ShellState(-1, "123", None))
+    assert load_state(path) is None
+
+
 async def test_telegram_test_reports_each_webhook(tmp_path, tg):  # Review Focus 11
     app, rp = build_from_replay(tmp_path, tg, REPLAYS / "direct.yaml",
                                 webhook_urls=(URL, URL2), webhook_secret=SECRET)  # fmt: skip
@@ -520,7 +625,8 @@ async def test_overlapping_state_saves_keep_the_newest(app, monkeypatch):
     )
     await until(entered.is_set)
     tap_task = asyncio.create_task(app.bot.handle(tap(button["callback_data"], 8)))
-    await until(lambda: app.bot.state.confirmed_for is not None)
+    await until(lambda: len(app.bot.writes) == 2)
+    assert not app.bot.confirmed
     await asyncio.sleep(0.01)  # the confirm's save waits for the first one
     gate.set()
     await asyncio.gather(first, tap_task)

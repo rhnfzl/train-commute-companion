@@ -17,7 +17,12 @@ from train_commute_companion.calendar import TZ, hhmm, resolve_local
 from train_commute_companion.location import LOCATION_KINDS, LocationEvent
 from train_commute_companion.messages import ATTRIBUTION
 from train_commute_companion.model import AlertEvent, Connection
-from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
+from train_commute_companion.providers.base import (
+    ActiveDisruptions,
+    PlannedWorks,
+    ProviderAnswer,
+    Query,
+)
 from train_commute_companion.providers.ns import map_trips
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.store import PersistedState
@@ -165,6 +170,9 @@ class ReplayProvider:
 
     async def planned_works(self) -> PlannedWorks:
         return PlannedWorks((), "complete")
+
+    async def active_disruptions(self) -> ActiveDisruptions:
+        return ActiveDisruptions((), "complete")
 
     async def stations(self) -> frozenset[str]:
         return frozenset()
