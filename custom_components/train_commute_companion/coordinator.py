@@ -45,6 +45,9 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
         entry: ConfigEntry,
         host: RuntimeHost,
         notification_available: Callable[[], bool] = lambda: True,
+        *,
+        notification_paused: Callable[[], bool] = lambda: False,
+        notification_quiet: Callable[[], bool] = lambda: False,
     ) -> None:
         super().__init__(
             hass,
@@ -55,6 +58,8 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
         )
         self.host = host
         self._notification_available = notification_available
+        self.notification_paused = notification_paused
+        self.notification_quiet = notification_quiet
         self._timeouts = 0
         self._auth_phase = AuthPhase.CLEAR
 

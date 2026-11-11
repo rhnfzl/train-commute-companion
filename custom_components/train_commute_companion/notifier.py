@@ -19,7 +19,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from train_commute_companion.calendar import to_utc
 from train_commute_companion.model import AlertEvent, Direction, EventKind, Severity
-from train_commute_companion.notify import event_fields
+from train_commute_companion.notify import NotificationPaused, event_fields
 
 from .const import (
     DEFAULT_LOUD_STYLE,
@@ -291,6 +291,9 @@ class HaNotifier:
         service: str,
         loud_style: LoudStyle = DEFAULT_LOUD_STYLE,
         retired: threading.Event | None = None,
+        *,
+        enabled_entity: str | None = None,
+        quiet_entity: str | None = None,
     ) -> None:
         self.hass = hass
         self._receipt_target = mobile_target(hass, service)
@@ -299,10 +302,23 @@ class HaNotifier:
         self.entry_id = entry_id
         self.service = service
         self.loud_style = loud_style
+        self.enabled_entity = enabled_entity
+        self.quiet_entity = quiet_entity
         self._fired: set[tuple[str, Direction | None, str, Severity, Any]] = set()
         # this notifier's work on hass.loop (sends and relay fallbacks), cancelled on unload
         self._tasks: set[asyncio.Task[None]] = set()
         self._timed_out_at: float | None = None
+
+    @property
+    def paused(self) -> bool:
+        """Read on HA's loop; missing or unknown controls leave safety warnings enabled."""
+        state = self.hass.states.get(self.enabled_entity) if self.enabled_entity else None
+        return state is not None and state.state == "off"
+
+    @property
+    def quiet(self) -> bool:
+        state = self.hass.states.get(self.quiet_entity) if self.quiet_entity else None
+        return state is not None and state.state == "on"
 
     @property
     def available(self) -> bool:
@@ -366,6 +382,8 @@ class HaNotifier:
             self._tasks.discard(me)
 
     async def _deliver(self, event: AlertEvent) -> bool:
+        if self.paused:
+            raise NotificationPaused
         if event.kind in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED) and (
             mobile_target(self.hass, self.service) != self._receipt_target
         ):
@@ -385,7 +403,8 @@ class HaNotifier:
             )
         if self.phase is not NotifierPhase.READY:
             return False
-        payload = notify_payload(event.severity, event.text, self.loud_style)
+        severity = Severity.SILENT if self.quiet else event.severity
+        payload = notify_payload(severity, event.text, self.loud_style)
         # Retries replace the same displayed alert, including after a runtime restart.
         identity = (
             self.entry_id,
@@ -397,7 +416,7 @@ class HaNotifier:
         )
         payload["data"]["tag"] = (
             "tcc_"
-            + hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
+            + hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()[:60]
         )
         ok, timed_out = await _push(self.hass, self.service, payload, self.retired, self._tasks)
         if timed_out:

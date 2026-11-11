@@ -106,7 +106,7 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.news import all_good, forget_ended, news_of, severity
 from train_commute_companion.notification_policy import channels_for, routing_ready
-from train_commute_companion.notify import Notifier, WebhookPort, destination_id
+from train_commute_companion.notify import NotificationPaused, Notifier, WebhookPort, destination_id
 from train_commute_companion.profile import load_config
 from train_commute_companion.providers.base import (
     ActiveDisruptions,
@@ -154,6 +154,7 @@ from train_commute_companion.state import (
 from train_commute_companion.state_writer import Change, StateWriter
 from train_commute_companion.store import PersistedState, StorageError, Store
 from train_commute_companion.tasks import RefreshTask
+from train_commute_companion.travelling import resume
 from train_commute_companion.vehicle import VehicleProvider, VehicleWatch
 from train_commute_companion.vehicle_monitor import VehicleMonitor
 from train_commute_companion.view import RuntimeView, runtime_view
@@ -199,6 +200,8 @@ class _LoggingNotifier:
     async def send(self, event: AlertEvent) -> bool:
         try:
             ok = await self._inner.send(event)
+        except NotificationPaused:
+            raise
         except Exception:  # a raising shell is a failed attempt, retried by the watchdog
             log.exception("notifier failed")
             return False
@@ -1598,6 +1601,31 @@ class Runtime:
         """`act` with a `NotTravelling`."""
         return await self.act(profile_id, NotTravelling(service_date, whole_day), direction)
 
+    async def travelling(
+        self,
+        profile_id: str,
+        service_date: date | None = None,
+        direction: Direction | None = None,
+        *,
+        whole_day: bool = False,
+    ) -> Refused | None:
+        """Undo an explicit skip after saving it, preserving the journey's physical history."""
+        if self._writer.waiting:
+            return Refused("An earlier choice is not saved yet. Try again.", RefusalKind.RETRY)
+        stored = self._writer.st
+        candidate = resume(
+            stored, profile_id, service_date, direction, whole_day, self._clock.now()
+        )
+        if isinstance(candidate, Refused):
+            return candidate
+        if candidate == stored:
+            return None
+        if not self._writer.commit_strict(candidate):
+            return Refused(
+                "Travel choice was not saved. Review storage and try again.", RefusalKind.RETRY
+            )
+        return None
+
     def _shown_name(self, profile_id: str) -> str:
         """The name `view` shows for the profile: a removed one keeps its newest occurrence's."""
         p = find_profile(self._writer.st.config, profile_id)
@@ -1769,7 +1797,7 @@ class Runtime:
         self._reload.announced = reason
         self._app_warning(EventKind.PROFILE_REFUSED, f"profile change refused: {reason}.", now)
 
-    async def reload(self) -> None:
+    async def reload(self) -> Refused | None:
         request = self._reload.begin()
         now = self._clock.now()
         applied: Config | None = None
@@ -1778,17 +1806,24 @@ class Runtime:
             text = await asyncio.to_thread(self._path.read_text, encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
             if not self._reload.current(request):
-                return
+                return Refused(
+                    "Another profile reload replaced this request. Try again.", RefusalKind.RETRY
+                )
             self._refuse(f"cannot read {self._path.name} ({e})", now)
         else:
             if not self._reload.current(request):
-                return
+                return Refused(
+                    "Another profile reload replaced this request. Try again.", RefusalKind.RETRY
+                )
             self._reload.refusal = None
             old, today = self._writer.st.config, now.astimezone(TZ).date()
             if self._require_stations and self.known_stations is None:
                 await self._fetch_stations()
                 if not self._reload.current(request):
-                    return
+                    return Refused(
+                        "Another profile reload replaced this request. Try again.",
+                        RefusalKind.RETRY,
+                    )
                 old = self._writer.st.config
             cfg, errors = load_config(
                 text, self.known_stations, old, today, available_channels=self.available_channels
@@ -1818,6 +1853,18 @@ class Runtime:
         if applied is not None and self._writer.waiting:
             self._mtime = None  # not written, so not active: the file watch tries again (r22)
         await self._deliver()
+
+        if not self._reload.current(request):
+            return Refused(
+                "Another profile reload replaced this request. Try again.", RefusalKind.RETRY
+            )
+        if self._reload.refusal is not None:
+            return Refused(self._reload.refusal)
+        if not self._writer.store_ok or self._writer.waiting:
+            return Refused(
+                "The profiles were not saved. Review storage and try again.", RefusalKind.RETRY
+            )
+        return None
 
     def _stations_due(self) -> bool:
         last = self._stations_tried

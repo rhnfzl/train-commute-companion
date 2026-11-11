@@ -38,6 +38,19 @@ For critical to work, set up your phone. The menu names below follow the compani
 
 When you change the alert style or the notify target (Configure, Change settings, then save), the integration sends a loud and a silent test. Turn Do Not Disturb on first and check that the loud test still rings. Saving without changing either sends no test.
 
+### Pause notifications or make them quiet
+
+Configure, Settings has two optional entity controls. Select a binary sensor, input boolean, or switch:
+
+- `notifications_enabled_entity`: `off` pauses phone notifications and `train_commute_companion_alert` events. `on` permits delivery.
+- `notifications_quiet_entity`: `on` makes phone notifications silent, including alerts configured as critical. The event keeps its original severity.
+
+Unset, missing, `unknown`, or `unavailable` controls leave notifications enabled and use the selected alert style. Clear a control to remove it.
+
+Monitoring continues while paused. Relevant alerts wait without failed attempts or delivery receipts. Expired advice and outdated delay updates are discarded before delivery. Journey warnings follow the existing retention policy until the journey is skipped. Unpausing permits still-relevant warnings on the next runtime pass.
+
+The health sensor shows `notifications_paused` unless a key, storage, profile, or existing delivery failure takes priority. Health attributes and downloaded diagnostics report both controls' effective states. Independently configured webhooks continue using their routing. Automations that relay alert events must apply their own silent-delivery setting. Explicit setup and settings test pushes still run.
+
 ### Check the file
 
 Under Configure, Check the profiles file, the integration reads your file and names every error, with a suggestion where it can. Run it after every edit. The same file works with `tcc check-profile`.
@@ -59,13 +72,21 @@ The [dashboard example](dashboard.md) shows journey details, data freshness and 
 
 ### Services
 
-All three take `profile` (the profile `id` or `name`) and optionally `direction` and `service_date`.
+All four take `profile` (the profile `id` or `name`) and optionally `direction` and `service_date`.
 
 - `train_commute_companion.leaving`: you are on your way.
 - `train_commute_companion.not_travelling`: you are not travelling (`whole_day: true` for both directions).
+- `train_commute_companion.travelling`: undo an explicit skip (`whole_day: true` for both directions).
 - `train_commute_companion.choose`: name the train you will take by its `departure` time, with an optional `train_number`.
 
 A service or button used when there is nothing to act on, or with an unknown profile, fails with a message that says why.
+
+`travelling` keeps existing train progress and arrival records. It does not restart completed journeys or journeys whose monitoring window closed.
+An active journey is unchanged. An older skip without its saved previous state is refused.
+`leaving` and `choose` do not undo a saved skip. Resume first, then choose or leave.
+
+`train_commute_companion.reload_profiles` takes no fields. It reads and applies the profiles file before returning.
+An invalid file, a superseded read, or a failed storage write raises an error. The last valid profiles keep running.
 
 ### Event
 

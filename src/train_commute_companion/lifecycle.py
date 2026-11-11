@@ -571,6 +571,9 @@ def apply_action(s: OccurrenceState, ctx: Ctx, action: UserAction) -> Transition
         replace(
             s,
             not_travelling=True,
+            skipped_direction_state=(
+                s.skipped_direction_state if s.not_travelling else s.direction_state
+            ),
             direction_state=DirectionState.EXPIRED,
             retained=(),
             generation=gen,

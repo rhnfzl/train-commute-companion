@@ -23,6 +23,8 @@ async def async_get_config_entry_diagnostics(
             "store_ok": view.store_ok,
             "key_rejected": view.key_rejected,
             "undelivered": view.undelivered,
+            "notifications_paused": data.coordinator.notification_paused(),
+            "notifications_quiet": data.coordinator.notification_quiet(),
             "requests": view.requests,
             "journeys": [
                 {

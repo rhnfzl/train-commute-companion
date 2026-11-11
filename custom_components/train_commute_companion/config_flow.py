@@ -18,6 +18,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.selector import (
     BooleanSelector,
+    EntitySelector,
+    EntitySelectorConfig,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -37,6 +39,8 @@ from . import notifier as notifier_mod
 from .arrival_flow import ArrivalFlow
 from .const import (
     CONF_LOUD_STYLE,
+    CONF_NOTIFICATIONS_ENABLED_ENTITY,
+    CONF_NOTIFICATIONS_QUIET_ENTITY,
     CONF_NOTIFY,
     CONF_PROFILES_PATH,
     CONF_WEBHOOK_SECRET,
@@ -79,6 +83,7 @@ class _SettingsCandidate:
     service: str
     style: LoudStyle
     target: str | None
+    controls: dict[str, str]
 
 
 def _fails(check: Callable[[str], None], value: str) -> bool:
@@ -447,6 +452,15 @@ class TccOptionsFlow(
         schema = vol.Schema({vol.Required(CONF_PROFILES_PATH, default=self._path): str}).extend(
             notify_schema(self.hass, self._service, self._style).schema
         )
+        schema = schema.extend(
+            {
+                vol.Optional(key): EntitySelector(
+                    EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch"])
+                )
+                for key in (CONF_NOTIFICATIONS_ENABLED_ENTITY, CONF_NOTIFICATIONS_QUIET_ENTITY)
+            }
+        )
+        schema = self.add_suggested_values_to_schema(schema, self.config_entry.options)
         return self.async_show_form(
             step_id="settings",
             data_schema=schema,
@@ -470,6 +484,11 @@ class TccOptionsFlow(
             user_input[CONF_NOTIFY],
             user_input[CONF_LOUD_STYLE],
             notifier_mod.mobile_target(self.hass, user_input[CONF_NOTIFY]),
+            {
+                key: user_input[key]
+                for key in (CONF_NOTIFICATIONS_ENABLED_ENTITY, CONF_NOTIFICATIONS_QUIET_ENTITY)
+                if user_input.get(key)
+            },
         )
         self._settings_candidate = candidate
         self._path, self._service, self._style = candidate.path, candidate.service, candidate.style
@@ -590,7 +609,13 @@ class TccOptionsFlow(
         self._settings_check.finish()
         return self.async_create_entry(
             data={
-                **candidate.base_options,
+                **{
+                    key: value
+                    for key, value in candidate.base_options.items()
+                    if key
+                    not in (CONF_NOTIFICATIONS_ENABLED_ENTITY, CONF_NOTIFICATIONS_QUIET_ENTITY)
+                },
+                **candidate.controls,
                 CONF_PROFILES_PATH: candidate.path,
                 CONF_NOTIFY: candidate.service,
                 CONF_LOUD_STYLE: candidate.style,
