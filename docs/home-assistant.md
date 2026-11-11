@@ -9,6 +9,18 @@ It needs Home Assistant 2026.10 or newer and the Home Assistant companion app on
 1. In HACS, open the menu, choose Custom repositories, and add `https://github.com/rhnfzl/train-commute-companion` as an Integration.
 2. Download Train Commute Companion in HACS and restart Home Assistant.
 
+### Upgrade to 0.2.2
+
+Update through HACS and restart Home Assistant. The integration installs the matching `train-commute-companion==0.2.2` core automatically.
+Existing profiles and settings remain valid. Notification controls are optional and keep the existing alert style when unset.
+
+Back up the integration and its state before upgrading. The older 0.2.1 core rejects the added recovery-state field.
+A downgrade requires a compatible pre-upgrade backup. Restoring it removes later journey decisions and arrival confirmations, so preserve newer history first.
+Never delete the state file to force a downgrade.
+
+The update uses notification tags within the Apple Push Notification service limit to restore iPhone delivery.
+Pending alerts can receive a new tag after upgrading, so they may appear separately from older notifications.
+
 ## Set up
 
 1. Get an NS API key from the NS API portal.
