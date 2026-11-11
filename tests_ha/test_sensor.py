@@ -96,6 +96,18 @@ async def test_entity_ids_follow_profile_name(hass):
     assert ids["sensor.office_a_health"] == "p1_health"
 
 
+async def test_status_distinguishes_explicit_skip_from_natural_status(hass):
+    h = await setup_tcc(hass, PROFILE)
+    assert attr(hass, "sensor.office_a_outbound_status", "not_travelling") is False
+    assert attr(hass, "sensor.office_a_return_status", "not_travelling") is False
+    await h.host.run(lambda rt: rt.not_travelling("p1", direction=Direction.OUTBOUND))
+    await h.entry.runtime_data.coordinator.async_refresh()
+    assert attr(hass, "sensor.office_a_outbound_status", "not_travelling") is True
+    await h.host.run(lambda rt: rt.travelling("p1", direction=Direction.OUTBOUND))
+    await h.entry.runtime_data.coordinator.async_refresh()
+    assert attr(hass, "sensor.office_a_outbound_status", "not_travelling") is False
+
+
 async def test_leg_and_transfer_states_after_poll(hass):
     h = await setup_tcc(hass, PROFILE)
     await drive(h, "08:00")

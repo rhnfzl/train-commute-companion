@@ -237,6 +237,7 @@ class OccurrenceState:
     disruptions_coverage: Literal["complete", "unknown"] = "unknown"
     selected_recovery: SelectedRecovery | None = None
     original_plan: PlannedJourney | None = None
+    skipped_direction_state: DirectionState | None = None
 
     @property
     def phase(self) -> OccurrencePhase:

@@ -73,7 +73,7 @@ def test_writer_phase_is_transactional_and_strict_failure_is_not_replayed():
     assert w.phase is WritePhase.DURABLE
 
 
-def test_pre_refactor_state_load_save_read_preserves_schema(tmp_path):
+def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_default(tmp_path):
     import json
     from pathlib import Path
 
@@ -86,6 +86,8 @@ def test_pre_refactor_state_load_save_read_preserves_schema(tmp_path):
     path.write_text(fixture.read_text())
     store = JsonFileStore(path)
     state = store.load()
+    for occurrence in raw["state"]["occurrences"].values():
+        occurrence["skipped_direction_state"] = None
     assert encode(state) == raw["state"]
     store.save(state)
     assert JsonFileStore(path).load() == state

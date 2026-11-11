@@ -19,7 +19,7 @@ from train_commute_companion.model import (
     WebhookCopy,
     alert_facts,
 )
-from train_commute_companion.notify import Notifier, WebhookPort, destination_id
+from train_commute_companion.notify import NotificationPaused, Notifier, WebhookPort, destination_id
 
 APP_WARNINGS = frozenset(
     {EventKind.KEY_REJECTED, EventKind.PROFILE_REFUSED, EventKind.STORAGE_FAILED}
@@ -201,8 +201,11 @@ async def deliver(
         return None, False
     if verdict is DeliveryVerdict.HOLD:
         return o, False
-    if await notifier.send(ledger.current(o)):
-        return None, True
+    try:
+        if await notifier.send(ledger.current(o)):
+            return None, True
+    except NotificationPaused:
+        return o, False
     return replace(o, attempts=o.attempts + 1), False
 
 

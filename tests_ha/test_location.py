@@ -487,8 +487,17 @@ async def test_event_queued_behind_the_lock_across_a_switch_back_is_dropped(hass
     assert await hass.async_add_executor_job(hit.wait, 30)
     set_person(hass, 52.0, 5.0)  # queues behind the lock with the old epoch
     await switch_away_and_back(h)
-    await tick(hass, REFRESH_S + 1)
-    await h.host.run(lambda rt: release.set())
+    refreshed = asyncio.Event()
+    unsubscribe = h.entry.runtime_data.coordinator.async_add_listener(refreshed.set)
+    refresh = hass.async_create_task(tick(hass, REFRESH_S + 1))
+    try:
+        # tick also drains the deliberately blocked location tasks, so release after the refresh.
+        async with asyncio.timeout(5):
+            await refreshed.wait()
+    finally:
+        unsubscribe()
+        await h.host.run(lambda rt: release.set())
+        await refresh
     await spied(h)
     assert await h.host.run(evidence) == []  # the queued event kept its old epoch
 

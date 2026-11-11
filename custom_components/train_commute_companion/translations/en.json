@@ -163,12 +163,16 @@
         "data": {
           "profiles_path": "Profiles file",
           "notify_service": "Phone",
-          "loud_style": "Loud alert style"
+          "loud_style": "Loud alert style",
+          "notifications_enabled_entity": "Notifications enabled entity",
+          "notifications_quiet_entity": "Quiet phone delivery entity"
         },
         "data_description": {
           "profiles_path": "Full path to your profiles file. Copy the starter file there first.",
           "notify_service": "The phone that gets the alerts. Both test notifications go to it.",
-          "loud_style": "How a loud alert arrives. Quiet updates are always silent."
+          "loud_style": "How a loud alert arrives. Quiet updates are always silent.",
+          "notifications_enabled_entity": "Optional. Off pauses phone notifications and alert events. Relevant alerts wait without a failed delivery. Missing or unknown states leave notifications enabled.",
+          "notifications_quiet_entity": "Optional. On makes phone notifications silent. Alert events keep their original severity. Missing or unknown states use the selected alert style."
         }
       },
       "test": {
@@ -628,6 +632,32 @@
           "description": "Supply only when no original plan was saved. Include the date and UTC offset."
         }
       }
+    },
+    "travelling": {
+      "name": "Travelling",
+      "description": "Resume a journey you explicitly skipped. Completed journeys stay unchanged.",
+      "fields": {
+        "profile": {
+          "name": "Profile",
+          "description": "The profile's name or id."
+        },
+        "service_date": {
+          "name": "Service date",
+          "description": "Pick another day's journey. Leave empty for the next one."
+        },
+        "direction": {
+          "name": "Direction",
+          "description": "Outbound or return. Needed when both run on the chosen day."
+        },
+        "whole_day": {
+          "name": "Whole day",
+          "description": "Both directions of the commute day."
+        }
+      }
+    },
+    "reload_profiles": {
+      "name": "Reload profiles",
+      "description": "Apply the current profiles file. An invalid file leaves the last valid profiles active."
     }
   }
 }

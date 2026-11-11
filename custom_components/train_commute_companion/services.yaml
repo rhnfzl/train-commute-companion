@@ -57,6 +57,18 @@ not_travelling:
       default: false
       selector:
         boolean:
+reload_profiles:
+  fields: {}
+travelling:
+  fields:
+    profile: {required: true, selector: {text: {}}}
+    service_date: {selector: {date: {}}}
+    direction:
+      selector:
+        select:
+          options: [outbound, return]
+          translation_key: direction
+    whole_day: {default: false, selector: {boolean: {}}}
 prepare_recovery:
   fields:
     profile: {required: true, selector: {text: {}}}

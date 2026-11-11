@@ -92,6 +92,16 @@ async def test_loud_payload_default_is_time_sensitive(hass, monkeypatch):
     assert calls[0].data["message"] == loud_event().text
 
 
+async def test_apple_collapse_identifier_fits_relay_limit(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
+    event = loud_event()
+    assert await send_from_thread(hass, event)
+    assert await send_from_thread(hass, event)
+    first, retried = [call.data["data"]["tag"] for call in calls]
+    assert len(first.encode("utf-8")) <= 64
+    assert first == retried
+
+
 async def test_loud_payload_critical_when_chosen(hass, monkeypatch):
     calls = fake_phone(hass, monkeypatch)
     assert await send_from_thread(hass, loud_event(), loud_style="critical")

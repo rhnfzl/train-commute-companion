@@ -1,4 +1,4 @@
-"""The three user actions (7.13) as services; the buttons call the same functions."""
+"""The user actions as services; the buttons call the same functions."""
 
 import asyncio
 import logging
@@ -145,6 +145,21 @@ async def do_not_travelling(
     await _refresh_or_refuse(data, refused, name)
 
 
+async def do_travelling(
+    data: TccData,
+    profile_id: str,
+    name: str,
+    *,
+    service_date: date | None = None,
+    direction: Direction | None = None,
+    whole_day: bool = False,
+) -> None:
+    refused = await _call_runtime(
+        data, lambda rt: rt.travelling(profile_id, service_date, direction, whole_day=whole_day)
+    )
+    await _refresh_or_refuse(data, refused, name)
+
+
 async def _handle_choose(call: ServiceCall) -> None:
     d = call.data
     data, pid, _ = resolve_profile(call.hass, d["profile"])
@@ -179,6 +194,28 @@ async def _handle_not_travelling(call: ServiceCall) -> None:
     )
 
 
+async def _handle_travelling(call: ServiceCall) -> None:
+    d = call.data
+    data, pid, name = resolve_profile(call.hass, d["profile"])
+    await do_travelling(
+        data,
+        pid,
+        name,
+        service_date=d.get("service_date"),
+        direction=d.get("direction"),
+        whole_day=d["whole_day"],
+    )
+
+
+async def _handle_reload_profiles(call: ServiceCall) -> None:
+    entries = call.hass.config_entries.async_loaded_entries(DOMAIN)
+    if not entries:
+        raise ServiceValidationError("Train Commute Companion is not loaded")
+    data: TccData = entries[0].runtime_data
+    refused = await _call_runtime(data, lambda rt: rt.reload())
+    await _refresh_or_refuse(data, refused)
+
+
 def async_setup_services(hass: HomeAssistant) -> None:
     from .arrival_controls import async_setup_arrival_services
     from .recovery_controls import async_setup_recovery_services
@@ -190,3 +227,5 @@ def async_setup_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, "not_travelling", _handle_not_travelling, NOT_TRAVELLING_SCHEMA
     )
+    hass.services.async_register(DOMAIN, "travelling", _handle_travelling, NOT_TRAVELLING_SCHEMA)
+    hass.services.async_register(DOMAIN, "reload_profiles", _handle_reload_profiles, vol.Schema({}))

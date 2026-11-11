@@ -81,13 +81,17 @@ def shown_and_others(
     return chosen, tuple(o for o in mine if o is not chosen)
 
 
-def health_state(view: RuntimeView, profile_id: str) -> str:
+def health_state(view: RuntimeView, profile_id: str, *, notifications_paused: bool = False) -> str:
     if view.key_rejected:
         return "key_rejected"
     if not view.store_ok:
         return "storage_failed"
+    if view.refusal is not None:
+        return "profile_refused"
     if view.undelivered > 0:
         return "notify_failing"
+    if notifications_paused:
+        return "notifications_paused"
     live = [o for o in view.occurrences if o.key.profile_id == profile_id and not o.resolved]
     if any(not o.health.fresh or o.health.consecutive_failures >= FAILED_POLLS for o in live):
         return "cannot_see"

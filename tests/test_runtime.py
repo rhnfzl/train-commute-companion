@@ -141,7 +141,8 @@ async def test_late_profile_read_cannot_replace_a_newer_reload(tmp_path, monkeyp
         await rig.rt.reload()
     finally:
         release.set()
-        await older
+        refusal = await older
+    assert isinstance(refusal, Refused) and refusal.kind is RefusalKind.RETRY
     assert rig.rt.config.profiles[0].name == "Newest edit"
 
 

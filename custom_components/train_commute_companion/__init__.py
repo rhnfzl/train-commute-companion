@@ -20,6 +20,8 @@ from train_commute_companion.webhook_send import WebhookPoster
 from . import host as host_mod
 from .const import (
     CONF_LOUD_STYLE,
+    CONF_NOTIFICATIONS_ENABLED_ENTITY,
+    CONF_NOTIFICATIONS_QUIET_ENTITY,
     CONF_NOTIFY,
     CONF_PROFILES_PATH,
     CONF_STARTED,
@@ -86,7 +88,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
     lock = file_lock(state_path)
     retired = threading.Event()
     # built here on hass.loop: an HA object, and unload needs it to cancel its pending pushes
-    notifier = HaNotifier(hass, entry_id, notify_service, loud_style, retired)
+    notifier = HaNotifier(
+        hass,
+        entry_id,
+        notify_service,
+        loud_style,
+        retired,
+        enabled_entity=entry.options.get(CONF_NOTIFICATIONS_ENABLED_ENTITY),
+        quiet_entity=entry.options.get(CONF_NOTIFICATIONS_QUIET_ENTITY),
+    )
 
     def build() -> host_mod.Parts:
         clock = host_mod.make_clock()
@@ -134,7 +144,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         except Exception as err:
             raise ConfigEntryNotReady(f"the runtime did not start: {err}") from err
 
-        coordinator = TccCoordinator(hass, entry, host, lambda: notifier.available)
+        coordinator = TccCoordinator(
+            hass,
+            entry,
+            host,
+            lambda: notifier.available,
+            notification_paused=lambda: notifier.paused,
+            notification_quiet=lambda: notifier.quiet,
+        )
         await coordinator.async_config_entry_first_refresh()
         # HA polls a coordinator only while it has a listener; monitoring must not wait for entities
         entry.async_on_unload(coordinator.async_add_listener(lambda: None))

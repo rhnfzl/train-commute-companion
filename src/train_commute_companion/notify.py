@@ -53,10 +53,14 @@ class DestinationReservations:
         return any(d in self.down and not self._active.get(d, False) for d in destinations)
 
 
+class NotificationPaused(Exception):
+    """The user paused delivery; keep a relevant alert without recording a failed attempt."""
+
+
 class Notifier(Protocol):
     async def send(self, event: AlertEvent) -> bool:
         """True when the message got through. False or an exception is a failed attempt, which
-        the runtime retries."""
+        the runtime retries. NotificationPaused defers without a failed attempt."""
         ...
 
 

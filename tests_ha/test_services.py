@@ -124,6 +124,42 @@ async def test_not_travelling_whole_day_expires_both_directions(hass):
     assert len(h.pushes) == before
 
 
+async def test_travelling_service_restores_only_explicit_skip(hass):
+    h = await setup_tcc(hass, PROFILE)
+    await call(hass, "not_travelling", profile="office_a", whole_day=True)
+    await call(hass, "travelling", profile="office_a", service_date=TUE.isoformat(), whole_day=True)
+    states = await h.host.run(lambda rt: tuple(rt.state.occurrences.values()))
+    assert states and all(not s.not_travelling for s in states)
+    before = states
+    await call(hass, "travelling", profile="office_a", service_date=TUE.isoformat(), whole_day=True)
+    assert await h.host.run(lambda rt: tuple(rt.state.occurrences.values())) == before
+
+
+async def test_leaving_cannot_resume_a_skipped_journey(hass):
+    h = await setup_tcc(hass, PROFILE)
+    await call(hass, "not_travelling", profile="office_a", direction="outbound")
+    with pytest.raises(ServiceValidationError):
+        await call(hass, "leaving", profile="office_a", direction="outbound")
+    assert (await h.host.run(lambda rt: only_occurrence(rt))).not_travelling
+
+
+async def test_reload_profiles_adopts_valid_file_before_returning(hass):
+    h = await setup_tcc(hass, PROFILE)
+    write_profiles(hass, PROFILE.replace("buffer_min: 10", "buffer_min: 12"))
+    await call(hass, "reload_profiles")
+    assert await h.host.run(lambda rt: rt.config.profiles[0].outbound.buffer_min) == 12
+
+
+async def test_reload_profiles_refuses_invalid_file_without_false_success(hass):
+    h = await setup_tcc(hass, PROFILE)
+    assert hass.services.has_service(DOMAIN, "reload_profiles")
+    before = await h.host.run(lambda rt: rt.config)
+    write_profiles(hass, "profiles: not-a-list")
+    with pytest.raises(ServiceValidationError, match="profile"):
+        await call(hass, "reload_profiles")
+    assert await h.host.run(lambda rt: rt.config) == before
+
+
 async def test_not_travelling_with_date_and_direction_touches_only_that_direction(hass):
     h = await setup_tcc(hass, PROFILE)
     key = OccurrenceKey("p1", Direction.RETURN, TUE)

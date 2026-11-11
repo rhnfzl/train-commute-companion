@@ -69,6 +69,7 @@ def _status_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
     if occ is None:
         return {
             "service_date": None,
+            "not_travelling": False,
             "route_changed": False,
             "others": [],
             "extra_legs": [],
@@ -83,6 +84,7 @@ def _status_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
     info = next(i for i in view.directions if i.profile_id == pid and i.direction is d)
     return {
         "service_date": occ.key.service_date.isoformat(),
+        "not_travelling": occ.not_travelling,
         "original_train_state": occ.direction_state.value,
         "recovery_offer": occ.recovery_offer.fields() if occ.recovery_offer else None,
         "selected_recovery": (
@@ -267,11 +269,23 @@ class TccSensor(TccEntity, SensorEntity):
 
     @property
     def native_value(self) -> Value:
+        if self._attr_translation_key == "health":
+            return health_state(
+                self.coordinator.data,
+                self.profile_id,
+                notifications_paused=self.coordinator.notification_paused(),
+            )
         return self._value_fn(self.coordinator.data)
 
     @property
     def extra_state_attributes(self) -> Attrs:
-        return self._attrs_fn(self.coordinator.data)
+        attrs = self._attrs_fn(self.coordinator.data)
+        if self._attr_translation_key == "health":
+            attrs.update(
+                notifications_paused=self.coordinator.notification_paused(),
+                notifications_quiet=self.coordinator.notification_quiet(),
+            )
+        return attrs
 
 
 def wanted(coordinator: TccCoordinator, view: RuntimeView) -> dict[str, Callable[[], TccEntity]]:
