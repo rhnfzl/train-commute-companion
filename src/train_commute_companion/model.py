@@ -456,6 +456,9 @@ class LocationSettings:
     entity: str | None
     zones: Mapping[str, str]
     station_radius_m: int = 150  # last and defaulted, so stored configs still decode
+    # Q12, source ha only: place role -> a Wi-Fi tracker (home/not_home), a motion activity sensor
+    wifi: Mapping[str, str] = field(default_factory=dict)
+    activity_entity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

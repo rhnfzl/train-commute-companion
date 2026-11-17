@@ -15,6 +15,7 @@ from train_commute_companion.classify import pair_transfer
 from train_commute_companion.disruptions import disruptions_fresh
 from train_commute_companion.health import BoardHealth, board_health
 from train_commute_companion.lifecycle import (
+    MISSED_CONFIRM,
     find_next_good,
     is_resolved,
     merged_pool,
@@ -28,6 +29,7 @@ from train_commute_companion.location import (
     LocationKind,
     Zone,
     ZoneTrack,
+    clear_of,
     fix_zone,
     next_zone,
     seed_zone,
@@ -268,41 +270,69 @@ def track_fix(
     loc = profile.location
     if loc is None or view.location_epochs.get(profile.id, 0) != epoch:
         return None
-    if fix.acc is not None and fix.acc > loc.station_radius_m:
-        return None
     running = running_stations(view.occurrences, profile.id)
-    stations = station_zones(profile, loc.station_radius_m, view.positions, running)
-    zone = fix_zone(fix, loc, [*stations, *places])
+    zones = [*station_zones(profile, loc.station_radius_m, view.positions, running), *places]
+    if fix.acc is not None and fix.acc > loc.station_radius_m:
+        # Q12: too coarse to place anyone in a zone, but one clear of every zone is a leave
+        placed = {z.name for z in zones}  # a region-only place has no circle to be clear of
+        if track is None or track.zone not in placed or fix.regions or not clear_of(fix, zones):
+            return None
+        return next_zone(track, None, fix.at)
+    zone = fix_zone(fix, loc, zones)
     return (seed_zone(zone, fix.at), []) if track is None else next_zone(track, zone, fix.at)
 
 
 STILL_LEAD = timedelta(minutes=5)  # Q10: still fresh (STALE_LOCATION) when the departure poll runs
+_VOUCHABLE = (LegState.PENDING, LegState.BOARDING, LegState.RIDING)
 
 
 def still_due(
-    view: RuntimeView, profile: Profile, zone: str | None, sent: Collection[str], now: datetime
+    view: RuntimeView,
+    profile: Profile,
+    zone: str | None,
+    sent: Collection[str],
+    now: datetime,
+    wifi: bool = False,
 ) -> str | None:
-    """Q3, Q10: the key of an unresolved occurrence of `profile` whose locked first train, not
-    yet left, departs within STILL_LEAD (half the buffer when shorter) while `zone` (the
-    source's track) is that direction's origin place (home outbound, work on return); None when
-    nothing is owed or `sent` holds it.
-    The shell then vouches for the zone with one `still` event per train: a phone at rest sends
-    no fixes, so without it the core has no fresh presence when the train leaves."""
+    """Q3, Q10, Q12: the key of a vouch owed for `zone` (the source's track), None when nothing
+    is owed or `sent` holds it. A phone at rest sends no fixes, so the shell then tells the core
+    once with a `still` event that its tracker still places the user there:
+    - before: the locked first train, not yet left, departs within STILL_LEAD (half the buffer
+      when shorter) while `zone` is that direction's origin place (home outbound, work on
+      return). Presence only (Q12 rule 6).
+    - departed: that train has just left while the origin place's Wi-Fi is connected (`wifi`),
+      so the vouch carries it (Q12 rule 3a).
+    - confirm: a locked train left MISSED_CONFIRM ago and `zone` is where it is boarded (its
+      station, or the origin place for the first train): the core confirms the miss (rule 4).
+    Each is keyed on the live departure: a vouch made stale by a growing delay is owed again."""
+    t = to_utc(now)
     for o in view.occurrences:
-        if o.key.profile_id != profile.id or o.resolved or o.not_travelling or not o.legs:
+        if o.key.profile_id != profile.id or o.resolved or o.not_travelling:
             continue
-        x = o.legs[0]
-        if x.progress not in (LegState.PENDING, LegState.BOARDING):
-            continue
-        if zone != place_zone(profile, profile.origin(o.key.direction)):
-            continue
-        dep = to_utc(x.departure or x.planned_departure)
-        # keyed on the live departure: a vouch made stale by a growing delay is owed again
-        key = f"{o.key.direction}|{o.key.service_date}|{x.train_number}|{dep.isoformat()}"
-        # under half the buffer, so the core still finds it too late to catch (Q3)
+        origin = place_zone(profile, profile.origin(o.key.direction))
         buffer = timedelta(minutes=profile.journey(o.key.direction).buffer_min)
-        if key not in sent and dep - min(STILL_LEAD, buffer / 2) <= to_utc(now) < dep:
-            return key
+        for i, x in enumerate(o.legs):
+            if x.progress not in _VOUCHABLE:
+                continue
+            place = i == 0 and zone == origin
+            if zone != x.board and not place:
+                continue
+            dep = to_utc(x.departure or x.planned_departure)
+            base = f"{o.key.direction}|{o.key.service_date}|{x.train_number}|{dep.isoformat()}"
+            if (
+                place
+                and x.progress is not LegState.RIDING
+                and dep - min(STILL_LEAD, buffer / 2) <= t < dep
+            ):
+                stage = "before"  # under half the buffer, so the core still finds it too late (Q3)
+            elif place and wifi and dep <= t < dep + STILL_LEAD:
+                stage = "departed"
+            elif dep + MISSED_CONFIRM <= t < dep + MISSED_CONFIRM + STILL_LEAD:
+                stage = "confirm"
+            else:
+                continue
+            if (key := f"{base}|{stage}") not in sent:
+                return key
     return None
 
 

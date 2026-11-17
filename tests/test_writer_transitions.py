@@ -88,10 +88,14 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
     state = store.load()
     for occurrence in raw["state"]["occurrences"].values():
         occurrence["skipped_direction_state"] = None
+        occurrence["moved_at"] = None  # Q12 defaults for an older store
+        occurrence["wifi_reports"] = {}
     for cfg in (raw["state"]["config"], *raw["state"]["config_snapshots"].values()):
         for profile in cfg["profiles"]:
             for d in ("outbound", "return_"):
                 profile[d]["active_lead_min"] = None  # Q9 default for an older store
+            if profile["location"] is not None:  # Q12 defaults
+                profile["location"] |= {"wifi": {}, "activity_entity": None}
     assert encode(state) == raw["state"]
     store.save(state)
     assert JsonFileStore(path).load() == state

@@ -76,7 +76,13 @@ from train_commute_companion.lookahead import forget_pending, rebase_on_edit, re
 from train_commute_companion.lookahead_probe import service_date
 from train_commute_companion.lookahead_run import apply_run, lookahead_done, probe_direction
 from train_commute_companion.match import usual_connection
-from train_commute_companion.messages import CHECK_APP, RefusalKind, Refused, no_journey
+from train_commute_companion.messages import (
+    CHECK_APP,
+    RefusalKind,
+    Refused,
+    name_stations,
+    no_journey,
+)
 from train_commute_companion.model import (
     AlertEvent,
     AlertFacts,
@@ -726,8 +732,11 @@ class Runtime:
             and x.key.direction is s.key.direction and not is_resolved(x)
         ]  # fmt: skip
         obligations = []
+        # only the NS provider loads a station catalogue
+        labels: Mapping[str, str] = getattr(self._provider, "station_labels", {})
         for e in out:
             mark_sent(keys, e.key, e.severity)
+            e = replace(e, text=name_stations(e.text, labels))
             if twins:  # 7.13: alerts name the service date while two occurrences exist
                 note = f" (service date {s.key.service_date.isoformat()})"
                 e = replace(e, text=e.text + note, facts=replace(alert_facts(e), twin_note=note))
@@ -1752,7 +1761,8 @@ class Runtime:
         epoch: int | None = None,
     ) -> bool:
         """Every unresolved occurrence of the profile gets the event with a fresh origin answer;
-        False when NS failed one of those requests, so the event was judged without it.
+        False when NS failed one of those requests or its answer went stale (another
+        generation), so the event was judged without it.
         With `source` (the settings the event was read under), a profile whose location settings
         differ by the time it would be written drops the event: a switched, disabled or replaced
         source supplies no evidence (8). With `epoch` (`RuntimeView.location_epochs` when the fix
@@ -1790,7 +1800,7 @@ class Runtime:
             ctx = None if s is None else self._ctx(s, now)
             if s is None or ctx is None or is_resolved(s) or stale(ctx):
                 continue
-            answered = answered and failed is None and failed_more is None
+            answered = answered and failed is None and failed_more is None and s.generation == gen
             if s.generation != gen:
                 # an answer asked under another generation is stale; the report itself still counts
                 answer, watched = None, ()

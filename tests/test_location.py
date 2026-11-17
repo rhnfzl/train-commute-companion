@@ -135,13 +135,13 @@ def test_leaving_origin_sets_provisional_lock_with_event_time_plus_buffer():
 
 
 def test_missed_first_train_vs_missed_transfer_are_separate_events():  # spec fixture
-    first = locate(occ(journey([L1, L2])), "08:16", event("AAA", "report", "08:15"), USUAL, LATER)
+    first = locate(occ(journey([L1, L2])), "08:25", event("AAA", "report", "08:24"), USUAL, LATER)
     assert kinds(first) == [(EventKind.MISSED_FIRST_TRAIN, Severity.LOUD)]
     assert numbers(first.state) == ["1300", "6666"]
     assert first.state.lock is not None and first.state.lock.source is LockSource.MISSED
 
     s = occ(journey([L1, L2], RIDE))
-    transfer = locate(s, "08:54", event("UT", "report", "08:53"), USUAL, conn(L1, R2))
+    transfer = locate(s, "09:03", event("UT", "report", "09:02"), USUAL, conn(L1, R2))
     assert kinds(transfer) == [(EventKind.MISSED_TRANSFER, Severity.LOUD)]
     assert numbers(transfer.state) == ["1234", "6666"]  # the ridden leg is kept
     assert first.events[0].text != transfer.events[0].text
@@ -178,30 +178,32 @@ def test_station_report_inside_grace_moves_nothing():  # safety fixture, Q4
 
 
 def test_location_confirmed_missed_train_is_dropped():  # Q2
-    t = locate(occ(journey([L1, L2])), "08:16", event("AAA", "report", "08:15"), USUAL, LATER)
+    t = locate(occ(journey([L1, L2])), "08:25", event("AAA", "report", "08:24"), USUAL, LATER)
     assert kinds(t) == [(EventKind.MISSED_FIRST_TRAIN, Severity.LOUD)] and t.state.retained == ()
     # its onward leg is cancelled later: nothing more about the missed train
-    a = poll(t.state, ctx(at("08:17")), ans("AAA", conn(L1, L2X), LATER, when="08:17"))
+    a = poll(t.state, ctx(at("08:26")), ans("AAA", conn(L1, L2X), LATER, when="08:26"))
     assert not any(e.train is not None and e.train.train_number == "1234" for e in a.events)
     assert not any("if you are on" in e.text for e in a.events)
     # a missed transfer is dropped the same way
     s = occ(journey([L1, L2], RIDE))
-    t = locate(s, "08:54", event("UT", "report", "08:53"), USUAL, conn(L1, R2))
+    t = locate(s, "09:03", event("UT", "report", "09:02"), USUAL, conn(L1, R2))
     assert kinds(t) == [(EventKind.MISSED_TRANSFER, Severity.LOUD)] and t.state.retained == ()
-    a = poll(t.state, ctx(at("08:55")), ans("AAA", conn(L1, L2X), conn(L1, R2), when="08:55"))
+    a = poll(t.state, ctx(at("09:04")), ans("AAA", conn(L1, L2X), conn(L1, R2), when="09:04"))
     assert not any(e.train is not None and e.train.train_number == "5678" for e in a.events)
 
 
-def test_missed_needs_three_minutes_after_expected_departure():  # Q4 boundary
+def test_station_presence_proves_a_miss_only_twelve_minutes_after_departure():  # Q12 rule 4
+    # replaces the Q4 rule "3 minutes after the expected departure": a phone reports late
     def missed(c: object, report: str, now: str) -> bool:
         t = locate(occ(journey([L1, L2])), now, event("AAA", "report", report), c, LATER)
         return any(e.kind is EventKind.MISSED_FIRST_TRAIN for e in t.events)
 
-    assert not missed(USUAL, "08:14:59", "08:15:30")
-    assert missed(USUAL, "08:15", "08:15:30")
+    assert not missed(USUAL, "08:15", "08:15:30")
+    assert not missed(USUAL, "08:23:59", "08:24:30")
+    assert missed(USUAL, "08:24", "08:24:30")
     late = conn(make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_dep=5), L2)
-    assert not missed(late, "08:19:59", "08:20:30")  # expected 08:17
-    assert missed(late, "08:20", "08:20:30")
+    assert not missed(late, "08:28:59", "08:29:30")  # expected 08:17
+    assert missed(late, "08:29", "08:29:30")
 
 
 def test_no_left_note_after_waiting_at_the_boarding_station():  # Q4
@@ -301,11 +303,13 @@ def test_late_leave_after_the_auto_train_left_keeps_the_lock():
     # the phone says "left home" only after the usual train left: a late fix, so the lock stays
     s = occ(journey([L1, L2], RIDE))
     t = locate(s, "08:14", event("home", "leave", "08:13"), USUAL, LATER)
-    assert t.state == s and t.events == ()
-    # a really late user is still caught at the station: there the next good train takes over
-    t = locate(t.state, "08:16", event("AAA", "enter", "08:16"), LATER)
-    assert t.state.lock is not None and t.state.lock.source is LockSource.STATION
-    assert numbers(t.state) == ["1300", "6666"]
+    assert t.state.lock == s.lock and t.events == () and t.state.moved_at == at("08:13")
+    # Q12: entering the station after it puts the user back in a zone, so that leave no longer
+    # says riding; the station is suspect at first and a miss once still there at +12
+    t = locate(t.state, "08:16", event("AAA", "enter", "08:16"), USUAL, LATER)
+    assert t.events == () and numbers(t.state) == ["1234", "5678"] and t.state.moved_at is None
+    t = locate(t.state, "08:24", event("AAA", "still", "08:24"), USUAL, LATER)
+    assert kinds(t) == [(EventKind.MISSED_FIRST_TRAIN, Severity.LOUD)]
 
 
 def at_station(t: Transition) -> list[str]:
@@ -375,13 +379,13 @@ def test_station_status_names_the_station_relock():  # Q1
 
 
 def test_missed_at_station_is_one_message_with_next_status():  # Q1, Q2
-    t = locate(occ(journey([L1, L2])), "08:16", event("AAA", "report", "08:15"), USUAL, LATER)
+    t = locate(occ(journey([L1, L2])), "08:25", event("AAA", "report", "08:24"), USUAL, LATER)
     assert kinds(t) == [(EventKind.MISSED_FIRST_TRAIN, Severity.LOUD)]
     assert t.events[0].text == (
         "Office A: you missed the 08:12. Next: 08:25 to RTD, change at UT, on time per NS,"
         " arrives 09:39."
     )
-    later = locate(t.state, "08:18", event("AAA", "report", "08:18"), LATER)
+    later = locate(t.state, "08:27", event("AAA", "report", "08:27"), LATER)
     assert at_station(later) == []
 
 
@@ -420,35 +424,45 @@ def missed_home(t: Transition) -> list[str]:
     return [e.text for e in t.events if e.kind is EventKind.MISSED_FIRST_TRAIN]
 
 
-def test_home_report_when_first_train_departs_relocks_with_leave_by():  # Q3
-    t = poll(home_at("08:07"), ctx(at("08:13")), ans("AAA", USUAL, LATER, when="08:13"))
-    assert kinds(t) == [(EventKind.MISSED_FIRST_TRAIN, Severity.LOUD)]  # no "has left" note
+LAST = conn(
+    make_leg("AAA", "UT", "08:44", "09:12", number="1400"),
+    make_leg("UT", "RTD", "09:20", "09:54", number="7777"),
+)
+
+
+def test_home_presence_at_departure_is_a_hedge_until_confirmed():  # Q3, Q12 rules 1, 4, 5
+    t = poll(home_at("08:07"), ctx(at("08:13")), ans("AAA", USUAL, LATER, LAST, when="08:13"))
+    assert kinds(t) == [(EventKind.NEXT_CONNECTION, Severity.SILENT)]  # suspect: the hedge
+    assert numbers(t.state) == ["1234", "5678"]  # still possibly ridden
+    t = locate(t.state, "08:24", event("home", "still", "08:24"), USUAL, LATER, LAST)
+    assert kinds(t) == [(EventKind.MISSED_FIRST_TRAIN, Severity.LOUD)]
     assert t.events[0].text == (
-        "Office A: you missed the 08:12. Next you can catch: 08:25. Leave by 08:15."
+        "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34."
     )
-    assert numbers(t.state) == ["1300", "6666"]
+    assert numbers(t.state) == ["1400", "7777"]
     assert t.state.lock is not None and t.state.lock.source is LockSource.MISSED
     assert t.state.retained == () and not t.state.travelling
 
 
-def test_home_report_after_departure_is_missed_on_the_event():  # Q3
-    # the departure poll had no fresh presence; the 08:12 is already followed as left
+def test_home_report_twelve_minutes_after_departure_is_missed_on_the_event():  # Q3, Q12
+    # the departure poll had no proof; the 08:12 is already followed as left
     s = occ(journey([L1, L2], RIDE))
-    t = locate(s, "08:13", event("home", "report", "08:13"), USUAL, LATER)
+    assert locate(s, "08:13", event("home", "report", "08:13"), USUAL, LATER).events == ()
+    t = locate(s, "08:24", event("home", "report", "08:24"), USUAL, LATER, LAST)
     assert missed_home(t) == [
-        "Office A: you missed the 08:12. Next you can catch: 08:25. Leave by 08:15."
+        "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34."
     ]
-    assert numbers(t.state) == ["1300", "6666"] and t.state.retained == ()
+    assert numbers(t.state) == ["1400", "7777"] and t.state.retained == ()
 
 
-def test_still_event_counts_as_presence():  # Q3, Q10
+def test_still_event_counts_as_presence_not_proof():  # Q3, Q10, Q12 rule 6
     s = home_at("08:08", kind="still")
     assert s.zone_reports["home"] == at("08:08")
     t = poll(s, ctx(at("08:13")), ans("AAA", USUAL, LATER, when="08:13"))
-    assert kinds(t) == [(EventKind.MISSED_FIRST_TRAIN, Severity.LOUD)]
+    assert kinds(t) == [(EventKind.NEXT_CONNECTION, Severity.SILENT)]
 
 
-def test_still_inside_half_a_small_buffer_is_a_miss():  # Q3 review: the return buffer is 2
+def test_still_inside_half_a_small_buffer_is_no_miss_alone():  # Q12 rule 6: return buffer 2
     def small(c: Ctx) -> Ctx:
         p = c.profile
         return replace(c, profile=replace(p, outbound=replace(p.outbound, buffer_min=2)))
@@ -461,7 +475,7 @@ def test_still_inside_half_a_small_buffer_is_a_miss():  # Q3 review: the return 
         ans("AAA", USUAL, LATER, when="08:11"),
     ).state
     t = poll(s, small(ctx(at("08:13"))), ans("AAA", USUAL, LATER, when="08:13"))
-    assert kinds(t) == [(EventKind.MISSED_FIRST_TRAIN, Severity.LOUD)]
+    assert missed_home(t) == [] and numbers(t.state) == ["1234", "5678"]
 
 
 def test_stale_home_report_at_departure_keeps_the_has_left_note():  # Q3
@@ -490,13 +504,14 @@ def test_delayed_train_still_at_platform_is_not_missed_from_home():  # Q3
 
 
 def test_home_with_no_catchable_train_sends_one_message():  # Q3
-    t = poll(home_at("08:07"), ctx(at("08:13")), ans("AAA", USUAL, when="08:13"))
+    s = poll(home_at("08:07"), ctx(at("08:13")), ans("AAA", USUAL, when="08:13")).state
+    t = locate(s, "08:24", event("home", "still", "08:24"), USUAL)
     assert kinds(t) == [(EventKind.MISSED_FIRST_TRAIN, Severity.LOUD)]
     assert t.events[0].text.endswith(
         "you missed the 08:12. No train you can still catch was found, check the NS app."
     )
     assert t.state.lock is not None and t.state.lock.legs[0].state is LegState.MISSED
-    again = poll(t.state, ctx(at("08:15")), ans("AAA", USUAL, when="08:15"))
+    again = poll(t.state, ctx(at("08:26")), ans("AAA", USUAL, when="08:26"))
     assert missed_home(again) == []
 
 
@@ -514,7 +529,9 @@ def test_return_direction_uses_the_work_zone():  # Q3
     s = occ(journey([home]), key=key)
     a = ans("RTD", conn(home), conn(later), when="17:50")
     s = on_location(s, c("17:50"), event("work", "report", "17:50"), a).state
-    t = poll(s, c("17:53"), ans("RTD", conn(home), conn(later), when="17:53"))
+    s = poll(s, c("17:53"), ans("RTD", conn(home), conn(later), when="17:53")).state
+    a = ans("RTD", conn(home), conn(later), when="18:04")
+    t = on_location(s, c("18:04"), event("work", "still", "18:04"), a)
     assert missed_home(t) == [
         "Office A: you missed the 17:52. Next you can catch: 18:22. Leave by 18:17."
     ]

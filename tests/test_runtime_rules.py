@@ -2164,8 +2164,8 @@ async def test_missed_message_holds_after_its_train_is_dropped(tmp_path):  # Q2
     rig = await started(tmp_path)
     rig.provider.world = [USUAL, LATER]
     rig.notifier.fails = lambda e: True  # held, so revalidation decides
-    rig.clock.set("08:18")
-    await rig.rt.report_location("p1", LocationEvent("AAA", "report", at("08:18")))
+    rig.clock.set("08:24")  # still there 12 min after the 08:12 left (Q12 rule 4)
+    await rig.rt.report_location("p1", LocationEvent("AAA", "report", at("08:24")))
     (o,) = [o for o in rig.rt.state.obligations if o.event.kind is EventKind.MISSED_FIRST_TRAIN]
     s = next(iter(rig.rt.state.occurrences.values()))
     assert s.retained == () and all(x.state is not LegState.MISSED for x in s.lock.legs)
