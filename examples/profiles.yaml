@@ -31,6 +31,13 @@ profiles:
       latest_acceptable_arrival: null   # optional "HH:MM"; later arrival makes delays loud
       quiet_hours: ["19:52", "07:12"]   # quiet events wait; loud ones still go out
     location: null            # optional; omit to run on times only
+    # location:                 # Home Assistant source, see docs/location-ha.md
+    #   source: ha
+    #   entity: person.me
+    #   zones: { home: zone.home, work: zone.work }
+    #   station_radius_m: 150
+    #   wifi: { home: device_tracker.phone_wifi }   # optional: proves a miss at home sooner
+    #   activity_entity: sensor.phone_activity      # optional: phone motion (riding or at rest)
   - id: "p2"
     name: "office_b"
     traveller: "me"

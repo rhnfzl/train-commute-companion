@@ -238,6 +238,10 @@ class OccurrenceState:
     selected_recovery: SelectedRecovery | None = None
     original_plan: PlannedJourney | None = None
     skipped_direction_state: DirectionState | None = None
+    # Q12: the latest riding sign (a leave, a fast fix, a fresh in-vehicle activity) and, per
+    # place zone, when its Wi-Fi was last seen connected: what tells a missed train from a late fix
+    moved_at: datetime | None = None
+    wifi_reports: Mapping[str, datetime] = field(default_factory=dict)
 
     @property
     def phase(self) -> OccurrencePhase:

@@ -1,6 +1,7 @@
 """Alert text shared by more than one caller (7.9, 11.1). Pure: every fact comes in as an argument."""
 
-from collections.abc import Sequence
+import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -10,6 +11,15 @@ from train_commute_companion.model import Leg
 ATTRIBUTION = "Data: NS"
 CHECK_APP = "check the NS app"
 ON_TIME_MAX_MIN = 1  # a departure delay up to this is on time (7.5)
+
+
+_STATION_NUMBER = re.compile(r"\b\d{7}\b")  # a UIC station number, as NS gives some stops
+
+
+def name_stations(text: str, labels: Mapping[str, str]) -> str:
+    """`text` with each station number the catalogue knows shown by its name: NS gives some
+    stops by number only, and a message never shows one."""
+    return _STATION_NUMBER.sub(lambda m: labels.get(m[0], m[0]), text)
 
 
 class RefusalKind(Enum):

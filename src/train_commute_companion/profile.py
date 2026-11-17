@@ -315,8 +315,10 @@ def _location(c: _ProfileErrors, raw: object) -> tuple[bool, LocationSettings | 
         c.err("location", "must be a mapping or null")
         return False, None
     n = len(c.errors)
-    c.keys(raw, ("source", "entity", "zones", "station_radius_m"), "location")
+    keys = ("source", "entity", "zones", "station_radius_m", "wifi", "activity_entity")
+    c.keys(raw, keys, "location")
     src, ent, zones = raw.get("source"), raw.get("entity"), raw.get("zones", {})
+    wifi, activity = raw.get("wifi", {}), raw.get("activity_entity")
     radius = raw.get("station_radius_m", 150)
     if isinstance(radius, bool) or not isinstance(radius, int) or radius <= 0:
         c.err("location.station_radius_m", "must be a whole number of metres above 0")
@@ -331,9 +333,23 @@ def _location(c: _ProfileErrors, raw: object) -> tuple[bool, LocationSettings | 
         isinstance(k, str) and isinstance(v, str) for k, v in zones.items()
     ):
         c.err("location.zones", "must map names to zone names")
+    if not isinstance(wifi, dict) or not all(
+        k in ("home", "work") and isinstance(v, str) and v for k, v in wifi.items()
+    ):
+        c.err(
+            "location.wifi",
+            "must map home or work to a Wi-Fi tracker entity",
+            "for example home: device_tracker.phone_wifi",
+        )
+    if activity is not None and (not isinstance(activity, str) or not activity):
+        c.err(
+            "location.activity_entity", "must be an entity id", "for example sensor.phone_activity"
+        )
+    if (wifi or activity) and src != "ha":
+        c.err("location", "wifi and activity_entity need source ha")
     if source is None or len(c.errors) > n:
         return False, None
-    return True, LocationSettings(source, ent, dict(zones), radius)
+    return True, LocationSettings(source, ent, dict(zones), radius, dict(wifi), activity)
 
 
 def _date(c: _ProfileErrors, value: object, path: str) -> date | None:

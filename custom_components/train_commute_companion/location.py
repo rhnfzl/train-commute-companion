@@ -22,6 +22,7 @@ from homeassistant.util import dt as dt_util
 
 from train_commute_companion.location import (
     PLACE_ROLES,
+    Evidence,
     Fix,
     LocationEvent,
     Zone,
@@ -58,6 +59,29 @@ def _fix(state: State) -> tuple[float, float] | None:
 
 def _acc(state: State) -> float | None:
     return number(state.attributes.get("gps_accuracy"))
+
+
+def _speed(hass: HomeAssistant, state: State) -> float | None:
+    """Q12: m/s of the fix, from the tracker itself or a person's source tracker."""
+    source = state.attributes.get("source")
+    tracker = hass.states.get(source) if isinstance(source, str) else None
+    return number((tracker or state).attributes.get("speed"))
+
+
+def evidence(
+    hass: HomeAssistant, loc: LocationSettings, zone: str, speed: float | None = None
+) -> Evidence:
+    """Q12: the optional signals beside a position: the fix's speed, the phone's motion activity
+    with when it was reported, and the Wi-Fi of the place `zone` names, when configured."""
+    activity = activity_at = None
+    st = hass.states.get(loc.activity_entity) if loc.activity_entity else None
+    if st is not None and st.state not in ("unavailable", "unknown"):
+        activity, activity_at = st.state, st.last_reported
+    wifi = None
+    for role, entity in loc.wifi.items():
+        if loc.zones.get(role, role) == zone and (w := hass.states.get(entity)) is not None:
+            wifi = {"home": True, "not_home": False}.get(w.state)
+    return Evidence(speed, activity, activity_at, wifi)
 
 
 def place_zones(hass: HomeAssistant, loc: LocationSettings) -> list[Zone]:
@@ -149,13 +173,14 @@ class LocationTracker:
             state = self._hass.states.get(entity)  # 7.2: the state found now only seeds the zone
             if state is not None and (pos := _fix(state)) is not None:
                 at, acc = state.last_updated, _acc(state)
-                self._spawn(self._process_fix(pid, gen, epoch, pos, at, acc, seed=True), pid)
+                self._spawn(self._process_fix(pid, gen, epoch, pos, at, acc, None, seed=True), pid)
         self._vouch(want)
 
     def _vouch(self, tracked: dict[str, tuple[str, int]]) -> None:
-        """Q3, Q10: a phone at rest at home sends no fixes, so shortly before a locked first
-        train leaves, a source whose tracker still places the user in that direction's origin
-        place tells the core so once per train (`still_due`), as fresh presence."""
+        """Q3, Q10, Q12: a phone at rest sends no fixes, so around a locked train's departure a
+        source whose tracker still places the user where it is boarded tells the core so, once
+        per train and stage (`still_due`), with the optional signals. A restart forgets what was
+        sent, but each stage is due only for minutes, so it repeats at most one vouch."""
         data, now = self._coordinator.data, dt_util.utcnow()
         for pid, (entity, epoch) in tracked.items():
             track, state = self._tracks.get(pid), self._hass.states.get(entity)
@@ -165,7 +190,9 @@ class LocationTracker:
             if state is None or _fix(state) is None:  # unavailable: it vouches for nothing
                 continue
             sent = self._still_sent.setdefault(pid, set())
-            if (key := still_due(data, profile, track.zone, sent, now)) is None:
+            loc, zone = profile.location, track.zone
+            wifi = loc is not None and evidence(self._hass, loc, zone).wifi is True
+            if (key := still_due(data, profile, zone, sent, now, wifi)) is None:
                 continue
             sent.add(key)
             self._spawn(self._send_still(pid, self._gen[pid], epoch, track.zone, now), pid)
@@ -182,9 +209,9 @@ class LocationTracker:
             if (track := self._tracks.get(pid)) is None or track.zone != zone:
                 return
             try:
-                await self._send(
-                    pid, gen, LocationEvent(zone, "still", at), profile.location, epoch
-                )
+                ev = evidence(self._hass, profile.location, zone)
+                event = LocationEvent(zone, "still", at, ev)
+                await self._send(pid, gen, event, profile.location, epoch)
             except RuntimeNotRunning:
                 _LOGGER.debug("location event dropped: the runtime is not running")
             except Exception:
@@ -211,8 +238,9 @@ class LocationTracker:
             return
         for pid, (entity, epoch) in self._tracked.items():
             if entity == event.data["entity_id"]:
-                at = new.last_updated
-                self._spawn(self._process_fix(pid, self._gen[pid], epoch, pos, at, _acc(new)), pid)
+                at, acc, speed = new.last_updated, _acc(new), _speed(self._hass, new)
+                fix = self._process_fix(pid, self._gen[pid], epoch, pos, at, acc, speed)
+                self._spawn(fix, pid)
 
     def _spawn(self, coro: Coroutine[Any, Any, None], pid: str) -> None:
         task = self._entry.async_create_task(self._hass, coro, f"tcc location {pid}")
@@ -227,6 +255,7 @@ class LocationTracker:
         pos: tuple[float, float],
         at: datetime,
         acc: float | None,
+        speed: float | None,
         *,
         seed: bool = False,
     ) -> None:
@@ -236,7 +265,7 @@ class LocationTracker:
         check, read `gen`: the rest of a fix's events are not dispatched for an old source."""
         async with self._locks.setdefault(pid, asyncio.Lock()):
             try:
-                await self._apply_fix(pid, gen, epoch, pos, at, acc, seed)
+                await self._apply_fix(pid, gen, epoch, pos, at, acc, speed, seed)
             except RuntimeNotRunning:
                 _LOGGER.debug("location event dropped: the runtime is not running")
             except Exception:
@@ -250,6 +279,7 @@ class LocationTracker:
         pos: tuple[float, float],
         at: datetime,
         acc: float | None,
+        speed: float | None,
         seed: bool,
     ) -> None:
         if self._phase is not TrackerPhase.TRACKING or self._gen.get(pid) is not gen:
@@ -271,6 +301,7 @@ class LocationTracker:
             at,
             lambda e: self._send(pid, gen, e, source, epoch),
             lambda: self._lift_timer(pid),
+            lambda zone: evidence(self._hass, source, zone, speed),
         )
 
     async def _send(

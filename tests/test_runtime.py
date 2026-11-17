@@ -25,7 +25,7 @@ from runtime_rig import (
 from train_commute_companion.budget import RequestBudget
 from train_commute_companion.ledger import leg_now
 from train_commute_companion.lifecycle import Choose
-from train_commute_companion.location import LocationEvent
+from train_commute_companion.location import Evidence, LocationEvent
 from train_commute_companion.messages import RefusalKind, Refused, no_journey
 from train_commute_companion.model import (
     AlertEvent,
@@ -1483,12 +1483,18 @@ async def test_location_says_whether_ns_answered(tmp_path):
 # --- Q5: a relock is not a gap; a real gap is told on the second poll under the new lock ---
 
 
+def resting(hhmm: str) -> Evidence:
+    """Q12 rule 3b: the phone reported it is at rest at `hhmm`, after the train left."""
+    return Evidence(activity="Stationary", activity_at=at(hhmm))
+
+
 async def relocked_at_aaa_0818(tmp: Path) -> Rig:
     """The 2026-11-17 incident: at AAA after the 08:12 left, the location relocks to the 08:44,
     which no poll has asked for yet."""
     rig = await one_transfer(tmp)
     await rig.run_until("08:18")
-    await rig.rt.report_location("p1", LocationEvent("AAA", "report", at("08:18")))
+    event = LocationEvent("AAA", "report", at("08:18"), resting("08:17"))
+    await rig.rt.report_location("p1", event)
     assert only_occurrence(rig.rt).lock.legs[0].train.planned_departure == at("08:44")
     return rig
 
@@ -1575,8 +1581,8 @@ async def test_choose_at_retained_remainder_promotes_ridden_train(tmp_path):  # 
 async def test_missed_transfer_is_dropped_and_cannot_be_chosen_back(tmp_path):  # Q2
     rig = await one_transfer(tmp_path)
     await rig.run_until("08:44")
-    rig.clock.set("08:54")  # at UT 3 min after the delayed 08:46 left (expected 08:51)
-    await rig.rt.report_location("p1", LocationEvent("UT", "report", at("08:54")))
+    rig.clock.set("08:54")  # at UT 3 min after the delayed 08:46 left (expected 08:51), at rest
+    await rig.rt.report_location("p1", LocationEvent("UT", "report", at("08:54"), resting("08:53")))
     assert EventKind.MISSED_TRANSFER in kinds(rig.rt.events_log)
     pre = only_occurrence(rig.rt)
     assert pre.retained == ()
@@ -1602,22 +1608,28 @@ async def test_station_report_finds_missed_first_train_ns_no_longer_lists(tmp_pa
     departing_from_asked_time(rig)
     rig.clock.set("08:18")  # at AAA after the 08:12 left; a query from AAA now omits it
     await rig.rt.report_location("p1", LocationEvent("AAA", "report", at("08:18")))
+    assert EventKind.MISSED_FIRST_TRAIN not in kinds(rig.rt.events_log)  # Q12: only suspect
+    rig.clock.set("08:24")  # still there 12 min after it left: a miss (Q12 rule 4)
+    await rig.rt.report_location("p1", LocationEvent("AAA", "report", at("08:24")))
     assert EventKind.MISSED_FIRST_TRAIN in kinds(rig.rt.events_log)
     s = only_occurrence(rig.rt)
     assert s.lock.legs[0].train.planned_departure == at("08:44")
     assert s.retained == ()  # dropped, never retained (Q2)
 
 
-async def test_home_report_then_departure_poll_sends_one_missed_message(tmp_path):  # Q3
+async def test_home_vouches_give_a_hedge_then_one_missed_message(tmp_path):  # Q3, Q12
     rig = await one_transfer(tmp_path)
     await rig.run_until("08:06")
     await rig.rt.report_location("p1", LocationEvent("home", "still", at("08:06")))
     await rig.run_until("08:15")  # the 08:14 poll sees the 08:12 gone while the user is home
+    assert EventKind.MISSED_FIRST_TRAIN not in kinds(rig.rt.events_log)  # presence, no proof
+    assert EventKind.NEXT_CONNECTION in kinds(rig.rt.events_log)  # the silent hedge
+    rig.clock.set("08:24")  # the shell's vouch 12 min after the departure confirms it
+    await rig.rt.report_location("p1", LocationEvent("home", "still", at("08:24")))
     missed = [e for e in rig.rt.events_log if e.kind is EventKind.MISSED_FIRST_TRAIN]
     assert [e.text for e in missed] == [
         "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34."
     ]
-    assert EventKind.NEXT_CONNECTION not in kinds(rig.rt.events_log)
     s = only_occurrence(rig.rt)
     assert s.lock.source is LockSource.MISSED
     assert s.lock.legs[0].train.planned_departure == at("08:44")
@@ -1628,7 +1640,7 @@ async def test_station_report_finds_missed_transfer_ns_no_longer_lists(tmp_path)
     departing_from_asked_time(rig)
     await rig.run_until("08:44")
     rig.clock.set("08:54")  # at UT after the delayed 08:46 left; a query from AAA now omits it
-    await rig.rt.report_location("p1", LocationEvent("UT", "report", at("08:54")))
+    await rig.rt.report_location("p1", LocationEvent("UT", "report", at("08:54"), resting("08:53")))
     assert EventKind.MISSED_TRANSFER in kinds(rig.rt.events_log)
     assert only_occurrence(rig.rt).retained == ()
 
@@ -1640,7 +1652,9 @@ async def test_lock_kept_missed_leg_is_not_watched(tmp_path):  # Q2
     await rig.rt.poll_once()
     departing_from_asked_time(rig)
     rig.clock.set("08:18")
-    await rig.rt.report_location("p1", LocationEvent("AAA", "report", at("08:18")))
+    await rig.rt.report_location(
+        "p1", LocationEvent("AAA", "report", at("08:18"), resting("08:17"))
+    )
     s = only_occurrence(rig.rt)
     assert s.lock.legs[0].state is LegState.MISSED and s.retained == ()
     n = len(rig.rt.events_log)

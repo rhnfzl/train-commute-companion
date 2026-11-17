@@ -261,9 +261,9 @@ def test_progress_changes_raise_the_generation():  # rule 21
     end = on_tick(arrived(), ctx(at("10:03")))
     assert end.state.direction_state is DirectionState.DONE
     assert end.state.generation == arrived().generation + 1
-    # a missed train with nothing to relock to is still a change
-    e = LocationEvent("AAA", "report", at("08:15"))
-    m = on_location(usual_locked(), ctx(at("08:16")), e, ans("AAA", conn(L1, L2), when="08:16"))
+    # a missed train with nothing to relock to is still a change (Q12: confirmed at +12 min)
+    e = LocationEvent("AAA", "report", at("08:24"))
+    m = on_location(usual_locked(), ctx(at("08:25")), e, ans("AAA", conn(L1, L2), when="08:25"))
     assert m.state.lock is not None and m.state.lock.legs[0].state is LegState.MISSED
     assert m.state.generation == usual_locked().generation + 1
     # the first platform report waives the buffer for the same station lock

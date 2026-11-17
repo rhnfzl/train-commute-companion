@@ -26,7 +26,7 @@ from train_commute_companion.lifecycle_lock import (
     unfinished_leg,
     write_lock,
 )
-from train_commute_companion.location import STALE_LOCATION, LocationEvent
+from train_commute_companion.location import STALE_LOCATION, Evidence, LocationEvent
 from train_commute_companion.match import (
     matches_pattern,
     remaining_pattern,
@@ -1451,7 +1451,7 @@ def left_note(s: OccurrenceState, ctx: Ctx, pool: Pool, j: Journey, i: int) -> A
 def _waited_at(s: OccurrenceState, station: str, dep: datetime) -> bool:
     """Q4: presence in `station`'s zone from BOARDING_LEAD before the expected departure until
     it, with no leave before the train (`on_location`): the user was there to board, so its
-    leaving is no news, and a miss is told by a later report there (`_missed`). A first report
+    leaving is no news, and a miss is told by later proof there (`_missed`). A first report
     only after the departure, or none, keeps the hedge (7.7)."""
     t = s.zone_reports.get(station)
     return t is not None and to_utc(dep) - BOARDING_LEAD <= to_utc(t) < to_utc(dep)
@@ -1586,7 +1586,16 @@ def on_poll(s: OccurrenceState, ctx: Ctx, poll: PollAnswers) -> Transition:
 # --- arrival acceptance, location, missed legs (7.2, 7.7, 7.12 rules 6, 7) ---
 
 ERRAND_TIMEOUT = timedelta(minutes=45)
-MISSED_GRACE = timedelta(minutes=3)  # Q4: a fix this soon after departure may be the train leaving
+MISSED_GRACE = timedelta(
+    minutes=3
+)  # Q4, Q12 3b: a fix this soon after departure may be the train leaving
+MISSED_CONFIRM = timedelta(minutes=12)  # Q12 rule 4: still there this long after it left is a miss
+RIDING_SPEED = 8.0  # Q12 rule 2: m/s, faster than anyone walks or waits on a platform
+ACTIVITY_FRESH = timedelta(minutes=5)  # Q12: an activity reported longer ago says nothing now
+WIFI_LAG = timedelta(minutes=5)  # Q12 3a: a Wi-Fi tracker says "not home" up to this late
+# iOS names (Stationary, Walking, Automotive), Android ones (still, on_foot, in_vehicle)
+_RIDING_ACTIVITY = frozenset({"automotive", "in_vehicle"})
+_AT_REST_ACTIVITY = frozenset({"stationary", "walking", "still", "on_foot"})
 BOARDING_LEAD = timedelta(minutes=30)  # Q4: a still phone sends no repeat reports (location docs)
 LAST_WATCH = timedelta(minutes=30)
 _MISSABLE = (LegState.PENDING, LegState.BOARDING, LegState.RIDING)
@@ -1693,13 +1702,14 @@ def on_location(
     watched: Sequence[ProviderAnswer] = (),
 ) -> Transition:
     """Location only adds (7.2): leaving the origin zone sets a provisional lock, entering the
-    first station zone a definitive one, a station report after a leg's expected departure is a
-    missed leg (rule 7). `answer`: a fresh healthy answer from the origin; without it only the
+    first station zone a definitive one, station presence after a leg's expected departure that
+    proves it (Q12) is a missed leg (rule 7). `answer`: a fresh healthy answer from the origin; without it only the
     travelling and station facts are kept, so the runtime passes the origin answer with every
     event. `watched`: the answers of `location_queries`, read only for a missed leg. Entering
     the origin station tells the train followed now, once (Q1). Presence at the origin place
-    after the locked first train left is a miss from there (Q3). A stale event counts as
-    unknown. An `enter`, `report` or `still` is kept in `zone_reports` (presence).
+    after the locked first train left is a miss from there once proven (Q3, Q12). A stale
+    event counts as unknown. An `enter`, `report` or `still` is kept in `zone_reports`
+    (presence).
     Nothing here ends or silences anything."""
     unchanged = Transition(s, ())
     if is_resolved(s) or event.zone is None:
@@ -1713,6 +1723,7 @@ def on_location(
     at = to_utc(event.at)
     if prev is not None and at < to_utc(prev):
         return unchanged
+    s = _note_evidence(s, event)
     # a leave places the user outside the zone: it is never presence (rule 6, 8.4). Q4: leaving
     # a boarding station before its train ends the wait; from the departure on, the user may be
     # aboard, so a later fix there keeps the earlier presence that says they waited.
@@ -1730,6 +1741,45 @@ def on_location(
     # rule 21: a lock, catchability or missed-leg change raises the generation; a repeat
     # report that changes none of them keeps polls in flight
     return keep_stated(bumped(start, t.state), t.events)
+
+
+def _activity(ev: Evidence, at: datetime, kinds: frozenset[str]) -> datetime | None:
+    """When the phone reported an activity of `kinds`, if that is fresh at `at`, else None."""
+    if ev.activity is None or ev.activity_at is None or ev.activity.casefold() not in kinds:
+        return None
+    t = to_utc(ev.activity_at)
+    return t if at - t <= ACTIVITY_FRESH else None
+
+
+def _note_evidence(s: OccurrenceState, event: LocationEvent) -> OccurrenceState:
+    """Q12: keep the latest riding sign (a fix outside a zone, a fast fix, a fresh in-vehicle
+    activity) and the time a place's Wi-Fi was seen connected."""
+    ev, at = event.evidence, to_utc(event.at)
+    signs = [at] if event.kind == "leave" or (ev.speed or 0.0) >= RIDING_SPEED else []
+    if (riding := _activity(ev, at, _RIDING_ACTIVITY)) is not None:
+        signs.append(riding)
+    if signs and (s.moved_at is None or max(signs) > to_utc(s.moved_at)):
+        s = replace(s, moved_at=max(signs))
+    if ev.wifi and event.kind != "leave" and event.zone is not None:
+        s = replace(s, wifi_reports={**s.wifi_reports, event.zone: event.at})
+    return s
+
+
+def _miss_proven(
+    s: OccurrenceState, seen: datetime, dep: datetime, event: LocationEvent | None = None
+) -> bool:
+    """Q12 rules 1-4: presence in the boarding zone or origin place, `seen` after the train left
+    at `dep`, is only suspect: a phone can report a position minutes late. It proves a miss with
+    no riding sign since the departure (rule 2) once it is MISSED_CONFIRM after it (rule 4), or
+    when `event` carries a fresh at-rest activity reported after it, MISSED_GRACE on (rule 3b)."""
+    if s.moved_at is not None and to_utc(s.moved_at) >= dep:
+        return False
+    if to_utc(seen) >= dep + MISSED_CONFIRM:
+        return True
+    if event is None or to_utc(event.at) < dep + MISSED_GRACE:
+        return False
+    rest = _activity(event.evidence, to_utc(event.at), _AT_REST_ACTIVITY)
+    return rest is not None and rest >= dep
 
 
 def _boarding_departure(s: OccurrenceState, zone: str, pool: Pool | None) -> datetime | None:
@@ -1762,7 +1812,7 @@ def _locate(
     if missed is not None:
         return missed
     if seen and event.zone == place_zone(p, p.origin(d)):
-        home = _missed_from_home(s, ctx, merged_pool(seen))  # Q3: a home fix after departure
+        home = _missed_from_home(s, ctx, merged_pool(seen), event)  # Q3: a home fix after departure
         if home is not None:
             return home
     if event.zone == p.origin(d):
@@ -1852,11 +1902,11 @@ def _with_status(s: OccurrenceState, ctx: Ctx, pool: Pool | None) -> Transition:
 
 
 def _missed(s: OccurrenceState, ctx: Ctx, event: LocationEvent, pool: Pool) -> Transition | None:
-    """Rule 7, Q2, Q4: a report at a leg's boarding station time-stamped `MISSED_GRACE` or more
-    after its expected departure. The leg is marked missed and dropped: the user cannot be on a
+    """Rule 7, Q2, Q12: presence at a leg's boarding station after its expected departure that
+    proves a miss (`_miss_proven`). The leg is marked missed and dropped: the user cannot be on a
     train that left the station they stand at, so it is never retained and nothing more is said
-    about it. Before that, once the train has left, it may still be pulling out with the user
-    aboard: presence is kept, nothing moves, and the next report decides."""
+    about it. Unproven, the user may be aboard with a phone that reports late: presence is kept,
+    nothing moves, and a riding sign or a later vouch decides."""
     lock = s.lock
     if lock is None:
         return None
@@ -1877,8 +1927,8 @@ def _missed(s: OccurrenceState, ctx: Ctx, event: LocationEvent, pool: Pool) -> T
         return None  # not yet departed: the station step decides (7.2)
     first = i == 0
     s = replace(s, at_station=s.at_station or first, travelling=True, errand_deadline=None)
-    if to_utc(event.at) < to_utc(expected) + MISSED_GRACE:
-        # departing: the user may be aboard; nothing moves, the next report decides (Q4)
+    if not _miss_proven(s, event.at, to_utc(expected), event):
+        # suspect (Q12 rule 1): the user may be aboard; nothing moves
         return Transition(replace(s, lock=replace(lock, commitment=Commitment.COMMITTED)), ())
     legs[i] = replace(x, state=LegState.MISSED)
     s = replace(s, lock=replace(lock, legs=tuple(legs), commitment=Commitment.COMMITTED))
@@ -1905,11 +1955,15 @@ def _missed(s: OccurrenceState, ctx: Ctx, event: LocationEvent, pool: Pool) -> T
     return _relock(s, ctx, pool, asked, cut)
 
 
-def _missed_from_home(s: OccurrenceState, ctx: Ctx, pool: Pool) -> Transition | None:
+def _missed_from_home(
+    s: OccurrenceState, ctx: Ctx, pool: Pool, event: LocationEvent | None = None
+) -> Transition | None:
     """Q3 (2026-11-17), rule 7: the locked first train has departed while the latest presence
     places the user in the origin place zone (home outbound, work on return): a fresh enter,
     report or `still` (7.2), no leave or station since (`travelling`, `at_station`), and too
-    late to reach the train by the profile's own buffer from there (the catch rule of 7.2). The
+    late to reach the train by the profile's own buffer from there (the catch rule of 7.2).
+    Q12: that presence must prove the miss (`_miss_proven`), or the place's Wi-Fi, seen
+    connected so late that even WIFI_LAG earlier the buffer could not be made (rule 3a). The
     leg is missed and the next train catchable from there is locked, with one message that says
     when to leave. A cancelled or unseen train is left to the follow step."""
     lock = s.lock
@@ -1919,7 +1973,8 @@ def _missed_from_home(s: OccurrenceState, ctx: Ctx, pool: Pool) -> Transition | 
     if x.state not in _MISSABLE:
         return None
     p, d = ctx.profile, ctx.direction
-    seen_at = s.zone_reports.get(place_zone(p, p.origin(d)))
+    place = place_zone(p, p.origin(d))
+    seen_at = s.zone_reports.get(place)
     now = to_utc(ctx.now)
     if seen_at is None or now - to_utc(seen_at) > STALE_LOCATION:
         return None
@@ -1927,7 +1982,17 @@ def _missed_from_home(s: OccurrenceState, ctx: Ctx, pool: Pool) -> Transition | 
     if cl is None or cl.kind is LegKind.CANCELLED:
         return None
     expected = _departs(x, cl)
-    if now < expected or to_utc(seen_at) + timedelta(minutes=p.journey(d).buffer_min) <= expected:
+    buffer = timedelta(minutes=p.journey(d).buffer_min)
+    if now < expected or to_utc(seen_at) + buffer <= expected:
+        return None
+    wifi = s.wifi_reports.get(place)
+    by_wifi = (
+        wifi is not None
+        and now - to_utc(wifi) <= STALE_LOCATION
+        and to_utc(wifi) - WIFI_LAG + buffer > expected
+        and (s.moved_at is None or to_utc(s.moved_at) < expected)
+    )
+    if not by_wifi and not _miss_proven(s, seen_at, expected, event):
         return None
     legs = (replace(x, state=LegState.MISSED), *lock.legs[1:])
     s = replace(s, lock=replace(lock, legs=legs))  # a missed leg is never retained (Q2)

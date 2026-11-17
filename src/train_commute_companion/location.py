@@ -29,6 +29,20 @@ LOCATION_KINDS: tuple[LocationKind, ...] = get_args(LocationKind)
 
 
 @dataclass(frozen=True, slots=True)
+class Evidence:
+    """Q12: what a source knows beside the position, each part optional. Only the core judges
+    it (a riding sign, or proof that a train was missed)."""
+
+    speed: float | None = None  # m/s of the fix behind the event
+    activity: str | None = None  # the phone's motion activity, as the phone names it
+    activity_at: datetime | None = None  # when the phone reported that activity
+    wifi: bool | None = None  # the event zone's place Wi-Fi: True connected, False not
+
+
+NO_EVIDENCE = Evidence()
+
+
+@dataclass(frozen=True, slots=True)
 class LocationEvent:
     """`still` (Q3): a shell vouches that its source still places the user in `zone` at `at`
     with no newer fix and no exit; never produced by `next_zone`, stored as presence."""
@@ -36,6 +50,7 @@ class LocationEvent:
     zone: str | None  # a station zone is named by its station code
     kind: LocationKind
     at: datetime  # when the position was taken
+    evidence: Evidence = NO_EVIDENCE
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +78,12 @@ def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dp, dl = p2 - p1, math.radians(lon2 - lon1)
     h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return 2 * _EARTH_M * math.asin(math.sqrt(h))
+
+
+def clear_of(fix: Fix, zones: Sequence[Zone]) -> bool:
+    """Q12: the whole uncertainty circle of `fix` lies outside every zone."""
+    acc = fix.acc or 0.0
+    return all(_distance_m(fix.lat, fix.lon, z.lat, z.lon) > z.radius_m + acc for z in zones)
 
 
 def resolve_zone(lat: float, lon: float, zones: Sequence[Zone]) -> str | None:
@@ -158,12 +179,14 @@ async def send_zone_events(
     at: datetime,
     send: Callable[[LocationEvent], Awaitable[bool]],
     undelivered: Callable[[], None],
+    evidence: Callable[[str], Evidence] = lambda _zone: NO_EVIDENCE,
 ) -> None:
-    """A fix's events in order. A send that fails, goes unanswered or raises calls `undelivered`,
-    where the shell takes the timer back with `without_current_report`; a raise ends the rest."""
+    """A fix's events in order, each with the source's `evidence` for its zone (Q12). A send that
+    fails, goes unanswered or raises calls `undelivered`, where the shell takes the timer back
+    with `without_current_report`; a raise ends the rest."""
     try:
         for name, kind in events:
-            if not await send(LocationEvent(name, kind, at)):
+            if not await send(LocationEvent(name, kind, at, evidence(name))):
                 undelivered()
     except Exception:
         undelivered()

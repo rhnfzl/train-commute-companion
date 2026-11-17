@@ -659,6 +659,7 @@ class NsProvider:
         self._clock = clock
         self.positions: dict[str, tuple[float, float]] = {}
         self._station_codes: dict[str, str] = {}
+        self.station_labels: dict[str, str] = {}  # station number -> its name, for messages
 
     async def station_names(self) -> dict[str, str]:
         return map_station_names(await self._get("/v2/stations"))
@@ -783,5 +784,9 @@ class NsProvider:
             if isinstance(s, dict)
             and s.get("UICCode")
             and str(s.get("code") or s.get("stationCode")) in codes
+        }
+        names = map_station_names(payload)
+        self.station_labels = {
+            uic: names.get(code, code) for uic, code in self._station_codes.items()
         }
         return codes
