@@ -348,6 +348,37 @@ async def test_fast_fix_after_departure_keeps_the_train(hass):  # Q12 rule 2
     assert not any("missed" in t for t in texts(h)), texts(h)
 
 
+async def test_station_confirm_vouch_judged_without_ns_is_sent_again(hass):  # Q12 rule 4
+    h = await setup_tcc(hass, VIA_UT, now="08:00")
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    await drive(h, "08:05")
+    set_person(hass, 52.0, 5.0)  # waits at AAA; the 08:12 leaves without the user
+    await drive(h, "08:23:30")
+    h.provider.error = lambda q: ProviderError("down")
+    await drive(h, "08:24")  # the +12 vouch meets an NS failure
+    assert not any("missed" in t for t in texts(h)), texts(h)
+    h.provider.error = lambda q: None
+    await drive(h, "08:26")  # owed again while its stage lasts, and now answered
+    assert (await spied(h))[:2] == [("AAA", "enter"), ("AAA", "still")]
+    assert set((await spied(h))[2:]) == {("AAA", "still")}
+    assert any("missed" in c.data["message"] and loud(c) for c in h.pushes), texts(h)
+
+
+async def test_activity_restamped_by_a_start_is_not_fresh(hass):  # Q12 3b
+    # HA stamps a restored state with its start time: a "Stationary" from waiting on the
+    # platform before the restart would look fresh after the departure
+    h = await setup_tcc(hass, SIGNALS, now="08:13")
+    hass.states.async_set("sensor.phone_activity", "Stationary")
+    set_person(hass, 52.0, 5.0)
+    await start_tracker(h)
+    await drive(h, "08:15:30")
+    set_person(hass, 52.00001, 5.0)  # a lagging station fix while the user rides
+    await drive(h, "08:16")
+    assert await spied(h) == [("AAA", "report")]
+    assert not any("missed" in t for t in texts(h)), texts(h)
+
+
 async def test_coarse_fix_clear_of_every_zone_is_a_leave(hass):  # Q12 rule 2
     h = await setup_tcc(hass, VIA_UT)
     set_person(hass, 52.1, 5.1)  # at UT

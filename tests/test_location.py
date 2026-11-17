@@ -304,12 +304,12 @@ def test_late_leave_after_the_auto_train_left_keeps_the_lock():
     s = occ(journey([L1, L2], RIDE))
     t = locate(s, "08:14", event("home", "leave", "08:13"), USUAL, LATER)
     assert t.state.lock == s.lock and t.events == () and t.state.moved_at == at("08:13")
-    # Q12 rule 2: that leave, after the departure, is a riding sign: the station after it cannot
-    # prove a miss, so the train stays possibly ridden and the departure's hedge stands
+    # Q12: entering the station after it puts the user back in a zone, so that leave no longer
+    # says riding; the station is suspect at first and a miss once still there at +12
     t = locate(t.state, "08:16", event("AAA", "enter", "08:16"), USUAL, LATER)
-    assert t.events == () and numbers(t.state) == ["1234", "5678"]
+    assert t.events == () and numbers(t.state) == ["1234", "5678"] and t.state.moved_at is None
     t = locate(t.state, "08:24", event("AAA", "still", "08:24"), USUAL, LATER)
-    assert t.events == () and numbers(t.state) == ["1234", "5678"]
+    assert kinds(t) == [(EventKind.MISSED_FIRST_TRAIN, Severity.LOUD)]
 
 
 def at_station(t: Transition) -> list[str]:

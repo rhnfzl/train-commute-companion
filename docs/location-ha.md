@@ -39,15 +39,15 @@ Leaving a zone, entering one, and reports from inside a station zone are sent as
 
 - About 5 minutes before your locked first train leaves (half your `buffer_min` when that is shorter, so a 2-minute buffer checks 1 minute before), if you are still in the home zone (the work zone on the way back). This says only where you are; it never proves a miss.
 - When that train leaves, if that place's Wi-Fi tracker is still connected.
-- 12 minutes after a locked train left, if you are still at its boarding station (or, for the first train, still at home or work).
+- 12 minutes after a locked train left, if you are still at its boarding station (or, for the first train, still at home or work). One that NS could not answer is tried again while that step lasts.
 
-Leaving home before your usual train leaves picks the next train you can still catch. A "left home" that comes only after your usual train left does not change your train, because a phone often reports late. It also counts as possibly riding, so the station does not confirm a miss of that train afterwards; the silent note names the next good train.
+Leaving home before your usual train leaves picks the next train you can still catch. A "left home" that comes only after your usual train left does not change your train, because a phone often reports late. It also counts as possibly riding until you enter the station, where a miss then needs the proof below; the silent note names the next good train.
 
 ## Missed trains
 
 A phone often reports a position minutes late, even while you are already on the train. So a position at your boarding station, or at home (work on the way back), after the train left only makes a miss possible. The companion says "you missed" only with proof:
 
-- Riding wins: any of these after the departure keeps following the train and sends nothing. A position outside that station or place (also a coarse cell-level one far away), a speed of 8 m/s or more, or an `Automotive` activity reported in the last 5 minutes.
+- Riding wins: any of these after the departure keeps following the train and sends nothing. A position outside that station or place (also a coarse cell-level one far away), a speed of 8 m/s or more, or an `Automotive` activity reported in the last 5 minutes. Entering that station or place again afterwards cancels a position outside it, for example a GPS jump over the zone's edge.
 - Missed at once: when the train leaves, your home Wi-Fi is still connected and your `buffer_min` is longer than 5 minutes. The work Wi-Fi works the same way on the way back.
 - Missed at once: 3 minutes or more after the departure, your phone reports `Stationary` or `Walking` (reported after the train left, at most 5 minutes ago) while it is still in that station or place.
 - Missed after waiting: 12 minutes after the departure the tracker still places you there and nothing said you were riding.
@@ -56,7 +56,7 @@ A miss confirmed at home (at work on the way back) says when to leave, for examp
 
 Without proof you get the usual silent "has left. If you are not on it, next good connection: ..." note, and the train is still followed in case you are on it. If you were at the boarding station before the train left, that note is skipped. Leaving the station again before the train leaves, or arriving there only after it left, keeps the note.
 
-With no Wi-Fi or activity entity set, misses come only from waiting 12 minutes, and riding is seen from positions and speed. A phone left at home, or a tracker stuck at the station while you ride, can still give a wrong "you missed" message 12 minutes after the departure. After a Home Assistant restart, a step still due may be sent once more.
+With no Wi-Fi or activity entity set, misses come only from waiting 12 minutes, and riding is seen from positions and speed. A phone left at home, or a tracker stuck at the station while you ride, can still give a wrong "you missed" message 12 minutes after the departure. After a Home Assistant restart, a step still due may be sent once more, and an activity reported in the first 5 minutes is ignored, because Home Assistant stamps every restored state with its start time.
 
 Arriving at the station where your journey starts sends one quiet message with the train now followed, its platform, whether it is on time and when it arrives. If that arrival shows you missed your train, the miss and the next train come in one message. Leaving and re-entering the zone does not repeat it.
 

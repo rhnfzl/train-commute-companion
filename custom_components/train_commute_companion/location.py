@@ -20,6 +20,7 @@ from homeassistant.core import (
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
+from train_commute_companion.lifecycle import ACTIVITY_FRESH
 from train_commute_companion.location import (
     PLACE_ROLES,
     Evidence,
@@ -69,13 +70,25 @@ def _speed(hass: HomeAssistant, state: State) -> float | None:
 
 
 def evidence(
-    hass: HomeAssistant, loc: LocationSettings, zone: str, speed: float | None = None
+    hass: HomeAssistant,
+    loc: LocationSettings,
+    zone: str,
+    since: datetime,
+    speed: float | None = None,
 ) -> Evidence:
     """Q12: the optional signals beside a position: the fix's speed, the phone's motion activity
-    with when it was reported, and the Wi-Fi of the place `zone` names, when configured."""
+    with when it was reported, and the Wi-Fi of the place `zone` names, when configured.
+    An activity reported before `since` (the tracker's creation) + ACTIVITY_FRESH is left out:
+    HA stamps every restored state with its start time, so an old one would look fresh."""
     activity = activity_at = None
     st = hass.states.get(loc.activity_entity) if loc.activity_entity else None
-    if st is not None and st.state not in ("unavailable", "unknown"):
+    # shortcut: a state restored later than ACTIVITY_FRESH after this integration started still
+    # looks fresh; take the activity from live state-change events if that is ever seen
+    if (
+        st is not None
+        and st.state not in ("unavailable", "unknown")
+        and st.last_reported >= since + ACTIVITY_FRESH
+    ):
         activity, activity_at = st.state, st.last_reported
     wifi = None
     for role, entity in loc.wifi.items():
@@ -121,6 +134,7 @@ class LocationTracker:
         self._locks: dict[str, asyncio.Lock] = {}  # a lock queues FIFO: arrival order per profile
         self._tracks: dict[str, ZoneTrack] = {}
         self._still_sent: dict[str, set[str]] = {}  # profile id -> trains vouched for (Q10)
+        self._since = dt_util.utcnow()  # Q12: activity stamped near an HA start is not trusted
         self._phase = TrackerPhase.STOPPED
 
     def start(self) -> None:
@@ -191,15 +205,18 @@ class LocationTracker:
                 continue
             sent = self._still_sent.setdefault(pid, set())
             loc, zone = profile.location, track.zone
-            wifi = loc is not None and evidence(self._hass, loc, zone).wifi is True
+            wifi = loc is not None and evidence(self._hass, loc, zone, self._since).wifi is True
             if (key := still_due(data, profile, zone, sent, now, wifi)) is None:
                 continue
             sent.add(key)
-            self._spawn(self._send_still(pid, self._gen[pid], epoch, track.zone, now), pid)
+            self._spawn(self._send_still(pid, self._gen[pid], epoch, zone, now, key), pid)
 
-    async def _send_still(self, pid: str, gen: object, epoch: int, zone: str, at: datetime) -> None:
-        """Behind the fixes queued before it: one that moved the track no longer vouches. The
-        core keeps the presence whether NS answered or not, so nothing is retried."""
+    async def _send_still(
+        self, pid: str, gen: object, epoch: int, zone: str, at: datetime, key: str
+    ) -> None:
+        """Behind the fixes queued before it: one that moved the track no longer vouches. One
+        judged without a fresh NS answer is owed again (`key`) while its stage lasts: the core
+        does not keep station presence after a departure, so a lost vouch would tell no miss."""
         async with self._locks.setdefault(pid, asyncio.Lock()):
             profile = next((p for p in self._coordinator.data.profiles if p.id == pid), None)
             if self._phase is not TrackerPhase.TRACKING or self._gen.get(pid) is not gen:
@@ -209,9 +226,10 @@ class LocationTracker:
             if (track := self._tracks.get(pid)) is None or track.zone != zone:
                 return
             try:
-                ev = evidence(self._hass, profile.location, zone)
+                ev = evidence(self._hass, profile.location, zone, self._since)
                 event = LocationEvent(zone, "still", at, ev)
-                await self._send(pid, gen, event, profile.location, epoch)
+                if not await self._send(pid, gen, event, profile.location, epoch):
+                    self._still_sent.get(pid, set()).discard(key)
             except RuntimeNotRunning:
                 _LOGGER.debug("location event dropped: the runtime is not running")
             except Exception:
@@ -301,7 +319,7 @@ class LocationTracker:
             at,
             lambda e: self._send(pid, gen, e, source, epoch),
             lambda: self._lift_timer(pid),
-            lambda zone: evidence(self._hass, source, zone, speed),
+            lambda zone: evidence(self._hass, source, zone, self._since, speed),
         )
 
     async def _send(

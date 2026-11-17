@@ -1761,7 +1761,8 @@ class Runtime:
         epoch: int | None = None,
     ) -> bool:
         """Every unresolved occurrence of the profile gets the event with a fresh origin answer;
-        False when NS failed one of those requests, so the event was judged without it.
+        False when NS failed one of those requests or its answer went stale (another
+        generation), so the event was judged without it.
         With `source` (the settings the event was read under), a profile whose location settings
         differ by the time it would be written drops the event: a switched, disabled or replaced
         source supplies no evidence (8). With `epoch` (`RuntimeView.location_epochs` when the fix
@@ -1799,7 +1800,7 @@ class Runtime:
             ctx = None if s is None else self._ctx(s, now)
             if s is None or ctx is None or is_resolved(s) or stale(ctx):
                 continue
-            answered = answered and failed is None and failed_more is None
+            answered = answered and failed is None and failed_more is None and s.generation == gen
             if s.generation != gen:
                 # an answer asked under another generation is stale; the report itself still counts
                 answer, watched = None, ()

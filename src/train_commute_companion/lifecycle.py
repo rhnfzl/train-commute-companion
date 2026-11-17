@@ -1753,13 +1753,18 @@ def _activity(ev: Evidence, at: datetime, kinds: frozenset[str]) -> datetime | N
 
 def _note_evidence(s: OccurrenceState, event: LocationEvent) -> OccurrenceState:
     """Q12: keep the latest riding sign (a fix outside a zone, a fast fix, a fresh in-vehicle
-    activity) and the time a place's Wi-Fi was seen connected."""
+    activity) and the time a place's Wi-Fi was seen connected. An enter with no sign of its own
+    at or after the sign puts the user back in a zone: a GPS bounce over its edge, or the leave
+    of a place overlapping the station the same fix enters, so the sign no longer says riding.
+    A report or `still` does not: it can follow a fast fix with no new position."""
     ev, at = event.evidence, to_utc(event.at)
     signs = [at] if event.kind == "leave" or (ev.speed or 0.0) >= RIDING_SPEED else []
     if (riding := _activity(ev, at, _RIDING_ACTIVITY)) is not None:
         signs.append(riding)
     if signs and (s.moved_at is None or max(signs) > to_utc(s.moved_at)):
         s = replace(s, moved_at=max(signs))
+    elif not signs and event.kind == "enter" and s.moved_at and to_utc(s.moved_at) <= at:
+        s = replace(s, moved_at=None)
     if ev.wifi and event.kind != "leave" and event.zone is not None:
         s = replace(s, wifi_reports={**s.wifi_reports, event.zone: event.at})
     return s
@@ -1988,6 +1993,7 @@ def _missed_from_home(
     wifi = s.wifi_reports.get(place)
     by_wifi = (
         wifi is not None
+        and buffer > WIFI_LAG  # rule 3a: within the lag the user may have just left
         and now - to_utc(wifi) <= STALE_LOCATION
         and to_utc(wifi) - WIFI_LAG + buffer > expected
         and (s.moved_at is None or to_utc(s.moved_at) < expected)

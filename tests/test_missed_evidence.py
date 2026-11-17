@@ -120,6 +120,43 @@ async def test_home_wifi_at_departure_is_an_immediate_miss_with_leave_by(tmp_pat
     assert EventKind.NEXT_CONNECTION not in kinds_of(rig)
 
 
+async def test_station_bounce_after_departure_is_still_a_miss_at_twelve_minutes(tmp_path):
+    rig = await started(tmp_path)
+    rig.provider.world = list(ONE_TRANSFER)
+    await rig.run_until("08:05")
+    await report(rig, "AAA", "enter", "08:05")  # waits on the platform
+    await rig.run_until("08:15")
+    await report(rig, "AAA", "leave", "08:15")  # a GPS bounce over the circle's edge
+    await report(rig, "AAA", "enter", "08:15:40")  # back in: the leave is no riding sign
+    await rig.run_until("08:24")
+    await report(rig, "AAA", "still", "08:24")
+    await rig.run_until("08:30")
+    assert [sev for _, sev in missed(rig)] == [Severity.LOUD]
+    assert only_occurrence(rig.rt).lock.legs[0].train.train_number == "1236"
+
+
+async def test_place_wifi_proves_nothing_with_a_buffer_inside_its_lag(tmp_path):  # rule 3a
+    async def told(buffer: int, kind: str, hhmm: str) -> list[tuple[str, Severity]]:
+        (path := tmp_path / f"{buffer}{kind}").mkdir()
+        rig = await started(path)
+        text = PROFILE.replace("NAME", "office_a").replace(
+            "buffer_min: 10", f"buffer_min: {buffer}"
+        )
+        rig.write(text=text)
+        await rig.rt.reload_if_changed()
+        rig.provider.world = list(ONE_TRANSFER)
+        await rig.run_until("08:08")
+        await report(rig, "home", "report", "08:08")
+        await rig.run_until(hhmm[:5])
+        # the user may have left minutes ago: the Wi-Fi tracker says "not home" up to 5 min late
+        await report(rig, "home", kind, hhmm, Evidence(wifi=True))
+        return missed(rig)
+
+    assert await told(5, "still", "08:12:15") == []  # the departed vouch
+    assert await told(2, "report", "08:15:20") == []  # a lagging home fix
+    assert [sev for _, sev in await told(6, "still", "08:12:15")] == [Severity.LOUD]
+
+
 async def test_automotive_activity_after_departure_means_riding(tmp_path):
     rig = await started(tmp_path)
     rig.provider.world = list(ONE_TRANSFER)
