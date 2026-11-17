@@ -141,6 +141,20 @@ def test_window_must_open_buffer_plus_15_before_first_train():
     assert "07:11" in (errs[0].suggestion or "")
 
 
+def test_active_lead_min_is_optional_and_at_least_buffer():
+    profiles, errs = parse_profiles(one(), None)
+    assert errs == [] and profiles[0].outbound.active_lead_min is None
+    with_lead = one(("outbound: {first_train", "outbound: {active_lead_min: 40, first_train"))
+    profiles, errs = parse_profiles(with_lead, None)
+    assert errs == [] and profiles[0].outbound.active_lead_min == 40
+    _, errs = parse_profiles(with_lead.replace("active_lead_min: 40", "active_lead_min: 9"), None)
+    assert [e.path for e in errs] == ["profiles[0].outbound.active_lead_min"]
+    assert "25" in (errs[0].suggestion or "")  # buffer 10 + 15
+    for bad in ('"x"', "-1"):
+        _, errs = parse_profiles(with_lead.replace("40", bad), None)
+        assert [e.path for e in errs] == ["profiles[0].outbound.active_lead_min"]
+
+
 def test_window_may_cross_midnight():
     text = one(
         ("return: {first_train", 'return: {window: ["23:00", "03:00"], first_train')

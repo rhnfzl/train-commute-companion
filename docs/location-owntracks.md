@@ -49,4 +49,10 @@ Entering a zone, leaving one, and updates from inside one are sent as they happe
 
 A "left home" that comes only after your usual train left does not change your train, because a phone often reports late. If you really missed it, arriving at the station picks the next good train.
 
-Location only adds alerts. It can make a warning arrive sooner, or tell the companion you are still at a station after your train left. It never removes or delays a warning that times alone would give.
+A report from a station counts as a missed train only from 3 minutes after its expected departure; before that the train may still be pulling out. A missed train is dropped: you get no more messages about it. If you were at the boarding station before the train left, you get no "has left" note. Leaving the station again before the train leaves, or arriving there only after it left, keeps that note.
+
+A fresh position (at most 10 minutes old) in your home region when your first train leaves, too late to reach it with your `buffer_min`, marks it missed with one loud message, for example "you missed the 07:25. Next you can catch: 07:55. Leave by 07:35." Unlike the Home Assistant source, OwnTracks does not vouch that a phone at rest is still at home, so this needs a real update around the departure.
+
+Arriving at the station where your journey starts sends one quiet message with the train now followed, its platform, whether it is on time and when it arrives. If that arrival shows you missed your train, the miss and the next train come in one message. Leaving and re-entering the zone does not repeat it.
+
+Location only adds alerts. It can make a warning arrive sooner, or tell the companion you are still at a station after your train left. It never removes or delays a warning that times alone would give. The one exception is the silent "has left, if you are not on it" note, which is skipped when you were at the boarding station, and replaced by the missed message when you were still at home.

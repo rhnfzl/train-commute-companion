@@ -16,6 +16,7 @@ profiles:
       transfers: ["UT"]       # transfer stations in travel order; [] for a direct train
       window: ["07:12", "10:12"]  # when to follow; default is first train -60 / +120 min
       buffer_min: 10          # minutes from the door to the platform
+      # active_lead_min: 25   # optional; before this many minutes ahead only unusual alerts (default buffer_min + 15)
       earlier_train_advice: false  # suggest an earlier train when yours is late
     return:                   # work to home
       day_offset: 0           # 1 when you travel back the morning after (night shift)

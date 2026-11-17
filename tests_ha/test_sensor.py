@@ -119,6 +119,7 @@ async def test_leg_and_transfer_states_after_poll(hass):
     assert attr(hass, "sensor.office_a_outbound_status", "attribution") == "Data: NS"
     assert state(hass, "sensor.office_a_outbound_lock") != "none"
     assert attr(hass, "sensor.office_a_outbound_lock", "trains")[0] == "08:12 AAA-UT 1234"
+    assert attr(hass, "sensor.office_a_outbound_lock", "usual_departure") == "08:12"
     assert state(hass, "sensor.office_a_health") == "ok"
     assert state(hass, "sensor.office_a_outbound_next_connection") != "unknown"
 
@@ -345,6 +346,14 @@ def test_health_state_order():
         == "key_rejected"
     )
     assert health_state(rv(stale), "p2") == "idle"
+
+
+def test_lock_usual_departure_comes_from_the_effective_occurrence():
+    from custom_components.train_commute_companion.sensor import _lock_attrs
+
+    adopted = datetime(2026, 10, 27, 8, 14, tzinfo=AMS)
+    occ = replace(ov(27), usual_departure=adopted)
+    assert _lock_attrs(rv(occ), "p1", Direction.OUTBOUND)["usual_departure"] == "08:14"
 
 
 async def test_health_sensor_shows_lookahead_last_ok(hass):

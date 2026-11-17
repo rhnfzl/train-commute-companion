@@ -10,16 +10,16 @@ from lifecycle_fixtures import (
     L2,
     L2X,
     LATER,
+    RIDE,
     ans,
     at,
     conn,
     ctx,
     full_state,
     journey,
-    occ,
     poll,
+    retained_of,
 )
-from location_fixtures import USUAL, event, locate
 
 from train_commute_companion.model import AdviceRecord, EventKind, Obligation, okey
 from train_commute_companion.serde import encode
@@ -113,16 +113,15 @@ def test_first_install_no_store_no_error(tmp_path):
 
 
 def test_retained_remainder_survives_restart(tmp_path):
-    # the dwell fixture's missed-first-train context, saved and loaded between report and poll
-    t = locate(occ(journey([L1, L2])), "08:14", event("AAA", "report", "08:13"), USUAL, LATER)
-    assert t.state.retained
+    # the lock moved to the 08:25 while the user may be on the 08:12: saved and loaded before a poll
+    kept = retained_of(journey([L1, L2], RIDE))
     path = tmp_path / "state.json"
     base = full_state()
-    JsonFileStore(path).save(replace(base, occurrences={"k": t.state}))
+    JsonFileStore(path).save(replace(base, occurrences={"k": kept}))
     loaded = JsonFileStore(path).load()
     assert loaded is not None
     s = loaded.occurrences["k"]
-    assert s == t.state
+    assert s == kept
     a = poll(s, ctx(at("08:16")), ans("AAA", conn(L1, L2X), LATER, when="08:16"))
     assert any("if you are on the 08:12" in e.text for e in a.events)
 

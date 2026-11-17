@@ -47,7 +47,9 @@ _GROUPS: dict[NotificationCategory, frozenset[EventKind]] = {
         {EventKind.WORKS_AHEAD, EventKind.WORKS_DIGEST, EventKind.TIMETABLE_ADOPTED}
     ),
     "disruptions": frozenset({EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED}),
-    "routine": frozenset({EventKind.ALL_GOOD, EventKind.COMPENSATION_REMINDER}),
+    "routine": frozenset(
+        {EventKind.ALL_GOOD, EventKind.AT_STATION, EventKind.COMPENSATION_REMINDER}
+    ),
 }
 
 

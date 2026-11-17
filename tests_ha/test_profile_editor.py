@@ -56,6 +56,7 @@ def test_edit_preserves_id_and_all_advanced_fields(tmp_path):
     p.update(extra_dates=["2027-03-02"], pauses=[{"start": "2027-04-01", "end": "2027-04-07"}])
     p["alerts"] = {"quiet_hours": ["20:00", "06:00"]}
     p["return"].update(day_offset=1, window=["16:52", "19:52"])
+    p["outbound"]["active_lead_min"] = 40
     raw["profiles"][1]["days"] = ["sun"]
     original = copy.deepcopy(raw)
     doc = document(tmp_path, yaml.safe_dump(raw))
@@ -66,6 +67,7 @@ def test_edit_preserves_id_and_all_advanced_fields(tmp_path):
         assert p[field] == original["profiles"][0][field]
     assert p["return"]["day_offset"] == 1
     assert p["return"]["window"] == ["16:52", "19:52"]
+    assert p["outbound"]["active_lead_min"] == 40
     assert changed["profiles"][1] == original["profiles"][1]
 
 

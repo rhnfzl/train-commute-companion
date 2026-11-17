@@ -53,6 +53,8 @@ class _Memory:
 
 
 class Follower:
+    # shortcut: no "still" vouching (Q10) for OwnTracks or Telegram, so a miss from home is told
+    # only from a fresh fix; add it when a user runs TCC without HA
     def __init__(self, rt: Runtime) -> None:
         self._rt = rt
         self._locks: dict[str, asyncio.Lock] = {}  # a lock queues FIFO: arrival order per profile

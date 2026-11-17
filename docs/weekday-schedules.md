@@ -19,7 +19,7 @@ return:
 
 Unspecified weekdays use `first_train`. Keys must be `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, or `sun`. Times must be quoted `HH:MM` values. An empty mapping removes the overrides.
 
-Transfers, transfer minimums, buffers, advice preferences, and return day offsets stay shared. Use separate profiles if these settings differ by weekday. The Home Assistant profile editor can set or clear weekday departures without changing other profile settings.
+Transfers, transfer minimums, buffers, active leads, advice preferences, and return day offsets stay shared. Use separate profiles if these settings differ by weekday. The Home Assistant profile editor can set or clear weekday departures without changing other profile settings.
 
 ## Dates and monitoring windows
 

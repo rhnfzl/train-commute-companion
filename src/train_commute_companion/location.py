@@ -24,12 +24,15 @@ class Zone:
     radius_m: float
 
 
-LocationKind = Literal["enter", "leave", "report"]
+LocationKind = Literal["enter", "leave", "report", "still"]
 LOCATION_KINDS: tuple[LocationKind, ...] = get_args(LocationKind)
 
 
 @dataclass(frozen=True, slots=True)
 class LocationEvent:
+    """`still` (Q3): a shell vouches that its source still places the user in `zone` at `at`
+    with no newer fix and no exit; never produced by `next_zone`, stored as presence."""
+
     zone: str | None  # a station zone is named by its station code
     kind: LocationKind
     at: datetime  # when the position was taken

@@ -149,7 +149,7 @@ def revalidate(o: Obligation, ledger: Ledger, now: datetime) -> DeliveryVerdict:
         return DeliveryVerdict.DROP
     if (
         o.event.severity is Severity.SILENT
-        and kind is not EventKind.ALL_GOOD
+        and kind not in (EventKind.ALL_GOOD, EventKind.AT_STATION)
         and ledger.in_quiet_hours(o.event.profile_id, now)
     ):
         return DeliveryVerdict.HOLD

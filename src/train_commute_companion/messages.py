@@ -9,6 +9,7 @@ from train_commute_companion.model import Leg
 
 ATTRIBUTION = "Data: NS"
 CHECK_APP = "check the NS app"
+ON_TIME_MAX_MIN = 1  # a departure delay up to this is on time (7.5)
 
 
 class RefusalKind(Enum):
@@ -50,9 +51,29 @@ def all_good_text(legs: Sequence[Leg]) -> str:
     when = _when(first)
     text = f"your {when} to {last.alight.name} is on time per NS"
     text += _changes(legs)
-    track = first.board.actual_track or first.board.planned_track
-    text += f", platform {track}" if track else ""
+    text += _track(first)
     return text + crowd_text(legs) + "."
+
+
+def _track(leg: Leg) -> str:
+    track = leg.board.actual_track or leg.board.planned_track
+    return f", platform {track}" if track else ""
+
+
+def status_text(legs: Sequence[Leg], late: int | None) -> str:
+    """The train followed now, for a user at its station (Q1 2026-11-17, 7.9):
+    '07:55 to Blerick, platform 6, on time per NS, arrives 08:55'. Named by its planned
+    departure, so a late train reads '07:55 ... 1 min late', never '07:56'. `late`: the
+    departure delay NS reports; None (no reported time) states no timing."""
+    first, last = legs[0], legs[-1]
+    text = f"{hhmm(first.train.planned_departure)} to {last.alight.name}" + _changes(legs)
+    text += _track(first)
+    if late is not None:
+        text += ", on time per NS" if late <= ON_TIME_MAX_MIN else f", {late} min late"
+    arr = last.alight.arrival
+    t = (arr.value or arr.planned if arr else None) or last.alight.planned_arrival
+    text += f", arrives {hhmm(t)}" if t else ""
+    return text + crowd_text(legs)  # crowd last: ledger `_with_crowd_note` strips it as a suffix
 
 
 def no_journey_text(name: str) -> str:

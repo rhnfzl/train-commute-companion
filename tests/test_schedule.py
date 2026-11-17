@@ -5,6 +5,7 @@ from train_commute_companion.calendar import TZ
 from train_commute_companion.model import Config, Direction
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.schedule import (
+    active_lead,
     dated_schedule,
     effective_first_train,
     schedules_active,
@@ -52,9 +53,10 @@ def test_return_day_offset_1_service_date():
     assert s.first_departure == dt("2026-10-28 04:00")
 
 
-def test_auto_lock_time():
-    s = dated_schedule(profile(), Direction.OUTBOUND, date(2026, 10, 27), None)
-    assert s.auto_lock_at == dt("2026-10-27 07:47")  # 08:12 - 10 - 15
+def test_active_lead_defaults_to_buffer_plus_15_and_reads_override():
+    j = profile().outbound
+    assert active_lead(j) == 25  # buffer 10 + 15, the old auto-lock lead
+    assert active_lead(replace(j, active_lead_min=40)) == 40
 
 
 def test_adoption_moves_window():
@@ -103,14 +105,6 @@ def test_active_uses_baseline():
     assert len(schedules_active(cfg, {}, dt("2026-10-27 07:13"))) == 1
     assert schedules_active(cfg, adopted, dt("2026-10-27 07:13")) == []
     assert len(schedules_active(cfg, adopted, dt("2026-10-27 07:15"))) == 1
-
-
-def test_dst_lock_time_uses_first_instant_autumn_and_gap_spring():
-    p = profile(out=("02:55", ("00:00", "04:00"), 0))
-    a = dated_schedule(p, Direction.OUTBOUND, date(2026, 10, 25), None)
-    assert utc(a.auto_lock_at) == datetime(2026, 10, 25, 0, 30, tzinfo=UTC)  # first 02:30
-    s = dated_schedule(p, Direction.OUTBOUND, date(2026, 3, 29), None)
-    assert utc(s.auto_lock_at) == datetime(2026, 3, 29, 1, 0, tzinfo=UTC)  # 02:30 missing -> 03:00
 
 
 def test_active_compares_instants_in_the_repeated_autumn_hour():

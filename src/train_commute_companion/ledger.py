@@ -99,7 +99,7 @@ OBSERVED = frozenset(
 # loud warnings with a "next good connection" clause, written against the lock of their time
 _NAMES_LOCK = JOURNEY_WARNINGS | {EventKind.MISSED_FIRST_TRAIN, EventKind.MISSED_TRANSFER}
 _BREAKS = (EventKind.CANCELLED, EventKind.CUT_SHORT, EventKind.MISSING)
-_FINISHED_LEG_STATES = (LegState.DONE, LegState.CANCELLED, LegState.RELOCKED)
+_FINISHED_LEG_STATES = (LegState.DONE, LegState.CANCELLED, LegState.RELOCKED, LegState.MISSED)
 
 
 class EpisodeTransition(StrEnum):
@@ -114,6 +114,18 @@ class BlindnessChange:
     since: datetime | None = None
 
 
+BLIND_POLLS = 2  # rule 13, Q5: a train gap is told after this many blind polls under one lock
+
+
+@dataclass(frozen=True, slots=True)
+class BlindSuspect:
+    """A gap not told yet (rule 13, Q5): the lock it was seen under and the blind polls counted."""
+
+    lock: tuple[TrainId, ...]
+    polls: int
+    last_poll: datetime | None
+
+
 @dataclass(slots=True)
 class PollMemory:
     """Per occurrence, what the runtime remembers of its polls and never stores."""
@@ -126,16 +138,41 @@ class PollMemory:
     before: dict[str, tuple[WatchedLeg, ...]] = field(default_factory=dict)
     # per train: what the last healthy poll showed of it (rule 13)
     seen: dict[str, dict[TrainId, WatchedLeg]] = field(default_factory=dict)
+    suspect: dict[str, BlindSuspect] = field(default_factory=dict)  # a gap not told yet (Q5)
+    # the latest poll applied: when, and the lock trains it asked for when it started (Q5)
+    polled: dict[str, tuple[datetime, tuple[TrainId, ...]]] = field(default_factory=dict)
+    told_blind: set[str] = field(default_factory=set)  # its "cannot see" reached the user (Q5)
 
-    def observe_blind(self, key: str, blind: bool, now: datetime) -> BlindnessChange:
+    def observe_blind(
+        self, key: str, blind: bool, now: datetime, *, lock: tuple[TrainId, ...], immediate: bool
+    ) -> BlindnessChange:
+        """Rule 13, Q5: a train gap is told after BLIND_POLLS blind polls asked under the current
+        lock (so never on the first poll after a relock); a board gap at once; "visible again"
+        only after the "cannot see" reached the user."""
         since = self.blind.get(key)
-        if blind and since is None:
+        if since is not None:
+            if blind:
+                return BlindnessChange(EpisodeTransition.UNCHANGED, since)
+            self.blind.pop(key)
+            if key not in self.told_blind:
+                return BlindnessChange(EpisodeTransition.UNCHANGED)  # held or dropped: say nothing
+            self.told_blind.discard(key)
+            return BlindnessChange(EpisodeTransition.EXITED, since)
+        if not blind:
+            self.suspect.pop(key, None)  # never told: recovers silently
+            return BlindnessChange(EpisodeTransition.UNCHANGED)
+        s = self.suspect.get(key)
+        if s is None or s.lock != lock:
+            s = BlindSuspect(lock, 0, None)
+        at, asked = self.polled.get(key, (None, None))
+        if at is not None and asked == lock and at != s.last_poll:  # ticks are not polls
+            s = BlindSuspect(lock, s.polls + 1, at)
+        if immediate or s.polls >= BLIND_POLLS:
+            self.suspect.pop(key, None)
             self.blind[key] = now
             return BlindnessChange(EpisodeTransition.ENTERED, now)
-        if not blind and since is not None:
-            self.blind.pop(key)
-            return BlindnessChange(EpisodeTransition.EXITED, since)
-        return BlindnessChange(EpisodeTransition.UNCHANGED, since)
+        self.suspect[key] = s
+        return BlindnessChange(EpisodeTransition.UNCHANGED)
 
     def observe_offline(self, key: str, offline: bool) -> EpisodeTransition:
         was_offline = key in self.offline
@@ -148,9 +185,10 @@ class PollMemory:
         return EpisodeTransition.EXITED
 
     def forget(self, k: str) -> None:
-        for held in (self.boards, self.blind, self.before, self.seen):
+        for held in (self.boards, self.blind, self.before, self.seen, self.suspect, self.polled):
             held.pop(k, None)
         self.offline.discard(k)
+        self.told_blind.discard(k)
 
 
 def _in_quiet(window: tuple[time, time] | None, now: datetime) -> bool:
@@ -493,7 +531,14 @@ class LiveLedger:
             )
             return on and not _broken(s, t)
         if e.kind in (EventKind.MISSED_FIRST_TRAIN, EventKind.MISSED_TRANSFER):
-            return any(x.train == e.train and x.state is LegState.MISSED for x in legs)
+            return True  # final (Q2): a missed train is never ridden or chosen back
+        if e.kind is EventKind.AT_STATION:  # Q1: while its train is still followed and ahead
+            first = None if s.lock is None else s.lock.legs[0]
+            return (
+                first is not None
+                and first.train == e.train
+                and first.state in (LegState.PENDING, LegState.BOARDING)
+            )
         if e.kind is EventKind.NEXT_CONNECTION:  # "if you are not on it": while it is unfinished
             return unfinished
         if e.kind is EventKind.ALL_GOOD:

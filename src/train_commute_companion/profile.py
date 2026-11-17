@@ -24,6 +24,7 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.notification_policy import validate_channels
 from train_commute_companion.overlap import overlap_pairs
+from train_commute_companion.schedule import ACTIVE_EXTRA_MIN
 from train_commute_companion.transfer import FALLBACK_MIN
 
 ALLOWED_TRAVELLER = "me"
@@ -148,11 +149,12 @@ def _check_window(
             "window closes at first_train, so the train itself is outside it",
             "close the window after first_train",
         )
-    elif before < buf + 15:
+    elif before < (need := buf + ACTIVE_EXTRA_MIN):
         c.err(
             f"{name}.window",
-            f"window opens {before} min before first_train, needs at least {buf + 15} (buffer_min + 15)",
-            f"open the window at {_shift(first, -(buf + 15)):%H:%M} or earlier",
+            f"window opens {before} min before first_train, needs at least {need}"
+            f" (buffer_min + {ACTIVE_EXTRA_MIN})",
+            f"open the window at {_shift(first, -need):%H:%M} or earlier",
         )
 
 
@@ -173,6 +175,7 @@ def _journey(
             "buffer_min",
             "earlier_train_advice",
             "day_offset",
+            "active_lead_min",
         ),
         name,
     )
@@ -189,6 +192,16 @@ def _journey(
     offset = 0
     if allow_offset:
         offset = c.integer(raw.get("day_offset", 0), f"{name}.day_offset", 0, 1) or 0
+    lead = None
+    if "active_lead_min" in raw:
+        lead = c.integer(raw["active_lead_min"], f"{name}.active_lead_min", 0)
+        if lead is not None and buf is not None and lead < buf:
+            c.err(
+                f"{name}.active_lead_min",
+                f"must be at least buffer_min ({buf}): everything is told from the moment"
+                " you need to leave",
+                f"set it to {buf + ACTIVE_EXTRA_MIN} or remove it for the default",
+            )
     window = _window(c, raw.get("window"), name, first)
     if first and window and buf is not None:
         _check_window(c, name, first, window, buf)
@@ -204,7 +217,7 @@ def _journey(
                 weekday_times[weekday] = parsed
     if len(c.errors) > n or first is None or window is None or buf is None or advice is None:
         return None
-    return UsualJourney(first, tuple(transfers), window, buf, advice, offset, weekday_times)
+    return UsualJourney(first, tuple(transfers), window, buf, advice, offset, weekday_times, lead)
 
 
 def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:

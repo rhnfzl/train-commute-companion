@@ -50,6 +50,7 @@ def sev(kind, minutes=None, **k):
 def test_unmapped_kind_is_loud():
     assert sev(EventKind.CUT_SHORT) is Severity.LOUD
     assert sev(EventKind.ALL_GOOD) is Severity.SILENT
+    assert sev(EventKind.AT_STATION) is Severity.SILENT
 
 
 def test_offline_and_earlier_train_withdrawn_are_silent():  # table 7.9

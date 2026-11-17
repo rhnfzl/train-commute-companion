@@ -23,9 +23,11 @@ async def switch(app: App, *names: str) -> None:
 async def test_first_fix_seeds_then_enter_and_leave_reach_the_core(app):
     await feed(app, *FAR, "08:20")
     await feed(app, *UT, "08:24")
+    assert "UT" in only_occurrence(app.rt).zone_reports  # 10.4: Telegram produces a zone event
     await feed(app, *FAR, "08:30")
     assert spied(app) == [("UT", "enter"), ("UT", "leave")]
-    assert "UT" in only_occurrence(app.rt).zone_reports  # 10.4: Telegram produces a zone event
+    # Q4: leaving the change station before its train ends that wait
+    assert "UT" not in only_occurrence(app.rt).zone_reports
 
 
 async def test_closed_follower_does_not_restart_location_tracking(app):

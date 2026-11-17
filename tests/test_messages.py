@@ -1,6 +1,8 @@
+from dataclasses import replace
+
 from builders import make_leg
 
-from train_commute_companion.messages import all_good_text, data_unclear_text
+from train_commute_companion.messages import all_good_text, data_unclear_text, status_text
 
 
 def test_change_journey_is_never_direct_and_ok_says_per_ns():
@@ -29,4 +31,19 @@ def test_data_unclear_lists_each_copy():
 def test_data_unclear_without_facts_still_reads():
     assert data_unclear_text("", "", ()) == (
         "NS data unclear for your train. Check the NS app or the station boards."
+    )
+
+
+def test_status_text_states_train_platform_timing_and_arrival():  # Q1
+    l1, l2 = make_leg("AAA", "UT", "08:12", "08:40"), make_leg("UT", "RTD", "08:50", "09:24")
+    l1 = replace(l1, stops=(replace(l1.board, planned_track="5"), *l1.stops[1:]))
+    assert status_text([l1, l2], 0) == (
+        "08:12 to RTD, change at UT, platform 5, on time per NS, arrives 09:24"
+    )
+    late = make_leg("AAA", "RTD", "08:12", "09:24", delay_dep=5, delay_arr=5)
+    assert status_text([late], 5) == "08:12 to RTD, 5 min late, arrives 09:29"  # never 08:17
+    assert status_text([l1, l2], None) == "08:12 to RTD, change at UT, platform 5, arrives 09:24"
+    crowded = replace(l2, crowd_forecast="high")
+    assert status_text([l1, crowded], 0).endswith(
+        "arrives 09:24, crowd forecasts per NS: AAA-UT unknown, UT-RTD high"
     )

@@ -136,6 +136,20 @@ def _works(view: RuntimeView, pid: str, d: Direction) -> tuple[WorksDay, ...]:
     return view.works.get(direction_key(pid, d), ())
 
 
+def _lock_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
+    """Expose the effective usual train so automations can identify a later train."""
+    occ = _occ(view, pid, d)
+    if occ is None:
+        return {}
+    attrs: Attrs = {
+        "source": _to_primitive(occ.lock_source),
+        "trains": [_train_label(x) for x in occ.legs],
+    }
+    if occ.usual_departure is not None:
+        attrs["usual_departure"] = f"{occ.usual_departure:%H:%M}"
+    return attrs
+
+
 def _health_attrs(view: RuntimeView, pid: str) -> Attrs:
     out: Attrs = {"store_ok": view.store_ok, "requests": view.requests}
     out["lookahead_last_ok"] = {
@@ -197,11 +211,7 @@ DIRECTION_SPECS: dict[str, Spec[str, Direction]] = {
     ),
     "lock": (
         lambda v, p, d: o.commitment.value if (o := _occ(v, p, d)) and o.commitment else "none",
-        lambda v, p, d: (
-            {"source": _to_primitive(o.lock_source), "trains": [_train_label(x) for x in o.legs]}
-            if (o := _occ(v, p, d))
-            else {}
-        ),
+        _lock_attrs,
         None,
     ),
     "next_connection": (

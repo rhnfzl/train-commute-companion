@@ -21,9 +21,21 @@ The Home Assistant profile form provides the same category list. Choosing a cate
 | `crowding` | Changed crowd forecast |
 | `planned_works` | Upcoming works, adopted timetable changes, restored lookahead journeys |
 | `disruptions` | Route disruption and its clearance |
-| `routine` | All-good confirmation |
+| `routine` | All-good confirmation, at-station status |
 
 System health, missing train data, stopped monitoring, invalid configuration, rejected credentials and command feedback remain enabled. These messages explain when the companion cannot follow a journey reliably.
+
+A train missing from NS data is reported after two polls in a row miss it while you follow the same train, so switching to another train never warns on its own. A stale or failing NS board is reported at once. "Visible again" follows only a "cannot see" message you actually received.
+
+## Quiet early watch
+
+The usual train is locked as soon as the window opens, with no extra NS requests. Until the active point, only unusual news is sent: a cancellation, a broken change, a train cut short, a changed route, a platform change, no connection found, a restored train, and a delay of 5 min or more. A delay you already heard about keeps its usual updates, so a change or a recovery is still told, and it is not repeated at the active point. Delays under 5 min, crowd forecasts, a transfer at risk, unclear NS data, a train missing from NS data, earlier-train advice and the "on time per NS" check-in wait for the active point. "Cannot see your train" can only start there too. A usual train that is not in NS data when the window opens is told at once, and the next good train is followed instead.
+
+The active point is `active_lead_min` minutes before your first train, set per direction. The default is `buffer_min + 15`, when following used to start, so the check-in comes at the same time as before. It must be at least `buffer_min`. A value longer than the window's opening turns the quiet phase off. Messages from your location, such as a missed train at the station, are never held.
+
+```yaml
+outbound: {first_train: "07:25", buffer_min: 20, active_lead_min: 35}
+```
 
 The shared delivery check reads the current profile settings before every attempt. Disabling a category drops its pending primary notifications and auxiliary copies. This includes alerts held during quiet hours and pending warnings about an old route.
 

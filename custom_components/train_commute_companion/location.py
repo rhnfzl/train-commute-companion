@@ -18,6 +18,7 @@ from homeassistant.core import (
     callback,
 )
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.util import dt as dt_util
 
 from train_commute_companion.location import (
     PLACE_ROLES,
@@ -31,7 +32,7 @@ from train_commute_companion.location import (
 )
 from train_commute_companion.model import LocationSettings
 from train_commute_companion.runtime import Runtime
-from train_commute_companion.view import track_fix
+from train_commute_companion.view import still_due, track_fix
 
 from .coordinator import TccCoordinator
 from .host import RuntimeHost, RuntimeNotRunning
@@ -95,6 +96,7 @@ class LocationTracker:
         self._tasks: set[asyncio.Task[None]] = set()
         self._locks: dict[str, asyncio.Lock] = {}  # a lock queues FIFO: arrival order per profile
         self._tracks: dict[str, ZoneTrack] = {}
+        self._still_sent: dict[str, set[str]] = {}  # profile id -> trains vouched for (Q10)
         self._phase = TrackerPhase.STOPPED
 
     def start(self) -> None:
@@ -113,6 +115,7 @@ class LocationTracker:
         self._tracked = {}
         self._gen.clear()
         self._tracks.clear()
+        self._still_sent.clear()
         tasks = list(self._tasks)
         for t in tasks:
             t.cancel()
@@ -137,6 +140,7 @@ class LocationTracker:
                 continue
             # a new source starts with no history: an old zone or pending event is not its evidence
             self._tracks.pop(pid, None)
+            self._still_sent.pop(pid, None)
             if tracked is None:
                 self._gen.pop(pid, None)
                 continue
@@ -146,6 +150,45 @@ class LocationTracker:
             if state is not None and (pos := _fix(state)) is not None:
                 at, acc = state.last_updated, _acc(state)
                 self._spawn(self._process_fix(pid, gen, epoch, pos, at, acc, seed=True), pid)
+        self._vouch(want)
+
+    def _vouch(self, tracked: dict[str, tuple[str, int]]) -> None:
+        """Q3, Q10: a phone at rest at home sends no fixes, so shortly before a locked first
+        train leaves, a source whose tracker still places the user in that direction's origin
+        place tells the core so once per train (`still_due`), as fresh presence."""
+        data, now = self._coordinator.data, dt_util.utcnow()
+        for pid, (entity, epoch) in tracked.items():
+            track, state = self._tracks.get(pid), self._hass.states.get(entity)
+            profile = next((p for p in data.profiles if p.id == pid), None)
+            if track is None or track.zone is None or profile is None:
+                continue
+            if state is None or _fix(state) is None:  # unavailable: it vouches for nothing
+                continue
+            sent = self._still_sent.setdefault(pid, set())
+            if (key := still_due(data, profile, track.zone, sent, now)) is None:
+                continue
+            sent.add(key)
+            self._spawn(self._send_still(pid, self._gen[pid], epoch, track.zone, now), pid)
+
+    async def _send_still(self, pid: str, gen: object, epoch: int, zone: str, at: datetime) -> None:
+        """Behind the fixes queued before it: one that moved the track no longer vouches. The
+        core keeps the presence whether NS answered or not, so nothing is retried."""
+        async with self._locks.setdefault(pid, asyncio.Lock()):
+            profile = next((p for p in self._coordinator.data.profiles if p.id == pid), None)
+            if self._phase is not TrackerPhase.TRACKING or self._gen.get(pid) is not gen:
+                return
+            if profile is None or profile.location is None:
+                return
+            if (track := self._tracks.get(pid)) is None or track.zone != zone:
+                return
+            try:
+                await self._send(
+                    pid, gen, LocationEvent(zone, "still", at), profile.location, epoch
+                )
+            except RuntimeNotRunning:
+                _LOGGER.debug("location event dropped: the runtime is not running")
+            except Exception:
+                _LOGGER.exception("location event for %s failed", pid)
 
     def _subscribe(self, entities: list[str], before: list[str]) -> None:
         if self._unsub_state is not None and entities == before:

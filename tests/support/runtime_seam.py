@@ -92,9 +92,5 @@ def lookahead_direction(rt, p, d, works):
     return rt._lookahead_direction(p, d, works)
 
 
-def remember_usual(rt, key, ctx, merged) -> None:
-    rt._remember_usual(key, ctx, merged)
-
-
 def poll_memory(rt):
     return rt._memory

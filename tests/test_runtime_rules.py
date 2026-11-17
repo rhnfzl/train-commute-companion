@@ -25,6 +25,7 @@ from runtime_rig import (
     escape_world,
     every_day,
     kinds,
+    late_usual_world,
     live_facts_bundle,
     returns_every_day,
     sig,
@@ -41,6 +42,7 @@ from train_commute_companion.model import (
     AlertEvent,
     DirectionState,
     EventKind,
+    LegState,
     NotTravelling,
     Obligation,
     Provenance,
@@ -240,30 +242,41 @@ async def test_lookahead_sibling_direction_uses_the_profile_of_its_revision(tmp_
 # --- finding 8: first-day advice has the usual's own arrival ---
 
 
-async def test_first_day_advice_before_auto_lock_on_a_cancelled_usual(tmp_path):
+async def test_first_day_advice_on_a_late_usual_has_its_planned_arrival(tmp_path):
     rig = Rig(tmp_path, "16:54")
-    rig.provider.world = [
-        make_connection([make_leg("RTD", "AAA", "17:52", "18:30", number="7952", cancelled=True)]),
-        make_connection([make_leg("RTD", "AAA", "17:22", "18:00", number="7922")]),
-        make_connection([make_leg("RTD", "AAA", "18:22", "19:00", number="7982")]),
-    ]
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
     s = rig.occ("p1|return|2026-10-27")
-    assert s is not None and s.lock is None  # before the 17:32 auto lock
+    assert s is not None and s.lock.legs[0].train.train_number == "7952"  # Q9: window start
     assert EventKind.LEAVE_NOW in kinds(rig.rt.events_log)
     assert s.advice is not None and s.advice.usual_arrival == at("18:30")
+
+
+async def test_cancelled_usual_at_the_window_start_is_relocked_at_once(tmp_path):
+    rig = Rig(tmp_path, "16:54")  # Q9: locked at the window start, so no advice is needed
+    rig.provider.world = cancelled_usual_world()
+    await rig.rt.start()
+    s = rig.occ("p1|return|2026-10-27")
+    assert s is not None and s.lock.legs[0].train.train_number == "7922"
+    assert EventKind.CANCELLED in kinds(rig.rt.events_log)
+    assert EventKind.LEAVE_NOW not in kinds(rig.rt.events_log)
 
 
 # --- finding 9: before a lock the usual train is judged on what the answer showed ---
 
 
-async def test_planned_only_usual_before_lock_is_cannot_see_train(tmp_path):
+async def test_planned_only_usual_is_cannot_see_train_after_the_quiet_watch(tmp_path):
     rig = Rig(tmp_path, "07:43")
     rig.provider.world = [make_connection([make_leg("AAA", "UT", "08:12", "08:40",
                           number="1234", provenance=Provenance.PLANNED), L2])]  # fmt: skip
     await rig.rt.start()
-    assert rig.occ().lock is None
+    assert rig.occ().lock is not None  # Q9: locked at once, quiet until 07:47
     await rig.rt.watchdog_once()
+    assert EventKind.CANNOT_SEE_TRAIN not in kinds(rig.rt.events_log)
+    for hhmm in ("07:47", "07:49"):  # a train gap is told after two polls under the lock (Q5)
+        rig.clock.set(hhmm)
+        await rig.rt.poll_once()
+        await rig.rt.watchdog_once()
     blind = [e for e in rig.rt.events_log if e.kind is EventKind.CANNOT_SEE_TRAIN]
     assert len(blind) == 1 and "no reported departure time" in blind[0].text
 
@@ -610,24 +623,24 @@ async def test_older_store_cancel_restore_restart_cancel_alerts_twice(tmp_path):
     assert kinds(rig.notifier.attempts).count(EventKind.CANCELLED) == 2
 
 
-async def test_first_day_advice_when_the_usual_is_absent(tmp_path):
+async def test_absent_usual_at_the_window_start_locks_the_next_good_train(tmp_path):
     rig = Rig(tmp_path, "16:54")
     rig.provider.world = escape_world()  # no 17:52 at all and no baseline yet
     await rig.rt.start()
     s = rig.occ("p1|return|2026-10-27")
-    assert s is not None and s.lock is None
-    leave = [e for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW]
-    assert len(leave) == 1 and "17:22" in leave[0].text
+    assert s is not None and s.lock.legs[0].train.train_number == "7922"  # Q9: window start
+    assert EventKind.MISSING in kinds(rig.rt.events_log)
+    assert EventKind.LEAVE_NOW not in kinds(rig.rt.events_log)
 
 
 async def test_held_leave_now_dropped_once_its_escape_train_is_cancelled(tmp_path):
     rig = Rig(tmp_path, "16:54")
     rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
-    rig.provider.world = escape_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
     assert any(o.event.kind is EventKind.LEAVE_NOW for o in rig.rt.state.obligations)
     rig.clock.set("16:56")
-    rig.provider.world = escape_world(escape_cancelled=True)
+    rig.provider.world = late_usual_world(escape_cancelled=True)
     await rig.rt.poll_once()
     rig.notifier.fails = lambda e: False
     await rig.rt.watchdog_once()
@@ -638,11 +651,11 @@ async def test_held_leave_now_dropped_once_its_escape_train_is_cancelled(tmp_pat
 async def test_held_leave_now_states_the_current_departure(tmp_path):
     rig = Rig(tmp_path, "16:54")
     rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
-    rig.provider.world = escape_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
     rig.clock.set("16:56")
     late = make_leg("RTD", "AAA", "17:22", "18:00", number="7922", delay_dep=4, delay_arr=4)
-    rig.provider.world = [make_connection([late]), *escape_world()[1:]]
+    rig.provider.world = [make_connection([late]), *late_usual_world()[1:]]
     await rig.rt.poll_once()
     rig.notifier.fails = lambda e: False
     await rig.rt.watchdog_once()
@@ -653,12 +666,12 @@ async def test_held_leave_now_states_the_current_departure(tmp_path):
 async def test_held_leave_now_is_dropped_when_its_saving_is_gone(tmp_path):
     rig = Rig(tmp_path, "16:54")
     rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
-    rig.provider.world = escape_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
     rig.clock.set("16:56")
     # the usual stays absent (bad); the escape train now arrives 19:06, after waiting's 19:00
     slow = make_leg("RTD", "AAA", "17:22", "18:00", number="7922", delay_arr=66)
-    rig.provider.world = [make_connection([slow]), *escape_world()[1:]]
+    rig.provider.world = [make_connection([slow]), *late_usual_world()[1:]]
     await rig.rt.poll_once()
     rig.notifier.fails = lambda e: False
     await rig.rt.watchdog_once()
@@ -670,11 +683,11 @@ async def test_held_leave_now_is_dropped_when_its_saving_is_gone(tmp_path):
 async def test_dropped_leave_now_is_advised_again_when_its_saving_returns(tmp_path, restart):
     rig = Rig(tmp_path, "16:54")
     rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
-    rig.provider.world = escape_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
     rig.clock.set("16:56")
     slow = make_leg("RTD", "AAA", "17:22", "18:00", number="7922", delay_arr=66)
-    rig.provider.world = [make_connection([slow]), *escape_world()[1:]]
+    rig.provider.world = [make_connection([slow]), *late_usual_world()[1:]]
     await rig.rt.poll_once()
     rig.notifier.fails = lambda e: False
     await rig.rt.watchdog_once()  # dropped unsent: the saving is gone
@@ -682,7 +695,7 @@ async def test_dropped_leave_now_is_advised_again_when_its_saving_returns(tmp_pa
     assert a.withdrawn and not a.delivered
     rt = await rig.restart() if restart else rig.rt
     rig.clock.set("16:58")
-    rig.provider.world = escape_world()  # the saving is back
+    rig.provider.world = late_usual_world()  # the saving is back
     await rt.poll_once()
     leave = [e for e in rig.notifier.attempts if e.kind is EventKind.LEAVE_NOW]
     assert leave and leave[-1] in rt.events_log and "17:22" in leave[-1].text
@@ -693,7 +706,7 @@ async def test_dropped_leave_now_is_advised_again_when_its_saving_returns(tmp_pa
 async def test_untold_advice_is_not_withdrawn_when_waiting_is_fine_again(tmp_path):
     rig = Rig(tmp_path, "16:54")
     rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
-    rig.provider.world = cancelled_usual_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
     rig.clock.set("16:56")
     rig.provider.world = [
@@ -712,10 +725,10 @@ async def test_untold_advice_is_not_withdrawn_when_waiting_is_fine_again(tmp_pat
 async def test_held_leave_now_for_a_delayed_train_still_goes_out(tmp_path):
     rig = Rig(tmp_path, "16:54")
     rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
-    rig.provider.world = escape_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
     late = make_leg("RTD", "AAA", "17:22", "18:00", number="7922", delay_dep=6, delay_arr=6)
-    rig.provider.world = [make_connection([late]), *escape_world()[1:]]
+    rig.provider.world = [make_connection([late]), *late_usual_world()[1:]]
     rig.clock.set("17:19")  # planned 17:22 minus the 5 min buffer, plus 2 min; leaves 17:28
     await rig.rt.poll_once()
     rig.notifier.fails = lambda e: False
@@ -727,14 +740,14 @@ async def test_held_leave_now_for_a_delayed_train_still_goes_out(tmp_path):
 async def test_stored_leave_now_loses_its_frozen_expiry_on_load(tmp_path):
     rig = Rig(tmp_path, "16:54")
     rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
-    rig.provider.world = escape_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
     st = rig.rt.state  # an older store froze the planned departure minus buffer as expiry
     frozen = tuple(replace(o, expires_at=at("17:17")) for o in st.obligations)
     rig.store.save(replace(st, obligations=frozen))
     rig.store.version = 1
     late = make_leg("RTD", "AAA", "17:22", "18:00", number="7922", delay_dep=6, delay_arr=6)
-    rig.provider.world = [make_connection([late]), *escape_world()[1:]]
+    rig.provider.world = [make_connection([late]), *late_usual_world()[1:]]
     rig.clock.set("17:19")
     rt = await rig.restart()
     rig.notifier.fails = lambda e: False
@@ -748,7 +761,7 @@ async def test_advice_searches_before_the_usual_departure(tmp_path):
     # asked from the usual 17:52, so advice asks again from now plus the buffer (7.6, rule 17)
     rig = Rig(tmp_path, "16:54")
     rig.provider.window = timedelta(hours=1)
-    rig.provider.world = cancelled_usual_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
     leave = [e for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW]
     assert len(leave) == 1 and "17:22" in leave[0].text
@@ -759,7 +772,7 @@ async def test_held_advice_is_revalidated_on_the_earlier_search(tmp_path):
     rig = Rig(tmp_path, "16:54")
     rig.provider.window = timedelta(hours=1)
     rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
-    rig.provider.world = cancelled_usual_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
     rig.clock.set("16:56")
     await rig.rt.poll_once()
@@ -794,7 +807,7 @@ async def test_newer_cancellation_on_the_advice_search_beats_an_older_recovery(t
     rig = Rig(tmp_path, "16:54")
     rig.provider.window = timedelta(hours=1)
     rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
-    rig.provider.world = cancelled_usual_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
 
     def split(q: Query) -> None:
@@ -802,7 +815,7 @@ async def test_newer_cancellation_on_the_advice_search_beats_an_older_recovery(t
             rig.provider.world = running_usual_world()
         else:
             rig.clock.jump(1)
-            rig.provider.world = cancelled_usual_world()
+            rig.provider.world = late_usual_world()
 
     rig.clock.set("16:56")
     rig.provider.hook = split
@@ -835,11 +848,11 @@ def test_origin_answer_keeps_distinct_connections_sharing_an_onward_train():
 
 async def held_then_split(tmp_path, main: list, search: list) -> list[AlertEvent]:
     """A LEAVE_NOW for the 17:22 is held; the next poll's own answer shows `main`, the advice
-    search answered a minute later shows `search`. The LEAVE_NOW events sent afterwards."""
+    search answered a minute later shows `search`. Every event sent afterwards."""
     rig = Rig(tmp_path, "16:54")
     rig.provider.window = timedelta(hours=1)
     rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
-    rig.provider.world = cancelled_usual_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
 
     def split(q: Query) -> None:
@@ -855,31 +868,38 @@ async def held_then_split(tmp_path, main: list, search: list) -> list[AlertEvent
     rig.provider.hook = None
     rig.notifier.fails = lambda e: False
     await rig.rt.watchdog_once()
-    return [e for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW]
+    return list(rig.rt.events_log)
+
+
+def leave_now(events: list[AlertEvent]) -> list[AlertEvent]:
+    return [e for e in events if e.kind is EventKind.LEAVE_NOW]
 
 
 async def test_advice_goes_when_the_newer_answer_cancels_the_usual_and_an_older_copy_arrives_earlier(
     tmp_path,
 ):
     early = make_leg("RTD", "AAA", "17:52", "18:30", number="7952", delay_arr=-1)  # 18:29
-    leave = await held_then_split(
-        tmp_path, [make_connection([early]), *escape_world()], cancelled_usual_world()
+    leave = leave_now(
+        await held_then_split(
+            tmp_path, [make_connection([early]), *escape_world()], late_usual_world()
+        )
     )
     assert len(leave) == 1 and "17:22" in leave[0].text
 
 
-async def test_advice_goes_when_the_newer_answer_cuts_the_usual_short(tmp_path):
+async def test_newer_answer_cutting_the_locked_usual_short_is_told(tmp_path):
+    # Q9: the usual is locked from the window start, so the follow step reads the newer copy
     full = make_leg("RTD", "AAA", "17:52", "18:30", number="7952", stops=["UT"])
     cut = make_leg("RTD", "AAA", "17:52", "18:30", number="7952", stops=["UT"], cut_after="UT")
-    leave = await held_then_split(
+    got = await held_then_split(
         tmp_path,
         [make_connection([full]), *escape_world()],
         [make_connection([cut]), *escape_world()],
     )
-    assert len(leave) == 1 and "17:22" in leave[0].text
+    assert EventKind.CUT_SHORT in kinds(got)
 
 
-async def test_advice_goes_when_the_cut_short_copy_omits_the_destination(tmp_path):
+async def test_cut_short_copy_omitting_the_destination_is_told(tmp_path):
     from builders import cut_stop
 
     full = make_leg("RTD", "AAA", "17:52", "18:30", number="7952", stops=["BBB", "UT"])
@@ -887,12 +907,12 @@ async def test_advice_goes_when_the_cut_short_copy_omits_the_destination(tmp_pat
     short = make_leg("RTD", "UT", "17:52", "18:20", number="7952", stops=["BBB"])
     short = replace(short, stops=(short.stops[0], cut_stop(short.stops[1]), short.stops[2]))
     onward = make_leg("UT", "AAA", "18:25", "18:35", number="7999")
-    leave = await held_then_split(
+    got = await held_then_split(
         tmp_path,
         [make_connection([full]), *escape_world()],
         [make_connection([short, onward]), *escape_world()],
     )
-    assert len(leave) == 1 and "17:22" in leave[0].text
+    assert EventKind.CUT_SHORT in kinds(got)
 
 
 async def test_leave_now_withdrawn_when_a_newer_answer_cancels_it(tmp_path):
@@ -900,7 +920,7 @@ async def test_leave_now_withdrawn_when_a_newer_answer_cancels_it(tmp_path):
         make_connection([make_leg("RTD", "AAA", "17:52", "18:30", number="7952", cancelled=True)]),
         *escape_world(escape_cancelled=True),
     ]
-    assert await held_then_split(tmp_path, cancelled_usual_world(), gone) == []
+    assert leave_now(await held_then_split(tmp_path, late_usual_world(), gone)) == []
 
 
 async def test_advice_saving_uses_the_current_arrival(tmp_path):
@@ -963,7 +983,7 @@ async def test_advice_never_offers_an_onward_train_a_transfer_answer_cancelled(t
 async def test_advice_search_shares_the_poll_deadline(tmp_path):
     rig = Rig(tmp_path, "16:54")  # 7.1: one hard deadline for the poll, not one per request
     rig.provider.window = timedelta(hours=1)
-    rig.provider.world = cancelled_usual_world()
+    rig.provider.world = late_usual_world()
     rig.provider.hook = lambda q: rig.clock.jump(70 / 60)
     await rig.rt.start()  # 70 s for the poll's own request, 70 s more for the advice search
     assert len(rig.provider.calls) == 2
@@ -973,7 +993,7 @@ async def test_advice_search_shares_the_poll_deadline(tmp_path):
 async def test_rejected_key_on_the_advice_search_is_reported(tmp_path):
     rig = Rig(tmp_path, "16:54")  # 7.11
     rig.provider.window = timedelta(hours=1)
-    rig.provider.world = cancelled_usual_world()
+    rig.provider.world = late_usual_world()
     rig.provider.error = lambda q: None if q.at == at("17:52") else AuthError()
     await rig.rt.start()
     assert rig.rt.key_rejected
@@ -1014,12 +1034,12 @@ async def test_skip_written_during_a_send_drops_the_next_message(tmp_path):
 async def test_advice_dropped_while_the_store_fails_is_advised_again(tmp_path, restart):
     rig = Rig(tmp_path, "16:54")  # rule 22, 7.6
     rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
-    rig.provider.world = escape_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
     rig.store.fail = True
     rig.clock.set("16:56")
     slow = make_leg("RTD", "AAA", "17:22", "18:00", number="7922", delay_arr=66)
-    rig.provider.world = [make_connection([slow]), *escape_world()[1:]]
+    rig.provider.world = [make_connection([slow]), *late_usual_world()[1:]]
     await rig.rt.poll_once()
     rig.notifier.fails = lambda e: False
     await rig.rt.watchdog_once()  # dropped unsent while nothing can be written
@@ -1029,7 +1049,7 @@ async def test_advice_dropped_while_the_store_fails_is_advised_again(tmp_path, r
     assert a.withdrawn and not a.delivered
     rt = await rig.restart() if restart else rig.rt
     rig.clock.set("16:58")
-    rig.provider.world = escape_world()  # the saving is back
+    rig.provider.world = late_usual_world()  # the saving is back
     await rt.poll_once()
     leave = [e for e in rig.notifier.attempts if e.kind is EventKind.LEAVE_NOW]
     assert leave and leave[-1] in rt.events_log and "17:22" in leave[-1].text
@@ -1038,7 +1058,7 @@ async def test_advice_dropped_while_the_store_fails_is_advised_again(tmp_path, r
 async def test_advice_held_for_audience_write_is_sent_then_withdrawn_once(tmp_path):
     rig = Rig(tmp_path, "16:54")  # rule 22, 7.6
     rig.store.fail = True
-    rig.provider.world = cancelled_usual_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
     assert EventKind.LEAVE_NOW not in kinds(rig.rt.events_log)
     assert any(o.event.kind is EventKind.LEAVE_NOW for o in seam.held(rig.rt).values())
@@ -1896,9 +1916,10 @@ async def _cancel_mid_pass(rig: Rig) -> None:
 async def test_shutdown_mid_pass_keeps_sent_alerts_and_advice_told(tmp_path):
     rig = Rig(tmp_path, "16:54")  # Review Focus 5, rule 22, 7.6
     rig.notifier.fails = lambda e: True
-    rig.provider.world = cancelled_usual_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
-    assert [o.event.kind for o in rig.rt.state.obligations] == [EventKind.LEAVE_NOW]
+    owed = [o.event.kind for o in rig.rt.state.obligations]
+    assert owed == [EventKind.DELAYED, EventKind.LEAVE_NOW]
     await _cancel_mid_pass(rig)
     stored = rig.store.load()
     assert [o.event.kind for o in stored.obligations] == [EventKind.KEY_REJECTED]
@@ -1948,7 +1969,7 @@ def _strip_delivered(text: str) -> str:
 
 async def test_legacy_advice_withdrawn_after_an_upgrade_restart(tmp_path):  # Review Focus 10
     rig = Rig(tmp_path, "16:54")
-    rig.provider.world = cancelled_usual_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()  # LEAVE_NOW sent and confirmed
     assert rig.occ("p1|return|2026-10-27").advice.delivered
     rig.store.text, rig.store.version = _strip_delivered(rig.store.text), 1
@@ -1970,7 +1991,7 @@ async def test_legacy_advice_still_owed_is_not_withdrawn_after_an_upgrade_restar
 ):  # Review Focus 10
     rig = Rig(tmp_path, "16:54")
     rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
-    rig.provider.world = cancelled_usual_world()
+    rig.provider.world = late_usual_world()
     await rig.rt.start()
     assert any(o.event.kind is EventKind.LEAVE_NOW for o in rig.rt.state.obligations)
     rig.store.text, rig.store.version = _strip_delivered(rig.store.text), 1
@@ -2139,6 +2160,18 @@ async def test_occurrence_data_unclear_holds_only_while_its_values_are_the_lates
     assert not view.fact_holds(first)  # also when no newer obligation is left to cover it
 
 
+async def test_missed_message_holds_after_its_train_is_dropped(tmp_path):  # Q2
+    rig = await started(tmp_path)
+    rig.provider.world = [USUAL, LATER]
+    rig.notifier.fails = lambda e: True  # held, so revalidation decides
+    rig.clock.set("08:18")
+    await rig.rt.report_location("p1", LocationEvent("AAA", "report", at("08:18")))
+    (o,) = [o for o in rig.rt.state.obligations if o.event.kind is EventKind.MISSED_FIRST_TRAIN]
+    s = next(iter(rig.rt.state.occurrences.values()))
+    assert s.retained == () and all(x.state is not LegState.MISSED for x in s.lock.legs)
+    assert seam.ledger(rig.rt).fact_holds(o)
+
+
 # --- one failing occurrence, a rejected key on a later request, a dropped occurrence ---
 
 
@@ -2211,3 +2244,20 @@ async def test_reload_forgets_what_was_seen_of_an_occurrence_it_drops(tmp_path):
     await rig.rt.poll_once()
     await rig.rt.watchdog_once()
     assert EventKind.CAN_SEE_TRAIN_AGAIN not in kinds(rig.rt.events_log)
+
+
+async def test_station_status_delivered_once_through_the_ledger(tmp_path):  # Q1
+    rig = await started(tmp_path, "07:40")  # quiet watch: the check-in waits for 07:47
+    assert rig.occ().lock is not None
+    for kind, when in (
+        ("enter", "07:44"),
+        ("leave", "07:45"),
+        ("enter", "07:46"),
+        ("report", "07:48"),
+    ):
+        rig.clock.set(when)
+        await rig.rt.report_location("p1", LocationEvent("AAA", kind, at(when)))  # type: ignore[arg-type]
+    await rig.run_until("07:52")
+    got = kinds(rig.rt.events_log)
+    assert got.count(EventKind.AT_STATION) == 1
+    assert EventKind.ALL_GOOD not in got  # the status already said it is on time

@@ -12,7 +12,7 @@ from train_commute_companion.lifecycle import (
     target_occurrence,
     whole_day_keys,
 )
-from train_commute_companion.lifecycle_lock import journey_of, write_lock
+from train_commute_companion.lifecycle_lock import journey_of, may_be_on, rides, write_lock
 from train_commute_companion.model import (
     Connection,
     Direction,
@@ -95,10 +95,10 @@ def test_every_write_raises_generation():
     assert [x.generation for x in (s0, s1, s2, s3, s4, s5)] == [0, 1, 2, 3, 4, 5]
 
 
-def test_auto_lock_at_first_train_minus_buffer_minus_15():
-    early = auto_lock(fresh(), ctx(at("07:46")), answer(USUAL, LATER))
+def test_auto_lock_from_window_start():
+    early = auto_lock(fresh(), ctx(at("07:11")), answer(USUAL, LATER))
     assert early.state.lock is None and early.events == ()
-    t = auto_lock(fresh(), ctx(at("07:47")), answer(USUAL, LATER))  # 08:12 - 10 - 15
+    t = auto_lock(fresh(), ctx(at("07:12")), answer(USUAL, LATER))  # Q9: the window opens
     assert t.state.lock is not None and first_dep(t.state) == at("08:12")
     assert t.state.lock.source is LockSource.AUTO
     assert t.state.lock.commitment is Commitment.INTENDED
@@ -127,6 +127,13 @@ def test_start_after_auto_lock_time_locks_at_once():
     assert first_dep(late.state) == at("08:12")
     assert [e.kind for e in late.events] == [EventKind.NEXT_CONNECTION]
     assert "08:44" in late.events[0].text
+
+
+def test_late_auto_lock_skips_left_note_after_a_station_report():  # Q4
+    waited = replace(fresh(), zone_reports={"AAA": at("08:05")})  # at the platform before 08:12
+    late = auto_lock(waited, ctx(at("08:20")), answer(USUAL, LATER))
+    assert first_dep(late.state) == at("08:12")
+    assert EventKind.NEXT_CONNECTION not in [e.kind for e in late.events]
 
 
 def test_usual_missing_after_its_departure_time_with_no_lock_is_loud():  # 10.1 safety
@@ -219,6 +226,19 @@ def test_relock_retains_a_train_the_user_may_be_on():
     )
     assert moved is not None and first_dep(moved) == at("08:44")
     assert [j.legs[0].train for j in moved.retained] == [s.lock.legs[0].train]
+
+
+def test_write_lock_never_retains_a_missed_leg():  # Q2
+    s = locked()
+    assert s.lock is not None
+    missed = replace(s.lock, legs=(replace(s.lock.legs[0], state=LegState.MISSED),))
+    s = replace(s, lock=missed)
+    new = journey_of(LATER, LockSource.MISSED, Commitment.COMMITTED)
+    for now in (None, at("08:20")):
+        moved = write_lock(s, new, expect=None, now=now)
+        assert moved is not None and moved.retained == ()
+    assert not may_be_on(missed.legs[0], at("08:20"))
+    assert not rides(missed, missed.legs[0].train, at("08:20"))
 
 
 def riding_occurrence_with_retained() -> OccurrenceState:

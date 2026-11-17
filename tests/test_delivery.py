@@ -92,6 +92,7 @@ def test_silent_held_in_quiet_hours_but_all_good_not():
     v = View(quiet=True)
     assert revalidate(ob(EventKind.DELAYED, Severity.SILENT), v, NOW) == "hold"
     assert revalidate(ob(EventKind.ALL_GOOD, Severity.SILENT), v, NOW) == "send"
+    assert revalidate(ob(EventKind.AT_STATION, Severity.SILENT), v, NOW) == "send"
     assert revalidate(ob(EventKind.LEAVE_NOW), v, NOW) == "send"
 
 

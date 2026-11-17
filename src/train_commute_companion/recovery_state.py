@@ -18,6 +18,7 @@ ORIGINAL_ROUTINE = frozenset(
         EventKind.NEXT_CONNECTION,
         EventKind.EARLIER_TRAIN_WITHDRAWN,
         EventKind.ALL_GOOD,
+        EventKind.AT_STATION,
     }
 )
 

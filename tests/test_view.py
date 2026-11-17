@@ -28,6 +28,7 @@ from train_commute_companion.view import (
     WorksDay,
     moved,
     occurrence_view,
+    still_due,
     track_fix,
     works_ahead,
 )
@@ -79,6 +80,15 @@ async def locked(tmp, conns=ONE_TRANSFER) -> World:
     await w.rt.poll_once()
     assert only_occurrence(w.rt).lock is not None
     return w
+
+
+async def test_usual_departure_uses_the_occurrence_schedule(tmp_path):
+    w = await locked(tmp_path)
+    s = only_occurrence(w.rt)
+    ctx = occurrence_ctx(w.rt.state, s, w.clock.now())
+    adopted = ctx.schedule.first_departure + timedelta(minutes=2)
+    ctx = replace(ctx, schedule=replace(ctx.schedule, first_departure=adopted))
+    assert occurrence_view(s, ctx, ()).usual_departure == adopted
 
 
 async def test_view_shows_locked_legs_delay_and_platform(tmp_path):
@@ -370,3 +380,42 @@ def test_track_fix_seeds_steps_and_drops():
     # a region the source names, when no circle holds the fix
     named = replace(far, regions=frozenset({"home"}))
     assert track_fix(view, profile, 3, named, None)[0].zone == "home"
+
+
+async def test_still_due_once_per_train_inside_the_lead(tmp_path):  # Q3, Q10
+    w = await locked(tmp_path)
+    view = w.rt.view()
+    profile = next(p for p in view.profiles if p.id == "p1")
+    assert still_due(view, profile, "home", (), at("08:06")) is None  # 6 min before the 08:12
+    key = still_due(view, profile, "home", (), at("08:07"))
+    assert key is not None
+    assert still_due(view, profile, "home", {key}, at("08:08")) is None  # one per train
+    for zone in ("AAA", "work", None):  # a station, the other place, no zone
+        assert still_due(view, profile, zone, (), at("08:07")) is None
+    assert still_due(view, profile, "home", (), at("08:12")) is None  # departed
+    o = view.occurrences[0]
+    riding = replace(o, legs=(replace(o.legs[0], progress=LegState.RIDING), *o.legs[1:]))
+    assert still_due(replace(view, occurrences=(riding,)), profile, "home", (), at("08:07")) is None
+
+
+async def test_still_due_again_when_the_delay_grows(tmp_path):  # Q10 review
+    w = await locked(tmp_path)
+    view = w.rt.view()
+    profile = next(p for p in view.profiles if p.id == "p1")
+    key = still_due(view, profile, "home", (), at("08:07"))
+    assert key is not None
+    o = view.occurrences[0]
+    late = replace(o, legs=(replace(o.legs[0], departure=at("08:22")), *o.legs[1:]))
+    # +10: the 08:07 vouch is stale when the train leaves, so it is owed in the new lead
+    again = still_due(replace(view, occurrences=(late,)), profile, "home", {key}, at("08:18"))
+    assert again is not None and again != key
+
+
+async def test_still_due_under_half_a_small_buffer(tmp_path):  # Q3 review: return buffer 2
+    w = await locked(tmp_path)
+    view = w.rt.view()
+    p = next(p for p in view.profiles if p.id == "p1")
+    small = replace(p, outbound=replace(p.outbound, buffer_min=2))
+    assert still_due(view, small, "home", (), at("08:07")) is None  # never too late to catch
+    assert still_due(view, small, "home", (), at("08:10:59")) is None
+    assert still_due(view, small, "home", (), at("08:11")) is not None

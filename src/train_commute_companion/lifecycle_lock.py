@@ -21,11 +21,12 @@ from train_commute_companion.state import (
     OccurrenceState,
 )
 
-# a train the user may be on: departed and not done (7.12 rule 7). RIDING and MISSED say so by
-# state; a PENDING or BOARDING leg says so once its planned departure has passed, since leg
-# progress may lag the clock (a departed usual is auto-locked PENDING). A delayed train still at
-# the platform also counts: retaining it errs on the safe side.
-_MAY_BE_ON = (LegState.RIDING, LegState.MISSED)
+# a train the user may be on: departed and not done (7.12 rule 7). RIDING says so by state; a
+# PENDING or BOARDING leg says so once its planned departure has passed, since leg progress may
+# lag the clock (a departed usual is auto-locked PENDING). A delayed train still at the platform
+# also counts: retaining it errs on the safe side. A MISSED leg never does: it was confirmed by a
+# report at its boarding station MISSED_GRACE after it left, and the user cannot be on it (Q2).
+_MAY_BE_ON = (LegState.RIDING,)
 MAY_HAVE_LEFT = (LegState.PENDING, LegState.BOARDING)
 _YIELDS_TO_CHOICE = (LockSource.AUTO, LockSource.STATION, LockSource.LOCATION)
 _NEEDS_EXPECT_OVER_CHOICE = (LockSource.RELOCK, LockSource.RESTORE)

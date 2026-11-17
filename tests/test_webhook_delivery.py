@@ -28,9 +28,9 @@ from runtime_rig import (
     Rig,
     at,
     cancelled_l2,
-    cancelled_usual_world,
     clean_world,
     kinds,
+    late_usual_world,
     live_facts_bundle,
     split_world,
     tracked,
@@ -420,7 +420,7 @@ async def test_give_up_holds_through_observation_waits(tmp_path, kind, wait, cap
 async def test_owed_copy_is_revalidated_before_each_try(tmp_path, case):
     if case == "leave_now_expired":
         rig = WRig(tmp_path, "16:54")
-        rig.provider.world = cancelled_usual_world()
+        rig.provider.world = late_usual_world()
         rig.end.status = 503
         await rig.rt.start()  # LEAVE_NOW for the 17:22 told by phone; its copy is owed
         assert copies(rig, EventKind.LEAVE_NOW)
@@ -1179,10 +1179,11 @@ async def test_urgent_advice_reaches_the_phone_while_a_backlog_drains(tmp_path):
         alert(rig, i)
     await asyncio.wait_for(rig.rt.watchdog_once(), 2)
     await asyncio.wait_for(rig.end.entered.wait(), 2)  # the first backlog POST is in flight
-    rig.provider.world = cancelled_usual_world()
+    rig.provider.world = late_usual_world()
     await asyncio.wait_for(rig.rt.poll_once(), 2)  # never waits behind the receiver
     leave = [e for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW]
-    assert len(leave) == 1 and "17:22" in leave[0].text and rig.end.accepted == []
+    # Q9: the window-start lock's own alerts were accepted before the backlog began
+    assert len(leave) == 1 and "17:22" in leave[0].text and rig.end.of(EventKind.LEAVE_NOW) == []
     await asyncio.wait_for(rig.rt.watchdog_once(), 2)  # the watchdog neither
     rig.end.gate.set()
     await asyncio.wait_for(rig.rt.webhooks_idle(), 5)

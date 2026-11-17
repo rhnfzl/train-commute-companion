@@ -105,7 +105,7 @@ async def test_whole_day_uses_next_day_return_offset(tmp_path):
     rig = Rig(tmp_path)
     rig.write(
         text=PROFILE.replace(
-            'return: {first_train: "17:52", buffer_min: 5}',
+            'return: {first_train: "17:52", buffer_min: 5, active_lead_min: 120}',
             'return: {first_train: "00:52", buffer_min: 5, day_offset: 1}',
         )
     )
@@ -174,7 +174,7 @@ async def test_return_resume_after_midnight_targets_original_commute_day(tmp_pat
     rig = Rig(tmp_path)
     rig.write(
         text=PROFILE.replace(
-            'return: {first_train: "17:52", buffer_min: 5}',
+            'return: {first_train: "17:52", buffer_min: 5, active_lead_min: 120}',
             'return: {first_train: "00:52", buffer_min: 5, day_offset: 1}',
         )
     )
@@ -198,7 +198,7 @@ async def test_resume_uses_running_routes_day_offset_after_profile_edit(tmp_path
     assert before.lock is not None
     rig.write(
         text=PROFILE.replace(
-            'return: {first_train: "17:52", buffer_min: 5}',
+            'return: {first_train: "17:52", buffer_min: 5, active_lead_min: 120}',
             'return: {first_train: "00:52", buffer_min: 5, day_offset: 1}',
         )
     )

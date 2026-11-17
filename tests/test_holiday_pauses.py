@@ -3,13 +3,14 @@ from datetime import date, timedelta
 import pytest
 from builders import make_connection
 from lifecycle_fixtures import L1, L2X
-from runtime_rig import DAY, PROFILE, started
+from runtime_rig import DAY, PROFILE, Rig, started
 
 from train_commute_companion.calendar import TZ
 from train_commute_companion.lookahead_probe import probe_dates
 from train_commute_companion.model import Config, Direction, EventKind, Profile
 from train_commute_companion.overlap import find_overlaps
 from train_commute_companion.profile import parse_profiles
+from train_commute_companion.providers.base import ServerError
 from train_commute_companion.schedule import schedules_active
 from train_commute_companion.serde import decode, encode
 
@@ -156,7 +157,10 @@ def pause_runtime_profile():
 
 
 async def test_adding_pause_drops_an_unlocked_occurrence(tmp_path):
-    rig = await started(tmp_path, "07:15")
+    rig = Rig(tmp_path, "07:15")
+    rig.provider.error = lambda q: ServerError()  # no answer, so no lock at the window start (Q9)
+    await rig.rt.start()
+    await rig.rt.poll_once()
     assert rig.occ().lock is None
     rig.write(text=pause_runtime_profile())
     await rig.rt.reload()
