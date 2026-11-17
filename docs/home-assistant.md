@@ -23,6 +23,17 @@ This prevents HTTP 400 failures when an intermediate stop supplies a numeric ide
 Returned stops keep the queried identifier so saved boarding and recovery state still match.
 It reuses the catalogue loaded at startup and does not add requests to each poll.
 
+### Upgrade to 0.2.5
+
+Update through HACS and restart Home Assistant. The integration installs the matching `train-commute-companion==0.2.5` core automatically.
+Existing profiles, settings and saved state remain valid.
+
+A position at your boarding station or at home after your train left no longer counts as a missed train by itself, because phones often report positions late. A miss now needs proof: still there 12 minutes after the departure with no sign of riding, or one of the new optional signals. See [Location with Home Assistant](location-ha.md#missed-trains).
+The profile `location` block takes two new optional keys: `wifi` (a Wi-Fi tracker per place) and `activity_entity` (the phone's motion activity sensor). Without them nothing needs to change.
+Messages now name a station that NS gives only by number, for example "runs only to Eindhoven Centraal".
+
+Back up the integration and its state before upgrading. The older 0.2.4 core cannot read any state saved by 0.2.5, even without the new keys. A downgrade needs that pre-upgrade backup, as described above.
+
 ## Set up
 
 1. Get an NS API key from the NS API portal.
