@@ -261,23 +261,103 @@ def test_visibility_episode_transitions_emit_once_and_preserve_outage_identity()
     from train_commute_companion.ledger import EpisodeTransition, PollMemory
 
     memory = PollMemory()
-    change = memory.observe_blind("journey", True, NOW)
+    board = {"lock": (), "immediate": True}
+    change = memory.observe_blind("journey", True, NOW, **board)
     assert change.transition is EpisodeTransition.ENTERED and change.since == NOW
     assert (
-        memory.observe_blind("journey", True, NOW + timedelta(minutes=2)).transition
+        memory.observe_blind("journey", True, NOW + timedelta(minutes=2), **board).transition
         is EpisodeTransition.UNCHANGED
     )
-    recovered = memory.observe_blind("journey", False, NOW + timedelta(minutes=4))
+    memory.told_blind.add("journey")
+    recovered = memory.observe_blind("journey", False, NOW + timedelta(minutes=4), **board)
     assert recovered.transition is EpisodeTransition.EXITED and recovered.since == NOW
     assert not memory.blind
     assert memory.observe_offline("journey", True) is EpisodeTransition.ENTERED
     assert memory.observe_offline("journey", True) is EpisodeTransition.UNCHANGED
     assert memory.observe_offline("journey", False) is EpisodeTransition.EXITED
     assert memory.observe_offline("journey", False) is EpisodeTransition.UNCHANGED
-    memory.observe_blind("journey", True, NOW)
+    memory.observe_blind("journey", True, NOW, **board)
+    memory.told_blind.add("journey")
+    memory.polled["journey"] = (NOW, ())
     memory.observe_offline("journey", True)
     memory.forget("journey")
-    assert not memory.blind and not memory.offline
+    assert not memory.blind and not memory.offline and not memory.told_blind
+    assert not memory.polled
+
+
+# --- Q5: a train gap is told after two polls under one lock, a board gap at once ---
+
+T0, T2, T4 = NOW, NOW + timedelta(minutes=2), NOW + timedelta(minutes=4)
+
+
+def _lock(name: str):
+    from train_commute_companion.model import TrainId
+
+    return (TrainId(NOW.date(), name, NOW),)
+
+
+def test_leg_gap_needs_two_polls_under_one_lock():
+    from train_commute_companion.ledger import EpisodeTransition, PollMemory
+
+    memory, a = PollMemory(), _lock("A")
+    memory.polled["j"] = (T0, a)
+    first = memory.observe_blind("j", True, T0, lock=a, immediate=False)
+    assert first.transition is EpisodeTransition.UNCHANGED and "j" not in memory.blind
+    tick = memory.observe_blind("j", True, T0 + timedelta(seconds=30), lock=a, immediate=False)
+    assert tick.transition is EpisodeTransition.UNCHANGED  # ticks are not polls
+    memory.polled["j"] = (T2, a)
+    told = memory.observe_blind("j", True, T2, lock=a, immediate=False)
+    assert told.transition is EpisodeTransition.ENTERED and told.since == T2
+
+
+def test_leg_gap_recovers_silently_when_never_told():
+    from train_commute_companion.ledger import EpisodeTransition, PollMemory
+
+    memory, a = PollMemory(), _lock("A")
+    memory.polled["j"] = (T0, a)
+    memory.observe_blind("j", True, T0, lock=a, immediate=False)
+    memory.polled["j"] = (T2, a)
+    back = memory.observe_blind("j", False, T2, lock=a, immediate=False)
+    assert back.transition is EpisodeTransition.UNCHANGED and not memory.suspect
+
+
+def test_relock_restarts_the_count_and_skips_the_old_lock_poll():
+    from train_commute_companion.ledger import EpisodeTransition, PollMemory
+
+    memory, a, b = PollMemory(), _lock("A"), _lock("B")
+    memory.polled["j"] = (T0, a)
+    memory.observe_blind("j", True, T0, lock=a, immediate=False)
+    relocked = memory.observe_blind("j", True, T0, lock=b, immediate=False)
+    assert relocked.transition is EpisodeTransition.UNCHANGED
+    assert memory.suspect["j"].polls == 0  # the latest poll asked for the old lock
+    memory.polled["j"] = (T2, b)
+    once = memory.observe_blind("j", True, T2, lock=b, immediate=False)
+    assert once.transition is EpisodeTransition.UNCHANGED  # the first poll after the relock
+    memory.polled["j"] = (T4, b)
+    assert memory.observe_blind("j", True, T4, lock=b, immediate=False).transition is (
+        EpisodeTransition.ENTERED
+    )
+
+
+def test_board_gap_is_told_at_once():
+    from train_commute_companion.ledger import EpisodeTransition, PollMemory
+
+    change = PollMemory().observe_blind("j", True, T0, lock=_lock("A"), immediate=True)
+    assert change.transition is EpisodeTransition.ENTERED
+
+
+def test_visible_again_only_after_cannot_see_reached_the_user():
+    from train_commute_companion.ledger import EpisodeTransition, PollMemory
+
+    memory, a = PollMemory(), _lock("A")
+    memory.observe_blind("j", True, T0, lock=a, immediate=True)
+    unheard = memory.observe_blind("j", False, T2, lock=a, immediate=False)
+    assert unheard.transition is EpisodeTransition.UNCHANGED and not memory.blind
+    memory.observe_blind("j", True, T2, lock=a, immediate=True)
+    memory.told_blind.add("j")
+    heard = memory.observe_blind("j", False, T4, lock=a, immediate=False)
+    assert heard.transition is EpisodeTransition.EXITED and heard.since == T2
+    assert not memory.told_blind
 
 
 async def test_one_destination_has_one_reservation_when_input_repeats():

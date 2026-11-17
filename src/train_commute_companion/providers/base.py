@@ -87,11 +87,22 @@ class PlannedWorks:
 
 
 @dataclass(frozen=True, slots=True)
+class DisruptionSection:
+    stations: frozenset[str]
+    # "SPR" or "IC" when NS names exactly that one train type as hit here; None when unknown
+    only: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ActiveDisruption:
     id: str
     title: str
     stations: frozenset[str]
     url: str | None
+    # Persisted inside notices: new fields need defaults so older state files still load.
+    summary: str = ""  # NS situation label: cause and effect
+    end: datetime | None = None  # NS expected end
+    sections: tuple[DisruptionSection, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

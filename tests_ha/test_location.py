@@ -239,7 +239,7 @@ async def test_an_enter_ns_did_not_answer_starts_no_report_timer(hass):
     h = await setup_tcc(hass, VIA_UT, now="08:00")
     set_person(hass, *FAR)
     await start_tracker(h)
-    await drive(h, "08:14")  # after the 08:12 left
+    await drive(h, "08:15")  # 3 min after the 08:12 left: a report from now on is a miss (Q4)
     answering = h.provider.trips
 
     async def timing_out(q):
@@ -251,9 +251,51 @@ async def test_an_enter_ns_did_not_answer_starts_no_report_timer(hass):
     h.provider.trips = answering
     ha_rig.FREEZER.tick(30)
     set_person(hass, 52.00001, 5.0)  # inside the 2 minutes, and it still reports
-    await drive(h, "08:15")
+    await drive(h, "08:16")
     assert await spied(h) == [("AAA", "enter"), ("AAA", "report")]
     assert any("missed" in c.data["message"].lower() and loud(c) for c in h.pushes), texts(h)
+
+
+async def test_waiting_at_the_station_gets_no_left_note(hass):  # Q4
+    h = await setup_tcc(hass, VIA_UT, now="08:00")
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    await drive(h, "08:05")
+    set_person(hass, 52.0, 5.0)  # in AAA's zone before the 08:12
+    await drive(h, "08:14")
+    assert await spied(h) == [("AAA", "enter")]
+    assert not any("has left" in t for t in texts(h)), texts(h)
+
+
+async def test_no_location_keeps_the_left_note(hass):  # Q4: no evidence, the hedge stays
+    h = await setup_tcc(hass, VIA_UT, now="08:00")
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    await drive(h, "08:14")
+    assert any("has left" in t for t in texts(h)), texts(h)
+    assert await spied(h) == []  # away from home: nothing to vouch for (Q10)
+
+
+async def test_still_sent_once_before_departure_while_home(hass):  # Q3, Q10
+    h = await setup_tcc(hass, VIA_UT, now="08:00")
+    set_person(hass, *HOME)  # at rest at home: the phone sends no fixes
+    await start_tracker(h)
+    await drive(h, "08:10")
+    assert await spied(h) == [("home", "still")]  # 5 min before the 08:12
+    await drive(h, "08:16")
+    assert await spied(h) == [("home", "still")]  # once per train
+    missed = [t for t in texts(h) if "missed" in t]
+    assert missed == ["Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34."]
+    assert not any("has left" in t for t in texts(h)), texts(h)
+
+
+async def test_no_still_when_the_tracker_is_unavailable(hass):  # Q10
+    h = await setup_tcc(hass, VIA_UT, now="08:00")
+    set_person(hass, *HOME)
+    await start_tracker(h)
+    set_person_state(hass, "unavailable")
+    await drive(h, "08:14")
+    assert await spied(h) == []
 
 
 async def test_attribute_change_with_old_coordinates_sends_nothing(hass):

@@ -24,7 +24,7 @@ from runtime_rig import (
 
 from train_commute_companion.budget import RequestBudget
 from train_commute_companion.ledger import leg_now
-from train_commute_companion.lifecycle import Choose, origin_answer
+from train_commute_companion.lifecycle import Choose
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.messages import RefusalKind, Refused, no_journey
 from train_commute_companion.model import (
@@ -48,7 +48,6 @@ from train_commute_companion.providers.base import (
     RateLimited,
     ServerError,
 )
-from train_commute_companion.revisions import occurrence_ctx
 from train_commute_companion.runtime import Runtime, fresh_state
 from train_commute_companion.state import BaselineHistory, LockSource
 from train_commute_companion.store import PersistedState, StorageError
@@ -355,6 +354,10 @@ async def locked_poll_at_0830(tmp_path: Path, by_origin: dict[str, list[Connecti
     answer_by_origin(rig, by_origin)
     await rig.rt.poll_once()
     await rig.rt.watchdog_once()
+    assert blind(rig) == []  # one blind poll is not yet a gap (Q5)
+    rig.clock.set("08:32")
+    await rig.rt.poll_once()
+    await rig.rt.watchdog_once()
     return rig
 
 
@@ -442,25 +445,32 @@ _ONWARD_CASES = {
 }  # fmt: skip
 
 
-async def before_lock_at_0755(tmp_path: Path, text: str, world: list[Connection]) -> Rig:
-    rig = Rig(tmp_path, "07:55")  # zero buffer: the auto lock is at 07:57
+async def locked_then_polled_at_0758(tmp_path: Path, text: str, world: list[Connection]) -> Rig:
+    """The reconcile poll at 07:55 locks at once (Q9) inside the quiet watch, which ends at
+    07:57 (zero buffer); then polls at 07:57 and 07:58: two polls under one lock, so a train
+    gap is told (Q5)."""
+    rig = Rig(tmp_path, "07:55")
     rig.write(text=text)
     rig.rt = rig.new()
     rig.provider.world = world
     await rig.rt.start()
     await rig.rt.watchdog_once()
-    assert rig.occ().lock is None
+    assert blind(rig) == []  # quiet watch: no episode starts
+    for hhmm in ("07:57", "07:58"):
+        rig.clock.set(hhmm)
+        await rig.rt.poll_once()
+        await rig.rt.watchdog_once()
     return rig
 
 
 @pytest.mark.parametrize("case", sorted(_ONWARD_CASES))
-async def test_watchdog_before_a_lock_checks_onward_legs(tmp_path, case):
-    rig = await before_lock_at_0755(tmp_path, ZERO_BUFFER, _ONWARD_CASES[case])
+async def test_watchdog_after_the_quiet_watch_checks_onward_legs(tmp_path, case):
+    rig = await locked_then_polled_at_0758(tmp_path, ZERO_BUFFER, _ONWARD_CASES[case])
     got = blind(rig)
     assert len(got) == 1 and got[0].severity is Severity.LOUD
 
 
-async def test_watchdog_before_a_lock_checks_every_leg_of_a_two_transfer_usual(tmp_path):
+async def test_watchdog_after_the_quiet_watch_checks_every_leg_of_a_two_transfer_usual(tmp_path):
     third = make_leg("BBB", "RTD", "08:24", "08:54", number="6666", provenance=Provenance.PLANNED)
     usual = make_connection([
         make_leg("AAA", "UT", "08:12", "08:14", number="1234"),
@@ -470,23 +480,7 @@ async def test_watchdog_before_a_lock_checks_every_leg_of_a_two_transfer_usual(t
     text = ZERO_BUFFER.replace("transfers: [UT]}", "transfers: [UT, BBB]}").replace(
         "{UT: 4}", "{UT: 4, BBB: 2}"
     )
-    rig = await before_lock_at_0755(tmp_path, text, [usual])
-    got = blind(rig)
-    assert len(got) == 1 and "no reported departure time" in got[0].text
-
-
-async def test_watchdog_before_a_lock_reads_the_newest_usual_copy(tmp_path):
-
-    rig = await before_lock_at_0755(tmp_path, ZERO_BUFFER, [make_connection([EARLY_L1, ONWARD])])
-    assert blind(rig) == []
-    planned = make_leg("AAA", "UT", "08:12", "08:16", number="1234", provenance=Provenance.PLANNED)
-    q = Query("AAA", "RTD", at("08:12"))
-    older = ProviderAnswer(q, (make_connection([EARLY_L1, ONWARD]),), at("07:54"))
-    newer = ProviderAnswer(q, (make_connection([planned, ONWARD]),), rig.clock.now())
-    k = "p1|outbound|2026-10-27"
-    ctx = occurrence_ctx(rig.rt.state, rig.occ(), rig.clock.now())
-    seam.remember_usual(rig.rt, k, ctx, origin_answer((older, newer), ctx))
-    await rig.rt.watchdog_once()
+    rig = await locked_then_polled_at_0758(tmp_path, text, [usual])
     got = blind(rig)
     assert len(got) == 1 and "no reported departure time" in got[0].text
 
@@ -1486,40 +1480,109 @@ async def test_location_says_whether_ns_answered(tmp_path):
     rig.provider.trips = answering
 
 
-async def test_choose_at_retained_remainder_promotes_ridden_train(tmp_path):  # N3, required
-    rig = await one_transfer(tmp_path)
-    rig.clock.set("08:18")  # at AAA after the 08:12 left: it may still dwell with the user on it
+# --- Q5: a relock is not a gap; a real gap is told on the second poll under the new lock ---
+
+
+async def relocked_at_aaa_0818(tmp: Path) -> Rig:
+    """The 2026-11-17 incident: at AAA after the 08:12 left, the location relocks to the 08:44,
+    which no poll has asked for yet."""
+    rig = await one_transfer(tmp)
+    await rig.run_until("08:18")
     await rig.rt.report_location("p1", LocationEvent("AAA", "report", at("08:18")))
-    rig.clock.set("08:20")
+    assert only_occurrence(rig.rt).lock.legs[0].train.planned_departure == at("08:44")
+    return rig
+
+
+async def test_location_relock_gap_is_not_cannot_see_train(tmp_path):
+    rig = await relocked_at_aaa_0818(tmp_path)
+    await rig.rt.watchdog_once()
+    assert blind(rig) == []
+    await rig.run_until("08:24")
+    assert blind(rig) == []
+    assert EventKind.CAN_SEE_TRAIN_AGAIN not in kinds(rig.rt.events_log)
+
+
+async def test_real_gap_after_relock_is_told_on_the_second_poll(tmp_path):
+    rig = await relocked_at_aaa_0818(tmp_path)
+    planned = make_connection([
+        make_leg("AAA", "UT", "08:44", "09:08", number="1236", provenance=Provenance.PLANNED),
+        make_leg("UT", "RTD", "09:16", "09:50", number="5680"),
+    ])  # fmt: skip
+    rig.provider.world = [ONE_TRANSFER[0], planned]
+    await rig.run_until("08:20")  # the 08:18 poll: the first under the new lock
+    assert blind(rig) == []
+    await rig.run_until("08:22")  # the 08:20 poll: the second
+    got = blind(rig)
+    assert len(got) == 1 and got[0].severity is Severity.LOUD
+    assert "no reported departure time" in got[0].text
+    rig.provider.world = list(ONE_TRANSFER)
+    await rig.run_until("08:24")
+    told = [k for k in kinds(rig.rt.events_log) if "see_train" in k.value]
+    assert told[-1] is EventKind.CAN_SEE_TRAIN_AGAIN
+
+
+async def test_held_cannot_see_is_not_followed_by_visible_again(tmp_path):
+    rig = await started(tmp_path, "07:56")
+    rig.store.fail = True
+    await rig.run_until("08:03", poll=False)  # the poller stopped: a board gap, told at once
+    assert any(o.event.kind is EventKind.CANNOT_SEE_TRAIN for o in seam.held(rig.rt).values())
+    await rig.rt.poll_once()  # the provider answers again
+    rig.store.fail = False
+    await rig.rt.watchdog_once()
+    sent = kinds(rig.notifier.attempts)
+    assert EventKind.CANNOT_SEE_TRAIN not in sent and EventKind.CAN_SEE_TRAIN_AGAIN not in sent
+
+
+# 07:42 AAA-UT with its onward 08:20 UT-RTD: the provisional lock of a 07:20 leave from home
+EARLY_TRANSFER = make_connection(
+    [
+        make_leg("AAA", "UT", "07:42", "08:10", number="1100"),
+        make_leg("UT", "RTD", "08:20", "08:54", number="2200"),
+    ]
+)
+
+
+async def retained_by_errand_timeout(tmp: Path) -> Rig:
+    """Left home at 07:20, so the 07:42 was locked; the errand timeout at 08:05 auto-locked the
+    08:12 and kept the departed 07:42 a retained remainder (7.12 rule 7)."""
+    rig = Rig(tmp, "07:20")
+    rig.provider.world = [EARLY_TRANSFER, *ONE_TRANSFER]
+    await rig.rt.start()
     await rig.rt.poll_once()
+    await rig.rt.report_location("p1", LocationEvent("home", "leave", at("07:20")))
+    rig.clock.set("08:06")
+    await rig.rt.poll_once()
+    return rig
+
+
+async def test_choose_at_retained_remainder_promotes_ridden_train(tmp_path):  # N3, required
+    rig = await retained_by_errand_timeout(tmp_path)
     pre = only_occurrence(rig.rt)
-    assert pre.lock.legs[0].train.planned_departure == at("08:44")
-    assert pre.retained[0].legs[0].train.planned_departure == at("08:12")
+    assert pre.lock.legs[0].train.planned_departure == at("08:12")
+    assert pre.lock.source is LockSource.AUTO
+    assert pre.retained[0].legs[0].train.planned_departure == at("07:42")
     ridden_state = pre.retained[0].legs[0].state
-    assert ridden_state is LegState.MISSED
-    assert await rig.rt.choose_at("p1", time(8, 12)) is None
+    assert ridden_state is LegState.RIDING
+    assert await rig.rt.choose_at("p1", time(7, 42)) is None
     s = only_occurrence(rig.rt)
-    assert s.lock.legs[0].train.planned_departure == at("08:12")
+    assert s.lock.legs[0].train.planned_departure == at("07:42")
     assert s.lock.source is LockSource.CHOOSE
     assert s.lock.legs[0].state is ridden_state  # the ridden prefix keeps its progress
     assert s.direction_state is DirectionState.RIDING and s.retained == ()
     assert not refused(rig.rt)
 
 
-async def test_choose_at_retained_from_missed_transfer_queries_transfer_station(tmp_path):
+async def test_missed_transfer_is_dropped_and_cannot_be_chosen_back(tmp_path):  # Q2
     rig = await one_transfer(tmp_path)
     await rig.run_until("08:44")
-    rig.clock.set("08:53")  # at UT after the delayed 08:46 left: missed transfer, kept retained
-    await rig.rt.report_location("p1", LocationEvent("UT", "report", at("08:53")))
+    rig.clock.set("08:54")  # at UT 3 min after the delayed 08:46 left (expected 08:51)
+    await rig.rt.report_location("p1", LocationEvent("UT", "report", at("08:54")))
+    assert EventKind.MISSED_TRANSFER in kinds(rig.rt.events_log)
     pre = only_occurrence(rig.rt)
-    assert pre.retained[0].legs[0].train.planned_departure == at("08:46")
-    assert await rig.rt.choose_at("p1", time(8, 46)) is None
-    assert rig.provider.calls[-1].origin == "UT"
-    s = only_occurrence(rig.rt)
-    # the 08:12 into UT stays in the lock, and nothing is left alerting (7.12 rule 7)
-    assert [x.train.planned_departure for x in s.lock.legs] == [at("08:12"), at("08:46")]
-    assert s.lock.legs[0] == pre.lock.legs[0] and s.retained == ()
-    assert s.lock.source is LockSource.CHOOSE and not refused(rig.rt)
+    assert pre.retained == ()
+    assert [x.train.planned_departure for x in pre.lock.legs] == [at("08:12"), at("09:16")]
+    assert await rig.rt.choose_at("p1", time(8, 46)) is not None  # not catchable any more
+    assert only_occurrence(rig.rt).lock == pre.lock
 
 
 def departing_from_asked_time(rig: Rig) -> None:
@@ -1542,17 +1605,54 @@ async def test_station_report_finds_missed_first_train_ns_no_longer_lists(tmp_pa
     assert EventKind.MISSED_FIRST_TRAIN in kinds(rig.rt.events_log)
     s = only_occurrence(rig.rt)
     assert s.lock.legs[0].train.planned_departure == at("08:44")
-    assert s.retained[0].legs[0].train.planned_departure == at("08:12")
+    assert s.retained == ()  # dropped, never retained (Q2)
+
+
+async def test_home_report_then_departure_poll_sends_one_missed_message(tmp_path):  # Q3
+    rig = await one_transfer(tmp_path)
+    await rig.run_until("08:06")
+    await rig.rt.report_location("p1", LocationEvent("home", "still", at("08:06")))
+    await rig.run_until("08:15")  # the 08:14 poll sees the 08:12 gone while the user is home
+    missed = [e for e in rig.rt.events_log if e.kind is EventKind.MISSED_FIRST_TRAIN]
+    assert [e.text for e in missed] == [
+        "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34."
+    ]
+    assert EventKind.NEXT_CONNECTION not in kinds(rig.rt.events_log)
+    s = only_occurrence(rig.rt)
+    assert s.lock.source is LockSource.MISSED
+    assert s.lock.legs[0].train.planned_departure == at("08:44")
 
 
 async def test_station_report_finds_missed_transfer_ns_no_longer_lists(tmp_path):  # rule 7
     rig = await one_transfer(tmp_path)
     departing_from_asked_time(rig)
     await rig.run_until("08:44")
-    rig.clock.set("08:53")  # at UT after the delayed 08:46 left; a query from AAA now omits it
-    await rig.rt.report_location("p1", LocationEvent("UT", "report", at("08:53")))
+    rig.clock.set("08:54")  # at UT after the delayed 08:46 left; a query from AAA now omits it
+    await rig.rt.report_location("p1", LocationEvent("UT", "report", at("08:54")))
     assert EventKind.MISSED_TRANSFER in kinds(rig.rt.events_log)
-    assert only_occurrence(rig.rt).retained[0].legs[0].train.planned_departure == at("08:46")
+    assert only_occurrence(rig.rt).retained == ()
+
+
+async def test_lock_kept_missed_leg_is_not_watched(tmp_path):  # Q2
+    rig = Rig(tmp_path, "07:50")
+    rig.provider.world = [ONE_TRANSFER[0]]  # no later train: the missed one stays in the lock
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    departing_from_asked_time(rig)
+    rig.clock.set("08:18")
+    await rig.rt.report_location("p1", LocationEvent("AAA", "report", at("08:18")))
+    s = only_occurrence(rig.rt)
+    assert s.lock.legs[0].state is LegState.MISSED and s.retained == ()
+    n = len(rig.rt.events_log)
+    # NS stops listing the departed train anywhere; its onward train stays visible
+    rig.provider.world = [make_connection([ONE_TRANSFER[0].legs[1]])]
+    await rig.run_until("08:40")
+    later = rig.rt.events_log[n:]
+    assert EventKind.CANNOT_SEE_TRAIN not in kinds(later)
+    assert not any(
+        e.kind is EventKind.MISSING and e.train is not None and e.train.train_number == "1234"
+        for e in later
+    )
 
 
 async def test_choose_at_onward_train_after_done_first_leg_keeps_prefix(tmp_path):
@@ -1670,8 +1770,8 @@ async def test_choose_at_waits_on_the_shared_backoff(tmp_path):  # rule 14
 
 
 async def test_choose_at_target_gone_after_request_returns_reason(tmp_path):
-    rig = await one_transfer(tmp_path, "07:20", poll=False)  # before the auto lock: not running
-    assert rig.occ() is not None and rig.occ().lock is None
+    rig = await one_transfer(tmp_path, "07:11", poll=False)  # the window opens at 07:12
+    rig.clock.set("07:20")  # choose_at creates the occurrence, not yet locked (Q9)
 
     async def remove_p1(q: Query) -> None:
         rig.provider.hook = None
@@ -1845,3 +1945,75 @@ async def test_profile_file_reads_run_off_the_loop(tmp_path):
     assert {p.name for p in rig.rt.config.profiles} == {"office_c", "office_b"}
     assert len(ThreadSpyPath.threads) == 2  # the stat and the read
     assert threading.get_ident() not in ThreadSpyPath.threads
+
+
+# --- Q9 quiet early watch: locked from the window start, active at 07:47 (buffer 10) ---
+
+
+async def test_quiet_lock_at_window_start_and_check_in_at_active_point(tmp_path):
+    rig = Rig(tmp_path, "07:20")
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    assert rig.occ().lock is not None
+    assert EventKind.ALL_GOOD not in kinds(rig.rt.events_log)
+    assert rig.occ().all_good_evaluated is False
+    rig.clock.set("07:48")
+    await rig.rt.poll_once()
+    good = [e for e in rig.rt.events_log if e.kind is EventKind.ALL_GOOD]
+    assert len(good) == 1 and "on time per NS" in good[0].text
+
+
+def late_l2(minutes: int) -> list[Connection]:
+    l2 = make_leg("UT", "RTD", "08:50", "09:24", number="5678", delay_dep=minutes,
+                  delay_arr=minutes)  # fmt: skip
+    return [make_connection([L1, l2])]
+
+
+async def test_quiet_told_delay_not_repeated_at_active_point(tmp_path):
+    rig = Rig(tmp_path, "07:20")
+    rig.provider.world = late_l2(6)
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    assert kinds(rig.notifier.attempts).count(EventKind.DELAYED) == 1  # 5 min or more passes
+    rig.clock.set("07:48")
+    await rig.rt.poll_once()
+    got = kinds(rig.notifier.attempts)
+    assert got.count(EventKind.DELAYED) == 1 and EventKind.ALL_GOOD not in got
+    rig.clock.set("07:50")
+    rig.provider.world = late_l2(8)  # under the 3-min step from the told 6
+    await rig.rt.poll_once()
+    assert kinds(rig.notifier.attempts).count(EventKind.DELAYED) == 1
+    rig.clock.set("07:52")
+    rig.provider.world = late_l2(9)
+    await rig.rt.poll_once()
+    assert kinds(rig.notifier.attempts).count(EventKind.DELAYED) == 2
+
+
+async def test_quiet_skips_the_advice_search(tmp_path):
+    rig = Rig(tmp_path, "07:20")
+    rig.write(text=PROFILE.replace("NAME", "office_a").replace(
+        "transfers: [UT]}", "transfers: [UT], earlier_train_advice: true}"))  # fmt: skip
+    rig.rt = rig.new()
+    late = make_connection([
+        make_leg("AAA", "UT", "08:12", "08:40", number="1234", delay_dep=15, delay_arr=15),
+        make_leg("UT", "RTD", "08:50", "09:24", number="5678", delay_dep=15, delay_arr=15),
+    ])  # fmt: skip
+    early = make_connection([make_leg("AAA", "UT", "08:04", "08:30", number="1300"),
+                             make_leg("UT", "RTD", "08:36", "09:10", number="6666")])  # fmt: skip
+    rig.provider.world = [late, early]
+    await rig.rt.start()
+    assert [q.at for q in rig.provider.calls] == [at("08:12")]  # the origin query only
+    assert EventKind.LEAVE_NOW not in kinds(rig.rt.events_log)
+    rig.clock.set("07:48")
+    await rig.rt.poll_once()
+    assert at("07:58") in [q.at for q in rig.provider.calls]  # now plus the 10 min buffer
+
+
+async def test_quiet_blind_episode_waits_for_active_point(tmp_path):
+    rig = Rig(tmp_path, "07:20")
+    await rig.rt.start()
+    rig.provider.error = lambda q: ServerError()
+    await rig.run_until("07:46")
+    assert blind(rig) == [] and EventKind.CAN_SEE_TRAIN_AGAIN not in kinds(rig.rt.events_log)
+    await rig.run_until("07:52")
+    assert len(blind(rig)) == 1  # the gap is told once the quiet watch ends

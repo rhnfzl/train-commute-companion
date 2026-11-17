@@ -78,13 +78,19 @@ def _leg_blind(leg: WatchedLeg, departure: datetime, now: datetime) -> str | Non
     return None
 
 
+def board_blind(health: BoardHealth) -> str | None:
+    """Rule 12: the board itself is old or failing. Already two polls deep (FRESH_FOR spans two
+    polls, FAILED_POLLS = 2), so it is told at once (Q5)."""
+    if not health.fresh:
+        return "the board is older than 5 minutes"
+    if health.consecutive_failures >= FAILED_POLLS:
+        return "the last polls failed"
+    return None
+
+
 def blindness(legs: Sequence[WatchedLeg], health: BoardHealth, now: datetime) -> tuple[bool, str]:
     now = to_utc(now)
-    board_reason = None
-    if not health.fresh:
-        board_reason = "the board is older than 5 minutes"
-    elif health.consecutive_failures >= FAILED_POLLS:
-        board_reason = "the last polls failed"
+    board_reason = board_blind(health)
     for leg in legs:
         # departed and neither ridden nor watched means finished (rule 13: unfinished legs only)
         departure = to_utc(leg.departure)

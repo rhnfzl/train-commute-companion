@@ -32,6 +32,7 @@ def with_settings(route: Profile, settings: Profile) -> Profile:
             route.journey(d),
             buffer_min=settings.journey(d).buffer_min,
             earlier_train_advice=settings.journey(d).earlier_train_advice,
+            active_lead_min=settings.journey(d).active_lead_min,
         )
 
     return replace(

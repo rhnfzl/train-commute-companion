@@ -39,6 +39,7 @@ def test_valid_categories_parse_and_category_coverage():
     )
     assert not errors and profiles[0].alerts.disabled_categories == {"delays", "crowding"}
     assert {category_for(k) for k in EventKind} - {None} == set(CATEGORIES)
+    assert category_for(EventKind.AT_STATION) == "routine"
 
 
 @pytest.mark.parametrize("kind", list(EventKind))

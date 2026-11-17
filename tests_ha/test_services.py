@@ -61,18 +61,25 @@ async def test_choose_service_locks_departure(hass):
 
 
 async def test_choose_retained_remainder_the_user_rides(hass):  # review-codex-rev11 N3, required
-    h = await setup_tcc(hass, PROFILE, now="08:00")
-    await drive(h, "08:18")  # auto lock 08:12
-    await h.host.run(
-        lambda rt: rt.report_location("p1", LocationEvent("AAA", "report", at("08:18")))
+    # left home at 07:20, so the 07:42 was locked; the errand timeout at 08:05 auto-locked the
+    # 08:12 and kept the departed 07:42 a retained remainder (7.12 rule 7)
+    early = make_connection(
+        [
+            make_leg("AAA", "UT", "07:42", "08:10", number="1100"),
+            make_leg("UT", "RTD", "08:20", "08:54", number="2200"),
+        ]
     )
-    await drive(h, "08:20")  # rule 7: lock now 08:44, 08:12 retained
+    h = await setup_tcc(hass, PROFILE, now="07:20", world=[early, *ONE_TRANSFER])
+    await h.host.run(
+        lambda rt: rt.report_location("p1", LocationEvent("home", "leave", at("07:20")))
+    )
+    await drive(h, "08:06")
     pre = await h.host.run(lambda rt: only_occurrence(rt))
-    assert pre.lock.legs[0].train.planned_departure == at("08:44")
-    assert pre.retained[0].legs[0].train.planned_departure == at("08:12")  # the precondition
-    await call(hass, "choose", profile="office_a", departure="08:12")
+    assert pre.lock.legs[0].train.planned_departure == at("08:12")
+    assert pre.retained[0].legs[0].train.planned_departure == at("07:42")  # the precondition
+    await call(hass, "choose", profile="office_a", departure="07:42")
     s = await h.host.run(lambda rt: only_occurrence(rt))
-    assert s.lock.legs[0].train.planned_departure == at("08:12")
+    assert s.lock.legs[0].train.planned_departure == at("07:42")
     assert s.lock.legs[0].state is pre.retained[0].legs[0].state  # ridden prefix keeps its progress
     assert s.direction_state is DirectionState.RIDING and s.retained == ()
     assert not refused(h)

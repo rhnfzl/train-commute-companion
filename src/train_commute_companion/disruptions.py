@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from uuid import uuid4
 
-from train_commute_companion.calendar import to_utc
+from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.health import FRESH_FOR
 from train_commute_companion.lifecycle import Transition, is_resolved, make_event
 from train_commute_companion.model import (
@@ -21,7 +21,11 @@ from train_commute_companion.model import (
     alert_facts,
     okey,
 )
-from train_commute_companion.providers.base import ActiveDisruptions, ProviderAnswer
+from train_commute_companion.providers.base import (
+    ActiveDisruption,
+    ActiveDisruptions,
+    ProviderAnswer,
+)
 from train_commute_companion.state import (
     DisruptionNotice,
     DisruptionReceipt,
@@ -99,40 +103,85 @@ def disruptions_fresh(state: OccurrenceState, now: datetime) -> bool:
     )
 
 
-def _stations(state: OccurrenceState, ctx: Ctx, answers: Sequence[ProviderAnswer]) -> set[str]:
-    journeys = (*((state.lock,) if state.lock else ()), *state.retained)
-    route = (
-        set()
-        if journeys
-        else {
-            ctx.profile.origin(ctx.direction),
-            ctx.profile.destination(ctx.direction),
-            *ctx.profile.journey(ctx.direction).transfers,
-        }
-    )
-    for journey in journeys:
+def _train_type(category: str) -> str | None:
+    code = category.strip().upper()
+    if code == "SPR":
+        return "SPR"
+    return "IC" if code.startswith("IC") else None  # IC, ICD, ICE, ICNG; anything else unknown
+
+
+def _legs(
+    state: OccurrenceState, answers: Sequence[ProviderAnswer]
+) -> list[tuple[set[str], str | None]]:
+    """The stations and train type of every unfinished locked or retained leg."""
+    legs = []
+    for journey in (*((state.lock,) if state.lock else ()), *state.retained):
         for leg in journey.legs:
-            if leg.state in (LegState.DONE, LegState.CANCELLED, LegState.RELOCKED):
+            if leg.state in (LegState.DONE, LegState.CANCELLED, LegState.RELOCKED, LegState.MISSED):
                 continue
-            route.update((leg.board_station, leg.alight_stop))
+            stations = {leg.board_station, leg.alight_stop}
+            kinds = set()
             for answer in answers:
                 for connection in answer.connections:
                     for current in connection.legs:
                         if current.train != leg.train or current.board.code != leg.board_station:
                             continue
+                        kinds.add(_train_type(current.category))
                         for stop in current.stops:
-                            route.add(stop.code)
+                            stations.add(stop.code)
                             if stop.uic:
-                                route.add(stop.uic)
+                                stations.add(stop.uic)
                             if stop.code == leg.alight_stop:
                                 break
-    return route
+            legs.append((stations, kinds.pop() if len(kinds) == 1 else None))
+    return legs
+
+
+def _stations(
+    state: OccurrenceState, ctx: Ctx, legs: Sequence[tuple[set[str], str | None]]
+) -> set[str]:
+    if state.lock or state.retained:
+        return set().union(*(stations for stations, _ in legs))
+    return {
+        ctx.profile.origin(ctx.direction),
+        ctx.profile.destination(ctx.direction),
+        *ctx.profile.journey(ctx.direction).transfers,
+    }
+
+
+def _hits_your_train(item: ActiveDisruption, legs: Sequence[tuple[set[str], str | None]]) -> bool:
+    """False only when every section on your stations names one train type that none of your
+    trains there is; any doubt (no lock, unknown type or wording) counts as a hit."""
+    touched = False
+    for section in item.sections:
+        kinds = [kind for stations, kind in legs if stations & section.stations]
+        if not kinds:
+            continue
+        touched = True
+        if section.only is None or any(kind in (None, section.only) for kind in kinds):
+            return True
+    return not touched
 
 
 def notice_key(notice: DisruptionNotice, service_date: str) -> str:
     ident = hashlib.sha256(notice.item.id.encode()).hexdigest()[:24]
     kind = EventKind.DISRUPTION if notice.active else EventKind.DISRUPTION_CLEARED
     return f"{kind.value}:{service_date}:{ident}:{notice.revision}:{notice.instance}"
+
+
+def _active_text(item: ActiveDisruption, ctx: Ctx) -> str:
+    until = ""
+    if item.end is not None:
+        end = item.end.astimezone(TZ)
+        day = "" if end.date() == ctx.now.astimezone(TZ).date() else f" on {end.day} {end:%b}"
+        until = f"until about {end:%H:%M}{day}"
+    if not item.summary:
+        joined = f", {until}" if until else ""
+        return (
+            f"NS reports {item.title} involving your route's stations{joined}; check your journey."
+        )
+    summary = item.summary if item.summary.endswith((".", "!", "?")) else item.summary + "."
+    return f"NS: {summary}{f' {until[0].upper()}{until[1:]}.' if until else ''} Check your journey."
 
 
 def notice_events(state: OccurrenceState, ctx: Ctx) -> tuple[AlertEvent, ...]:
@@ -154,7 +203,7 @@ def notice_events(state: OccurrenceState, ctx: Ctx) -> tuple[AlertEvent, ...]:
                 targets |= {LEGACY_PRIMARY}
         item = notice.item
         if phase is NoticePhase.ACTIVE_PENDING:
-            text = f"NS reports {item.title} involving your route's stations; check your journey."
+            text = _active_text(item, ctx)
             kind, severity = EventKind.DISRUPTION, Severity.SILENT
         else:
             text = f"NS no longer lists {item.title} as active. Check your journey; this does not confirm that your trains run."
@@ -183,6 +232,14 @@ def notice_events(state: OccurrenceState, ctx: Ctx) -> tuple[AlertEvent, ...]:
     return tuple(events)
 
 
+def _same_news(told: ActiveDisruption, item: ActiveDisruption) -> bool:
+    """A moved NS end time alone is not news, and a notice stored before 0.2.3 (no summary, end
+    or sections) is the same notice as its newly parsed item."""
+    if not told.summary and not told.sections:
+        item = replace(item, summary="", sections=())
+    return replace(told, end=None) == replace(item, end=None)
+
+
 def update_disruptions(
     state: OccurrenceState,
     ctx: Ctx,
@@ -194,7 +251,8 @@ def update_disruptions(
     if not context_enabled(state, ctx):
         return Transition(state, ())
     notices = dict(state.disruptions)
-    route = _stations(state, ctx, answers)
+    legs = _legs(state, answers)
+    route = _stations(state, ctx, legs)
     present = {item.id for item in feed.items}
     uncertain_scope = False
     for item in feed.items:
@@ -202,7 +260,7 @@ def update_disruptions(
         if not item.stations:
             uncertain_scope |= previous is not None and previous.active and previous.relevant
             continue
-        if not item.stations & route:
+        if not item.stations & route or not _hits_your_train(item, legs):
             if previous is not None and previous.relevant:
                 notices[item.id] = replace(
                     previous,
@@ -217,7 +275,7 @@ def update_disruptions(
             notices[item.id] = DisruptionNotice(
                 item, True, 1, instance=uuid4().hex, audience=audience
             )
-        elif not previous.active or not previous.relevant or previous.item != item:
+        elif not previous.active or not previous.relevant or not _same_news(previous.item, item):
             notices[item.id] = replace(
                 previous,
                 item=item,
@@ -228,6 +286,8 @@ def update_disruptions(
                 audience=audience,
                 announced=previous.active and previous.relevant and previous.announced,
             )
+        else:
+            notices[item.id] = replace(previous, item=item)
     if feed.coverage == "complete":
         for ident, previous in notices.items():
             if previous.active and ident not in present:

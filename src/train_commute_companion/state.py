@@ -123,8 +123,8 @@ class LegProgress:
 
     @property
     def arrival_phase(self) -> ArrivalPhase:
-        if self.state in (LegState.CANCELLED, LegState.RELOCKED):
-            return ArrivalPhase.INACTIVE
+        if self.state in (LegState.CANCELLED, LegState.RELOCKED, LegState.MISSED):
+            return ArrivalPhase.INACTIVE  # a missed leg is never ridden (Q2)
         if self.state is LegState.DONE:
             return ArrivalPhase.WATCHING if self.watch_until is not None else ArrivalPhase.ACCEPTED
         if self.accept_value is not None and self.accept_first_seen is not None:

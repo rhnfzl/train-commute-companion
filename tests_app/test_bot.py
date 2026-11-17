@@ -152,24 +152,40 @@ async def test_choose_usage_without_departure(app):
     assert app.texts() == [bot_mod.USAGE_CHOOSE]
 
 
-async def test_choose_retained_remainder_promotes_ridden_train(app):  # N3, required (11.3)
-    rig = app.rig
-    rig.clock.set("08:18")  # at AAA after the 08:12 left: it may still dwell with the user on it
-    await app.rt.report_location("p1", LocationEvent("AAA", "report", at("08:18")))
-    rig.clock.set("08:20")
-    await app.rt.poll_once()
-    pre = only_occurrence(app.rt)
-    assert pre.lock.legs[0].train.planned_departure == at("08:44")
-    assert pre.retained[0].legs[0].train.planned_departure == at("08:12")
-    ridden_state = pre.retained[0].legs[0].state
-    assert ridden_state is LegState.MISSED
-    await app.bot.handle(app.msg("/choose 08:12"))
-    assert app.texts() == ["Locked the 08:12 for Office A."]
-    s = only_occurrence(app.rt)
-    assert s.lock.legs[0].train.planned_departure == at("08:12")
-    assert s.lock.source is LockSource.CHOOSE
-    assert s.lock.legs[0].state is ridden_state  # the ridden prefix keeps its progress
-    assert s.direction_state is DirectionState.RIDING and s.retained == ()
+async def test_choose_retained_remainder_promotes_ridden_train(tmp_path, tg):  # N3 (11.3)
+    # left home at 07:20, so the 07:42 was locked; the errand timeout at 08:05 auto-locked the
+    # 08:12 and kept the departed 07:42 a retained remainder (7.12 rule 7)
+    early = make_connection(
+        [
+            make_leg("AAA", "UT", "07:42", "08:10", number="1100"),
+            make_leg("UT", "RTD", "08:20", "08:54", number="2200"),
+        ]
+    )
+    rig = Rig(tmp_path, "07:20")
+    rig.write(text=ONE_PROFILE)
+    rig.provider.world = [early, *ONE_TRANSFER]
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    await rig.rt.report_location("p1", LocationEvent("home", "leave", at("07:20")))
+    rig.clock.set("08:06")
+    await rig.rt.poll_once()
+    path = tmp_path / "telegram.json"
+    app = App(rig, tg, path, Bot(TelegramApi(TOKEN, tg.client()), rig.rt, CHAT, path))
+    try:
+        pre = only_occurrence(app.rt)
+        assert pre.lock.legs[0].train.planned_departure == at("08:12")
+        assert pre.retained[0].legs[0].train.planned_departure == at("07:42")
+        ridden_state = pre.retained[0].legs[0].state
+        assert ridden_state is LegState.RIDING
+        await app.bot.handle(app.msg("/choose 07:42"))
+        assert app.texts() == ["Locked the 07:42 for Office A."]
+        s = only_occurrence(app.rt)
+        assert s.lock.legs[0].train.planned_departure == at("07:42")
+        assert s.lock.source is LockSource.CHOOSE
+        assert s.lock.legs[0].state is ridden_state  # the ridden prefix keeps its progress
+        assert s.direction_state is DirectionState.RIDING and s.retained == ()
+    finally:
+        await app.bot.close()
 
 
 async def test_leaving_uses_the_runtime_clock(app):

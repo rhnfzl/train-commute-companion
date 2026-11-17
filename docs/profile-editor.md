@@ -31,7 +31,7 @@ Valid edits become active through the existing profile reload. Invalid edits do 
 
 ## Settings the form preserves
 
-The editor preserves settings it does not display: location, advice thresholds, quiet hours, extra dates, explicit monitoring windows, overnight return offsets and unused transfer minimums. Other profiles stay unchanged.
+The editor preserves settings it does not display: location, advice thresholds, quiet hours, extra dates, explicit monitoring windows, active leads (`active_lead_min`), overnight return offsets and unused transfer minimums. Other profiles stay unchanged.
 
 Turn on **Edit weekday departure times** in the details form to set different outbound and return times for each weekday. Blank fields use the direction's default time. An overnight return uses the weekday when the commute starts.
 

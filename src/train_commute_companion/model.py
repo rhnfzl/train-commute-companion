@@ -98,6 +98,7 @@ class EventKind(StrEnum):
     OFFLINE = "offline"
     CHOOSE_REFUSED = "choose_refused"
     NEXT_CONNECTION = "next_connection"
+    AT_STATION = "at_station"  # Q1: the train followed now, once at the origin station
     DATA_UNCLEAR = "data_unclear"
 
 
@@ -403,7 +404,6 @@ class DatedSchedule:
     first_departure: datetime
     window_start: datetime
     window_end: datetime
-    auto_lock_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -415,6 +415,7 @@ class UsualJourney:
     earlier_train_advice: bool
     day_offset: int
     first_train_by_weekday: Mapping[str, time] = field(default_factory=dict)
+    active_lead_min: int | None = None  # Q9: end of the quiet early watch; None is buffer + 15
 
 
 NotificationChannel = Literal["primary", "email", "webhook"]

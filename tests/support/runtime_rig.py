@@ -43,7 +43,9 @@ profiles:
     work_station: "RTD"
     transfer_min: {UT: 4}
     outbound: {first_train: "08:12", buffer_min: 10, transfers: [UT]}
-    return: {first_train: "17:52", buffer_min: 5}
+    # active_lead_min past the window opening: no quiet early watch on return (Q9), so the
+    # return tests exercise advice and the check-in from the window start as before
+    return: {first_train: "17:52", buffer_min: 5, active_lead_min: 120}
   - id: "p2"
     name: "office_b"
     days: [sat]
@@ -299,6 +301,13 @@ def escape_world(escape_cancelled: bool = False) -> list:
                                   cancelled=escape_cancelled)]),
         make_connection([make_leg("RTD", "AAA", "18:22", "19:00", number="7982")]),
     ]  # fmt: skip
+
+
+def late_usual_world(escape_cancelled: bool = False) -> list:
+    """The escape trains and the usual 17:52 half an hour late, arriving 19:00 like the 18:22.
+    The lock forms at the window start (Q9), so advice is tested on a late locked train."""
+    late = make_leg("RTD", "AAA", "17:52", "18:30", number="7952", delay_dep=30, delay_arr=30)
+    return [*escape_world(escape_cancelled), make_connection([late])]
 
 
 def cancelled_usual_world() -> list:

@@ -27,4 +27,8 @@ Station zones are not set up by hand. The companion takes each station's positio
 
 Entering a station zone, leaving one, and updates from inside one are sent as they happen. Updates from one zone are sent at most once every 2 minutes, because each one costs a live NS request. An update NS could not answer does not start those 2 minutes, so the next position is sent at once. The first position after you start sharing (or after the profile's location settings change) only tells the companion where you are; it sends nothing. A position older than the last one used, more than 10 minutes old, more than 2 minutes in the future, or less accurate than the station radius is ignored.
 
-Location only adds alerts. It can make a warning arrive sooner, or tell the companion you are still at a station after your train left. It never removes or delays a warning that times alone would give.
+A report from a station counts as a missed train only from 3 minutes after its expected departure; before that the train may still be pulling out. A missed train is dropped: you get no more messages about it. If you were at the boarding station before the train left, you get no "has left" note. Leaving the station again before the train leaves, or arriving there only after it left, keeps that note.
+
+Arriving at the station where your journey starts sends one quiet message with the train now followed, its platform, whether it is on time and when it arrives. If that arrival shows you missed your train, the miss and the next train come in one message. Leaving and re-entering the zone does not repeat it.
+
+Location only adds alerts. It can make a warning arrive sooner, or tell the companion you are still at a station after your train left. It never removes or delays a warning that times alone would give. The one exception is the silent "has left, if you are not on it" note, which is skipped when you were at the boarding station.

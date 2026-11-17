@@ -19,7 +19,13 @@ from train_commute_companion.model import (
     UsualJourney,
 )
 
-_LOCK_LEAD_MIN = 15
+ACTIVE_EXTRA_MIN = 15
+
+
+def active_lead(j: UsualJourney) -> int:
+    """Minutes before the first departure at which the quiet early watch ends (Q9):
+    `active_lead_min`, else buffer + 15, the old auto-lock lead."""
+    return j.buffer_min + ACTIVE_EXTRA_MIN if j.active_lead_min is None else j.active_lead_min
 
 
 def effective_first_train(j: UsualJourney, baseline_first_train: time | None) -> time:
@@ -49,7 +55,6 @@ def dated_schedule(
         _local(first, "start"),
         _local(first - before, "start"),
         _local(first + after, "end"),
-        _local(first - timedelta(minutes=j.buffer_min + _LOCK_LEAD_MIN), "start"),
     )
 
 

@@ -52,6 +52,7 @@ _SILENT = frozenset(
         EventKind.CROWD_CHANGE,
         EventKind.CAN_SEE_TRAIN_AGAIN,
         EventKind.ALL_GOOD,
+        EventKind.AT_STATION,
         EventKind.NEARLY_ON_TIME,
         EventKind.BACK_TO_NORMAL,
         EventKind.RESTORED,
@@ -305,7 +306,8 @@ def _changes_proven(
 
 
 def all_good(s: OccurrenceState, poll: PollAnswers, ctx: Ctx) -> AlertEvent | None:
-    """Evaluated once, at the first lock. The caller sets `all_good_evaluated`.
+    """Evaluated once, at the first poll with a lock at or after the active point (Q9). The
+    caller sets `all_good_evaluated`.
     Rule 20: the newest answer is fresh and contains every locked leg, seen, ok and with
     reported times, every transfer is ok, polling is healthy now (no failed poll since the
     last success), and no answer of the poll says otherwise (6.1: one identity across all

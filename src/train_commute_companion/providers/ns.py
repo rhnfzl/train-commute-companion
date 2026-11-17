@@ -28,6 +28,7 @@ from train_commute_companion.providers.base import (
     ActiveDisruption,
     ActiveDisruptions,
     AuthError,
+    DisruptionSection,
     DoorToDoorNotAllowed,
     MalformedAnswer,
     PlannedWork,
@@ -438,6 +439,18 @@ def map_disruptions(payload: object) -> PlannedWorks:
     return PlannedWorks(tuple(items), "complete" if complete else "unknown")
 
 
+_ONLY_TYPE = re.compile(r"(?:geen|minder) (sprinters|intercity'?s)\.?")
+
+
+def _only_train_type(text: object) -> str | None:
+    """ "SPR" or "IC" when a consequence names exactly that one train type; None otherwise."""
+    if not isinstance(text, str):
+        return None
+    plain = " ".join(re.sub("[\u2018\u2019`\u00b4]", "'", text).lower().split())
+    hit = _ONLY_TYPE.fullmatch(plain)
+    return None if hit is None else ("SPR" if hit[1] == "sprinters" else "IC")
+
+
 def _active_disruption(raw: object) -> ActiveDisruption | None:
     if not isinstance(raw, dict):
         raise MalformedAnswer("incident is not an object")
@@ -449,14 +462,18 @@ def _active_disruption(raw: object) -> ActiveDisruption | None:
     ):
         raise ValueError("incident identity or active status is unknown")
     stations: set[str] = set()
+    found: list[DisruptionSection] = []
     sections = raw.get("publicationSections", [])
     for section in _objects(sections, "publicationSections"):
         parts = [section.get("section")]
         consequence = section.get("consequence")
+        only = None
         if consequence is not None:
             if not isinstance(consequence, dict):
                 raise ValueError("incident consequence is unreadable")
             parts.append(consequence.get("section"))
+            only = _only_train_type(consequence.get("description"))
+        here: set[str] = set()
         for part in (p for p in parts if p is not None):
             if not isinstance(part, dict):
                 raise MalformedAnswer("incident section is unreadable")
@@ -469,7 +486,9 @@ def _active_disruption(raw: object) -> ActiveDisruption | None:
                 ]
                 if not valid:
                     raise ValueError("incident station has no identity")
-                stations.update(valid)
+                here.update(valid)
+        stations |= here
+        found.append(DisruptionSection(frozenset(here), only))
     link = raw.get("url")
     safe_url = None
     if isinstance(link, str):
@@ -486,7 +505,23 @@ def _active_disruption(raw: object) -> ActiveDisruption | None:
         except ValueError:
             pass
     assert isinstance(ident, str) and isinstance(title, str)
-    return ActiveDisruption(ident, " ".join(title.split())[:500], frozenset(stations), safe_url)
+    spans = raw.get("timespans")
+    span = spans[0] if isinstance(spans, list) and spans and isinstance(spans[0], dict) else {}
+    situation = span.get("situation")
+    label = situation.get("label") if isinstance(situation, dict) else None
+    expected = raw.get("expectedDuration")
+    end = _dt(expected.get("endTime") if isinstance(expected, dict) else None) or _dt(
+        raw.get("end")
+    )
+    return ActiveDisruption(
+        ident,
+        " ".join(title.split())[:500],
+        frozenset(stations),
+        safe_url,
+        summary=" ".join(label.split())[:500] if isinstance(label, str) else "",
+        end=end,
+        sections=tuple(found),
+    )
 
 
 def map_active_disruptions(payload: object) -> ActiveDisruptions:

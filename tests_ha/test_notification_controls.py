@@ -10,7 +10,7 @@ from homeassistant.data_entry_flow import InvalidData
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import async_capture_events
-from runtime_rig import escape_world
+from runtime_rig import late_usual_world
 from test_config_flow import add_entry, current, settings
 from test_notifier import make_event
 
@@ -85,7 +85,9 @@ async def test_unpause_drops_delay_when_train_recovers(hass):
 async def test_paused_advice_is_not_told_and_expired_advice_never_emits(hass):
     hass.states.async_set(ENABLED, "off")
     events = async_capture_events(hass, EVENT_ALERT)
-    h = await setup_tcc(hass, PROFILE, now="16:54", world=escape_world(), options=OPTIONS)
+    # Q9: advice needs a lock on a late usual and no quiet watch on return
+    text = PROFILE.replace("buffer_min: 5}", "buffer_min: 5, active_lead_min: 120}", 1)
+    h = await setup_tcc(hass, text, now="16:54", world=late_usual_world(), options=OPTIONS)
     pending = await h.host.run(lambda rt: rt.state.obligations)
     advice = next(o for o in pending if o.event.kind is EventKind.LEAVE_NOW)
     record = await h.host.run(lambda rt: only_occurrence(rt, Direction.RETURN).advice)

@@ -74,7 +74,7 @@ PORTED: dict[str, str] = {
     "board:67": "tests/test_news.py::test_all_good_once_when_all_reported_and_ok",
     "board:68": "tests/test_advice.py::test_off_by_default_outbound",
     "board:69": "tests/test_lifecycle_follow.py::test_queries_cover_retained_and_restorable",
-    "board:70": "tests/test_schedule.py::test_auto_lock_time",
+    "board:70": "tests/test_lifecycle_lock.py::test_auto_lock_from_window_start",  # Q9
     "board:71": "tests/test_calendar.py::test_extra_date_counts_and_holiday_skipped",
     "board:72": "overridden:12",  # 12: work-from-home inference is not ported
     "board:73": "tests/test_schedule.py::test_window_is_half_open",
@@ -113,7 +113,7 @@ PORTED: dict[str, str] = {
     "lifecycle:22": "overridden:7.2",
     "lifecycle:23": "tests/test_lifecycle_follow.py::test_no_connection_found_is_loud",
     "lifecycle:24": "tests/test_location.py::test_missed_first_train_vs_missed_transfer_are_separate_events",
-    "lifecycle:25": "tests/test_location.py::test_station_report_while_train_dwells_keeps_train_retained",
+    "lifecycle:25": "tests/test_location.py::test_station_report_inside_grace_moves_nothing",
     "lifecycle:26": "overridden:9",
     "lifecycle:27": "overridden:9",
     "lifecycle:28": "overridden:9",

@@ -4,13 +4,13 @@ follows, built by pure functions, so a shell never reaches into runtime state.""
 import copy
 import hashlib
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from itertools import pairwise
 from typing import Literal
 
-from train_commute_companion.calendar import TZ
+from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.classify import pair_transfer
 from train_commute_companion.disruptions import disruptions_fresh
 from train_commute_companion.health import BoardHealth, board_health
@@ -20,6 +20,7 @@ from train_commute_companion.lifecycle import (
     merged_pool,
     next_good_instead_of,
     observe,
+    place_zone,
 )
 from train_commute_companion.lifecycle_lock import unfinished_leg
 from train_commute_companion.location import (
@@ -194,6 +195,7 @@ class OccurrenceView:
     recovery_offer: RecoveryOffer | None = None
     selected_recovery: SelectedRecovery | None = None
     train_context: VehicleSnapshot | None = None
+    usual_departure: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +274,36 @@ def track_fix(
     stations = station_zones(profile, loc.station_radius_m, view.positions, running)
     zone = fix_zone(fix, loc, [*stations, *places])
     return (seed_zone(zone, fix.at), []) if track is None else next_zone(track, zone, fix.at)
+
+
+STILL_LEAD = timedelta(minutes=5)  # Q10: still fresh (STALE_LOCATION) when the departure poll runs
+
+
+def still_due(
+    view: RuntimeView, profile: Profile, zone: str | None, sent: Collection[str], now: datetime
+) -> str | None:
+    """Q3, Q10: the key of an unresolved occurrence of `profile` whose locked first train, not
+    yet left, departs within STILL_LEAD (half the buffer when shorter) while `zone` (the
+    source's track) is that direction's origin place (home outbound, work on return); None when
+    nothing is owed or `sent` holds it.
+    The shell then vouches for the zone with one `still` event per train: a phone at rest sends
+    no fixes, so without it the core has no fresh presence when the train leaves."""
+    for o in view.occurrences:
+        if o.key.profile_id != profile.id or o.resolved or o.not_travelling or not o.legs:
+            continue
+        x = o.legs[0]
+        if x.progress not in (LegState.PENDING, LegState.BOARDING):
+            continue
+        if zone != place_zone(profile, profile.origin(o.key.direction)):
+            continue
+        dep = to_utc(x.departure or x.planned_departure)
+        # keyed on the live departure: a vouch made stale by a growing delay is owed again
+        key = f"{o.key.direction}|{o.key.service_date}|{x.train_number}|{dep.isoformat()}"
+        # under half the buffer, so the core still finds it too late to catch (Q3)
+        buffer = timedelta(minutes=profile.journey(o.key.direction).buffer_min)
+        if key not in sent and dep - min(STILL_LEAD, buffer / 2) <= to_utc(now) < dep:
+            return key
+    return None
 
 
 def _reported(obs: TimeObs | None) -> datetime | None:
@@ -387,6 +419,7 @@ def occurrence_view(
         disruptions_checked_at=s.disruptions_checked_at,
         disruptions_coverage=coverage,
         profile_name=ctx.profile.name,
+        usual_departure=ctx.schedule.first_departure,
         direction_state=s.direction_state,
         resolved=resolved,
         not_travelling=s.not_travelling,

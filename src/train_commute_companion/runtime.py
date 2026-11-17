@@ -42,6 +42,7 @@ from train_commute_companion.disruptions import (
 from train_commute_companion.health import (
     WatchedLeg,
     blindness,
+    board_blind,
     board_health,
     offline,
 )
@@ -64,6 +65,7 @@ from train_commute_companion.lifecycle import (
     on_poll,
     origin_answer,
     queries_needed,
+    quiet_watch,
     target_occurrence,
     whole_day_keys,
 )
@@ -170,6 +172,11 @@ _APP = "app"  # profile name on application warnings, which belong to no profile
 
 def _reasons(errors: Sequence[ProfileProblem]) -> str:
     return "; ".join(f"{e.path}: {e.message}" for e in errors)
+
+
+def _lock_trains(s: OccurrenceState) -> tuple[TrainId, ...]:
+    """The lock's identity for the gap count (Q5): only a relock restarts it."""
+    return () if s.lock is None else tuple(x.train for x in s.lock.legs)
 
 
 def fresh_state(key: OccurrenceKey, revision: int, baseline: int | None) -> OccurrenceState:
@@ -922,6 +929,8 @@ class Runtime:
                     destination,
                     audience_written=self._writer.audience_written(o),
                 )
+                if sent and o.event.kind is EventKind.CANNOT_SEE_TRAIN and o.occurrence is not None:
+                    self._memory.told_blind.add(okey(o.occurrence))  # Q5: told, so recovery is too
                 if (
                     sent
                     and destination is not None
@@ -1114,6 +1123,7 @@ class Runtime:
             self._apply({k: (t.state, t.events)})
             return  # the window only selects the first train (rule 19)
         gen, end = s.generation, ctx.schedule.window_end
+        asked = _lock_trains(s)  # Q5: a poll counts toward a gap only for the lock it asked for
         deadline = to_utc(now) + POLL_DEADLINE  # one hard deadline for every request (7.1)
         got = await self._gate.all_trips(queries_needed(s, ctx), True, end, deadline)
         error = got if isinstance(got, str) else None
@@ -1122,6 +1132,7 @@ class Runtime:
         if (
             error is None
             and not (s.selected_recovery is not None and s.selected_recovery.status == "active")
+            and not quiet_watch(s, ctx)  # Q9: advice waits, so its search is not spent
             and (usual := origin_answer(answers, ctx)) is not None
         ):
             # 7.6: an earlier catchable train is before the time the poll asked from; a failed
@@ -1154,6 +1165,7 @@ class Runtime:
         if context is not None:
             events += notice_events(st, context)
         self._apply({k: (st, events)}, polled=current and bool(answers))
+        self._memory.polled[k] = (now, asked)
 
     def _judge_poll(
         self,
@@ -1171,11 +1183,12 @@ class Runtime:
             self._remember_usual(k, ctx, merged)
         tick = on_tick(st, ctx, merged)
         st, events = tick.state, [*events, *tick.events]
-        if st.lock is not None and not st.all_good_evaluated:
+        quiet = quiet_watch(st, ctx)  # Q9: check-in and advice wait for the active point
+        if st.lock is not None and not st.all_good_evaluated and not quiet:
             good = all_good(st, poll, ctx)  # judged once, at the first poll with a lock
             st = replace(st, all_good_evaluated=True)
             events += [good] if good else []
-        if merged is not None:
+        if merged is not None and not quiet:
             # no reference: an absent or broken usual still makes waiting bad (7.6)
             arrival = usual_arrival(st, ctx, merged)
             record, more = advise(st, ctx, merged, arrival)
@@ -1251,19 +1264,14 @@ class Runtime:
         main = (s.lock,) if s.lock and s.direction_state is not DirectionState.DONE else ()
         for j in (*main, *s.retained):
             for x in j.legs:
-                if x.state in (LegState.CANCELLED, LegState.RELOCKED):
-                    continue
+                if x.state in (LegState.CANCELLED, LegState.RELOCKED, LegState.MISSED):
+                    continue  # a missed train is not watched (Q2)
                 w = x.watch_until
                 watched = x.state is LegState.DONE and (w is None or to_utc(now) < to_utc(w))
                 if x.state is LegState.DONE and not watched:
                     continue
                 gone = to_utc(now) >= to_utc(x.train.planned_departure)  # may be on it (rule 7)
-                riding = (
-                    watched
-                    or x.state in (LegState.RIDING, LegState.MISSED)
-                    or j in s.retained
-                    or gone
-                )
+                riding = watched or x.state is LegState.RIDING or j in s.retained or gone
                 base = seen.get(x.train) or WatchedLeg(
                     x.train, x.train.planned_departure, False, Observation.SEEN,
                     Provenance.REPORTED, Provenance.REPORTED, None,
@@ -1313,7 +1321,11 @@ class Runtime:
                 created_at=now,
             )
 
-        change = self._memory.observe_blind(k, blind, now)
+        blind = blind and not quiet_watch(s, ctx)  # Q9: an episode starts at the active point
+        immediate = blind and board_blind(health) is not None
+        change = self._memory.observe_blind(
+            k, blind, now, lock=_lock_trains(s), immediate=immediate
+        )
         if change.transition is EpisodeTransition.ENTERED:
             text = f"cannot see your train in NS data ({reason}), {CHECK_APP}."
             out.append(event(EventKind.CANNOT_SEE_TRAIN, text, now.isoformat()))

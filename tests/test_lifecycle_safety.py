@@ -262,8 +262,8 @@ def test_progress_changes_raise_the_generation():  # rule 21
     assert end.state.direction_state is DirectionState.DONE
     assert end.state.generation == arrived().generation + 1
     # a missed train with nothing to relock to is still a change
-    e = LocationEvent("AAA", "report", at("08:13"))
-    m = on_location(usual_locked(), ctx(at("08:14")), e, ans("AAA", conn(L1, L2), when="08:14"))
+    e = LocationEvent("AAA", "report", at("08:15"))
+    m = on_location(usual_locked(), ctx(at("08:16")), e, ans("AAA", conn(L1, L2), when="08:16"))
     assert m.state.lock is not None and m.state.lock.legs[0].state is LegState.MISSED
     assert m.state.generation == usual_locked().generation + 1
     # the first platform report waives the buffer for the same station lock
@@ -395,7 +395,9 @@ def poll_answers_at(s, now, *conns):
     from train_commute_companion.state import PollRecord
 
     q = Query("AAA", "RTD", now)
-    return PollAnswers((ProviderAnswer(q, conns, now),), (PollRecord(now, True, None),), s.generation)
+    return PollAnswers(
+        (ProviderAnswer(q, conns, now),), (PollRecord(now, True, None),), s.generation
+    )
 
 
 def test_late_acceptance_stops_at_the_150_minute_limit():  # rules 6, 7
@@ -458,7 +460,9 @@ def test_newer_cancellation_in_the_second_dst_hour_beats_the_first():  # 7.13
 
     s = occ(journey([runs]))
     now = fold("02:31", 1)
-    b = PollAnswers((answer(conn(runs), 0), answer(conn(gone), 1)), (PollRecord(now, True, None),), 1)
+    b = PollAnswers(
+        (answer(conn(runs), 0), answer(conn(gone), 1)), (PollRecord(now, True, None),), 1
+    )
     t = on_poll(s, ctx(now, DIRECT), b)
     assert (EventKind.CANCELLED, Severity.LOUD) in kinds(t)
 

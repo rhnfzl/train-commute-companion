@@ -9,17 +9,14 @@ It needs Home Assistant 2026.10 or newer and the Home Assistant companion app on
 1. In HACS, open the menu, choose Custom repositories, and add `https://github.com/rhnfzl/train-commute-companion` as an Integration.
 2. Download Train Commute Companion in HACS and restart Home Assistant.
 
-### Upgrade to 0.2.2
+### Upgrade to 0.2.3
 
-Update through HACS and restart Home Assistant. The integration installs the matching `train-commute-companion==0.2.2` core automatically.
-Existing profiles and settings remain valid. Notification controls are optional and keep the existing alert style when unset.
+Update through HACS and restart Home Assistant. The integration installs the matching `train-commute-companion==0.2.3` core automatically.
+Existing profiles and settings remain valid. `active_lead_min` is a new optional setting.
 
-Back up the integration and its state before upgrading. The older 0.2.1 core rejects the added recovery-state field.
+Back up the integration and its state before upgrading. The older 0.2.2 core cannot read any state saved by 0.2.3, even without at-station messages or an explicit `active_lead_min`.
 A downgrade requires a compatible pre-upgrade backup. Restoring it removes later journey decisions and arrival confirmations, so preserve newer history first.
 Never delete the state file to force a downgrade.
-
-The update uses notification tags within the Apple Push Notification service limit to restore iPhone delivery.
-Pending alerts can receive a new tag after upgrading, so they may appear separately from older notifications.
 
 ## Set up
 
@@ -73,7 +70,7 @@ The file is checked again about every 10 seconds. A valid edit becomes the activ
 
 Per profile and direction (`outbound`, `return`):
 
-- Sensors: status, lock (the trains you are following), next connection, earlier train advice, works ahead, one sensor per leg and one per transfer.
+- Sensors: status, lock (the trains you are following), next connection, earlier train advice, works ahead, one sensor per leg and one per transfer. The lock sensor shows the usual train from the moment the window opens. Its `usual_departure` attribute is the usual first train for that day (`HH:MM`), so an automation can tell when you took a later train. An automation that treats "locked" as "commute active" should check the time instead (see the quiet early watch in [notification preferences](notification-preferences.md)).
 - Buttons: leaving, not travelling, choose next.
 
 Per profile: a health sensor and a "not travelling today" button.
