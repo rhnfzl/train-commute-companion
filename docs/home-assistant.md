@@ -18,6 +18,11 @@ Back up the integration and its state before upgrading. The older 0.2.2 core can
 A downgrade requires a compatible pre-upgrade backup. Restoring it removes later journey decisions and arrival confirmations, so preserve newer history first.
 Never delete the state file to force a downgrade.
 
+Version 0.2.4 also resolves numeric station identifiers through the station catalogue before requesting NS journeys.
+This prevents HTTP 400 failures when an intermediate stop supplies a numeric identifier instead of the station code.
+Returned stops keep the queried identifier so saved boarding and recovery state still match.
+It reuses the catalogue loaded at startup and does not add requests to each poll.
+
 ## Set up
 
 1. Get an NS API key from the NS API portal.

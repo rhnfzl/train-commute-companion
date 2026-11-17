@@ -592,6 +592,28 @@ def map_station_names(payload: object) -> dict[str, str]:
 BASE_URL = "https://gateway.apiportal.ns.nl/reisinformatie-api/api"
 
 
+def _query_station_ids(answer: ProviderAnswer, ids: dict[str, str]) -> ProviderAnswer:
+    """Keep queried numeric IDs matchable against saved boarding and recovery state."""
+
+    def leg(g: Leg) -> Leg:
+        return replace(
+            g,
+            stops=tuple(
+                replace(s, code=ids[s.code])
+                if s.code in ids and s.uic in (None, ids[s.code])
+                else s
+                for s in g.stops
+            ),
+        )
+
+    return replace(
+        answer,
+        connections=tuple(
+            replace(c, legs=tuple(leg(g) for g in c.legs)) for c in answer.connections
+        ),
+    )
+
+
 # Hard cap per request (7.1); the runtime's per-poll deadline wraps whole polls.
 REQUEST_DEADLINE_S = 90.0
 VEHICLE_BODY_LIMIT = 2_000_000
@@ -636,6 +658,7 @@ class NsProvider:
         self._client = client
         self._clock = clock
         self.positions: dict[str, tuple[float, float]] = {}
+        self._station_codes: dict[str, str] = {}
 
     async def station_names(self) -> dict[str, str]:
         return map_station_names(await self._get("/v2/stations"))
@@ -717,16 +740,22 @@ class NsProvider:
         ):
             raise ProviderError("non-station locations cannot be used in a station journey query")
         params = {
-            "fromStation": q.origin,
-            "toStation": q.destination,
+            "fromStation": self._station_codes.get(q.origin, q.origin),
+            "toStation": self._station_codes.get(q.destination, q.destination),
             "dateTime": q.at.isoformat(timespec="seconds"),
         }
         if q.require_accessible:
             params["searchForAccessibleTrip"] = "true"
         if q.via:
-            params["viaStation"] = q.via
+            params["viaStation"] = self._station_codes.get(q.via, q.via)
         payload = await self._get("/v3/trips", params)
-        return map_trips(payload, q, self._clock())
+        answer = map_trips(payload, q, self._clock())
+        ids = {
+            self._station_codes[s]: s
+            for s in (q.origin, q.destination, q.via)
+            if s in self._station_codes
+        }
+        return _query_station_ids(answer, ids) if ids else answer
 
     async def planned_works(self) -> PlannedWorks:
         # request failures raise (429/5xx feed shared backoff, 7.1); the caller treats them as unknown
@@ -747,4 +776,12 @@ class NsProvider:
         payload = await self._get("/v2/stations")
         codes = map_stations(payload)
         self.positions = map_station_positions(payload)  # same payload, no extra request
+        # NS's station planner rejects UIC identifiers that can occur on intermediate stops.
+        self._station_codes = {
+            str(s["UICCode"]): str(s.get("code") or s.get("stationCode"))
+            for s in _items(payload) or ()
+            if isinstance(s, dict)
+            and s.get("UICCode")
+            and str(s.get("code") or s.get("stationCode")) in codes
+        }
         return codes

@@ -7,6 +7,8 @@ import httpx
 import pytest
 from builders import AMS
 
+from train_commute_companion.classify import find_leg
+from train_commute_companion.model import Observation
 from train_commute_companion.providers.base import (
     AuthError,
     MalformedAnswer,
@@ -17,6 +19,7 @@ from train_commute_companion.providers.base import (
     ServerError,
 )
 from train_commute_companion.providers.ns import NsProvider
+from train_commute_companion.replacement import Catchability, check_good
 
 NOW = datetime(2026, 10, 27, 7, 0, tzinfo=AMS)
 Q = Query("AAA", "BBB", datetime(2026, 10, 27, 8, 0, tzinfo=AMS), via="UT")
@@ -47,6 +50,52 @@ async def test_trips_sends_key_header_and_maps():
     assert (p["fromStation"], p["toStation"], p["viaStation"]) == ("AAA", "BBB", "UT")
     assert p["dateTime"].startswith("2026-10-27T08:00:00")
     assert a.fetched_at == NOW and a.connections
+
+
+async def test_trip_request_resolves_catalogue_uic_ids_without_changing_the_query():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if request.url.path.endswith("/stations"):
+            return httpx.Response(
+                200,
+                json={
+                    "payload": [
+                        {"code": "AAA", "UICCode": "1000001"},
+                        {"code": "BBB", "UICCode": "1000003"},
+                        {"code": "UT", "UICCode": "8400621"},
+                    ]
+                },
+            )
+        assert dict(request.url.params) == {
+            "fromStation": "AAA",
+            "toStation": "BBB",
+            "viaStation": "UT",
+            "dateTime": Q.at.isoformat(timespec="seconds"),
+        }
+        return httpx.Response(200, content=(DATA / "on_time_direct.json").read_bytes())
+
+    p = provider(handler)
+    await p.stations()
+    q = Query("1000001", "1000003", Q.at, via="8400621")
+    answer = await p.trips(q)
+    assert answer.query is q and answer.connections
+    candidate = answer.connections[0]
+    assert candidate.origin == q.origin and candidate.destination == q.destination
+    assert find_leg(answer, candidate.legs[0].train, q.origin)[1] is Observation.SEEN
+    assert check_good(
+        candidate,
+        answer,
+        board_station=q.origin,
+        destination=q.destination,
+        catch=Catchability(NOW),
+        kept_incoming=None,
+        done_transfers=0,
+        max_transfers=0,
+        profile_min={},
+    ).ok
+    assert len(seen) == 2  # catalogue already loaded by runtime startup
 
 
 @pytest.mark.parametrize("code", [401, 403])
