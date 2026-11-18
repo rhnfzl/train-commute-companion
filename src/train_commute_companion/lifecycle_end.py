@@ -77,12 +77,23 @@ def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transi
         and s.direction_state is not DirectionState.DONE
         and now >= to_utc(ctx.schedule.window_end)
     ):
-        text = "I stopped following your journey, check the NS app."
-        events.append(make_event(ctx, EventKind.STOPPED_FOLLOWING, Severity.LOUD, text))
+        if not s.released:  # a train the user never boarded is no lost journey
+            text = "I stopped following your journey, check the NS app."
+            events.append(make_event(ctx, EventKind.STOPPED_FOLLOWING, Severity.LOUD, text))
         s = replace(s, direction_state=DirectionState.DONE)
     if s.lock is not None and s.direction_state is not DirectionState.DONE:
         end = _journey_end(s, ctx, s.lock, retained=False)
-        if end is not None:
+        if end and _never_boarded(s, ctx, s.lock):
+            s = replace(
+                s,
+                lock=None,
+                released=True,
+                travelling=False,
+                tap_at=None,
+                errand_deadline=None,
+                direction_state=DirectionState.IDLE,
+            )
+        elif end is not None:
             events += end
             s = replace(s, direction_state=DirectionState.DONE)
     left = []
@@ -90,7 +101,7 @@ def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transi
         end = _journey_end(s, ctx, r, retained=True)
         if end is None:
             left.append(r)
-        else:
+        elif not (end and _never_boarded(s, ctx, r)):
             events += end
     return Transition(replace(s, retained=tuple(left)), tuple(events))
 
@@ -123,6 +134,15 @@ def _arrived(s: OccurrenceState, ctx: Ctx, last: LegProgress) -> bool:
     p, d = ctx.profile, ctx.direction
     zones = {last.alight_stop, p.destination(d), place_zone(p, p.destination(d))}
     return any((t := s.zone_reports.get(z)) is not None and to_utc(t) > to_utc(when) for z in zones)
+
+
+def _never_boarded(s: OccurrenceState, ctx: Ctx, j: Journey) -> bool:
+    """2026-11-18: with location on, the user was never at the origin station nor at any station
+    `j` boards at. A train that only NS saw leave and arrive was a guess (Q12 rule 5), so its end
+    says nothing about the user. A boarding with a lagging phone still has its station fix."""
+    if ctx.profile.location is None or s.at_station:
+        return False
+    return not any(x.board_station in s.zone_reports for x in j.legs)
 
 
 def _journey_end(
