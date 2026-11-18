@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 
 from builders import make_leg
@@ -33,6 +34,8 @@ from train_commute_companion.model import (
     NotTravelling,
     Severity,
 )
+from train_commute_companion.serde import decode, encode
+from train_commute_companion.state import Commitment, OccurrenceState
 
 
 def test_repeated_estimate_before_its_time_does_not_end_journey():
@@ -135,8 +138,13 @@ def test_retained_train_never_boarded_ends_quietly_with_location_on():  # 2026-1
     c = replace(c, profile=replace(c.profile, location=LocationSettings("ha", "person.me", {})))
     t = on_tick(s, c)
     assert t.events == () and t.state.retained == () and t.state.lock == s.lock
-    seen = on_tick(replace(s, zone_reports={"AAA": at("08:05")}), c)  # at the station: told
-    assert kinds(seen) == [(EventKind.STOPPED_FOLLOWING, Severity.LOUD)]
+    # a station fix taken while it was the lock committed it, and it survives a restart: told
+    seen = replace(s, retained=(replace(s.retained[0], commitment=Commitment.COMMITTED),))
+    seen = decode(OccurrenceState, json.loads(json.dumps(encode(seen))))
+    assert kinds(on_tick(seen, c)) == [(EventKind.STOPPED_FOLLOWING, Severity.LOUD)]
+    # at the station later, for the 08:25 the user then chose: says nothing about this train
+    later = replace(s, at_station=True, zone_reports={"AAA": at("08:20")})
+    assert on_tick(later, c).events == ()
 
 
 def test_retained_150_min_limit_does_not_end_new_lock():

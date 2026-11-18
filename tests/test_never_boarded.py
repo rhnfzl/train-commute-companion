@@ -31,7 +31,8 @@ LOCATED = "{source: ha, entity: person.me}"
 def evening() -> list:
     delays = {"17:06": 3, "17:36": 6}
     out = []
-    for i, dep in enumerate(("16:36", "17:06", "17:36", "18:06", "18:36", "19:06", "19:36")):
+    deps = ("16:36", "17:06", "17:36", "18:06", "18:36", "19:06", "19:36", "20:06", "20:36")
+    for i, dep in enumerate(deps):
         arr = f"{int(dep[:2]) + 1}:{dep[3:]}"
         d = delays.get(dep, 0)
         leg = make_leg(
@@ -49,9 +50,11 @@ async def rig_for(tmp_path, location: str = LOCATED, extra: str = "") -> Rig:
     return rig
 
 
-async def report(rig: Rig, kind: str, hhmm: str, ev: Evidence = NO_EVIDENCE) -> None:
+async def report(
+    rig: Rig, kind: str, hhmm: str, ev: Evidence = NO_EVIDENCE, zone: str = "work"
+) -> None:
     rig.clock.set(hhmm)
-    await rig.rt.report_location("p1", LocationEvent("work", kind, at(hhmm), ev))  # type: ignore[arg-type]
+    await rig.rt.report_location("p1", LocationEvent(zone, kind, at(hhmm), ev))  # type: ignore[arg-type]
 
 
 async def replay_to_departure(rig: Rig) -> None:
@@ -104,10 +107,22 @@ async def test_a_train_never_boarded_ends_quietly_and_keeps_the_window_open(tmp_
     assert loud_after(rig, "17:21:30") == []
     s = rig.occ(KEY)
     assert s.direction_state is not DirectionState.DONE
-    assert s.lock is not None and s.lock.legs[0].train.train_number == "3574"  # the 19:36
+    # no train is guessed again: one the user is not seen near would only bring loud news
+    assert s.lock is None and s.released
     await rig.run_until("21:31")  # nobody seen at a station: the window closes, still quietly
     assert loud_after(rig, "17:21:30") == []
     assert rig.occ(KEY) is None or rig.occ(KEY).direction_state is DirectionState.DONE
+
+
+async def test_after_a_release_reaching_the_station_follows_the_next_train(tmp_path):
+    rig = await rig_for(tmp_path)
+    await replay_to_departure(rig)
+    await rig.run_until("19:54")
+    assert rig.occ(KEY).lock is None
+    await report(rig, "enter", "19:55", zone="RTD")
+    s = rig.occ(KEY)
+    assert s.lock is not None and s.lock.legs[0].train.train_number == "3576"  # the 20:06
+    assert not s.released
 
 
 async def test_quiet_repeat_misses_makes_the_second_miss_from_work_silent(tmp_path):

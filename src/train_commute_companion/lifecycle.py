@@ -387,8 +387,8 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
         return unchanged
     p, d = ctx.profile, ctx.direction
     q = answer.query
-    if s.released:
-        return _lock_after_release(s, ctx, answer)
+    if s.released:  # the user was never seen near the train let go: wait for a sign of them
+        return unchanged
     # provider failures raise, so any answer is healthy; one asked from elsewhere or after the
     # usual departure cannot prove the usual is absent, so it is not judged (6.3, rule 2)
     if (q.origin, q.destination) != (p.origin(d), p.destination(d)) or q.at.astimezone(
@@ -401,21 +401,6 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
     if usual is not None:
         return _lock_usual(s, ctx, answer, usual)
     return _lock_without_usual(s, ctx, answer)
-
-
-def _lock_after_release(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transition:
-    """A train the user was never seen boarding was let go (`lifecycle_end`): the usual has
-    long left, so the next good train from the origin is followed, quietly. None found keeps
-    waiting; the window's end closes the direction without a message."""
-    p, d = ctx.profile, ctx.direction
-    if (answer.query.origin, answer.query.destination) != (p.origin(d), p.destination(d)):
-        return Transition(s, ())
-    nxt = find_next_good(s, ctx, answer)
-    if nxt is None:
-        return Transition(s, ())
-    new = replace(journey_of(nxt, LockSource.AUTO, Commitment.INTENDED), plan=None)
-    locked = write_lock(s, new, expect=None, now=to_utc(ctx.now))
-    return Transition(present(locked), ())
 
 
 def _lock_usual(
@@ -728,7 +713,7 @@ def queries_needed(s: OccurrenceState, ctx: Ctx) -> list[Query]:
             seen.add(key)
             out.append(Query.for_profile(p, station, dest, at))
 
-    if s.lock is None and s.released:  # a later train, from now
+    if s.lock is None and s.released:  # a later train, from now, for a station or leave event
         add(p.origin(d), max(ctx.schedule.first_departure, ctx.now, key=to_utc))
     elif s.lock is None:  # the usual at its effective departure, also when past (6.3)
         add(p.origin(d), ctx.schedule.first_departure)

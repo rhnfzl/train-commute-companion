@@ -67,7 +67,7 @@ A miss confirmed at home (at work on the way back) says when to leave, for examp
 
 Without proof you get the usual silent "has left. If you are not on it, next good connection: ..." note, and the train is still followed in case you are on it. If you were at the boarding station before the train left, that note is skipped. Leaving the station again before the train leaves, or arriving there only after it left, keeps the note.
 
-A train followed this way that you were never seen boarding ends quietly. If no position ever put you at the station where it, or the journey, starts, its arrival says nothing about you: you get no "I stopped following" message, and the companion follows the next good train from your origin until the window closes. That window then closes without a message too.
+A train followed this way that you were never seen boarding ends quietly. If no position ever put you at the station where it, or the journey, starts, its arrival says nothing about you: you get no "I stopped following" message, and the companion follows no train until you reach the station, leave your origin or choose a train. If none of that happens, the window closes without a message too.
 
 With no Wi-Fi or activity entity set, misses come only from waiting 12 minutes, and riding is seen from positions and speed. A phone left at home, or a tracker stuck at the station while you ride, can still give a wrong "you missed" message 12 minutes after the departure. After a Home Assistant restart, a step still due may be sent once more, and an activity reported in the first 5 minutes is ignored, because Home Assistant stamps every restored state with its start time.
 
