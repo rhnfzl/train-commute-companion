@@ -31,13 +31,12 @@ location:
 
 ## Phone setup
 
-The Companion app sends data in the background only with the right permissions. Without them the sensors stay `unavailable` and the companion falls back to waiting 12 minutes.
+Allow background location so the companion can use your phone's position. Motion is optional. Without it, a miss needs Wi-Fi or the 12-minute check, and that check still needs a valid tracker position at home/work or at the boarding station.
 
-- **Location.** iOS: Settings, Home Assistant, Location: Always, with Precise Location on. Android: Location, Allow all the time. On iOS, background sensor updates ride on location updates, so this also keeps the activity sensor fresh.
-- **Motion on iOS.** The app does not ask by itself, so Home Assistant is missing from Settings, Privacy & Security, Motion & Fitness. In the Home Assistant app open Settings, Companion App, Sensors, and tap the blue **Motion** link above the sensor list. Allow access when iOS asks. The sensor is usually `sensor.<phone>_activity`.
+- **Location.** iOS: Settings, Privacy & Security, Location Services, Home Assistant: Always, with Precise Location on. Android: Location, Allow all the time. On iOS, background sensor updates ride on location updates, so this also keeps the activity sensor fresh.
+- **Motion on iOS.** The app does not ask by itself, so Home Assistant is missing from Settings, Privacy & Security, Motion & Fitness. In the Home Assistant app open Settings, Companion App, Sensors. Tap the blue **Motion** link above the sensor list and allow access. Then enable **Activity**. The sensor is usually `sensor.<phone>_activity`.
 - **Motion on Android.** Turn on the Detected activity sensor (Settings, Companion app, Manage sensors) and allow Physical activity. It exists only in the Play Store version of the app. The sensor is usually `sensor.<phone>_detected_activity`.
-- **Focus modes (iOS).** If a Focus mode does not allow Home Assistant, its sensors can stop updating while that Focus is on.
-- **Check it.** In Home Assistant, Developer tools, States: the activity sensor shows a value such as `Stationary` or `still`, not `unavailable`. Its first value can be `Unknown` until you move.
+- **Check it.** In Home Assistant, Developer tools, States: the phone tracker has `latitude` and `longitude` attributes. If you enabled motion, the activity sensor is not `unavailable`. Its first value can be `Unknown` until you move.
 
 The phone reports activity when the operating system decides to, not every minute. That is why activity only adds proof and is never needed.
 
