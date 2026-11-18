@@ -90,7 +90,8 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
         occurrence["skipped_direction_state"] = None
         occurrence["moved_at"] = None  # Q12 defaults for an older store
         occurrence["wifi_reports"] = {}
-        occurrence["released"] = False  # 2026-11-18 default for an older store
+        occurrence["released"] = False  # 2026-11-18 defaults for an older store
+        occurrence["missed_from_origin"] = False
     for cfg in (raw["state"]["config"], *raw["state"]["config_snapshots"].values()):
         for profile in cfg["profiles"]:
             for d in ("outbound", "return_"):

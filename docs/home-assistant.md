@@ -40,7 +40,7 @@ Update through HACS and restart Home Assistant. The integration installs the mat
 Existing profiles, settings and saved state remain valid.
 
 With location on, a train you were never seen boarding now ends quietly. You get no "I stopped following" message for it, and the companion waits until you reach the station, leave your origin or choose a train. See [Location with Home Assistant](location-ha.md#missed-trains).
-The profile `alerts` block takes a new optional key, `quiet_repeat_misses`. Set it to `true` to make a later "you missed" message silent when it is about a train the companion picked after an earlier miss that day. It is also a switch in the profile form. See [Notification preferences](notification-preferences.md#repeated-missed-trains).
+The profile `alerts` block takes a new optional key, `quiet_repeat_misses`. Set it to `true` to make every "you missed" message after the first one from the same place that day silent. It is also a switch in the profile form. See [Notification preferences](notification-preferences.md#repeated-missed-trains).
 An NS disruption that shares only an end station with your journey, but not a stretch of track you travel, no longer sends a notice. "Fewer stopping trains" now counts as Sprinter-only, so it stays quiet on an Intercity.
 A platform change now turns loud exactly 15 minutes before the expected departure, not up to a minute earlier.
 

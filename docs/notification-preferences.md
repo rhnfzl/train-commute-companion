@@ -36,7 +36,7 @@ alerts:
   quiet_repeat_misses: true
 ```
 
-With `quiet_repeat_misses: true`, only the first of these messages makes a sound. A later miss of a train the companion picked after an earlier miss that day still arrives, silently. Missing a train you chose yourself, or a miss at the station, stays loud. The default is `false`. The Home Assistant profile form has the same switch.
+With `quiet_repeat_misses: true`, only the first of these messages that day makes a sound. Each later one from the same place still arrives, silently, also for a train you chose or one that replaced a cancelled train. A miss at the station stays loud. The default is `false`. The Home Assistant profile form has the same switch.
 
 ## Quiet early watch
 

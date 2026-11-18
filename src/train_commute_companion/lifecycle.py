@@ -2005,10 +2005,10 @@ def _missed_from_home(
     if not by_wifi and not _miss_proven(s, seen_at, expected, event):
         return None
     legs = (replace(x, state=LegState.MISSED), *lock.legs[1:])
-    s = replace(s, lock=replace(lock, legs=legs))  # a missed leg is never retained (Q2)
+    repeat = p.alerts.quiet_repeat_misses and s.missed_from_origin
+    # a missed leg is never retained (Q2)
+    s = replace(s, lock=replace(lock, legs=legs), missed_from_origin=True)
     text = f"you missed the {hhmm(x.train.planned_departure)}"
-    # a lock from an earlier miss is a train TCC picked, not one the user meant to take
-    repeat = p.alerts.quiet_repeat_misses and lock.source is LockSource.MISSED
     severity = Severity.SILENT if repeat else Severity.LOUD
     cut = Relock(
         legs=legs,

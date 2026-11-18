@@ -4,6 +4,8 @@ rest of the window open. Times are the real ones; stations are the test world's.
 
 import json
 
+import pytest
+
 from builders import make_connection, make_leg
 from lifecycle_fixtures import L1, L2, journey, occ
 from runtime_rig import Rig, at
@@ -28,7 +30,7 @@ profiles:
 LOCATED = "{source: ha, entity: person.me}"
 
 
-def evening() -> list:
+def evening(cancelled: str = "") -> list:
     delays = {"17:06": 3, "17:36": 6}
     out = []
     deps = ("16:36", "17:06", "17:36", "18:06", "18:36", "19:06", "19:36", "20:06", "20:36")
@@ -36,7 +38,8 @@ def evening() -> list:
         arr = f"{int(dep[:2]) + 1}:{dep[3:]}"
         d = delays.get(dep, 0)
         leg = make_leg(
-            "RTD", "AAA", dep, arr, number=f"35{62 + 2 * i}", delay_dep=d, delay_arr=d // 2
+            "RTD", "AAA", dep, arr, number=f"35{62 + 2 * i}", delay_dep=d, delay_arr=d // 2,
+            cancelled=dep == cancelled,
         )
         out.append(make_connection([leg]))
     return out
@@ -134,6 +137,24 @@ async def test_quiet_repeat_misses_makes_the_second_miss_from_work_silent(tmp_pa
     ]
 
 
+@pytest.mark.parametrize(("quiet", "second"), [(True, Severity.SILENT), (False, Severity.LOUD)])
+async def test_a_cancelled_replacement_does_not_reset_the_repeat_miss(tmp_path, quiet, second):
+    rig = await rig_for(tmp_path, extra=f"    alerts: {{quiet_repeat_misses: {str(quiet).lower()}}}\n")
+    await rig.run_until("16:30")
+    await report(rig, "report", "16:30")
+    await rig.run_until("16:48")
+    await report(rig, "still", "16:48")  # the 16:36 missed: the 17:06 is followed
+    rig.provider.world = evening(cancelled="17:06")
+    await rig.run_until("17:00")  # the 17:06 is cancelled: the 17:36 replaces it
+    assert rig.occ(KEY).lock.legs[0].train.train_number == "3566"
+    await rig.run_until("17:55")
+    await report(rig, "still", "17:55")  # the 17:36 left at 17:42: missed too
+    assert misses(rig) == [
+        ("you missed the 16:36.", Severity.LOUD),
+        ("you missed the 17:36.", second),
+    ]
+
+
 async def test_without_location_the_end_of_an_unconfirmed_train_is_still_told(tmp_path):
     rig = await rig_for(tmp_path, "null")
     await rig.run_until("19:25")
@@ -144,5 +165,5 @@ async def test_without_location_the_end_of_an_unconfirmed_train_is_still_told(tm
 def test_state_written_by_0_2_5_loads_with_nothing_released():
     s = occ(journey([L1, L2]))
     raw = json.loads(json.dumps(encode(s)))
-    del raw["released"]  # 0.2.5 had no such field
+    del raw["released"], raw["missed_from_origin"]  # 0.2.5 had no such fields
     assert decode(OccurrenceState, raw) == s
