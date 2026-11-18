@@ -25,9 +25,21 @@ location:
 - `entity` is a `person` or a `device_tracker` that reports `latitude` and `longitude`. A tracker that only says `home` or `not_home` (a router, for example) has no coordinates and is ignored, so it can never cause a "left home" or a missed-train warning.
 - `zones` maps the roles `home` and `work` to Home Assistant zone entities. `home` falls back to `zone.home`. A role whose zone does not exist is skipped.
 - `station_radius_m` is the size of every station zone in metres. The default is 150.
-- `wifi` (optional) maps the roles `home` and `work` to a tracker that is `home` while the phone is on that place's Wi-Fi, for example a UniFi or router `device_tracker`. Such trackers say `not_home` a few minutes late, which is why a connected Wi-Fi proves a miss only when your `buffer_min` is longer than 5 minutes.
-- `activity_entity` (optional) is the phone's motion activity sensor, for example the Companion app's activity sensor on iOS (`Stationary`, `Walking`, `Automotive`) or on Android (`still`, `on_foot`, `in_vehicle`). On iOS it needs Motion & Fitness access for the Companion app.
+- `wifi` (optional) maps the roles `home` and `work` to a tracker that is `home` while the phone is on that place's Wi-Fi, for example a UniFi or router `device_tracker`. Such trackers say `not_home` a few minutes late, which is why a connected Wi-Fi proves a miss only when your `buffer_min` is longer than 5 minutes. The Companion app's SSID sensor is not a tracker and does not work here.
+- `activity_entity` (optional) is the phone's motion activity sensor, for example the Companion app's activity sensor on iOS (`Stationary`, `Walking`, `Automotive`) or on Android (`still`, `on_foot`, `in_vehicle`). It needs motion access, see [Phone setup](#phone-setup).
 - The speed of a fix is read from the tracker's `speed` attribute (metres per second), or for a `person` from its source tracker. Nothing needs to be set for it.
+
+## Phone setup
+
+The Companion app sends data in the background only with the right permissions. Without them the sensors stay `unavailable` and the companion falls back to waiting 12 minutes.
+
+- **Location.** iOS: Settings, Home Assistant, Location: Always, with Precise Location on. Android: Location, Allow all the time. On iOS, background sensor updates ride on location updates, so this also keeps the activity sensor fresh.
+- **Motion on iOS.** The app does not ask by itself, so Home Assistant is missing from Settings, Privacy & Security, Motion & Fitness. In the Home Assistant app open Settings, Companion App, Sensors, and tap the blue **Motion** link above the sensor list. Allow access when iOS asks. The sensor is usually `sensor.<phone>_activity`.
+- **Motion on Android.** Turn on the Detected activity sensor (Settings, Companion app, Manage sensors) and allow Physical activity. It exists only in the Play Store version of the app. The sensor is usually `sensor.<phone>_detected_activity`.
+- **Focus modes (iOS).** If a Focus mode does not allow Home Assistant, its sensors can stop updating while that Focus is on.
+- **Check it.** In Home Assistant, Developer tools, States: the activity sensor shows a value such as `Stationary` or `still`, not `unavailable`. Its first value can be `Unknown` until you move.
+
+The phone reports activity when the operating system decides to, not every minute. That is why activity only adds proof and is never needed.
 
 ## Stations
 

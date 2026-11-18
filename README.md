@@ -42,7 +42,7 @@ Data: NS. You bring your own NS API key; none is bundled. This project is not ma
 | Today | Private read-only journey and service status in a browser, from Docker | [docs/docker.md](docs/docker.md#today-web-status) |
 | MCP | Three read-only tools (status, next connections, planned works) for a local MCP client | [docs/mcp.md](docs/mcp.md) |
 
-Location (optional) helps it know when you leave and where you are: [Home Assistant](docs/location-ha.md), [OwnTracks](docs/location-owntracks.md), [Telegram](docs/location-telegram.md).
+Location (optional) helps it know when you leave and where you are. See [Where you are](#where-you-are) below.
 
 Profiles can request [accessible journeys](docs/accessibility.md) and disable [notification categories](docs/notification-preferences.md). These settings also appear in the Home Assistant profile form.
 
@@ -56,6 +56,39 @@ Save an [explicit arrival](docs/compensation-reminders.md) to compare it with th
 4. Enable guided setup to choose stations and trains in forms, or select an existing [profiles file](examples/profiles.yaml).
 
 The full guide is in [docs/home-assistant.md](docs/home-assistant.md).
+
+## Where you are
+
+A timetable app knows your train. It does not know where you are. With location on, the companion can:
+
+- see that you are still at home when your train leaves, and tell you the next train and when to leave;
+- see that you are on the train, so a late phone position does not cause a false "you missed it";
+- pick a later train for you when you leave home late.
+
+Phones often report a position minutes late. So one position is never proof. The companion combines signals:
+
+```mermaid
+flowchart TD
+    A[Your train leaves] --> B{"Any sign you ride?<br/>You left the station zone,<br/>speed 8 m/s or more,<br/>or activity Automotive"}
+    B -- yes --> C[Keep following your train.<br/>No message.]
+    B -- no --> D{"Proof you are still there?<br/>Home Wi-Fi still connected,<br/>or Stationary / Walking in the zone"}
+    D -- yes --> E["You missed it.<br/>Next train + leave by"]
+    D -- no --> F{"Still in the zone<br/>12 minutes later?"}
+    F -- yes --> E
+    F -- no --> C
+```
+
+Without enough data you get only a quiet "has left. If you are not on it, next train" note. Location never hides or delays a train alert. Full rules: [Missed trains](docs/location-ha.md#missed-trains). Other sources: [OwnTracks](docs/location-owntracks.md), [Telegram](docs/location-telegram.md).
+
+### Phone setup (Home Assistant companion app)
+
+Do this once, or the phone sends no data in the background:
+
+1. **Location: Always.** iOS: Settings, Home Assistant, Location: Always, Precise on. Android: Allow all the time.
+2. **Motion (optional, recommended).** iOS: in the Home Assistant app open Settings, Companion App, Sensors, and tap the blue **Motion** link above the list. iOS then asks for access. Android: turn on the Detected activity sensor and allow Physical activity.
+3. **Check it.** In Home Assistant, Developer tools, States: your phone's activity sensor must show a value, not `unavailable`.
+
+Then add the `location` block to your profile. Steps and the optional Wi-Fi tracker: [Location with Home Assistant](docs/location-ha.md).
 
 ## The Python core
 
