@@ -353,6 +353,9 @@ def news_of(
         Fact(e.key, e.kind, e.train.planned_departure if e.train else None)
         for e in events
         if announcement_phase(sent.get(e.key)) is AnnouncementPhase.SILENT
+        # each poll restates a platform move timed by the expected departure; this planned,
+        # whole-minute clock made it loud up to a minute early (2026-11-18)
+        and e.kind is not EventKind.PLATFORM_CHANGE
     ]
     loud = set(escalations(sent, facts, now))
     # a known fact that turned loud itself (an arrival now past the limit) goes once more
