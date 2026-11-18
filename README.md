@@ -42,7 +42,7 @@ Data: NS. You bring your own NS API key; none is bundled. This project is not ma
 | Today | Private read-only journey and service status in a browser, from Docker | [docs/docker.md](docs/docker.md#today-web-status) |
 | MCP | Three read-only tools (status, next connections, planned works) for a local MCP client | [docs/mcp.md](docs/mcp.md) |
 
-Location (optional) helps it know when you leave and where you are: [Home Assistant](docs/location-ha.md), [OwnTracks](docs/location-owntracks.md), [Telegram](docs/location-telegram.md).
+Location (optional) helps it know when you leave and where you are. See [Where you are](#where-you-are) below.
 
 Profiles can request [accessible journeys](docs/accessibility.md) and disable [notification categories](docs/notification-preferences.md). These settings also appear in the Home Assistant profile form.
 
@@ -56,6 +56,37 @@ Save an [explicit arrival](docs/compensation-reminders.md) to compare it with th
 4. Enable guided setup to choose stations and trains in forms, or select an existing [profiles file](examples/profiles.yaml).
 
 The full guide is in [docs/home-assistant.md](docs/home-assistant.md).
+
+## Where you are
+
+A timetable app knows your train. It does not know where you are. With location on, the companion can:
+
+- see that you are still at home when your train leaves, and tell you the next train and when to leave;
+- see that you are on the train, so a late phone position does not cause a false "you missed it";
+- pick the next train you can catch when you leave home before your usual train leaves.
+
+Phones often report a position minutes late. A position just after the departure does not prove a miss. The companion also checks movement, Wi-Fi, activity and time:
+
+```mermaid
+flowchart TD
+    A["Your train leaves"] --> B{"Any sign you ride?<br/>Left the zone, 8 m/s or more,<br/>or Automotive"}
+    B -- yes --> C["Keep following your train"]
+    B -- no --> D{"Tracker still places you at home/work<br/>or at your boarding station?"}
+    D -- no --> C
+    D -- yes --> E{"Proof?<br/>Home/work Wi-Fi on, buffer over 5 min;<br/>or Stationary/Walking, 3 min after departure;<br/>or still there after 12 min"}
+    E -- no --> C
+    E -- yes --> F["You missed it: next train.<br/>At home/work also: leave by"]
+```
+
+Activity counts only when reported after the departure and at most 5 minutes ago. Without proof the train stays followed, and you may get a quiet "has left. If you are not on it, next train" note. Regular train alerts still apply. Full rules: [Missed trains](docs/location-ha.md#missed-trains). Other sources: [OwnTracks](docs/location-owntracks.md), [Telegram](docs/location-telegram.md).
+
+### Phone setup (Home Assistant companion app)
+
+1. **Location: Always.** iOS: Settings, Privacy & Security, Location Services, Home Assistant: Always, Precise Location on. Android: Allow all the time.
+2. **Motion (optional, recommended).** iOS: the app does not ask by itself. In the app open Settings, Companion App, Sensors, tap the blue **Motion** link and allow access, then enable **Activity**. Android: enable Detected activity. [Details](docs/location-ha.md#phone-setup).
+3. **Check it.** In Home Assistant, Developer tools, States: your phone tracker has `latitude` and `longitude`, and the activity sensor is not `unavailable`.
+
+Then add the `location` block to your profile. Steps and the optional Wi-Fi tracker: [Location with Home Assistant](docs/location-ha.md).
 
 ## The Python core
 
