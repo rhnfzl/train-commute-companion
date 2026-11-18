@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
 from enum import StrEnum
+from itertools import pairwise
 from uuid import uuid4
 
 from train_commute_companion.calendar import TZ, to_utc
@@ -24,6 +25,7 @@ from train_commute_companion.model import (
 from train_commute_companion.providers.base import (
     ActiveDisruption,
     ActiveDisruptions,
+    DisruptionSection,
     ProviderAnswer,
 )
 from train_commute_companion.state import (
@@ -110,38 +112,42 @@ def _train_type(category: str) -> str | None:
     return "IC" if code.startswith("IC") else None  # IC, ICD, ICE, ICNG; anything else unknown
 
 
-def _legs(
-    state: OccurrenceState, answers: Sequence[ProviderAnswer]
-) -> list[tuple[set[str], str | None]]:
-    """The stations and train type of every unfinished locked or retained leg."""
-    legs = []
+# per unfinished leg: its stations, its one train type (None when unknown), and its stops from
+# boarding to alighting in order, each as its ids (None when no answer shows them)
+_Leg = tuple[set[str], str | None, tuple[frozenset[str], ...] | None]
+
+
+def _legs(state: OccurrenceState, answers: Sequence[ProviderAnswer]) -> list[_Leg]:
+    """The stations, train type and ordered stops of every unfinished locked or retained leg."""
+    legs: list[_Leg] = []
     for journey in (*((state.lock,) if state.lock else ()), *state.retained):
         for leg in journey.legs:
             if leg.state in (LegState.DONE, LegState.CANCELLED, LegState.RELOCKED, LegState.MISSED):
                 continue
             stations = {leg.board_station, leg.alight_stop}
             kinds = set()
+            path: tuple[frozenset[str], ...] | None = None
             for answer in answers:
                 for connection in answer.connections:
                     for current in connection.legs:
                         if current.train != leg.train or current.board.code != leg.board_station:
                             continue
                         kinds.add(_train_type(current.category))
+                        stops = []
                         for stop in current.stops:
-                            stations.add(stop.code)
-                            if stop.uic:
-                                stations.add(stop.uic)
+                            ids = frozenset(x for x in (stop.code, stop.uic) if x)
+                            stations |= ids
+                            stops.append(ids)
                             if stop.code == leg.alight_stop:
+                                path = path or tuple(stops)
                                 break
-            legs.append((stations, kinds.pop() if len(kinds) == 1 else None))
+            legs.append((stations, kinds.pop() if len(kinds) == 1 else None, path))
     return legs
 
 
-def _stations(
-    state: OccurrenceState, ctx: Ctx, legs: Sequence[tuple[set[str], str | None]]
-) -> set[str]:
+def _stations(state: OccurrenceState, ctx: Ctx, legs: Sequence[_Leg]) -> set[str]:
     if state.lock or state.retained:
-        return set().union(*(stations for stations, _ in legs))
+        return set().union(*(leg[0] for leg in legs))
     return {
         ctx.profile.origin(ctx.direction),
         ctx.profile.destination(ctx.direction),
@@ -149,18 +155,29 @@ def _stations(
     }
 
 
-def _hits_your_train(item: ActiveDisruption, legs: Sequence[tuple[set[str], str | None]]) -> bool:
-    """False only when every section on your stations names one train type that none of your
-    trains there is; any doubt (no lock, unknown type or wording) counts as a hit."""
+def _touches(section: DisruptionSection, leg: _Leg) -> bool:
+    """A section is on your leg when it covers a stretch you travel (two of its stops in a row)
+    or is one station you pass. Sharing only your end station is another line through it.
+    Without the leg's stops, any shared station counts."""
+    stations, _, path = leg
+    if path is None:
+        return bool(stations & section.stations)
+    on = [bool(ids & section.stations) for ids in path]
+    return any(a and b for a, b in pairwise(on)) or (section.size == 1 and any(on))
+
+
+def _hits_your_train(item: ActiveDisruption, legs: Sequence[_Leg]) -> bool:
+    """False when no section is on your legs, or every one that is names one train type that
+    none of your trains there is; any doubt (no lock, unknown type or wording) counts as a hit."""
     touched = False
     for section in item.sections:
-        kinds = [kind for stations, kind in legs if stations & section.stations]
+        kinds = [leg[1] for leg in legs if _touches(section, leg)]
         if not kinds:
             continue
         touched = True
         if section.only is None or any(kind in (None, section.only) for kind in kinds):
             return True
-    return not touched
+    return not touched and not (legs and item.sections)
 
 
 def notice_key(notice: DisruptionNotice, service_date: str) -> str:
@@ -237,6 +254,8 @@ def _same_news(told: ActiveDisruption, item: ActiveDisruption) -> bool:
     or sections) is the same notice as its newly parsed item."""
     if not told.summary and not told.sections:
         item = replace(item, summary="", sections=())
+    elif not any(x.size for x in told.sections):  # stored before sections counted stations
+        item = replace(item, sections=tuple(replace(x, size=0) for x in item.sections))
     return replace(told, end=None) == replace(item, end=None)
 
 
