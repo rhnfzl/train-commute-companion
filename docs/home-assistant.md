@@ -34,6 +34,18 @@ Messages now name a station that NS gives only by number, for example "runs only
 
 Back up the integration and its state before upgrading. The older 0.2.4 core cannot read any state saved by 0.2.5, even without the new keys. A downgrade needs that pre-upgrade backup, as described above.
 
+### Upgrade to 0.2.6
+
+Update through HACS and restart Home Assistant. The integration installs the matching `train-commute-companion==0.2.6` core automatically.
+Existing profiles, settings and saved state remain valid.
+
+With location on, a train you were never seen boarding now ends quietly. You get no "I stopped following" message for it, and the companion keeps following the next good train until the window closes. See [Location with Home Assistant](location-ha.md#missed-trains).
+The profile `alerts` block takes a new optional key, `quiet_repeat_misses`. Set it to `true` to make a later "you missed" message silent when it is about a train the companion picked after an earlier miss that day. It is also a switch in the profile form. See [Notification preferences](notification-preferences.md#repeated-missed-trains).
+An NS disruption that shares only an end station with your journey, but not a stretch of track you travel, no longer sends a notice. "Fewer stopping trains" now counts as Sprinter-only, so it stays quiet on an Intercity.
+A platform change now turns loud exactly 15 minutes before the expected departure, not up to a minute earlier.
+
+Back up the integration and its state before upgrading. The older 0.2.5 core cannot read any state saved by 0.2.6, even without the new key. A downgrade needs that pre-upgrade backup, as described above.
+
 ## Set up
 
 1. Get an NS API key from the NS API portal.
