@@ -237,6 +237,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "disabled_categories",
             "channels",
             "compensation_reminder",
+            "quiet_repeat_misses",
         ),
         "alerts",
     )
@@ -244,6 +245,9 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
     compensation = raw.get("compensation_reminder", False)
     if not isinstance(compensation, bool):
         c.err("alerts.compensation_reminder", "must be true or false")
+    repeat = raw.get("quiet_repeat_misses", False)
+    if not isinstance(repeat, bool):
+        c.err("alerts.quiet_repeat_misses", "must be true or false")
     thr = c.integer(
         raw.get("earlier_train_threshold_min", d.earlier_train_threshold_min),
         "alerts.earlier_train_threshold_min",
@@ -305,6 +309,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         frozenset(cast(list[NotificationCategory], disabled)),
         channels,
         compensation,
+        repeat,
     )
 
 

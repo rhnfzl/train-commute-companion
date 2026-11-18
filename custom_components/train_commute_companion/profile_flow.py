@@ -326,15 +326,12 @@ class ProfileEditorFlow:
         fields[
             vol.Optional("edit_weekday_times", default=values.get("edit_weekday_times", False))
         ] = BooleanSelector()
-        fields[
-            vol.Optional(
-                "compensation_reminder",
-                default=values.get(
-                    "compensation_reminder",
-                    existing.get("alerts", {}).get("compensation_reminder", False),
-                ),
-            )
-        ] = BooleanSelector()
+        for key in ("compensation_reminder", "quiet_repeat_misses"):
+            fields[
+                vol.Optional(
+                    key, default=values.get(key, existing.get("alerts", {}).get(key, False))
+                )
+            ] = BooleanSelector()
         for code in stations:
             fields[
                 vol.Required(

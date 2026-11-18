@@ -41,9 +41,9 @@ def evening() -> list:
     return out
 
 
-async def rig_for(tmp_path, location: str = LOCATED) -> Rig:
+async def rig_for(tmp_path, location: str = LOCATED, extra: str = "") -> Rig:
     rig = Rig(tmp_path, "15:40")
-    rig.write(text=PROFILE.replace("LOCATION", location))
+    rig.write(text=PROFILE.replace("LOCATION", location) + extra)
     rig.provider.world = evening()
     await rig.rt.start()
     return rig
@@ -85,13 +85,20 @@ def loud_after(rig: Rig, hhmm: str) -> list[tuple[EventKind, str]]:
     ]
 
 
+def misses(rig: Rig) -> list[tuple[str, Severity]]:
+    return [
+        (e.body[:21], e.severity)
+        for e in rig.rt.events_log
+        if e.kind is EventKind.MISSED_FIRST_TRAIN
+    ]
+
+
 async def test_a_train_never_boarded_ends_quietly_and_keeps_the_window_open(tmp_path):
     rig = await rig_for(tmp_path)
     await replay_to_departure(rig)
-    misses = [e.text for e in rig.rt.events_log if e.kind is EventKind.MISSED_FIRST_TRAIN]
-    assert [m.split(": ", 1)[1][:21] for m in misses] == [
-        "you missed the 16:36.",
-        "you missed the 17:06.",
+    assert misses(rig) == [
+        ("you missed the 16:36.", Severity.LOUD),
+        ("you missed the 17:06.", Severity.LOUD),  # loud again by default (2026-11-18 decision)
     ]
     await rig.run_until("19:25")  # the 17:36 arrived 18:39; its last watch ended about 19:19
     assert loud_after(rig, "17:21:30") == []
@@ -101,6 +108,15 @@ async def test_a_train_never_boarded_ends_quietly_and_keeps_the_window_open(tmp_
     await rig.run_until("21:31")  # nobody seen at a station: the window closes, still quietly
     assert loud_after(rig, "17:21:30") == []
     assert rig.occ(KEY) is None or rig.occ(KEY).direction_state is DirectionState.DONE
+
+
+async def test_quiet_repeat_misses_makes_the_second_miss_from_work_silent(tmp_path):
+    rig = await rig_for(tmp_path, extra="    alerts: {quiet_repeat_misses: true}\n")
+    await replay_to_departure(rig)
+    assert misses(rig) == [
+        ("you missed the 16:36.", Severity.LOUD),
+        ("you missed the 17:06.", Severity.SILENT),
+    ]
 
 
 async def test_without_location_the_end_of_an_unconfirmed_train_is_still_told(tmp_path):

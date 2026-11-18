@@ -496,6 +496,11 @@ def with_field(line: str) -> tuple[str, str]:
         (with_field("alerts: 5"), "alerts", "must be a mapping"),
         (with_field("alerts: {quiet_hours: 5}"), "alerts.quiet_hours", "must be two times"),
         (
+            with_field("alerts: {quiet_repeat_misses: 1}"),
+            "alerts.quiet_repeat_misses",
+            "must be true or false",
+        ),
+        (
             with_field('alerts: {quiet_hours: ["x", "07:12"]}'),
             "alerts.quiet_hours[0]",
             "not a valid time",

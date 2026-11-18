@@ -445,6 +445,9 @@ class AlertSettings:
         default_factory=dict
     )
     compensation_reminder: bool = False
+    # a second or later miss from home (work on the way back) of the same day and direction
+    # is silent: TCC chose that train itself after the first miss
+    quiet_repeat_misses: bool = False
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]

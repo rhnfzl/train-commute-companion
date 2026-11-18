@@ -92,10 +92,12 @@
           "channel_disruptions": "Active disruptions destinations",
           "channel_routine": "Routine and compensation reminder destinations",
           "edit_weekday_times": "Set different departure times by weekday",
-          "compensation_reminder": "Remind me to check NS compensation after a confirmed delay"
+          "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
+          "quiet_repeat_misses": "Silent missed-train message after the first one of the day"
         },
         "data_description": {
-          "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility."
+          "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
+          "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently."
         }
       },
       "profile_error": {
@@ -241,10 +243,12 @@
           "channel_disruptions": "Active disruptions destinations",
           "channel_routine": "Routine and compensation reminder destinations",
           "edit_weekday_times": "Set different departure times by weekday",
-          "compensation_reminder": "Remind me to check NS compensation after a confirmed delay"
+          "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
+          "quiet_repeat_misses": "Silent missed-train message after the first one of the day"
         },
         "data_description": {
-          "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility."
+          "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
+          "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently."
         }
       },
       "profile_error": {

@@ -2022,12 +2022,15 @@ def _missed_from_home(
     legs = (replace(x, state=LegState.MISSED), *lock.legs[1:])
     s = replace(s, lock=replace(lock, legs=legs))  # a missed leg is never retained (Q2)
     text = f"you missed the {hhmm(x.train.planned_departure)}"
+    # a lock from an earlier miss is a train TCC picked, not one the user meant to take
+    repeat = p.alerts.quiet_repeat_misses and lock.source is LockSource.MISSED
+    severity = Severity.SILENT if repeat else Severity.LOUD
     cut = Relock(
         legs=legs,
         first_replaced=0,
         station=x.board_station,
         kept=None,
-        cause=Cause(EventKind.MISSED_FIRST_TRAIN, Severity.LOUD, text, x.train),
+        cause=Cause(EventKind.MISSED_FIRST_TRAIN, severity, text, x.train),
         source=LockSource.MISSED,
         leave_by=True,
     )
