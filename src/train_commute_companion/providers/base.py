@@ -91,6 +91,7 @@ class DisruptionSection:
     stations: frozenset[str]
     # "SPR" or "IC" when NS names exactly that one train type as hit here; None when unknown
     only: str | None = None
+    size: int = 0  # how many stations NS names; 0 in notices stored before it was counted
 
 
 @dataclass(frozen=True, slots=True)

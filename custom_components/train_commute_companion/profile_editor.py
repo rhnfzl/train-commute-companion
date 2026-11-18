@@ -112,12 +112,14 @@ def edit_profile(
             **copy.deepcopy(profile.get("alerts", {})),
             "disabled_categories": values["disabled_categories"],
         }
-    if "compensation_reminder" in values:
-        if type(values["compensation_reminder"]) is not bool:
+    for key in ("compensation_reminder", "quiet_repeat_misses"):
+        if key not in values:
+            continue
+        if type(values[key]) is not bool:
             raise EditorError("invalid_profile")
         alerts = copy.deepcopy(profile.get("alerts", {}))
-        if values["compensation_reminder"] or "compensation_reminder" in alerts:
-            alerts["compensation_reminder"] = values["compensation_reminder"]
+        if values[key] or key in alerts:
+            alerts[key] = values[key]
             profile["alerts"] = alerts
     if any(f"channel_{category}" in values for category in CATEGORIES):
         alerts = copy.deepcopy(profile.get("alerts", {}))

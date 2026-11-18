@@ -118,6 +118,19 @@ def test_notification_categories_preserve_aliased_alert_settings(tmp_path):
     assert saved["profiles"][1]["alerts"] == shared
 
 
+def test_quiet_repeat_misses_is_written_only_once_chosen(tmp_path):
+    doc = document(tmp_path)
+    off = yaml.safe_load(
+        edit_profile(doc, "p1", {**VALUES, "quiet_repeat_misses": False}, KNOWN, TODAY)
+    )
+    assert "quiet_repeat_misses" not in off["profiles"][0].get("alerts", {})
+    text = edit_profile(doc, "p1", {**VALUES, "quiet_repeat_misses": True}, KNOWN, TODAY)
+    profiles, errors = parse_profiles(text, KNOWN)
+    assert not errors and profiles[0].alerts.quiet_repeat_misses
+    with pytest.raises(EditorError):
+        edit_profile(doc, "p1", {**VALUES, "quiet_repeat_misses": "yes"}, KNOWN, TODAY)
+
+
 def test_channel_editor_preserves_aliased_settings_and_can_restore_defaults(tmp_path):
     data = yaml.safe_load(PROFILE)
     shared = {

@@ -27,6 +27,17 @@ System health, missing train data, stopped monitoring, invalid configuration, re
 
 A train missing from NS data is reported after two polls in a row miss it while you follow the same train, so switching to another train never warns on its own. A stale or failing NS board is reported at once. "Visible again" follows only a "cannot see" message you actually received.
 
+## Repeated missed trains
+
+When you stay at home (at work on the way back) past your train, the companion says "you missed" with the next train you can catch, and follows that one. Stay longer and each next train gets its own "you missed" message. By default every one of them makes a sound.
+
+```yaml
+alerts:
+  quiet_repeat_misses: true
+```
+
+With `quiet_repeat_misses: true`, only the first of these messages that day makes a sound. Each later one from the same place still arrives, silently, also for a train you chose or one that replaced a cancelled train. A miss at the station stays loud. The default is `false`. The Home Assistant profile form has the same switch.
+
 ## Quiet early watch
 
 The usual train is locked as soon as the window opens, with no extra NS requests. Until the active point, only unusual news is sent: a cancellation, a broken change, a train cut short, a changed route, a platform change, no connection found, a restored train, and a delay of 5 min or more. A delay you already heard about keeps its usual updates, so a change or a recovery is still told, and it is not repeated at the active point. Delays under 5 min, crowd forecasts, a transfer at risk, unclear NS data, a train missing from NS data, earlier-train advice and the "on time per NS" check-in wait for the active point. "Cannot see your train" can only start there too. A usual train that is not in NS data when the window opens is told at once, and the next good train is followed instead.

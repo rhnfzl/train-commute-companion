@@ -242,6 +242,11 @@ class OccurrenceState:
     # place zone, when its Wi-Fi was last seen connected: what tells a missed train from a late fix
     moved_at: datetime | None = None
     wifi_reports: Mapping[str, datetime] = field(default_factory=dict)
+    # 2026-11-18: the lock ended with no sign the user boarded it and was let go: no train is
+    # followed until a station, a leave or a choice shows one, and the window closes silently
+    released: bool = False
+    # a train was already missed from the origin place today (`quiet_repeat_misses`)
+    missed_from_origin: bool = False
 
     @property
     def phase(self) -> OccurrencePhase:

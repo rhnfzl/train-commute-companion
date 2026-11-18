@@ -154,4 +154,5 @@ def write_lock(
         generation=s.generation + 1,
         direction_state=DirectionState.LOCKED if state is DirectionState.IDLE else state,
         errand_deadline=s.errand_deadline if new.commitment is Commitment.PROVISIONAL else None,
+        released=False,
     )

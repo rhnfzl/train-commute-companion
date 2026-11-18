@@ -51,12 +51,12 @@ def incident(*consequences, codes=(("HT", "BTL", "EHV"), ("TB", "BTL", "EHV")), 
     return feed
 
 
-def riding(category):
+def riding(category, board="HT", alight="EHV", stops=("BTL",)):
     leg = replace(
-        make_leg("HT", "EHV", "08:12", "08:40", number="3500", stops=("BTL",)), category=category
+        make_leg(board, alight, "08:12", "08:40", number="3500", stops=stops), category=category
     )
     answer = ProviderAnswer(
-        Query("HT", "EHV", leg.train.planned_departure), (make_connection([leg]),), at("07:50")
+        Query(board, alight, leg.train.planned_departure), (make_connection([leg]),), at("07:50")
     )
     return occ(journey([leg])), (answer,)
 
@@ -163,3 +163,60 @@ def test_missed_train_without_replacement_has_no_disruption_route():
         told(replace(state, lock=missed), incident("geen Sprinters", "geen Sprinters"), answers)
         == []
     )
+
+
+# --- 2026-11-18: a section is on your leg only along a stretch you travel ---
+
+
+def test_a_section_sharing_only_your_end_station_is_another_line_in_both_directions():
+    other_approach = incident("Er rijden minder treinen", codes=(("TB", "EHV"),))
+    stretch = incident("Er rijden minder treinen", codes=(("BTL", "EHV"),))
+    for board, alight in (("HT", "EHV"), ("EHV", "HT")):
+        state, answers = riding("IC", board, alight)
+        assert told(state, other_approach, answers) == []
+        assert told(state, stretch, answers)
+
+
+def test_one_station_on_your_leg_tells_and_unknown_stops_keep_station_overlap():
+    state, answers = riding("IC")
+    assert told(state, incident("Er rijden minder treinen", codes=(("BTL",),)), answers)
+    assert told(state, incident("Er rijden minder treinen", codes=(("EHV",),)), answers)
+    # no answer shows the leg's stops: any shared station still tells
+    assert told(state, incident("Er rijden minder treinen", codes=(("TB", "EHV"),)))
+
+
+def test_a_leg_listed_with_only_its_end_stations_keeps_station_overlap():
+    state, answers = riding("IC", stops=())  # NS left the stops out: the ends are not a stretch
+    assert told(state, incident("Er rijden minder treinen", codes=(("BTL", "EHV"),)), answers)
+
+
+def test_a_section_on_any_copy_of_your_train_tells_in_either_answer_order():
+    state, via_btl = riding("IC")
+    _, via_tb = riding("IC", stops=("TB",))  # a newer answer shows the train diverted
+    feed = incident("Er rijden minder treinen", codes=(("TB", "EHV"),))
+    assert told(state, feed, (*via_btl, *via_tb))
+    assert told(state, feed, (*via_tb, *via_btl))
+    # quiet only when every copy shows it off your leg
+    assert told(state, feed, (*via_btl, *via_btl)) == []
+
+
+def test_fewer_stopping_trains_is_quiet_for_an_intercity_only():
+    feed = incident("minder stoptreinen", "geen stoptreinen.")
+    state, answers = riding("IC")
+    assert told(state, feed, answers) == []
+    state, answers = riding("SPR")
+    assert told(state, feed, answers)
+
+
+def test_a_notice_stored_before_sections_counted_stations_is_no_news():
+    state, answers = riding("SPR")
+    feed = incident("geen Sprinters", "geen Sprinters")
+    first = update_disruptions(state, ctx(at("07:50")), feed, answers).state
+    old = {
+        k: replace(
+            n, item=replace(n.item, sections=tuple(replace(x, size=0) for x in n.item.sections))
+        )
+        for k, n in first.disruptions.items()
+    }
+    again = update_disruptions(replace(first, disruptions=old), ctx(at("07:52")), feed, answers)
+    assert [n.revision for n in again.state.disruptions.values()] == [1]

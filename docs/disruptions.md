@@ -8,7 +8,9 @@ Active incident checks run after the journey requests, using the same NS request
 
 A new relevant incident or a change to its public content produces a silent `disruption` alert. A change of NS's expected end time alone is not sent again. The message quotes NS's own description of the cause and effect, for example "NS: Door een brandmelding: tussen Boxtel en Eindhoven Centraal rijden er geen Sprinters. Until about 16:45. Check your journey.", followed by the NS link. When NS gives no description, the message names the incident title and adds the expected end when NS reports one.
 
-An incident that hits only the other train type stays quiet. This happens only when every NS section on your stations names exactly one train type ("geen Sprinters", "minder Intercity's") and your followed train on those stations is known to be the other type. The check uses the train you follow, not the route, so routes served by both Sprinters and Intercities work. Any doubt still produces the notice: no followed train yet, an unknown train type, mixed types, or NS wording the companion does not recognise. A later NS update that starts to hit your train type produces the notice. A successful, complete NS snapshot can produce one silent `disruption_cleared` alert when an incident disappears. That message says NS no longer lists the incident; it does not confirm your trains run.
+An NS section counts as on your journey only where your train travels through it: two stops in a row of your followed train, from where you board to where you get off, are both in that section, or the section is one station your train calls at or passes. A section that shares only one end station with your journey is another line through that station and stays quiet, for example an incident between Nijmegen and Venlo while you ride to Blerick from the other side. When NS data does not show your train's stops, any shared station still counts. When NS shows your train on more than one route, a section on any of them counts.
+
+An incident that hits only the other train type stays quiet. This happens only when every NS section on your journey names exactly one train type ("geen Sprinters", "minder stoptreinen", "minder Intercity's") and your followed train there is known to be the other type. NS uses "stoptreinen" for Sprinters too. The check uses the train you follow, not the route, so routes served by both Sprinters and Intercities work. Any doubt still produces the notice: no followed train yet, an unknown train type, mixed types, or NS wording the companion does not recognise. A later NS update that starts to hit your train type produces the notice. A successful, complete NS snapshot can produce one silent `disruption_cleared` alert when an incident disappears. That message says NS no longer lists the incident; it does not confirm your trains run.
 
 Repeated snapshots and restarts do not repeat a delivered notice. Failed delivery can retry while its source state still holds. An incident that ends before its first warning reaches you does not produce an unexplained clear message.
 
@@ -24,7 +26,7 @@ Alerts also use the existing HA event and signed webhook delivery. Their kinds a
 
 ## Limits
 
-Station overlap means possible route impact. It is not evidence that a particular train fails. Your train-level cancellation, delay and transfer warnings remain independent.
+Overlap with your journey means possible route impact. It is not evidence that a particular train fails. Your train-level cancellation, delay and transfer warnings remain independent.
 
 A public NS banner without station information cannot be assigned reliably to your route. It is not inferred from its title. Check the NS app for such network-wide announcements. If a previously scoped incident loses its scope, its earlier context stays visible as unverified and no clear is inferred.
 

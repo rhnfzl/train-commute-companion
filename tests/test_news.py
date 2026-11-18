@@ -2,7 +2,20 @@ from dataclasses import replace
 from datetime import timedelta
 
 from builders import make_connection, make_leg
-from lifecycle_fixtures import L1, L2, R2, at, ctx, journey, occ, poll_answers
+from lifecycle_fixtures import (
+    L1,
+    L2,
+    R2,
+    ans,
+    at,
+    conn,
+    ctx,
+    journey,
+    occ,
+    poll,
+    poll_answers,
+    with_track,
+)
 
 from train_commute_companion.classify import classify_leg
 from train_commute_companion.model import (
@@ -18,6 +31,7 @@ from train_commute_companion.news import (
     all_good,
     escalations,
     key_legs,
+    news_of,
     next_stated_delay,
     next_stated_delays,
     segment_key,
@@ -25,7 +39,7 @@ from train_commute_companion.news import (
     unsent,
 )
 from train_commute_companion.providers.base import ProviderAnswer, Query
-from train_commute_companion.state import OccurrenceState
+from train_commute_companion.state import OccurrenceState, mark_sent
 
 LOCK = journey([L1, L2])
 OK_T = TransferCheck(TransferState.OK, 10, 4, "ok")
@@ -421,3 +435,17 @@ def test_plus_5_to_plus_8_is_news_and_plus_5_to_plus_6_is_not():
     assert next_stated_delay(5, 8) == 8
     assert key(late(8), last=said5) != k5
     assert key(late(6), last=said5) == k5
+
+
+def test_platform_move_goes_loud_at_15_min_before_the_expected_departure():  # 2026-11-18
+    def told(now: str, delay: int = 0) -> list[Severity]:
+        leg = with_track(make_leg("AAA", "UT", "08:12", "08:40", delay_dep=delay), "6", "6a")
+        t = poll(occ(journey([L1, L2])), ctx(at(now)), ans("AAA", conn(leg, L2), when=now))
+        events = [e for e in t.events if e.kind is EventKind.PLATFORM_CHANGE]
+        keys: dict[str, str] = {}
+        mark_sent(keys, events[0].key, Severity.SILENT)  # told silently earlier
+        return [e.severity for e in news_of(keys, events, at(now))]
+
+    assert told("07:56:03") == []  # 15 min 57 s before the 08:12: still silent
+    assert told("07:57") == [Severity.LOUD]
+    assert told("07:58", delay=5) == []  # 19 min before it now leaves

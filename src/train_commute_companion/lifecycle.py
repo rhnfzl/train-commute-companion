@@ -387,6 +387,8 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
         return unchanged
     p, d = ctx.profile, ctx.direction
     q = answer.query
+    if s.released:  # the user was never seen near the train let go: wait for a sign of them
+        return unchanged
     # provider failures raise, so any answer is healthy; one asked from elsewhere or after the
     # usual departure cannot prove the usual is absent, so it is not judged (6.3, rule 2)
     if (q.origin, q.destination) != (p.origin(d), p.destination(d)) or q.at.astimezone(
@@ -711,7 +713,9 @@ def queries_needed(s: OccurrenceState, ctx: Ctx) -> list[Query]:
             seen.add(key)
             out.append(Query.for_profile(p, station, dest, at))
 
-    if s.lock is None:  # the usual at its effective departure, also when past (6.3)
+    if s.lock is None and s.released:  # a later train, from now, for a station or leave event
+        add(p.origin(d), max(ctx.schedule.first_departure, ctx.now, key=to_utc))
+    elif s.lock is None:  # the usual at its effective departure, also when past (6.3)
         add(p.origin(d), ctx.schedule.first_departure)
     else:
         k = first_open(s.lock)
@@ -2001,14 +2005,17 @@ def _missed_from_home(
     if not by_wifi and not _miss_proven(s, seen_at, expected, event):
         return None
     legs = (replace(x, state=LegState.MISSED), *lock.legs[1:])
-    s = replace(s, lock=replace(lock, legs=legs))  # a missed leg is never retained (Q2)
+    repeat = p.alerts.quiet_repeat_misses and s.missed_from_origin
+    # a missed leg is never retained (Q2)
+    s = replace(s, lock=replace(lock, legs=legs), missed_from_origin=True)
     text = f"you missed the {hhmm(x.train.planned_departure)}"
+    severity = Severity.SILENT if repeat else Severity.LOUD
     cut = Relock(
         legs=legs,
         first_replaced=0,
         station=x.board_station,
         kept=None,
-        cause=Cause(EventKind.MISSED_FIRST_TRAIN, Severity.LOUD, text, x.train),
+        cause=Cause(EventKind.MISSED_FIRST_TRAIN, severity, text, x.train),
         source=LockSource.MISSED,
         leave_by=True,
     )

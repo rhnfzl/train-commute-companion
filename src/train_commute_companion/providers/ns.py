@@ -439,7 +439,8 @@ def map_disruptions(payload: object) -> PlannedWorks:
     return PlannedWorks(tuple(items), "complete" if complete else "unknown")
 
 
-_ONLY_TYPE = re.compile(r"(?:geen|minder) (sprinters|intercity'?s)\.?")
+# "stoptreinen" (stopping trains) is how NS also names the Sprinters
+_ONLY_TYPE = re.compile(r"(?:geen|minder) (sprinters|stoptreinen|intercity'?s)\.?")
 
 
 def _only_train_type(text: object) -> str | None:
@@ -448,7 +449,7 @@ def _only_train_type(text: object) -> str | None:
         return None
     plain = " ".join(re.sub("[\u2018\u2019`\u00b4]", "'", text).lower().split())
     hit = _ONLY_TYPE.fullmatch(plain)
-    return None if hit is None else ("SPR" if hit[1] == "sprinters" else "IC")
+    return None if hit is None else ("IC" if hit[1].startswith("intercity") else "SPR")
 
 
 def _active_disruption(raw: object) -> ActiveDisruption | None:
@@ -474,6 +475,7 @@ def _active_disruption(raw: object) -> ActiveDisruption | None:
             parts.append(consequence.get("section"))
             only = _only_train_type(consequence.get("description"))
         here: set[str] = set()
+        named = 0
         for part in (p for p in parts if p is not None):
             if not isinstance(part, dict):
                 raise MalformedAnswer("incident section is unreadable")
@@ -486,9 +488,10 @@ def _active_disruption(raw: object) -> ActiveDisruption | None:
                 ]
                 if not valid:
                     raise ValueError("incident station has no identity")
+                named += not here.intersection(valid)  # the consequence repeats the section's
                 here.update(valid)
         stations |= here
-        found.append(DisruptionSection(frozenset(here), only))
+        found.append(DisruptionSection(frozenset(here), only, named))
     link = raw.get("url")
     safe_url = None
     if isinstance(link, str):
