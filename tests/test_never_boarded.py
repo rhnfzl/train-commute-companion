@@ -5,7 +5,6 @@ rest of the window open. Times are the real ones; stations are the test world's.
 import json
 
 import pytest
-
 from builders import make_connection, make_leg
 from lifecycle_fixtures import L1, L2, journey, occ
 from runtime_rig import Rig, at
@@ -37,9 +36,9 @@ def evening(cancelled: str = "") -> list:
     for i, dep in enumerate(deps):
         arr = f"{int(dep[:2]) + 1}:{dep[3:]}"
         d = delays.get(dep, 0)
+        n, gone = f"35{62 + 2 * i}", dep == cancelled
         leg = make_leg(
-            "RTD", "AAA", dep, arr, number=f"35{62 + 2 * i}", delay_dep=d, delay_arr=d // 2,
-            cancelled=dep == cancelled,
+            "RTD", "AAA", dep, arr, number=n, delay_dep=d, delay_arr=d // 2, cancelled=gone
         )
         out.append(make_connection([leg]))
     return out
@@ -139,7 +138,9 @@ async def test_quiet_repeat_misses_makes_the_second_miss_from_work_silent(tmp_pa
 
 @pytest.mark.parametrize(("quiet", "second"), [(True, Severity.SILENT), (False, Severity.LOUD)])
 async def test_a_cancelled_replacement_does_not_reset_the_repeat_miss(tmp_path, quiet, second):
-    rig = await rig_for(tmp_path, extra=f"    alerts: {{quiet_repeat_misses: {str(quiet).lower()}}}\n")
+    rig = await rig_for(
+        tmp_path, extra=f"    alerts: {{quiet_repeat_misses: {str(quiet).lower()}}}\n"
+    )
     await rig.run_until("16:30")
     await report(rig, "report", "16:30")
     await rig.run_until("16:48")
