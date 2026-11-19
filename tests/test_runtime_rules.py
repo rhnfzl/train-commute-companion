@@ -831,7 +831,7 @@ async def test_newer_cancellation_on_the_advice_search_beats_an_older_recovery(t
 
 
 def test_origin_answer_keeps_distinct_connections_sharing_an_onward_train():
-    from lifecycle_fixtures import ans, conn
+    from lifecycle_fixtures import ans, conn, occ
     from lifecycle_fixtures import ctx as follow_ctx
 
     from train_commute_companion.providers.base import Pool
@@ -839,7 +839,7 @@ def test_origin_answer_keeps_distinct_connections_sharing_an_onward_train():
     older = ans("AAA", conn(L1, R2), when="07:50")  # the 08:12 and the 08:25 share the 09:05
     newer = ans("AAA", LATER, when="07:52")
     transfer = ans("UT", conn(R2), when="07:53")
-    got = origin_answer((older, newer, transfer), follow_ctx(at("07:53")))
+    got = origin_answer((older, newer, transfer), follow_ctx(at("07:53")), occ(None))
     assert isinstance(got, Pool)
     assert got.connections == (LATER, conn(L1, R2))  # the newer answer's first
     assert got.answers == (older, newer, transfer)  # every answer of the poll is evidence

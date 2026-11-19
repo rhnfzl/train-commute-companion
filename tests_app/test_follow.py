@@ -106,7 +106,8 @@ async def test_late_out_of_order_and_inaccurate_fixes_send_nothing(app):  # Revi
     await feed(app, *FAR, "08:20")
     await feed(app, *FAR, "08:30")
     await feed(app, *UT, "08:25", now="08:31")  # queued in a tunnel, delivered late
-    await feed(app, *UT, "08:31", acc=400)  # worse than the 150 m station radius
+    # worse than the 150 m station radius and the 500 m other station radius
+    await feed(app, *UT, "08:31", acc=600)
     assert spied(app) == []
     await feed(app, *UT, "08:32", acc=20)
     assert spied(app) == [("UT", "enter")]
@@ -220,7 +221,7 @@ async def test_telegram_location_messages_reach_the_follower(app):
     spied(app)
     steps = [
         ("08:20", location_update("message", "08:20", *FAR)),
-        ("08:22", location_update("edited_message", "08:22", *UT, horizontal_accuracy=400)),
+        ("08:22", location_update("edited_message", "08:22", *UT, horizontal_accuracy=600)),
         ("08:23", location_update("edited_message", "08:23", "52.1", 5.1)),
         ("08:24", location_update("edited_message", "08:24", *UT, horizontal_accuracy=10)),
     ]

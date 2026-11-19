@@ -2,6 +2,7 @@
 7.12 rules 1, 2, 3, 6, 7, 8, 10, 11, 21, 7.13). The lock writer is in `lifecycle_lock`, termination
 in `lifecycle_end`. Pure: `now` always comes from the caller."""
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -64,6 +65,7 @@ from train_commute_companion.model import (
     TransferState,
     alert_facts,
     display_name,
+    okey,
     present,
     train_ident,
 )
@@ -90,6 +92,8 @@ from train_commute_companion.state import (
     OccurrencePhase,
     OccurrenceState,
     PollRecord,
+    PromptStage,
+    StationPrompt,
     unclear_slot,
 )
 from train_commute_companion.transfer import check_transfer, transfer_minimum
@@ -111,7 +115,23 @@ class Choose:
     answers: tuple[ProviderAnswer, ...]
 
 
-UserAction = Choose | Leaving | NotTravelling
+@dataclass(frozen=True, slots=True)
+class ConfirmStation:
+    """Yes or Other train: the user boards at `station`, not where the direction starts."""
+
+    service_date: date | None
+    station: str
+
+
+@dataclass(frozen=True, slots=True)
+class SetPrompt:
+    """Replace or clear the open question (No, a new stage, an answer handled)."""
+
+    service_date: date | None
+    prompt: StationPrompt | None
+
+
+UserAction = Choose | Leaving | NotTravelling | ConfirmStation | SetPrompt
 
 _STATION_REPLACES = (LockSource.AUTO, LockSource.LOCATION)
 _STATUS_SLOT = "at_station#"  # Q1: the station message of this occurrence was told
@@ -122,6 +142,11 @@ def is_resolved(s: OccurrenceState) -> bool:
     """Nothing left to follow (rule 6, consistent with `may_archive`): an occurrence whose main journey
     ended still runs while a retained remainder remains (rule 7)."""
     return s.phase is not OccurrencePhase.FOLLOWING
+
+
+def boarding_origin(s: OccurrenceState, ctx: Ctx) -> str:
+    """Where this occurrence boards: a confirmed other station, else the profile origin."""
+    return s.boarding_station or ctx.profile.origin(ctx.direction)
 
 
 def _plan(s: OccurrenceState) -> tuple[object, ...]:
@@ -364,7 +389,7 @@ def find_next_good(
     """The next good connection from `station` (default the origin), not starting on `after`
     and not leaving before `not_before`. Both only leave the ranking: identity is judged on the
     whole answer (6.1)."""
-    at = station or ctx.profile.origin(ctx.direction)
+    at = station or boarding_origin(s, ctx)
     floor = None if not_before is None else to_utc(not_before)
     c, _ = choose_replacement(
         answer,
@@ -401,10 +426,13 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
         return unchanged
     p, d = ctx.profile, ctx.direction
     q = answer.query
-    if (q.origin, q.destination) != (p.origin(d), p.destination(d)):
+    if (q.origin, q.destination) != (boarding_origin(s, ctx), p.destination(d)):
         return unchanged
-    if s.released or ctx.schedule.pick == "on_leave":
-        # the user was never seen near the train let go, or follows none until leaving
+    if s.prompt is not None and s.prompt.stage == "pick":
+        return unchanged  # the user picks the train from the other station
+    if s.released or s.boarding_station or ctx.schedule.pick == "on_leave":
+        # the user was never seen near the train let go, follows none until leaving, or stands
+        # at an other station: the next train they can catch, never the usual one
         return _lock_after_sign(s, ctx, answer)
     if ctx.schedule.mode == "window":
         return _lock_earliest(s, ctx, answer)
@@ -627,7 +655,7 @@ def _choice_check(
     else:
         kept = observe(pool, done[-1])[0] if done else None
         n_before = len(done)
-        station = done[-1].alight_stop if done else p.origin(d)
+        station = done[-1].alight_stop if done else boarding_origin(s, ctx)
     if n_before and kept is None:
         return GoodCheck(False, "the change from your current train is not in NS data")
     return check_good(rest, pool, **_good_kw(s, ctx, station, kept, n_before))
@@ -681,6 +709,10 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
 def apply_action(s: OccurrenceState, ctx: Ctx, action: UserAction) -> Transition:
     if isinstance(action, Choose):
         return _choose(s, ctx, action)
+    if isinstance(action, SetPrompt):  # not a plan fact: polls in flight stay valid
+        return Transition(replace(s, prompt=action.prompt), ())
+    if isinstance(action, ConfirmStation):
+        return Transition(bumped(s, _confirm_station(s, action.station)), ())
     gen = s.generation + 1
     if isinstance(action, Leaving):
         lock = None if s.lock is None else replace(s.lock, commitment=Commitment.COMMITTED)
@@ -711,6 +743,26 @@ def apply_action(s: OccurrenceState, ctx: Ctx, action: UserAction) -> Transition
     )
 
 
+def _confirm_station(s: OccurrenceState, station: str) -> OccurrenceState:
+    """The user stands at `station`. A lock whose first train boards elsewhere and was not ridden
+    goes; the next poll or the user's pick follows a train from there."""
+    s = replace(
+        s,
+        boarding_station=station,
+        at_station=True,
+        travelling=True,
+        errand_deadline=None,
+        released=False,
+        prompt=None,
+    )
+    lock = s.lock
+    if lock is None or lock.legs[0].board_station == station:
+        return s
+    if lock.legs[0].state in _DEPARTED:
+        return s  # already riding: the station is where a later choice boards
+    return replace(s, lock=None)
+
+
 # --- follow, relock, restore (7.4, 7.12 rules 2, 3, 8, 21) ---
 
 _RUNNING_LEG_KINDS = (LegKind.OK, LegKind.DELAYED)
@@ -738,7 +790,7 @@ def _observed(x: LegProgress, now: datetime) -> bool:
 def _restorable(s: OccurrenceState, ctx: Ctx, h: LegProgress) -> bool:
     """Not yet departed minus the catchability margin (rule 2): the buffer at the origin, else
     none (the user is on the way and the kept leg's transfer check decides)."""
-    if h.board_station == ctx.profile.origin(ctx.direction):
+    if h.board_station == boarding_origin(s, ctx):
         nb = catch_from_state(s, ctx.profile.journey(ctx.direction).buffer_min, ctx.now).not_before
     else:
         nb = ctx.now.astimezone(UTC)
@@ -777,18 +829,23 @@ def queries_needed(s: OccurrenceState, ctx: Ctx) -> list[Query]:
             out.append(Query.for_profile(p, station, dest, at))
 
     window = ctx.schedule.mode == "window"
+    origin = boarding_origin(s, ctx)
     if s.lock is None and (
-        s.released or ctx.schedule.pick == "on_leave" or window and s.travelling
+        s.released
+        or s.boarding_station
+        or ctx.schedule.pick == "on_leave"
+        or window
+        and s.travelling
     ):
         # a later train, from now, for a station or leave event; a window day's tap before its
-        # minimum stay ends asks from now too
-        early = window and s.travelling
+        # minimum stay ends, and a user at an other station, ask from now too
+        early = window and s.travelling or s.boarding_station is not None
         start = ctx.now if early else max(ctx.schedule.first_departure, ctx.now, key=to_utc)
-        add(p.origin(d), start)
+        add(origin, start)
     elif s.lock is None and window:  # the earliest still catchable: NS omits trains before
-        add(p.origin(d), max(ctx.schedule.first_departure, ctx.now, key=to_utc))
+        add(origin, max(ctx.schedule.first_departure, ctx.now, key=to_utc))
     elif s.lock is None:  # the usual at its effective departure, also when past (6.3)
-        add(p.origin(d), ctx.schedule.first_departure)
+        add(origin, ctx.schedule.first_departure)
     else:
         k = first_open(s.lock)
         if k < len(s.lock.legs):
@@ -919,7 +976,7 @@ def _restore_at(
     lock = present(s.lock)
     p, d = ctx.profile, ctx.direction
     legs = lock.legs
-    station = p.origin(d) if j == 0 else legs[j - 1].intended_alight
+    station = boarding_origin(s, ctx) if j == 0 else legs[j - 1].intended_alight
     rest = legs[j:]
     if station != h.board_station or rest[0].train == h.train:
         return None
@@ -1811,6 +1868,10 @@ def on_location(
             s = replace(
                 s, zone_reports={k: v for k, v in s.zone_reports.items() if k != event.zone}
             )
+        if event.zone in s.station_seen:  # a dwell at an other station starts again
+            s = replace(
+                s, station_seen={k: v for k, v in s.station_seen.items() if k != event.zone}
+            )
     elif prev is None or (at > to_utc(prev) and (boards is None or at < boards)):
         s = replace(s, zone_reports={**s.zone_reports, event.zone: event.at})
     t = _locate(s, ctx, event, answer, watched)
@@ -1896,10 +1957,150 @@ def _locate(
         home = _missed_from_home(s, ctx, merged_pool(seen), event)  # Q3: a home fix after departure
         if home is not None:
             return home
-    if event.zone == p.origin(d):
+    if event.zone == p.origin(d) and s.boarding_station is not None:
+        if s.lock is not None and s.lock.legs[0].state in _DEPARTED:
+            return Transition(s, ())  # riding from the other station through the usual one
+        # back at the usual station after all: a train from the other one is not taken
+        s = replace(s, boarding_station=None, lock=None)
+    if event.zone == boarding_origin(s, ctx):
         # one evidence pool: a newer watched answer's cancellation also rules a train out (rule 1)
         return _at_first_station(s, ctx, None if answer is None else merged_pool(seen))
+    if other_station_candidate(s, ctx, event):
+        return _at_other_station(s, ctx, event, answer)
     return Transition(s, ())
+
+
+def other_station_candidate(s: OccurrenceState, ctx: Ctx, event: LocationEvent) -> bool:
+    """A station event that may show the user boarding somewhere else: the trip is open and no
+    train is followed yet (none, or TCC's own uncommitted guess not yet left). Also read by the
+    runtime before it spends a request from that station."""
+    p, d, zone = ctx.profile, ctx.direction, event.zone
+    if p.location is None or zone is None or event.kind == "leave":
+        return False
+    places = {place_zone(p, p.home_station), place_zone(p, p.work_station)}
+    if zone in places or zone in (boarding_origin(s, ctx), p.origin(d), p.destination(d)):
+        return False
+    if is_resolved(s) or s.direction_state is DirectionState.DONE:
+        return False
+    lock = s.lock
+    if lock is None:
+        return True
+    if any(x.board_station == zone for x in lock.legs):
+        return False  # a locked leg boards there: the missed-train rules decide (Q12)
+    return (
+        lock.source in _STATION_REPLACES
+        and lock.commitment is not Commitment.COMMITTED
+        and lock.legs[0].state in (LegState.PENDING, LegState.BOARDING)
+        and not s.at_station
+    )
+
+
+def prompt_id(key: OccurrenceKey, station: str, stage: str, at: datetime) -> str:
+    """10 lowercase hex: short enough for a button's callback, unique per question."""
+    raw = f"{okey(key)}|{station}|{stage}|{to_utc(at).isoformat()}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:10]
+
+
+ASK_CHOICES = (("yes", "Yes"), ("other", "Other train"), ("no", "No"))
+
+
+REMEMBER_CHOICES = (("remember", "Yes"), ("forget", "No"))
+PICK_MAX = 3
+
+
+def _prompt(
+    s: OccurrenceState,
+    ctx: Ctx,
+    kind: EventKind,
+    stage: PromptStage,
+    text: str,
+    choices: tuple[tuple[str, str], ...],
+    name: str,
+) -> Transition:
+    """A new question about the station `s` boards at, replacing any open one."""
+    station = present(s.boarding_station)
+    pid = prompt_id(s.key, station, stage, ctx.now)
+    prompt = StationPrompt(pid, station, stage, None, choices, ctx.now, name)
+    facts = AlertFacts(prompt_id=pid, choices=choices)
+    e = make_event(ctx, kind, Severity.SILENT, text, None, pid, facts)
+    return Transition(replace(s, prompt=prompt), (e,))
+
+
+def remember_prompt(s: OccurrenceState, ctx: Ctx, name: str) -> Transition:
+    """After Yes at a new station: offer to remember it. No answer remembers nothing."""
+    text = f"remember {name} as a boarding station for your {ctx.direction.value} trips?"
+    return _prompt(s, ctx, EventKind.STATION_REMEMBER, "remember", text, REMEMBER_CHOICES, name)
+
+
+def pick_prompt(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, name: str) -> Transition:
+    """After Other train: up to PICK_MAX next good trains from the station, as buttons."""
+    station, found = present(s.boarding_station), []
+    floor: datetime | None = None
+    for _ in range(PICK_MAX):
+        c = find_next_good(s, ctx, answer, station=station, not_before=floor)
+        if c is None:
+            break
+        found.append(c)
+        floor = _departure(c) + timedelta(minutes=1)
+    if not found:
+        text = "no connection found, check the NS app."
+        e = make_event(ctx, EventKind.NO_CONNECTION, Severity.SILENT, text)
+        return Transition(replace(s, prompt=None), (e,))
+    choices = tuple(
+        (f"t{t:%H%M}", f"{t:%H:%M}")
+        for t in (c.legs[0].train.planned_departure.astimezone(TZ) for c in found)
+    )
+    text = f"which train from {name}?"
+    return _prompt(s, ctx, EventKind.STATION_ASK, "pick", text, choices, name)
+
+
+def _at_other_station(
+    s: OccurrenceState, ctx: Ctx, event: LocationEvent, answer: ProviderAnswer | None
+) -> Transition:
+    """The phone is at a station that is not where this direction starts. Driving past says
+    nothing. A known station (the profile's or a remembered one) is followed by itself: the next
+    train the user can catch there, told once. Any other station is asked about once per day,
+    with Yes, Other train and No; no answer does nothing."""
+    zone, at, ev = present(event.zone), to_utc(event.at), event.evidence
+    if (ev.speed or 0.0) >= RIDING_SPEED or _activity(ev, at, _RIDING_ACTIVITY) is not None:
+        return Transition(s, ())
+    loc = present(ctx.profile.location)
+    first = s.station_seen.get(zone)
+    if first is None:
+        s = replace(s, station_seen={**s.station_seen, zone: event.at})
+        first = event.at
+    if at - to_utc(first) < timedelta(minutes=loc.other_station_dwell_min):
+        return Transition(s, ())
+    known = zone in ctx.profile.journey(ctx.direction).other_stations or zone in ctx.remembered
+    if not known and zone in s.asked_stations:
+        return Transition(s, ())
+    if answer is None or answer.query.origin != zone:
+        return Transition(s, ())  # the next report asks NS again
+    c = find_next_good(replace(s, at_station=True), ctx, answer, station=zone)
+    if c is None:
+        return Transition(s, ())
+    first_leg, dest = c.legs[0], c.legs[-1].alight.name
+    when, name = hhmm(first_leg.train.planned_departure), first_leg.board.name
+    if known:
+        here = replace(
+            s,
+            boarding_station=zone,
+            at_station=True,
+            travelling=True,
+            errand_deadline=None,
+            released=False,
+        )
+        new = journey_of(c, LockSource.STATION, Commitment.COMMITTED, answer.fetched_at)
+        written = present(write_lock(here, new, expect=s.lock, now=ctx.now))
+        pool = merged_pool((answer,))
+        return _with_status(written, ctx, pool, f"at {name}: following your ")
+    pid = prompt_id(s.key, zone, "ask", ctx.now)
+    prompt = StationPrompt(pid, zone, "ask", first_leg.train, ASK_CHOICES, ctx.now, name)
+    asked = replace(s, prompt=prompt, asked_stations=s.asked_stations | {zone})
+    text = f"are you taking the {when} from {name} to {dest}?"
+    facts = AlertFacts(prompt_id=pid, choices=ASK_CHOICES)
+    e = make_event(ctx, EventKind.STATION_ASK, Severity.SILENT, text, first_leg.train, pid, facts)
+    return Transition(asked, (e,))
 
 
 def _left_origin(
@@ -1958,14 +2159,16 @@ def _at_first_station(s: OccurrenceState, ctx: Ctx, pool: Pool | None) -> Transi
     return _with_status(s if new is None else replace(s, lock=new), ctx, pool)
 
 
-def _with_status(s: OccurrenceState, ctx: Ctx, pool: Pool | None) -> Transition:
+def _with_status(
+    s: OccurrenceState, ctx: Ctx, pool: Pool | None, prefix: str = "at the station: your "
+) -> Transition:
     """Q1 (2026-11-17): the first time the user is at the origin station, one silent status of
     the train followed now. None without a fresh answer (the next report tells it), without a
     lock, for a first train already left, or when NS shows it cancelled (6.3; its own alert
     speaks). `_STATUS_SLOT` keeps a GPS bounce or a report from repeating it, and the check-in
     (rule 20) is spent: the user already heard whether the train is on time."""
-    lock = s.lock
-    if pool is None or lock is None or _STATUS_SLOT in s.alert_keys:
+    lock, slot = s.lock, _STATUS_SLOT + (s.boarding_station or "")
+    if pool is None or lock is None or slot in s.alert_keys:
         return Transition(s, ())
     x = lock.legs[0]
     cl = observe(pool, x)[0]
@@ -1976,9 +2179,9 @@ def _with_status(s: OccurrenceState, ctx: Ctx, pool: Pool | None) -> Transition:
     if cl.kind is LegKind.CANCELLED:
         return Transition(s, ())
     c = current_connection(evidence(pool), c)
-    text = f"at the station: your {status_text(c.legs, cl.dep_delay_min)}."
+    text = f"{prefix}{status_text(c.legs, cl.dep_delay_min)}."
     e = make_event(ctx, EventKind.AT_STATION, Severity.SILENT, text, x.train, "")
-    told = replace(s, alert_keys={**s.alert_keys, _STATUS_SLOT: "1"}, all_good_evaluated=True)
+    told = replace(s, alert_keys={**s.alert_keys, slot: "1"}, all_good_evaluated=True)
     return Transition(told, (e,))
 
 
@@ -2052,9 +2255,9 @@ def _missed_from_home(
     if lock is None or s.travelling or s.at_station:
         return None
     x = lock.legs[0]
-    if x.state not in _MISSABLE:
-        return None
     p, d = ctx.profile, ctx.direction
+    if x.state not in _MISSABLE or x.board_station != p.origin(d):
+        return None  # the origin place cannot prove a miss at an other station (Q12)
     place = place_zone(p, p.origin(d))
     seen_at = s.zone_reports.get(place)
     now = to_utc(ctx.now)
@@ -2097,12 +2300,13 @@ def _missed_from_home(
     return _relock(s, ctx, pool, tuple(a.query for a in pool.answers), cut)
 
 
-def origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx) -> Pool | None:
-    """Every connection asked from the origin, newest answer first, so an earlier train searched
-    for advice and the usual or locked train are judged together (7.6). Every answer of the poll
-    is its evidence: each train is read as its current copy, so an older healthy copy never
-    hides a newer cancellation, also one asked from a transfer station (6.2)."""
-    origin = ctx.profile.origin(ctx.direction)
+def origin_answer(answers: Sequence[ProviderAnswer], ctx: Ctx, s: OccurrenceState) -> Pool | None:
+    """Every connection asked from the origin (an other boarding station once confirmed),
+    newest answer first, so an earlier train searched for advice and the usual or locked train
+    are judged together (7.6). Every answer of the poll is its evidence: each train is read as
+    its current copy, so an older healthy copy never hides a newer cancellation, also one asked
+    from a transfer station (6.2)."""
+    origin = boarding_origin(s, ctx)
     mine = sorted(
         (a for a in answers if a.query.origin == origin),
         key=lambda a: to_utc(a.fetched_at),

@@ -282,7 +282,7 @@ def _current_body(
     answers: tuple[ProviderAnswer, ...],
 ) -> str | None:
     if e.kind is EventKind.LEAVE_NOW:
-        origin = origin_answer(answers, ctx)
+        origin = origin_answer(answers, ctx, s)
         c = (
             None
             if origin is None
@@ -566,7 +566,7 @@ class LiveLedger:
 
     def _advice_holds(self, e: AlertEvent, s: OccurrenceState) -> bool:
         ctx, answers = self._ctx(s), self._memory.boards.get(okey(s.key), ())
-        a, origin = s.advice, None if ctx is None else origin_answer(answers, ctx)
+        a, origin = s.advice, None if ctx is None else origin_answer(answers, ctx, s)
         if a is None or ctx is None or origin is None:
             return False
         if e.kind is EventKind.LEAVE_NOW:

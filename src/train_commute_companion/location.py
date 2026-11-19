@@ -73,7 +73,7 @@ def number(v: object) -> float | None:
     return f if math.isfinite(f) else None
 
 
-def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp, dl = p2 - p1, math.radians(lon2 - lon1)
     h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
@@ -83,12 +83,12 @@ def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 def clear_of(fix: Fix, zones: Sequence[Zone]) -> bool:
     """Q12: the whole uncertainty circle of `fix` lies outside every zone."""
     acc = fix.acc or 0.0
-    return all(_distance_m(fix.lat, fix.lon, z.lat, z.lon) > z.radius_m + acc for z in zones)
+    return all(distance_m(fix.lat, fix.lon, z.lat, z.lon) > z.radius_m + acc for z in zones)
 
 
 def resolve_zone(lat: float, lon: float, zones: Sequence[Zone]) -> str | None:
     """The smallest zone containing the point (a station inside a city zone wins), else None."""
-    inside = [z for z in zones if _distance_m(lat, lon, z.lat, z.lon) <= z.radius_m]
+    inside = [z for z in zones if distance_m(lat, lon, z.lat, z.lon) <= z.radius_m]
     return min(inside, key=lambda z: z.radius_m).name if inside else None
 
 

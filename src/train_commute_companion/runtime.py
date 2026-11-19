@@ -54,9 +54,12 @@ from train_commute_companion.ledger import (
 )
 from train_commute_companion.lifecycle import (
     Choose,
+    ConfirmStation,
     PollAnswers,
+    SetPrompt,
     UserAction,
     apply_action,
+    boarding_origin,
     is_resolved,
     location_queries,
     make_event,
@@ -64,8 +67,11 @@ from train_commute_companion.lifecycle import (
     on_location,
     on_poll,
     origin_answer,
+    other_station_candidate,
+    pick_prompt,
     queries_needed,
     quiet_watch,
+    remember_prompt,
     target_occurrence,
     whole_day_keys,
 )
@@ -1153,7 +1159,8 @@ class Runtime:
             error is None
             and not (s.selected_recovery is not None and s.selected_recovery.status == "active")
             and not quiet_watch(s, ctx)  # Q9: advice waits, so its search is not spent
-            and (usual := origin_answer(answers, ctx)) is not None
+            and s.boarding_station is None  # advice compares trains from the usual station
+            and (usual := origin_answer(answers, ctx, s)) is not None
         ):
             # 7.6: an earlier catchable train is before the time the poll asked from; a failed
             # search leaves advice to the poll's own answers and never fails the poll
@@ -1198,8 +1205,9 @@ class Runtime:
     ) -> tuple[OccurrenceState, list[AlertEvent]]:
         answers = poll.answers
         # the whole poll's evidence for the watchdog, the auto lock and advice (6.2)
-        merged = origin_answer(answers, ctx)
-        if merged is not None and unlocked:
+        merged = origin_answer(answers, ctx, st)
+        usual = st.boarding_station is None  # an other station has no usual train or advice
+        if merged is not None and unlocked and usual:
             self._remember_usual(k, ctx, merged)
         tick = on_tick(st, ctx, merged)
         st, events = tick.state, [*events, *tick.events]
@@ -1208,7 +1216,7 @@ class Runtime:
             good = all_good(st, poll, ctx)  # judged once, at the first poll with a lock
             st = replace(st, all_good_evaluated=True)
             events += [good] if good else []
-        if merged is not None and not quiet:
+        if merged is not None and not quiet and usual:
             # no reference: an absent or broken usual still makes waiting bad (7.6)
             arrival = usual_arrival(st, ctx, merged)
             record, more = advise(st, ctx, merged, arrival)
@@ -1725,6 +1733,117 @@ class Runtime:
         i = next((n for n, r in enumerate(why) if r is None), 0)
         return why[i] if await self.act(profile_id, choices[i], d) is None else gone
 
+    # --- other boarding station questions ---
+
+    async def answer_prompt(self, prompt_id: str, answer: str) -> Refused | None:
+        """A button on a question about an other boarding station. The short id alone finds
+        the occurrence. Yes follows the train asked about and may offer to remember the station;
+        Other train offers the next trains there; No and no answer do nothing."""
+        found = next(
+            (
+                s for s in self._writer.st.occurrences.values()
+                if s.prompt is not None and s.prompt.id == prompt_id and not is_resolved(s)
+            ),
+            None,
+        )  # fmt: skip
+        if found is None or found.prompt is None:
+            return Refused("this question has expired")
+        q = found.prompt
+        if answer not in dict(q.choices):
+            return Refused("unknown answer")
+        pid, d, day = found.key.profile_id, found.key.direction, found.key.service_date
+        if answer in ("no", "forget"):
+            return await self.act(pid, SetPrompt(day, None), d)
+        if q.stage == "remember":
+            return self._remember_station(found, q.station)
+        if q.stage == "pick":
+            at = time(int(answer[1:3]), int(answer[3:5]))
+            refused = await self.choose_at(pid, at, service_date=day, direction=d)
+            return refused or await self.act(pid, SetPrompt(day, None), d)
+        refused = await self.act(pid, ConfirmStation(day, q.station), d)
+        if refused is not None:
+            return refused
+        if answer == "other":
+            return await self._offer_trains(okey(found.key), q.name)
+        train = present(q.train)
+        refused = await self.choose_at(
+            pid,
+            train.planned_departure.astimezone(TZ).time(),
+            train_number=train.train_number,
+            service_date=day,
+            direction=d,
+        )
+        if refused is None:
+            self._offer_remember(okey(found.key), q.station, q.name)
+            await self._deliver()
+        return refused
+
+    def _offer_remember(self, k: str, station: str, name: str) -> None:
+        s = self._writer.st.occurrences.get(k)
+        ctx = None if s is None else self._ctx(s, self._clock.now())
+        if s is None or ctx is None or ctx.profile.location is None:
+            return
+        if not ctx.profile.location.ask_to_remember_station or station in ctx.remembered:
+            return
+        t = remember_prompt(s, ctx, name)
+        self._apply({k: (t.state, t.events)}, kind=Change.ACTION)
+
+    async def _offer_trains(self, k: str, name: str) -> Refused | None:
+        s = self._writer.st.occurrences.get(k)
+        ctx = None if s is None else self._ctx(s, self._clock.now())
+        if s is None or ctx is None or s.boarding_station is None:
+            return Refused("this question has expired")
+        p, d = ctx.profile, ctx.direction
+        q = Query.for_profile(p, s.boarding_station, p.destination(d), self._clock.now())
+        deadline = to_utc(self._clock.now()) + POLL_DEADLINE
+        got = await self._gate.trips(q, True, ctx.schedule.window_end, deadline)
+        self._track_key_rejection(got if isinstance(got, str) else None, k, self._clock.now())
+        if isinstance(got, str):
+            await self._deliver()
+            return Refused(f"NS did not answer ({got}); try again", RefusalKind.RETRY)
+        s = self._writer.st.occurrences.get(k)
+        ctx = None if s is None else self._ctx(s, self._clock.now())
+        if s is None or ctx is None or is_resolved(s) or s.boarding_station is None:
+            return Refused("this question has expired")
+        t = pick_prompt(s, ctx, got, name)
+        self._apply({k: (t.state, t.events)}, kind=Change.ACTION)
+        await self._deliver()
+        return None
+
+    def _remember_station(self, s: OccurrenceState, station: str) -> Refused | None:
+        """Remembered in TCC's own state, never in the profile file; the question closes."""
+        if self._writer.waiting:
+            return Refused("An earlier choice is not saved yet. Try again.", RefusalKind.RETRY)
+        st, k = self._writer.st, direction_key(s.key.profile_id, s.key.direction)
+        have = st.remembered_stations.get(k, ())
+        occ = st.occurrences.get(okey(s.key), s)
+        candidate = replace(
+            st,
+            remembered_stations={
+                **st.remembered_stations,
+                k: have if station in have else (*have, station),
+            },
+            occurrences={**st.occurrences, okey(s.key): replace(occ, prompt=None)},
+        )
+        if not self._writer.commit_strict(candidate):
+            return Refused("The station was not saved. Try again.", RefusalKind.RETRY)
+        return None
+
+    def forget_station(self, profile_id: str, direction: Direction, station: str) -> Refused | None:
+        """Take a remembered boarding station off the list."""
+        if self._writer.waiting:
+            return Refused("An earlier choice is not saved yet. Try again.", RefusalKind.RETRY)
+        st, k = self._writer.st, direction_key(profile_id, direction)
+        have = st.remembered_stations.get(k, ())
+        if station not in have:
+            return Refused(f"{station} is not a remembered station of {direction.value} trips")
+        rest = tuple(x for x in have if x != station)
+        kept = {key: v for key, v in st.remembered_stations.items() if key != k}
+        candidate = replace(st, remembered_stations={**kept, **({k: rest} if rest else {})})
+        if not self._writer.commit_strict(candidate):
+            return Refused("The change was not saved. Try again.", RefusalKind.RETRY)
+        return None
+
     async def _fetch_choice(self, t: ChoiceTarget, k: str) -> tuple[ProviderAnswer, ...] | Refused:
         """The answer naming the train first, then what judges the change to it: from a transfer
         station, a fresh observation of the kept incoming leg, never an older poll's answer
@@ -1739,7 +1858,7 @@ class Runtime:
                 ),
             )
         ]
-        if t.station != ctx.profile.origin(ctx.direction):
+        if t.station != boarding_origin(t.occ, ctx):
             asks.insert(0, queries_needed(t.occ, ctx))
         out: tuple[ProviderAnswer, ...] = ()
         for queries in asks:
@@ -1795,8 +1914,12 @@ class Runtime:
             if s is None or ctx is None or is_resolved(s) or stale(ctx):
                 continue
             gen, p, d = s.generation, ctx.profile, ctx.direction
+            # at the usual station, also after an other one was confirmed: trains from there
+            origin = p.origin(d) if event.zone == p.origin(d) else boarding_origin(s, ctx)
+            if event.zone in self._provider.positions and other_station_candidate(s, ctx, event):
+                origin = present(event.zone)  # what leaves from the station the phone is at
             got = await self._gate.trips(
-                Query.for_profile(p, p.origin(d), p.destination(d), now), True, None
+                Query.for_profile(p, origin, p.destination(d), now), True, None
             )
             qs = location_queries(s, ctx, event)  # the locked trains, from where they leave
             more = await self._gate.all_trips(qs, True, None) if qs else ()

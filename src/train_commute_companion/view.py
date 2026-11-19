@@ -25,13 +25,16 @@ from train_commute_companion.lifecycle import (
 )
 from train_commute_companion.lifecycle_lock import unfinished_leg
 from train_commute_companion.location import (
+    PLACE_ROLES,
     Fix,
     LocationKind,
     Zone,
     ZoneTrack,
     clear_of,
+    distance_m,
     fix_zone,
     next_zone,
+    resolve_zone,
     seed_zone,
     station_zones,
 )
@@ -200,6 +203,8 @@ class OccurrenceView:
     usual_departure: datetime | None = None
     # a window day: the earliest (stay end included) and latest departure; None on a fixed day
     window: tuple[datetime, datetime] | None = None
+    # an other boarding station the user confirmed, or a known one TCC followed; None: the origin
+    boarding_station: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +249,8 @@ class RuntimeView:
     lookahead_last_ok: Mapping[str, datetime | None] = field(default_factory=dict)
     # station code -> (lat, lon) from the provider's last station list; empty until it answers
     positions: Mapping[str, tuple[float, float]] = field(default_factory=dict)
+    # "<profile_id>|<direction>" -> the boarding stations the user asked TCC to remember
+    remembered: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def running_stations(occurrences: Iterable[OccurrenceView], profile_id: str) -> set[str]:
@@ -273,7 +280,13 @@ def track_fix(
     if loc is None or view.location_epochs.get(profile.id, 0) != epoch:
         return None
     running = running_stations(view.occurrences, profile.id)
-    zones = [*station_zones(profile, loc.station_radius_m, view.positions, running), *places]
+    others = other_station_zones(view, profile, fix, places)
+    route = station_zones(profile, loc.station_radius_m, view.positions, running)
+    zones = [*route, *others, *places]
+    if fix.acc is not None and fix.acc > loc.station_radius_m and others:
+        # only an other station's wider circle can place a fix this coarse
+        zone = fix_zone(fix, loc, others)
+        return (seed_zone(zone, fix.at), []) if track is None else next_zone(track, zone, fix.at)
     if fix.acc is not None and fix.acc > loc.station_radius_m:
         # Q12: too coarse to place anyone in a zone, but one clear of every zone is a leave
         placed = {z.name for z in zones}  # a region-only place has no circle to be clear of
@@ -282,6 +295,51 @@ def track_fix(
         return next_zone(track, None, fix.at)
     zone = fix_zone(fix, loc, zones)
     return (seed_zone(zone, fix.at), []) if track is None else next_zone(track, zone, fix.at)
+
+
+def _unfollowed(o: OccurrenceView) -> bool:
+    """Open, and no train followed yet: none, or TCC's own guess, uncommitted and not left."""
+    if o.resolved or o.not_travelling or o.direction_state is DirectionState.DONE:
+        return False
+    return o.lock_source is None or (
+        o.lock_source in (LockSource.AUTO, LockSource.LOCATION)
+        and o.commitment is not Commitment.COMMITTED
+        and bool(o.legs)
+        and o.legs[0].progress in (LegState.PENDING, LegState.BOARDING)
+    )
+
+
+def other_station_zones(
+    view: RuntimeView, profile: Profile, fix: Fix, places: Sequence[Zone] = ()
+) -> list[Zone]:
+    """At most one zone, of the other station radius, for the nearest station of the fix: when
+    a trip of the profile is open with no train followed, the fix is precise enough, is in no
+    home or work place, and the station is not where that trip starts or ends. A confirmed other
+    station keeps its wide circle while its train is followed, so the next fix there is no leave."""
+    loc = profile.location
+    if loc is None or (fix.acc is not None and fix.acc > loc.other_station_radius_m):
+        return []
+    mine = [o for o in view.occurrences if o.key.profile_id == profile.id and not o.resolved]
+    boarding = {o.boarding_station for o in mine if o.boarding_station}
+    ends = [
+        {profile.origin(o.key.direction), profile.destination(o.key.direction)}
+        for o in mine
+        if _unfollowed(o)
+    ]
+    if not ends and not boarding:
+        return []
+    names = {loc.zones.get(role, role) for role in PLACE_ROLES}
+    if fix.regions & names or resolve_zone(fix.lat, fix.lon, places) is not None:
+        return []
+    near = sorted(
+        (distance_m(fix.lat, fix.lon, lat, lon), code)
+        for code, (lat, lon) in view.positions.items()
+        if code in boarding or any(code not in e for e in ends)
+    )
+    if not near or near[0][0] > loc.other_station_radius_m:
+        return []
+    code = near[0][1]
+    return [Zone(code, *view.positions[code], float(loc.other_station_radius_m))]
 
 
 STILL_LEAD = timedelta(minutes=5)  # Q10: still fresh (STALE_LOCATION) when the departure poll runs
@@ -316,7 +374,8 @@ def still_due(
         for i, x in enumerate(o.legs):
             if x.progress not in _VOUCHABLE:
                 continue
-            place = i == 0 and zone == origin
+            # Q12: the origin place vouches only for a train from the usual station
+            place = i == 0 and zone == origin and x.board == profile.origin(o.key.direction)
             if zone != x.board and not place:
                 continue
             dep = to_utc(x.departure or x.planned_departure)
@@ -455,6 +514,7 @@ def occurrence_view(
         window=None
         if ctx.schedule.last_departure is None
         else (ctx.schedule.first_departure, ctx.schedule.last_departure),
+        boarding_station=s.boarding_station,
         direction_state=s.direction_state,
         resolved=resolved,
         not_travelling=s.not_travelling,
@@ -623,4 +683,5 @@ def runtime_view(
         location_epochs=dict(location_epochs),
         lookahead_last_ok=last_ok,
         positions=dict(positions),
+        remembered=dict(st.remembered_stations),
     )
