@@ -398,12 +398,30 @@ def okey(k: OccurrenceKey) -> str:
     return f"{k.profile_id}|{k.direction.value}|{k.service_date.isoformat()}"
 
 
+Mode = Literal["fixed", "window"]
+Pick = Literal["earliest", "earliest_silent", "on_leave"]
+
+
 @dataclass(frozen=True, slots=True)
 class DatedSchedule:
     key: OccurrenceKey
     first_departure: datetime
     window_start: datetime
     window_end: datetime
+    # never persisted: rebuilt from the profile each time (only OccurrenceKey is stored)
+    mode: Mode = "fixed"
+    pick: Pick = "earliest"
+    last_departure: datetime | None = None  # window mode: the latest departure TCC may pick
+
+
+@dataclass(frozen=True, slots=True)
+class DayOverride:
+    """One weekday's settings that differ from the direction's own; None keeps the default."""
+
+    mode: Mode | None = None
+    window: tuple[time, time] | None = None
+    pick: Pick | None = None
+    min_stay_min: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -416,6 +434,13 @@ class UsualJourney:
     day_offset: int
     first_train_by_weekday: Mapping[str, time] = field(default_factory=dict)
     active_lead_min: int | None = None  # Q9: end of the quiet early watch; None is buffer + 15
+    # every field below is defaulted, so stored config snapshots still decode
+    mode: Mode = "fixed"  # window: any train between window[0] and window[1], no usual train
+    pick: Pick = "earliest"
+    min_stay_min: int | None = None  # window days: start no earlier than arrival + this
+    by_weekday: Mapping[str, DayOverride] = field(default_factory=dict)
+    # False: window mode with no first_train; window[0] stands in where code needs a time
+    first_train_set: bool = True
 
 
 NotificationChannel = Literal["primary", "email", "webhook"]
@@ -501,22 +526,10 @@ class Profile:
         return self.outbound if d is Direction.OUTBOUND else self.return_
 
     def journey_on(self, d: Direction, commute_day: date) -> UsualJourney:
-        """Resolve the commute weekday before applying a return's service-day offset."""
-        journey = self.journey(d)
-        key = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[commute_day.weekday()]
-        first = journey.first_train_by_weekday.get(key, journey.first_train)
-        delta = (first.hour * 60 + first.minute) - (
-            journey.first_train.hour * 60 + journey.first_train.minute
-        )
-
-        def shifted(value: time) -> time:
-            minute = (value.hour * 60 + value.minute + delta) % 1440
-            return time(minute // 60, minute % 60)
-
-        return replace(
-            journey,
-            first_train=first,
-            window=(shifted(journey.window[0]), shifted(journey.window[1])),
+        """Resolve the commute weekday before applying a return's service-day offset: its first
+        train, then its `by_weekday` override of mode, window, pick and minimum stay."""
+        return resolve_day(
+            self.journey(d), _WEEKDAY_KEYS[commute_day.weekday()], self.location is not None
         )
 
     def origin(self, d: Direction) -> str:
@@ -524,6 +537,46 @@ class Profile:
 
     def destination(self, d: Direction) -> str:
         return self.work_station if d is Direction.OUTBOUND else self.home_station
+
+
+_WEEKDAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _shift(value: time, minutes: int) -> time:
+    minute = (value.hour * 60 + value.minute + minutes) % 1440
+    return time(minute // 60, minute % 60)
+
+
+def resolve_day(journey: UsualJourney, weekday: str, has_location: bool) -> UsualJourney:
+    """The journey as it runs on `weekday` (mon..sun). The one place a day override and the
+    pick fallback are applied, so the profile check and the runtime never disagree."""
+    o = journey.by_weekday.get(weekday, DayOverride())
+    mode = o.mode or journey.mode
+    first = journey.first_train_by_weekday.get(weekday, journey.first_train)
+    if o.window is not None:
+        window = o.window
+    elif mode == "window":
+        window = journey.window
+    elif journey.mode == "window":  # a fixed day of a window direction: the default watch
+        window = (_shift(first, -60), _shift(first, 120))
+    else:
+        delta = (first.hour * 60 + first.minute) - (
+            journey.first_train.hour * 60 + journey.first_train.minute
+        )
+        window = (_shift(journey.window[0], delta), _shift(journey.window[1], delta))
+    pick = o.pick or journey.pick
+    if pick == "on_leave" and not has_location:
+        pick = "earliest_silent"  # nothing can tell when you leave
+    stay = o.min_stay_min if o.min_stay_min is not None else journey.min_stay_min
+    return replace(
+        journey,
+        first_train=first,
+        window=window,
+        mode=mode,
+        pick=pick,
+        min_stay_min=stay,
+        first_train_set=journey.first_train_set or weekday in journey.first_train_by_weekday,
+    )
 
 
 def display_name(name: str) -> str:

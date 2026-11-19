@@ -96,6 +96,13 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
         for profile in cfg["profiles"]:
             for d in ("outbound", "return_"):
                 profile[d]["active_lead_min"] = None  # Q9 default for an older store
+                profile[d] |= {  # 0.3.0 window mode defaults
+                    "mode": "fixed",
+                    "pick": "earliest",
+                    "min_stay_min": None,
+                    "by_weekday": {},
+                    "first_train_set": True,
+                }
             profile["alerts"]["quiet_repeat_misses"] = False  # 2026-11-18 default
             if profile["location"] is not None:  # Q12 defaults
                 profile["location"] |= {"wifi": {}, "activity_entity": None}
