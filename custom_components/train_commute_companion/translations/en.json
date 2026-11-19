@@ -116,11 +116,21 @@
           "edit_weekday_times": "Set different departure times by weekday",
           "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
           "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
-          "edit_day_overrides": "Set a different mode, window, train choice or stay for some days"
+          "edit_day_overrides": "Set a different mode, window, train choice or stay for some days",
+          "outbound_other_stations": "Other outbound boarding stations",
+          "return_other_stations": "Other return boarding stations",
+          "other_station_radius_m": "Other station distance in metres",
+          "other_station_dwell_min": "Minutes at another station before it counts",
+          "ask_to_remember_station": "Offer to remember a new boarding station"
         },
         "data_description": {
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
-          "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently."
+          "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently.",
+          "outbound_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",
+          "return_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",
+          "other_station_radius_m": "How near your phone must be to a station. Default 500.",
+          "other_station_dwell_min": "0 means one location fix is enough. Default 0.",
+          "ask_to_remember_station": "After you say Yes at a new station, TCC asks once whether to remember it."
         }
       },
       "profile_error": {
@@ -312,11 +322,21 @@
           "edit_weekday_times": "Set different departure times by weekday",
           "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
           "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
-          "edit_day_overrides": "Set a different mode, window, train choice or stay for some days"
+          "edit_day_overrides": "Set a different mode, window, train choice or stay for some days",
+          "outbound_other_stations": "Other outbound boarding stations",
+          "return_other_stations": "Other return boarding stations",
+          "other_station_radius_m": "Other station distance in metres",
+          "other_station_dwell_min": "Minutes at another station before it counts",
+          "ask_to_remember_station": "Offer to remember a new boarding station"
         },
         "data_description": {
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
-          "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently."
+          "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently.",
+          "outbound_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",
+          "return_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",
+          "other_station_radius_m": "How near your phone must be to a station. Default 500.",
+          "other_station_dwell_min": "0 means one location fix is enough. Default 0.",
+          "ask_to_remember_station": "After you say Yes at a new station, TCC asks once whether to remember it."
         }
       },
       "profile_error": {
@@ -752,6 +772,38 @@
     "reload_profiles": {
       "name": "Reload profiles",
       "description": "Apply the current profiles file. An invalid file leaves the last valid profiles active."
+    },
+    "answer_prompt": {
+      "name": "Answer a question",
+      "description": "Answer a question about another boarding station, as its button does.",
+      "fields": {
+        "prompt_id": {
+          "name": "Question id",
+          "description": "The prompt_id of the alert event."
+        },
+        "answer": {
+          "name": "Answer",
+          "description": "One answer from the alert's choices, for example yes."
+        }
+      }
+    },
+    "forget_station": {
+      "name": "Forget a station",
+      "description": "Take a remembered boarding station off the list.",
+      "fields": {
+        "profile": {
+          "name": "Profile",
+          "description": "The profile's name or id."
+        },
+        "direction": {
+          "name": "Direction",
+          "description": "Outbound or return trips."
+        },
+        "station": {
+          "name": "Station",
+          "description": "The station code, for example VL."
+        }
+      }
     }
   }
 }

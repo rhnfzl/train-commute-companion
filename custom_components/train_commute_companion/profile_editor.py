@@ -172,6 +172,7 @@ def edit_profile(
         for station in journey["transfers"]:
             minimum.setdefault(station, FALLBACK_MIN)
     minimum.update(values.get("transfer_min", {}))
+    _write_other_stations(profile, values)
     action = values.get("pause_action", "keep")
     if action not in ("keep", "add", "replace", "clear"):
         raise EditorError("invalid_profile")
@@ -224,6 +225,41 @@ def _write_schedule(journey: dict[str, Any], direction: str, values: Mapping[str
             journey["min_stay_min"] = stay
         else:
             journey.pop("min_stay_min", None)
+
+
+OTHER_STATION_DEFAULTS = {
+    "other_station_radius_m": 500,
+    "other_station_dwell_min": 0,
+    "ask_to_remember_station": True,
+}
+
+
+def _write_other_stations(profile: dict[str, Any], values: Mapping[str, Any]) -> None:
+    """Other boarding stations per direction and their location settings. A default is written
+    only when the key is already in the file, so an untouched profile keeps its shape."""
+    for direction in ("outbound", "return"):
+        key = f"{direction}_other_stations"
+        if key not in values:
+            continue
+        codes = values[key]
+        if not isinstance(codes, list):
+            raise EditorError("invalid_profile")
+        journey = profile[direction]
+        if codes or "other_stations" in journey:
+            journey["other_stations"] = list(codes)
+    location = profile.get("location")
+    if not isinstance(location, dict):
+        return
+    location = copy.deepcopy(location)
+    for key, default in OTHER_STATION_DEFAULTS.items():
+        if key not in values:
+            continue
+        value = values[key]
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        if value != default or key in location:
+            location[key] = value
+    profile["location"] = location
 
 
 class WritePhase(StrEnum):

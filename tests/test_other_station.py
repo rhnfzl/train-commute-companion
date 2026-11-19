@@ -163,9 +163,9 @@ async def test_remember_flow_and_forget(tmp_path):
     assert rig.rt.view().remembered == {"p1|return": ("VL",)}
     assert rig.occ(KEY).prompt is None
     assert rig.path.read_bytes() == profile_text  # never written to the profile file
-    assert rig.rt.forget_station("p1", Direction.RETURN, "VL") is None
+    assert await rig.rt.forget_station("p1", Direction.RETURN, "VL") is None
     assert rig.rt.state.remembered_stations == {}
-    refused = rig.rt.forget_station("p1", Direction.RETURN, "VL")
+    refused = await rig.rt.forget_station("p1", Direction.RETURN, "VL")
     assert refused is not None
 
 

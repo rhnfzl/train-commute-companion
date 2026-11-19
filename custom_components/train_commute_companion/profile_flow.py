@@ -30,6 +30,7 @@ from train_commute_companion.transfer import FALLBACK_MIN
 
 from .flow_state import ReviewPhase
 from .profile_editor import (
+    OTHER_STATION_DEFAULTS,
     EditorError,
     ProfileDocument,
     edit_profile,
@@ -375,6 +376,9 @@ class ProfileEditorFlow:
                     key, default=values.get(key, existing.get("alerts", {}).get(key, False))
                 )
             ] = BooleanSelector()
+        location = existing.get("location")
+        if isinstance(location, dict):  # other boarding stations need a location source
+            fields.update(self._other_station_fields(existing, location, values))
         for code in stations:
             fields[
                 vol.Required(
@@ -440,6 +444,33 @@ class ProfileEditorFlow:
             errors=errors,
             description_placeholders={"stations": labels, "pauses": pauses, "report": report},
         )
+
+    def _other_station_fields(
+        self, existing: Mapping[str, Any], location: Mapping[str, Any], values: Mapping[str, Any]
+    ) -> dict[Any, Any]:
+        options: list[SelectOptionDict] = [
+            {"value": code, "label": label}
+            for code, label in sorted((self._catalogue or {}).items(), key=lambda item: item[1])
+        ]
+        fields: dict[Any, Any] = {}
+        for direction in ("outbound", "return"):
+            key = f"{direction}_other_stations"
+            saved = existing.get(direction, {}).get("other_stations", [])
+            fields[vol.Optional(key, default=values.get(key, saved))] = SelectSelector(
+                SelectSelectorConfig(
+                    options=options, mode=SelectSelectorMode.DROPDOWN, multiple=True
+                )
+            )
+        for key, high in (("other_station_radius_m", 5000), ("other_station_dwell_min", 60)):
+            default = values.get(key, location.get(key, OTHER_STATION_DEFAULTS[key]))
+            low = 1 if key == "other_station_radius_m" else 0
+            fields[vol.Optional(key, default=default)] = NumberSelector(
+                NumberSelectorConfig(min=low, max=high, step=1, mode=NumberSelectorMode.BOX)
+            )
+        key = "ask_to_remember_station"
+        default = values.get(key, location.get(key, True))
+        fields[vol.Optional(key, default=default)] = BooleanSelector()
+        return fields
 
     async def async_step_profile_weekdays(
         self, user_input: Mapping[str, Any] | None = None

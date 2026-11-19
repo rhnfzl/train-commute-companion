@@ -1829,7 +1829,9 @@ class Runtime:
             return Refused("The station was not saved. Try again.", RefusalKind.RETRY)
         return None
 
-    def forget_station(self, profile_id: str, direction: Direction, station: str) -> Refused | None:
+    async def forget_station(
+        self, profile_id: str, direction: Direction, station: str
+    ) -> Refused | None:
         """Take a remembered boarding station off the list."""
         if self._writer.waiting:
             return Refused("An earlier choice is not saved yet. Try again.", RefusalKind.RETRY)

@@ -459,3 +459,35 @@ def test_day_overrides_are_written_and_removed(tmp_path):
     doc = document(tmp_path, text)
     text = edit_profile(doc, "p1", {**VALUES, "return_by_weekday": {}}, KNOWN, TODAY)
     assert "by_weekday" not in yaml.safe_load(text)["profiles"][0]["return"]
+
+
+def test_other_stations_and_their_settings_are_written_only_when_set(tmp_path):
+    raw = yaml.safe_load(PROFILE)
+    raw["profiles"][0]["location"] = {"source": "ha", "entity": "person.me"}
+    doc = document(tmp_path, yaml.safe_dump(raw, sort_keys=False))
+    untouched = {
+        **VALUES,
+        "outbound_other_stations": [],
+        "return_other_stations": [],
+        "other_station_radius_m": 500.0,
+        "other_station_dwell_min": 0.0,
+        "ask_to_remember_station": True,
+    }
+    same = yaml.safe_load(edit_profile(doc, "p1", untouched, KNOWN, TODAY))["profiles"][0]
+    assert "other_stations" not in same["return"]
+    assert same["location"] == {"source": "ha", "entity": "person.me"}
+    changed = {
+        **untouched,
+        "return_other_stations": ["BBB"],
+        "other_station_radius_m": 300.0,
+        "ask_to_remember_station": False,
+    }
+    text = edit_profile(doc, "p1", changed, KNOWN, TODAY)
+    (p, *_), errors = parse_profiles(text, KNOWN)
+    assert not errors
+    assert p.return_.other_stations == ("BBB",)
+    assert p.location is not None
+    assert (p.location.other_station_radius_m, p.location.ask_to_remember_station) == (300, False)
+    assert isinstance(
+        yaml.safe_load(text)["profiles"][0]["location"]["other_station_radius_m"], int
+    )

@@ -112,3 +112,17 @@ confirm_arrival:
     expected_revision: {required: true, selector: {number: {min: 0, step: 1, mode: box}}}
     action_id: {required: true, selector: {text: {}}}
     original_planned_arrival: {selector: {text: {}}}
+answer_prompt:
+  fields:
+    prompt_id: {required: true, selector: {text: {}}}
+    answer: {required: true, selector: {text: {}}}
+forget_station:
+  fields:
+    profile: {required: true, selector: {text: {}}}
+    direction:
+      required: true
+      selector:
+        select:
+          options: [outbound, return]
+          translation_key: direction
+    station: {required: true, selector: {text: {}}}

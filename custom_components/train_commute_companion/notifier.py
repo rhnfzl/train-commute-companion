@@ -18,7 +18,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from train_commute_companion.calendar import to_utc
-from train_commute_companion.model import AlertEvent, Direction, EventKind, Severity
+from train_commute_companion.model import AlertEvent, Direction, EventKind, Severity, alert_facts
 from train_commute_companion.notify import NotificationPaused, event_fields
 
 from .const import (
@@ -111,8 +111,35 @@ def notify_payload(
     raise ValueError(f"unknown loud style {loud_style!r}, expected one of {LOUD_STYLES}")
 
 
+ACTION_PREFIX = "TCC_ANSWER"
+
+
 def event_data(event: AlertEvent, entry_id: str, device_id: str | None) -> dict[str, Any]:
-    return {"config_entry_id": entry_id, "device_id": device_id, **event_fields(event)}
+    """The bus event. A question also carries its id and answer buttons, for an automation
+    that shows them (the webhook body stays unchanged)."""
+    data = {"config_entry_id": entry_id, "device_id": device_id, **event_fields(event)}
+    facts = alert_facts(event)
+    if facts.choices:
+        data["prompt_id"] = facts.prompt_id
+        data["choices"] = [{"answer": a, "label": label} for a, label in facts.choices]
+    return data
+
+
+def answer_actions(event: AlertEvent) -> list[dict[str, str]]:
+    """Companion app buttons for a question: TCC_ANSWER|<prompt_id>|<answer>."""
+    facts = alert_facts(event)
+    return [
+        {"action": f"{ACTION_PREFIX}|{facts.prompt_id}|{a}", "title": label}
+        for a, label in facts.choices
+    ]
+
+
+def parse_answer_action(action: object) -> tuple[str, str] | None:
+    """(prompt_id, answer) of a companion app button TCC made, else None."""
+    parts = action.split("|") if isinstance(action, str) else []
+    if len(parts) != 3 or parts[0] != ACTION_PREFIX or not parts[1] or not parts[2]:
+        return None
+    return parts[1], parts[2]
 
 
 def mobile_target(hass: HomeAssistant, service: str) -> str | None:
@@ -405,6 +432,8 @@ class HaNotifier:
             return False
         severity = Severity.SILENT if self.quiet else event.severity
         payload = notify_payload(severity, event.text, self.loud_style)
+        if actions := answer_actions(event):
+            payload["data"]["actions"] = actions
         # Retries replace the same displayed alert, including after a runtime restart.
         identity = (
             self.entry_id,

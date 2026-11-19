@@ -33,6 +33,7 @@ from custom_components.train_commute_companion.notifier import HaNotifier, notif
 from train_commute_companion.calendar import TZ
 from train_commute_companion.model import (
     AlertEvent,
+    AlertFacts,
     Direction,
     EventKind,
     Severity,
@@ -701,3 +702,48 @@ async def test_retry_after_notifier_restart_replaces_same_alert(hass, monkeypatc
         hass, event, notifier=HaNotifier(hass, "other-entry", "mobile_app_phone")
     )
     assert calls[3].data["data"]["tag"] != first
+
+
+def question() -> AlertEvent:
+    choices = (("yes", "Yes"), ("other", "Other train"), ("no", "No"))
+    return replace(
+        make_event(Severity.SILENT),
+        kind=EventKind.STATION_ASK,
+        text="Commute: are you taking the 20:06 from Venlo to 's-Hertogenbosch?",
+        facts=AlertFacts(prompt_id="0123456789", choices=choices),
+    )
+
+
+async def test_a_question_carries_its_id_and_buttons_on_the_bus_and_the_phone(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
+    events = async_capture_events(hass, EVENT_ALERT)
+    assert await send_from_thread(hass, question())
+    d = events[0].data
+    assert set(d) == EXPECTED_KEYS | {"prompt_id", "choices"}
+    assert d["kind"] == "station_ask" and d["prompt_id"] == "0123456789"
+    assert d["choices"] == [
+        {"answer": "yes", "label": "Yes"},
+        {"answer": "other", "label": "Other train"},
+        {"answer": "no", "label": "No"},
+    ]
+    assert calls[0].data["data"]["actions"] == [
+        {"action": "TCC_ANSWER|0123456789|yes", "title": "Yes"},
+        {"action": "TCC_ANSWER|0123456789|other", "title": "Other train"},
+        {"action": "TCC_ANSWER|0123456789|no", "title": "No"},
+    ]
+
+
+async def test_an_alert_without_choices_has_no_buttons(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
+    events = async_capture_events(hass, EVENT_ALERT)
+    assert await send_from_thread(hass, make_event(Severity.SILENT))
+    assert set(events[0].data) == EXPECTED_KEYS
+    assert "actions" not in calls[0].data["data"]
+
+
+def test_answer_actions_parse_back():
+    parse = notifier_mod.parse_answer_action
+    assert parse("TCC_ANSWER|0123456789|yes") == ("0123456789", "yes")
+    assert parse("TCC_ANSWER|0123456789") is None
+    assert parse("OTHER|0123456789|yes") is None
+    assert parse(None) is None
