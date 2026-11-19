@@ -198,6 +198,8 @@ class OccurrenceView:
     selected_recovery: SelectedRecovery | None = None
     train_context: VehicleSnapshot | None = None
     usual_departure: datetime | None = None
+    # a window day: the earliest (stay end included) and latest departure; None on a fixed day
+    window: tuple[datetime, datetime] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -450,6 +452,9 @@ def occurrence_view(
         disruptions_coverage=coverage,
         profile_name=ctx.profile.name,
         usual_departure=None if ctx.schedule.mode == "window" else ctx.schedule.first_departure,
+        window=None
+        if ctx.schedule.last_departure is None
+        else (ctx.schedule.first_departure, ctx.schedule.last_departure),
         direction_state=s.direction_state,
         resolved=resolved,
         not_travelling=s.not_travelling,

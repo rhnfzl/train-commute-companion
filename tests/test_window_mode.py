@@ -92,6 +92,9 @@ async def test_window_earliest_locks_first_train_from_window_start_loud_miss(tmp
     rig = await rig_for(tmp_path)
     await rig.run_until("06:37")  # the window opens 25 min (buffer + 15) before 07:00
     assert first_train(rig) == "07:00"  # never the 06:45 before the window
+    (shown,) = [o for o in rig.rt.view().occurrences if o.key.service_date == DAY]
+    assert shown.usual_departure is None
+    assert [f"{t:%H:%M}" for t in shown.window or ()] == ["07:00", "10:00"]
     await report(rig, "report", "06:55")
     await rig.run_until("07:12")
     await report(rig, "still", "07:12")  # still home 12 min after the 07:00 left

@@ -147,6 +147,8 @@ def _lock_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
     }
     if occ.usual_departure is not None:
         attrs["usual_departure"] = f"{occ.usual_departure:%H:%M}"
+    if occ.window is not None:  # a window day has no usual train
+        attrs["window"] = [f"{t:%H:%M}" for t in occ.window]
     return attrs
 
 
