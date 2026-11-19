@@ -127,6 +127,18 @@ async def test_after_a_release_reaching_the_station_follows_the_next_train(tmp_p
     assert not s.released
 
 
+async def test_after_a_release_a_leaving_tap_follows_the_next_train(tmp_path):
+    rig = await rig_for(tmp_path)
+    await replay_to_departure(rig)
+    await rig.run_until("19:50")
+    assert rig.occ(KEY).lock is None
+    assert await rig.rt.leaving("p1") is None
+    await rig.run_until("19:54")
+    s = rig.occ(KEY)
+    assert s.lock is not None and s.lock.legs[0].train.train_number == "3576"  # the 20:06
+    assert not s.released
+
+
 async def test_quiet_repeat_misses_makes_the_second_miss_from_work_silent(tmp_path):
     rig = await rig_for(tmp_path, extra="    alerts: {quiet_repeat_misses: true}\n")
     await replay_to_departure(rig)

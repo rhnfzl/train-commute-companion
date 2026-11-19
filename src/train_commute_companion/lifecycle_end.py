@@ -22,6 +22,7 @@ from train_commute_companion.model import (
     DirectionState,
     EventKind,
     LegState,
+    Profile,
     Severity,
     present,
 )
@@ -78,7 +79,8 @@ def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transi
         and s.direction_state is not DirectionState.DONE
         and now >= to_utc(ctx.schedule.window_end)
     ):
-        if not s.released:  # a train the user never boarded is no lost journey
+        # a train the user never boarded is no lost journey; on_leave with no leave is no trip
+        if not s.released and ctx.schedule.pick != "on_leave":
             text = "I stopped following your journey, check the NS app."
             events.append(make_event(ctx, EventKind.STOPPED_FOLLOWING, Severity.LOUD, text))
         s = replace(s, direction_state=DirectionState.DONE)
@@ -135,6 +137,24 @@ def _arrived(s: OccurrenceState, ctx: Ctx, last: LegProgress) -> bool:
     p, d = ctx.profile, ctx.direction
     zones = {last.alight_stop, p.destination(d), place_zone(p, p.destination(d))}
     return any((t := s.zone_reports.get(z)) is not None and to_utc(t) > to_utc(when) for z in zones)
+
+
+def arrival_evidence(s: OccurrenceState, p: Profile) -> tuple[datetime | None, datetime | None]:
+    """(first phone presence at the destination, accepted train arrival), each None while
+    unknown. A report from before the locked train left is not an arrival."""
+    d, lock = s.key.direction, s.lock
+    last = lock.legs[-1] if lock is not None else None
+    train = None
+    if last is not None and last.state is LegState.DONE:
+        train = last.accept_value or last.accepted_at
+    zones = {p.destination(d), place_zone(p, p.destination(d))}
+    if last is not None:
+        zones.add(last.alight_stop)
+    after = None if lock is None else to_utc(lock.legs[0].train.planned_departure)
+    seen = [
+        t for z, t in s.zone_reports.items() if z in zones and (after is None or to_utc(t) >= after)
+    ]
+    return (min(seen, key=to_utc) if seen else None), train
 
 
 def _never_boarded(s: OccurrenceState, ctx: Ctx, j: Journey, *, retained: bool) -> bool:

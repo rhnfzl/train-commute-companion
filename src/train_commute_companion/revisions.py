@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 
+from train_commute_companion.calendar import to_utc
 from train_commute_companion.model import (
     Config,
     Ctx,
@@ -13,6 +14,7 @@ from train_commute_companion.model import (
     Signature,
     UsualJourney,
     direction_key,
+    present,
 )
 from train_commute_companion.schedule import dated_schedule
 from train_commute_companion.state import (
@@ -171,7 +173,29 @@ def occurrence_ctx(st: PersistedState, s: OccurrenceState, now: datetime) -> Ctx
     else:
         sig = signature_for(st, p, d, s.key.service_date, s.baseline_version)
     first = sig.legs[0].departure if sig else None
-    return Ctx(p, d, dated_schedule(p, d, commute_day, first), sig, now)
+    schedule = dated_schedule(p, d, commute_day, first)
+    if schedule.mode == "window" and p.journey_on(d, commute_day).min_stay_min:
+        arrived = stay_from(st, p, d, schedule.first_departure, present(schedule.last_departure))
+        schedule = dated_schedule(p, d, commute_day, first, arrived)
+    return Ctx(p, d, schedule, sig, now)
+
+
+def stay_from(
+    st: PersistedState, p: Profile, d: Direction, start: datetime, end: datetime
+) -> datetime | None:
+    """The arrival before this window at the other direction's destination: confirmed by the
+    user, else first phone presence there, else the accepted train arrival. The newest one in
+    the 24 h before the window start up to its latest time."""
+    other = Direction.RETURN if d is Direction.OUTBOUND else Direction.OUTBOUND
+    lo, hi = to_utc(start) - timedelta(hours=24), to_utc(end)
+    found = [
+        t
+        for r in st.journey_records.values()
+        if r.key.profile_id == p.id and r.key.direction is other
+        for t in (r.arrived_at or r.seen_at or r.train_arrival,)
+        if t is not None and lo < to_utc(t) <= hi
+    ]
+    return max(found, key=to_utc) if found else None
 
 
 def frozen(st: PersistedState, s: OccurrenceState) -> OccurrenceState:

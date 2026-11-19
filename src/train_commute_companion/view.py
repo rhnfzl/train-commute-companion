@@ -449,7 +449,7 @@ def occurrence_view(
         disruptions_checked_at=s.disruptions_checked_at,
         disruptions_coverage=coverage,
         profile_name=ctx.profile.name,
-        usual_departure=ctx.schedule.first_departure,
+        usual_departure=None if ctx.schedule.mode == "window" else ctx.schedule.first_departure,
         direction_state=s.direction_state,
         resolved=resolved,
         not_travelling=s.not_travelling,

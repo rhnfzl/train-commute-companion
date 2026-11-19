@@ -90,8 +90,8 @@ W = 'mode: window, window: ["07:00", "10:00"], buffer_min: 10'
          "outbound.by_weekday.mon.first_train", "unknown field 'first_train'"),
         (f"{{{W}, by_weekday: {{sat: {{mode: fixed}}}}}}", "outbound.by_weekday.sat.mode",
          "mode fixed needs a first train on sat"),
-        (f"{{{W}, first_train_by_weekday: {{sat: '10:12'}}, "
-         "by_weekday: {sat: {mode: fixed, window: ['10:00', '12:00']}}}",
+        ((f"{{{W}, first_train_by_weekday: {{sat: '10:12'}}, "
+          "by_weekday: {sat: {mode: fixed, window: ['10:00', '12:00']}}}"),
          "outbound.by_weekday.sat.window",
          "window opens 12 min before first_train, needs at least 25 (buffer_min + 15)"),
         (f"{{{W}, by_weekday: {{fri: {{window: ['09:00', '09:00']}}}}}}",

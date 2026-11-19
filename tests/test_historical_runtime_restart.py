@@ -14,7 +14,10 @@ from train_commute_companion.serde import encode
 async def test_pre_refactor_runtime_state_resumes_without_rebinding_receipts(tmp_path, version):
     fixture = Path(__file__).parent / "data/state/pre-explicit-runtime-v2.json"
     original = json.loads(fixture.read_text())["state"]
-    expected_records = original["journey_records"]
+    expected_records = {  # 0.3.0: no arrival seen yet in these saved journeys
+        k: {**r, "seen_at": None, "train_arrival": None}
+        for k, r in original["journey_records"].items()
+    }
     old_alerts = {o["event"]["key"] for o in original["obligations"]}
     if version == 1:
         for state in original["occurrences"].values():

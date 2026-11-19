@@ -69,7 +69,7 @@ from train_commute_companion.lifecycle import (
     target_occurrence,
     whole_day_keys,
 )
-from train_commute_companion.lifecycle_end import may_archive, on_tick
+from train_commute_companion.lifecycle_end import arrival_evidence, may_archive, on_tick
 from train_commute_companion.lifecycle_lock import unfinished_leg
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import forget_pending, rebase_on_edit, reset_on_edit
@@ -774,6 +774,15 @@ class Runtime:
                 )
             elif previous.plan is None and state.original_plan is not None:
                 records[k] = replace(previous, plan=state.original_plan)
+            record = records[k]
+            seen, train = arrival_evidence(state, profile)
+            if (record.seen_at is None and seen) or (record.train_arrival is None and train):
+                # written once: the first arrival, though zone_reports later moves on
+                records[k] = replace(
+                    record,
+                    seen_at=record.seen_at or seen,
+                    train_arrival=record.train_arrival or train,
+                )
         st = replace(st, journey_records=records)
         self._writer.commit(self._archived(st, now), kind)
 
@@ -1131,6 +1140,8 @@ class Runtime:
             t = on_tick(s, ctx)
             self._apply({k: (t.state, t.events)})
             return  # the window only selects the first train (rule 19)
+        if not followed and not s.travelling and to_utc(now) < to_utc(ctx.schedule.window_start):
+            return  # a minimum stay has not ended: no NS request is spent yet
         gen, end = s.generation, ctx.schedule.window_end
         asked = _lock_trains(s)  # Q5: a poll counts toward a gap only for the lock it asked for
         deadline = to_utc(now) + POLL_DEADLINE  # one hard deadline for every request (7.1)
@@ -1212,7 +1223,9 @@ class Runtime:
     def _remember_usual(self, k: str, ctx: Ctx, merged: Pool) -> None:
         """Before a lock: what the poll shows of every usual leg (rules 13, 20), each as its
         current copy, so the watchdog judges it on the same terms as a locked leg, never on
-        invented timing."""
+        invented timing. A window day has no usual train to watch."""
+        if ctx.schedule.mode == "window":
+            return
         p, d, first = ctx.profile, ctx.direction, ctx.schedule.first_departure
         old = self._memory.before.get(k, ())
         c = usual_connection(merged, p.origin(d), first, p.journey(d).transfers, ctx.signature)
