@@ -115,10 +115,10 @@ async def test_1118_evening_venlo_single_far_fix_asks_then_follows_2006(tmp_path
     assert remember.text.endswith("remember VL as a boarding station for your return trips?")
     assert remember.facts.choices == (("remember", "Yes"), ("forget", "No"))
 
-    # a second fix as far out is still at the station, never a leave
-    assert await phone.fix(NEAR_VL, "19:58") == [("VL", "report")]
+    # once confirmed, the station has the usual radius: a fix that far out is a leave, harmless
+    assert await phone.fix(NEAR_VL, "19:58") == [("VL", "leave")]
     await rig.run_until("21:20")
-    assert await phone.fix(HOME, "21:20") == [("VL", "leave"), ("home", "enter")]
+    assert await phone.fix(HOME, "21:20") == [("home", "enter")]
     await rig.run_until("22:00")  # arrived 21:06; the last watch ends about 21:46
     assert loud_after(rig, "19:49") == []
     assert rig.occ(KEY) is None or rig.occ(KEY).direction_state is DirectionState.DONE
@@ -173,6 +173,17 @@ async def test_remember_no_answer_is_not_remembered(tmp_path):
     rig, _ = await at_venlo(tmp_path)
     (ask,) = of(rig, EventKind.STATION_ASK)
     await rig.rt.answer_prompt(ask.facts.prompt_id, "yes")
+    assert len(of(rig, EventKind.STATION_REMEMBER)) == 1  # never answered
+    await rig.run_until("21:00")
+    await rig.restart()
+    await rig.run_until("22:00")
+    assert rig.rt.state.remembered_stations == {}
+
+
+async def test_remember_answer_no_is_not_remembered(tmp_path):
+    rig, _ = await at_venlo(tmp_path)
+    (ask,) = of(rig, EventKind.STATION_ASK)
+    await rig.rt.answer_prompt(ask.facts.prompt_id, "yes")
     (remember,) = of(rig, EventKind.STATION_REMEMBER)
     assert await rig.rt.answer_prompt(remember.facts.prompt_id, "forget") is None
     await rig.run_until("21:00")
@@ -211,7 +222,9 @@ async def test_known_station_auto_follows_with_one_message(tmp_path):
     await phone.fix(NEAR_VL, "19:50")
     s = rig.occ(KEY)
     assert s.boarding_station == "VL" and s.lock.legs[0].train.train_number == "6066"
-    assert s.lock.source.value == "station"
+    # provisional until a fix inside the station circle: a walk past is let go quietly
+    assert s.lock.source.value == "location" and s.lock.commitment.value == "provisional"
+    assert not s.at_station
     (told,) = [e for e in of(rig, EventKind.AT_STATION) if e.created_at >= at("19:50")]
     assert told.severity is Severity.SILENT
     assert "at VL: following your 20:06 to AAA" in told.text
@@ -385,7 +398,9 @@ async def test_back_at_the_usual_station_follows_a_train_from_there(tmp_path):
     assert s.lock.legs[0].board_station == "RTD" and s.lock.legs[0].train.train_number == "3576"
 
 
-async def test_auto_lock_counts_as_unfollowed(tmp_path):
+async def test_auto_lock_counts_as_unfollowed_but_a_known_station_then_asks(tmp_path):
+    """TCC's own guess is no train the user follows, so the station is noticed. A known station
+    is then asked about, not followed by itself: the guess may still be the train they take."""
     rig = await rig_for(tmp_path, other="other_stations: [VL]")
     await rig.run_until("16:20")
     s = rig.occ(KEY)
@@ -394,9 +409,14 @@ async def test_auto_lock_counts_as_unfollowed(tmp_path):
     await phone.fix(ROAD, "16:20")
     assert await phone.fix(NEAR_VL, "16:22") == [("VL", "enter")]
     s = rig.occ(KEY)
-    assert s.boarding_station == "VL" and s.lock.source.value == "station"
-    assert s.lock.legs[0].train.train_number == "6036"  # the 19:36, the next one from Venlo
-    assert s.direction_state is DirectionState.LOCKED
+    assert s.boarding_station is None and s.lock.source.value == "auto"
+    assert s.lock.legs[0].board_station == "RTD"
+    (ask,) = of(rig, EventKind.STATION_ASK)
+    assert ask.text.endswith("are you taking the 19:36 from VL to AAA?")
+    assert await rig.rt.answer_prompt(ask.facts.prompt_id, "yes") is None
+    s = rig.occ(KEY)
+    assert s.boarding_station == "VL" and s.lock.legs[0].train.train_number == "6036"
+    assert of(rig, EventKind.STATION_REMEMBER) == []  # already a known station
 
 
 async def test_committed_lock_counts_as_followed(tmp_path):

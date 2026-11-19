@@ -13,7 +13,7 @@ outbound:
 
 In window mode `window` holds the earliest and the latest departure. Both are included. The latest time is always required. `first_train` is optional.
 
-TCC starts watching `active_lead_min` before the earliest departure (default `buffer_min` + 15). It follows the earliest good train in the window. If a train is missed, it follows the next one, like fixed mode does. If no train leaves in the window, it says so once.
+TCC starts watching `active_lead_min` before the earliest departure (default `buffer_min` + 15). It follows the earliest good train in the window, also when a later train takes your usual route. If a train is missed, it follows the next one, like fixed mode does. If no train leaves in the window, it says so once.
 
 There is no usual train on a window day. So look-ahead does not probe that day, no timetable is learned or adopted, and the earlier train advice is off. The weekly works digest still runs. Compensation reminders use the train TCC followed.
 
@@ -39,11 +39,13 @@ return:
 
 `min_stay_min` keeps a window day from starting too soon after you arrived. The day starts at the later of the window start and your arrival plus the stay. The arrival is the newest arrival on the other direction in the 24 hours before the window. TCC uses the first time your phone was at the destination, else the train arrival NS showed. An arrival you confirmed yourself wins over both.
 
-With an arrival at 09:05 and 480 minutes, the return starts at 17:05. A start after the latest time is capped at the latest time. Then TCC follows the first train from the latest time on.
+With an arrival at 09:05 and 480 minutes, the return starts at 17:05. A start after the latest time is capped at the latest time. Then TCC follows the first train from the latest time on, and a missed train is silent that day: you may still be in your stay when it leaves.
+
+If NS changes the arrival of the train you came on, the stay moves with it.
 
 TCC does not poll NS before the stay ends. If you leave early, it still follows a train: a leave of work, a station or an I'm leaving tap starts it.
 
-`min_stay_min` works on window days only.
+`min_stay_min` works on window days only. A day can set `min_stay_min: 0` to turn off the stay it would get from the direction.
 
 ## Settings by day
 
@@ -58,6 +60,8 @@ return:
   by_weekday:
     fri: {mode: window, window: ["13:00", "18:00"], min_stay_min: 300}
 ```
+
+An edited `pick` or `min_stay_min` of one day applies from the next trip, not to a trip already running.
 
 A window day in a fixed direction needs its own `window`. A fixed day in a window direction needs a first train: `first_train_by_weekday` for that day, or `first_train`. Its watch window is 60 minutes before to 120 minutes after that train, unless the day sets one. The first train per day stays in `first_train_by_weekday`, described below.
 

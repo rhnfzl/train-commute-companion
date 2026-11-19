@@ -48,8 +48,11 @@ def test_window_mode_profile_parses_without_first_train():
 
 
 def test_fixed_profiles_unchanged():
+    total = 0
     for path in (Path("examples/profiles.yaml"), *Path("tests/data/profiles").glob("*.yaml")):
-        profiles, _ = parse_profiles(path.read_text(), None)
+        profiles, errs = parse_profiles(path.read_text(), None)
+        assert errs == [] or path.name.startswith("bad"), (path, errs)
+        total += len(profiles)
         for p in profiles:
             for d in Direction:
                 j = p.journey(d)
@@ -59,6 +62,7 @@ def test_fixed_profiles_unchanged():
                     None,
                     {},
                 )
+    assert total >= 20  # the 0.2.6 fixtures really parse
 
 
 W = 'mode: window, window: ["07:00", "10:00"], buffer_min: 10'
@@ -87,7 +91,7 @@ W = 'mode: window, window: ["07:00", "10:00"], buffer_min: 10'
         (f"{{{W}, by_weekday: {{funday: {{}}}}}}", "outbound.by_weekday.funday",
          "unknown field 'funday'"),
         (f"{{{W}, by_weekday: {{mon: {{first_train: '08:00'}}}}}}",
-         "outbound.by_weekday.mon.first_train", "unknown field 'first_train'"),
+         "outbound.by_weekday.mon.first_train", "a day's first train is set in first_train_by_weekday"),
         (f"{{{W}, by_weekday: {{sat: {{mode: fixed}}}}}}", "outbound.by_weekday.sat.mode",
          "mode fixed needs a first train on sat"),
         ((f"{{{W}, first_train_by_weekday: {{sat: '10:12'}}, "
@@ -181,3 +185,24 @@ def test_window_schedule_opens_active_lead_before_the_earliest_and_stay_moves_it
     late = s.first_departure.replace(hour=13)
     capped = dated_schedule(p, Direction.RETURN, day, None, late)
     assert f"{capped.first_departure:%H:%M}" == "20:00" == f"{capped.last_departure:%H:%M}"
+
+
+def test_first_train_in_a_day_points_to_first_train_by_weekday():
+    out = '{first_train: "08:12", buffer_min: 10, by_weekday: {sat: {first_train: "10:12"}}}'
+    _, errs = parse(out=out)
+    (e,) = errs
+    assert e.path.endswith("outbound.by_weekday.sat.first_train")
+    assert "first_train_by_weekday" in e.message
+    assert e.suggestion == 'set outbound.first_train_by_weekday.sat: "10:12"'
+
+
+def test_a_day_stay_of_zero_is_off_and_inherits_nothing():
+    out = '{mode: window, window: ["07:00", "10:00"], buffer_min: 10, min_stay_min: 480, by_weekday: {sun: {min_stay_min: 0}}}'
+    (p,), errs = parse(out=out)
+    assert errs == []
+    from train_commute_companion.model import resolve_day
+
+    assert resolve_day(p.outbound, "sun", True).min_stay_min == 0
+    assert resolve_day(p.outbound, "mon", True).min_stay_min == 480
+    fixed = '{first_train: "08:12", buffer_min: 10, by_weekday: {sun: {min_stay_min: 0}}}'
+    assert parse(out=fixed)[1] == []  # 0 is off, so it has an effect nowhere and errs nowhere

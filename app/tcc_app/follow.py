@@ -12,8 +12,10 @@ from typing import Any, Literal
 from train_commute_companion.calendar import TZ
 from train_commute_companion.location import (
     STALE_LOCATION,
+    Evidence,
     Fix,
     ZoneTrack,
+    distance_m,
     send_zone_events,
     without_current_report,
 )
@@ -43,6 +45,22 @@ def stamp(v: object) -> datetime | None:
         return None
 
 
+SPEED_SPAN = (timedelta(seconds=30), timedelta(minutes=15))
+
+
+def moved_speed(prev: Fix | None, fix: Fix) -> float | None:
+    """Q12: m/s between two fixes of one source, their accuracy taken off; None when they are
+    too close or too far apart in time to tell. Telegram sends no speed, and OwnTracks may send
+    0 while stopped, so driving past a station still reads as riding and asks nothing."""
+    if prev is None:
+        return None
+    dt = fix.at - prev.at
+    if not SPEED_SPAN[0] <= dt <= SPEED_SPAN[1]:
+        return None
+    moved = distance_m(prev.lat, prev.lon, fix.lat, fix.lon) - (prev.acc or 0) - (fix.acc or 0)
+    return max(moved, 0.0) / dt.total_seconds()
+
+
 @dataclass(slots=True)
 class _Memory:
     """One profile's last fix under one source epoch; `last_at` in UTC."""
@@ -50,6 +68,7 @@ class _Memory:
     epoch: int
     last_at: datetime
     track: ZoneTrack
+    fix: Fix | None = None
 
 
 class Follower:
@@ -116,11 +135,18 @@ class Follower:
         if step is None:
             return
         track, events = step
-        mem = self._memory[pid] = _Memory(fed_epoch, at, track)
+        # the faster of the two: a reported 0 at a red light hides no drive between fixes
+        moved = moved_speed(known.fix if known else None, fix)
+        speed = max((v for v in (fix.speed, moved) if v is not None), default=None)
+        mem = self._memory[pid] = _Memory(fed_epoch, at, track, fix)
 
         def undelivered() -> None:
             mem.track = without_current_report(mem.track)
 
         await send_zone_events(
-            events, fix.at, lambda e: self._rt.report_location(pid, e, loc, fed_epoch), undelivered
+            events,
+            fix.at,
+            lambda e: self._rt.report_location(pid, e, loc, fed_epoch),
+            undelivered,
+            lambda _zone: Evidence(speed=speed),
         )

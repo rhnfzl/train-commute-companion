@@ -134,3 +134,11 @@ async def test_serve_wires_owntracks_only_with_a_secret(tmp_path, tg, secret, ex
 def test_parse_refuses_an_integer_too_large_for_a_float():
     body = {"_type": "location", "lat": 10**400, "lon": 5.0, "tst": 1_700_000_000}
     assert parse(json.dumps(body).encode()) is None
+
+
+def test_parse_reads_speed_in_metres_per_second():
+    tst = int(at("08:24").timestamp())
+    body = {"_type": "location", "lat": 52.1, "lon": 5, "tst": tst, "vel": 36}
+    assert parse(json.dumps(body).encode()).speed == 10.0  # 36 km/h
+    unknown = {**body, "vel": -1}  # iOS: speed unknown
+    assert parse(json.dumps(unknown).encode()).speed is None

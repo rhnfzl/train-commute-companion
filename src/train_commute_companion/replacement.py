@@ -124,13 +124,14 @@ def check_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) 
 def choose_replacement(
     answer: ProviderAnswer,
     *,
-    usual_remaining: tuple[str, ...],
+    usual_remaining: tuple[str, ...] | None,
     candidates: Sequence[Connection] | None = None,
     **kw: Unpack[GoodKwargs],
 ) -> tuple[Connection | None, Literal["usual_pattern", "new_route", "none"]]:
     """Ranks `candidates` (default: every connection in `answer`); identity is always judged
     against the whole `answer`, so dropping a train from the ranking never hides that it shares
-    a minute with a candidate (6.1)."""
+    a minute with a candidate (6.1). `usual_remaining` None: the earliest good one, no route
+    preferred (window mode, an other boarding station)."""
     pool = answer.connections if candidates is None else candidates
     # ranked and returned as current copies, judged on the raw ones (their alight stops)
     seen_in = evidence(answer)
@@ -138,6 +139,6 @@ def choose_replacement(
     ranked = sorted(pool, key=lambda c: expected_departure(cur[id(c)]))
     good = [c for c in ranked if check_good(c, answer, **kw).ok]
     for c in good:
-        if matches_pattern(c, usual_remaining):
+        if usual_remaining is not None and matches_pattern(c, usual_remaining):
             return cur[id(c)], "usual_pattern"
     return (cur[id(good[0])], "new_route") if good else (None, "none")

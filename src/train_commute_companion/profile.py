@@ -216,10 +216,11 @@ def _pick(c: _ProfileErrors, v: object, path: str) -> Pick | None:
     return found
 
 
-def _stay(c: _ProfileErrors, v: object, path: str) -> int | None:
-    if isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= MINUTES_PER_DAY:
+def _stay(c: _ProfileErrors, v: object, path: str, low: int = 1) -> int | None:
+    """`low` 0 for a day: 0 turns off the stay the day would inherit."""
+    if isinstance(v, int) and not isinstance(v, bool) and low <= v <= MINUTES_PER_DAY:
         return v
-    c.err(path, f"must be a whole number of minutes from 1 to 1440, got {v!r}")
+    c.err(path, f"must be a whole number of minutes from {low} to 1440, got {v!r}")
     return None
 
 
@@ -236,12 +237,19 @@ def _day_override(c: _ProfileErrors, raw: object, path: str) -> DayOverride | No
     if not isinstance(raw, dict):
         c.err(path, "must be a mapping of mode, window, pick or min_stay_min")
         return None
-    c.keys(raw, _DAY_KEYS, path)
+    if "first_train" in raw:  # a likely first try: point to where a day's first train lives
+        day, name = path.rsplit(".", 1)[1], path.split(".by_weekday")[0]
+        c.err(
+            f"{path}.first_train",
+            "a day's first train is set in first_train_by_weekday",
+            f'set {name}.first_train_by_weekday.{day}: "{raw["first_train"]}"',
+        )
+    c.keys({k: v for k, v in raw.items() if k != "first_train"}, _DAY_KEYS, path)
     return DayOverride(
         _mode(c, raw["mode"], f"{path}.mode") if "mode" in raw else None,
         _range(c, raw["window"], path) if "window" in raw else None,
         _pick(c, raw["pick"], f"{path}.pick") if "pick" in raw else None,
-        _stay(c, raw["min_stay_min"], f"{path}.min_stay_min") if "min_stay_min" in raw else None,
+        _stay(c, raw["min_stay_min"], f"{path}.min_stay_min", 0) if "min_stay_min" in raw else None,
     )
 
 
@@ -281,7 +289,7 @@ def _check_days(c: _ProfileErrors, j: UsualJourney, name: str, raw: Mapping[str,
         elif o.window is not None or j.mode == "window":
             _check_window(c, at, r.first_train, r.window, j.buffer_min)
         for key in ("pick", "min_stay_min"):
-            if getattr(o, key) is not None:
+            if getattr(o, key) not in (None, 0):  # a stay of 0 is off, also on a fixed day
                 c.err(f"{at}.{key}", f"{key} has no effect on a fixed day")
     for key in ("pick", "min_stay_min"):
         if key in raw and not any_window:

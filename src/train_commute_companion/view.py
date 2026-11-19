@@ -313,11 +313,12 @@ def other_station_zones(
     view: RuntimeView, profile: Profile, fix: Fix, places: Sequence[Zone] = ()
 ) -> list[Zone]:
     """At most one zone, of the other station radius, for the nearest station of the fix: when
-    a trip of the profile is open with no train followed, the fix is precise enough, is in no
-    home or work place, and the station is not where that trip starts or ends. A confirmed other
-    station keeps its wide circle while its train is followed, so the next fix there is no leave."""
+    a trip of the profile is open with no train followed, the fix has a known accuracy within
+    the radius, is in no home or work place, and the station is not where that trip starts or
+    ends. Once a station is the boarding station its circle is the usual station radius: the wide
+    one only notices it, and a fix that far out proves neither boarding nor a miss (Q12)."""
     loc = profile.location
-    if loc is None or (fix.acc is not None and fix.acc > loc.other_station_radius_m):
+    if loc is None or fix.acc is None or fix.acc > loc.other_station_radius_m:
         return []
     mine = [o for o in view.occurrences if o.key.profile_id == profile.id and not o.resolved]
     boarding = {o.boarding_station for o in mine if o.boarding_station}
@@ -331,15 +332,20 @@ def other_station_zones(
     names = {loc.zones.get(role, role) for role in PLACE_ROLES}
     if fix.regions & names or resolve_zone(fix.lat, fix.lon, places) is not None:
         return []
-    near = sorted(
-        (distance_m(fix.lat, fix.lon, lat, lon), code)
-        for code, (lat, lon) in view.positions.items()
-        if code in boarding or any(code not in e for e in ends)
+    near = min(
+        (
+            (distance_m(fix.lat, fix.lon, lat, lon), code)
+            for code, (lat, lon) in view.positions.items()
+        ),
+        default=None,
     )
-    if not near or near[0][0] > loc.other_station_radius_m:
+    if near is None or not (near[1] in boarding or any(near[1] not in e for e in ends)):
+        return []  # the nearest station is where a trip starts or ends, or none is known
+    dist, code = near
+    radius = loc.station_radius_m if code in boarding else loc.other_station_radius_m
+    if dist > radius or fix.acc > radius:
         return []
-    code = near[0][1]
-    return [Zone(code, *view.positions[code], float(loc.other_station_radius_m))]
+    return [Zone(code, *view.positions[code], float(radius))]
 
 
 STILL_LEAD = timedelta(minutes=5)  # Q10: still fresh (STALE_LOCATION) when the departure poll runs

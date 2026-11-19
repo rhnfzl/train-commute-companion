@@ -69,13 +69,17 @@ def _window_schedule(
     p: Profile, d: Direction, j: UsualJourney, service_date: date, stay_from: datetime | None
 ) -> DatedSchedule:
     """Window mode: any departure from window[0] to window[1], both inclusive. The minimum stay
-    moves the start to arrival + stay, but never past the latest time. No usual train, so a
-    baseline is never adopted."""
+    moves the start to arrival + stay, but never past the latest time. A stay that ends after
+    the latest time makes that day's misses silent: the user may still be inside the stay when
+    the train TCC follows leaves. No usual train, so a baseline is never adopted."""
     start = _local(datetime.combine(service_date, j.window[0]), "start")
     end_day = service_date + timedelta(days=1 if j.window[1] < j.window[0] else 0)
     end = _local(datetime.combine(end_day, j.window[1]), "end")
+    pick = j.pick
     if j.min_stay_min and stay_from is not None:
         stayed = stay_from.astimezone(UTC) + timedelta(minutes=j.min_stay_min)
+        if stayed > end.astimezone(UTC) and pick == "earliest":
+            pick = "earliest_silent"
         start = min(max(start.astimezone(UTC), stayed), end.astimezone(UTC)).astimezone(TZ)
     return DatedSchedule(
         OccurrenceKey(p.id, d, service_date),
@@ -83,7 +87,7 @@ def _window_schedule(
         (start.astimezone(UTC) - timedelta(minutes=active_lead(j))).astimezone(TZ),
         (end.astimezone(UTC) + timedelta(minutes=1)).astimezone(TZ),  # half-open: end included
         "window",
-        j.pick,
+        pick,
         end,
     )
 

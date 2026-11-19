@@ -617,7 +617,7 @@ class ProfileEditorFlow:
             stay = user_input.get("min_stay")
             if isinstance(stay, float) and stay.is_integer():
                 stay = int(stay)
-            if stay:
+            if stay is not None:  # 0 turns off the stay this day would inherit
                 override["min_stay_min"] = stay
             days = {k: v for k, v in self._editor_values[key].items() if k != day}
             if override:

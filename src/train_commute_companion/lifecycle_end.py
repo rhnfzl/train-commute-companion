@@ -59,9 +59,12 @@ def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transi
         if f < len(lock.legs) and may_be_on(lock.legs[f], now):
             retained += (replace(lock, legs=lock.legs[f:]),)
         state = s.direction_state
+        # a known other station followed by itself and let go: the usual origin again
+        back = lock.legs[0].board_station == s.boarding_station
         s = replace(
             s,
             lock=None,
+            boarding_station=None if back else s.boarding_station,
             retained=retained,
             travelling=False,
             tap_at=None,

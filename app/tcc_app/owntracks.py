@@ -25,7 +25,9 @@ def parse(body: bytes) -> Fix | None:
         return None  # a malformed acc is not "accuracy unknown": the fix is not trusted
     regions = msg.get("inregions")
     names = [r for r in regions if isinstance(r, str)] if isinstance(regions, list) else []
-    return Fix(lat, lon, at, acc, frozenset(names))
+    vel = number(msg.get("vel"))  # km/h; iOS sends -1 when unknown
+    speed = vel / 3.6 if vel is not None and vel >= 0 else None
+    return Fix(lat, lon, at, acc, frozenset(names), speed)
 
 
 def handler(follower: Follower) -> Callable[[bytes], None]:

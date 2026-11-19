@@ -250,3 +250,31 @@ async def test_telegram_fix_with_a_malformed_accuracy_is_not_trusted(app):
         await app.bot.handle(update)
         await app.follower.drain()
     assert spied(app) == []
+
+
+def test_moved_speed_between_two_fixes():
+    from tcc_app.follow import moved_speed
+
+    a = Fix(52.0, 5.0, at("08:20"), 10)
+    b = Fix(52.009, 5.0, at("08:21"), 10)  # about 1 km a minute later
+    assert 15 < moved_speed(a, b) < 17
+    assert moved_speed(None, b) is None
+    assert moved_speed(a, Fix(52.009, 5.0, at("08:20:10"), 10)) is None  # too close in time
+    assert moved_speed(a, Fix(52.009, 5.0, at("08:40"), 10)) is None  # too far apart
+
+
+async def test_speed_between_fixes_reaches_the_core(app):
+    """Telegram sends no speed: the speed between two fixes is the riding sign (Q12), so a
+    station passed by car or train is no stop."""
+    seen = []
+    orig = app.rt.report_location
+
+    async def spy(profile_id, event, *rest, **kw):
+        seen.append((event.zone, event.kind, event.evidence.speed))
+        return await orig(profile_id, event, *rest, **kw)
+
+    app.rt.report_location = spy
+    await feed(app, *FAR, "08:20")
+    await feed(app, *UT, "08:30")  # about 100 km in 10 minutes
+    ((zone, kind, speed),) = seen
+    assert (zone, kind) == ("UT", "enter") and speed is not None and speed >= 8

@@ -273,6 +273,9 @@ async def test_guided_window_profile_and_day_overrides_round_trip(hass, monkeypa
     )
     assert flow["step_id"] == "profile_day_pick"
     assert "return Friday" in flow["description_placeholders"]["overrides"]
+    flow = await configure(hass, flow, {"day": "return:thu"})
+    flow = await configure(hass, flow, {"mode": "default", "pick": "default", "min_stay": 0})
+    assert flow["step_id"] == "profile_day_pick"  # 0 turns the stay off on Thursday
     flow = await configure(hass, flow, {"day": "done"})
     assert flow["step_id"] == "notify" and not profiles_path(hass).exists()
     flow = await configure(hass, flow, {"notify_service": NOTIFY})
@@ -283,7 +286,10 @@ async def test_guided_window_profile_and_day_overrides_round_trip(hass, monkeypa
     assert "first_train" not in saved
     assert saved["mode"] == "window" and saved["window"] == ["15:00", "20:00"]
     assert saved["min_stay_min"] == 480
-    assert saved["by_weekday"] == {"fri": {"window": ["13:00", "18:00"], "min_stay_min": 300}}
+    assert saved["by_weekday"] == {
+        "fri": {"window": ["13:00", "18:00"], "min_stay_min": 300},
+        "thu": {"min_stay_min": 0},
+    }
 
 
 def shown(flow) -> dict:

@@ -385,15 +385,19 @@ def find_next_good(
     kept: ClassifiedLeg | None = None,
     n_before: int = 0,
     not_before: datetime | None = None,
+    earliest: bool = False,
 ) -> Connection | None:
     """The next good connection from `station` (default the origin), not starting on `after`
     and not leaving before `not_before`. Both only leave the ranking: identity is judged on the
-    whole answer (6.1)."""
+    whole answer (6.1). A window day and an other boarding station (`earliest`) take the
+    earliest good one; elsewhere the usual route wins."""
     at = station or boarding_origin(s, ctx)
     floor = None if not_before is None else to_utc(not_before)
+    transfers = ctx.profile.journey(ctx.direction).transfers
+    earliest = earliest or ctx.schedule.mode == "window" or at == s.boarding_station
     c, _ = choose_replacement(
         answer,
-        usual_remaining=remaining_pattern(ctx.profile.journey(ctx.direction).transfers, at),
+        usual_remaining=None if earliest else remaining_pattern(transfers, at),
         candidates=[
             c
             for c in answer.connections
@@ -428,8 +432,6 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
     q = answer.query
     if (q.origin, q.destination) != (boarding_origin(s, ctx), p.destination(d)):
         return unchanged
-    if s.prompt is not None and s.prompt.stage == "pick":
-        return unchanged  # the user picks the train from the other station
     if s.released or s.boarding_station or ctx.schedule.pick == "on_leave":
         # the user was never seen near the train let go, follows none until leaving, or stands
         # at an other station: the next train they can catch, never the usual one
@@ -745,15 +747,14 @@ def apply_action(s: OccurrenceState, ctx: Ctx, action: UserAction) -> Transition
 
 def _confirm_station(s: OccurrenceState, station: str) -> OccurrenceState:
     """The user stands at `station`. A lock whose first train boards elsewhere and was not ridden
-    goes; the next poll or the user's pick follows a train from there."""
+    goes; the next poll or the user's pick follows a train from there. The question stays open
+    until a train is chosen, so a failed choice can be tried again."""
     s = replace(
         s,
         boarding_station=station,
         at_station=True,
         travelling=True,
         errand_deadline=None,
-        released=False,
-        prompt=None,
     )
     lock = s.lock
     if lock is None or lock.legs[0].board_station == station:
@@ -1957,6 +1958,8 @@ def _locate(
         home = _missed_from_home(s, ctx, merged_pool(seen), event)  # Q3: a home fix after departure
         if home is not None:
             return home
+    if event.zone == p.origin(d) and s.prompt is not None and s.prompt.stage != "remember":
+        s = replace(s, prompt=None)  # at the usual station after all: an older question is void
     if event.zone == p.origin(d) and s.boarding_station is not None:
         if s.lock is not None and s.lock.legs[0].state in _DEPARTED:
             return Transition(s, ())  # riding from the other station through the usual one
@@ -2008,6 +2011,7 @@ ASK_CHOICES = (("yes", "Yes"), ("other", "Other train"), ("no", "No"))
 
 REMEMBER_CHOICES = (("remember", "Yes"), ("forget", "No"))
 PICK_MAX = 3
+RIDE_GAP = timedelta(minutes=30)  # at another station this recently: a stop of a train ridden
 
 
 def _prompt(
@@ -2018,9 +2022,10 @@ def _prompt(
     text: str,
     choices: tuple[tuple[str, str], ...],
     name: str,
+    station: str | None = None,
 ) -> Transition:
-    """A new question about the station `s` boards at, replacing any open one."""
-    station = present(s.boarding_station)
+    """A new question about `station` (default the one `s` boards at), replacing any open one."""
+    station = station or present(s.boarding_station)
     pid = prompt_id(s.key, station, stage, ctx.now)
     prompt = StationPrompt(pid, station, stage, None, choices, ctx.now, name)
     facts = AlertFacts(prompt_id=pid, choices=choices)
@@ -2034,12 +2039,16 @@ def remember_prompt(s: OccurrenceState, ctx: Ctx, name: str) -> Transition:
     return _prompt(s, ctx, EventKind.STATION_REMEMBER, "remember", text, REMEMBER_CHOICES, name)
 
 
-def pick_prompt(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, name: str) -> Transition:
-    """After Other train: up to PICK_MAX next good trains from the station, as buttons."""
-    station, found = present(s.boarding_station), []
+def pick_prompt(
+    s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, station: str, name: str
+) -> Transition:
+    """After Other train: up to PICK_MAX next good trains from `station`, as buttons. Nothing
+    is confirmed yet, so an unanswered question changes nothing."""
+    found: list[Connection] = []
     floor: datetime | None = None
+    here = replace(s, at_station=True)
     for _ in range(PICK_MAX):
-        c = find_next_good(s, ctx, answer, station=station, not_before=floor)
+        c = find_next_good(here, ctx, answer, station=station, not_before=floor, earliest=True)
         if c is None:
             break
         found.append(c)
@@ -2053,15 +2062,18 @@ def pick_prompt(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer, name: str)
         for t in (c.legs[0].train.planned_departure.astimezone(TZ) for c in found)
     )
     text = f"which train from {name}?"
-    return _prompt(s, ctx, EventKind.STATION_ASK, "pick", text, choices, name)
+    return _prompt(s, ctx, EventKind.STATION_ASK, "pick", text, choices, name, station)
 
 
 def _at_other_station(
     s: OccurrenceState, ctx: Ctx, event: LocationEvent, answer: ProviderAnswer | None
 ) -> Transition:
     """The phone is at a station that is not where this direction starts. Driving past says
-    nothing. A known station (the profile's or a remembered one) is followed by itself: the next
-    train the user can catch there, told once. Any other station is asked about once per day,
+    nothing, and nor does a station minutes after another one: a train TCC does not follow stops
+    at many. A known station (the profile's or a remembered one) with no train followed is
+    followed by itself: the next train the user can catch there, told once. That lock stays
+    provisional until a fix inside the station circle, so a walk past it is let go quietly. Any
+    other station, or a known one while TCC holds its own guess, is asked about once per day,
     with Yes, Other train and No; no answer does nothing."""
     zone, at, ev = present(event.zone), to_utc(event.at), event.evidence
     if (ev.speed or 0.0) >= RIDING_SPEED or _activity(ev, at, _RIDING_ACTIVITY) is not None:
@@ -2073,27 +2085,33 @@ def _at_other_station(
         first = event.at
     if at - to_utc(first) < timedelta(minutes=loc.other_station_dwell_min):
         return Transition(s, ())
-    known = zone in ctx.profile.journey(ctx.direction).other_stations or zone in ctx.remembered
+    places = {
+        place_zone(ctx.profile, ctx.profile.home_station),
+        place_zone(ctx.profile, ctx.profile.work_station),
+    }
+    if any(
+        z != zone and z not in places and at - to_utc(t) < RIDE_GAP
+        for z, t in s.zone_reports.items()
+    ):
+        return Transition(s, ())  # at another station minutes ago: a stop of a train ridden
+    known = s.lock is None and (
+        zone in ctx.profile.journey(ctx.direction).other_stations or zone in ctx.remembered
+    )
     if not known and zone in s.asked_stations:
         return Transition(s, ())
     if answer is None or answer.query.origin != zone:
         return Transition(s, ())  # the next report asks NS again
-    c = find_next_good(replace(s, at_station=True), ctx, answer, station=zone)
+    c = find_next_good(replace(s, at_station=True), ctx, answer, station=zone, earliest=True)
     if c is None:
         return Transition(s, ())
     first_leg, dest = c.legs[0], c.legs[-1].alight.name
     when, name = hhmm(first_leg.train.planned_departure), first_leg.board.name
     if known:
-        here = replace(
-            s,
-            boarding_station=zone,
-            at_station=True,
-            travelling=True,
-            errand_deadline=None,
-            released=False,
-        )
-        new = journey_of(c, LockSource.STATION, Commitment.COMMITTED, answer.fetched_at)
-        written = present(write_lock(here, new, expect=s.lock, now=ctx.now))
+        # not at_station: the wide circle is no proof of boarding (`_never_boarded`)
+        deadline = (at + ERRAND_TIMEOUT).astimezone(TZ)
+        here = replace(s, boarding_station=zone, travelling=True, errand_deadline=deadline)
+        new = journey_of(c, LockSource.LOCATION, Commitment.PROVISIONAL, answer.fetched_at)
+        written = present(write_lock(here, new, expect=None, now=ctx.now))
         pool = merged_pool((answer,))
         return _with_status(written, ctx, pool, f"at {name}: following your ")
     pid = prompt_id(s.key, zone, "ask", ctx.now)

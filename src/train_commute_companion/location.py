@@ -60,6 +60,7 @@ class Fix:
     at: datetime
     acc: float | None = None
     regions: frozenset[str] = frozenset()
+    speed: float | None = None  # m/s, when the source reports one (Q12 riding sign)
 
 
 def number(v: object) -> float | None:
