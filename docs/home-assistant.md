@@ -98,7 +98,7 @@ The file is checked again about every 10 seconds. A valid edit becomes the activ
 
 Per profile and direction (`outbound`, `return`):
 
-- Sensors: status, lock (the trains you are following), next connection, earlier train advice, works ahead, one sensor per leg and one per transfer. The lock sensor shows the usual train from the moment the window opens. Its `usual_departure` attribute is the usual first train for that day (`HH:MM`), so an automation can tell when you took a later train. An automation that treats "locked" as "commute active" should check the time instead (see the quiet early watch in [notification preferences](notification-preferences.md)).
+- Sensors: status, lock (the trains you are following), next connection, earlier train advice, works ahead, one sensor per leg and one per transfer. The lock sensor shows the usual train from the moment the window opens. Its `usual_departure` attribute is the usual first train for that day (`HH:MM`), so an automation can tell when you took a later train. A window day has no usual train: it shows a `window` attribute with the earliest and latest departure instead (`["07:00", "10:00"]`, the start moved by a minimum stay). An automation that treats "locked" as "commute active" should check the time instead (see the quiet early watch in [notification preferences](notification-preferences.md)).
 - Buttons: leaving, not travelling, choose next.
 
 Per profile: a health sensor and a "not travelling today" button.

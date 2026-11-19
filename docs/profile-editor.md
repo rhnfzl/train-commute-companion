@@ -33,6 +33,16 @@ Valid edits become active through the existing profile reload. Invalid edits do 
 
 The editor preserves settings it does not display: location, advice thresholds, quiet hours, extra dates, explicit monitoring windows, active leads (`active_lead_min`), overnight return offsets and unused transfer minimums. Other profiles stay unchanged.
 
+## Window mode and settings by day
+
+The main form has a mode for each direction. Fixed follows your usual train. Window follows the earliest good train between the two window times. In window mode the first train can stay blank, and the latest time is required. The same form sets the train choice and the minimum stay. See [Schedules](weekday-schedules.md#window-mode).
+
+Turn on **Set a different mode, window, train choice or stay for some days** in the details form. A loop then edits one day at a time. Pick a day, change it, and save. Fields left on Same as every day, or blank, use the normal setting. A day with only normal settings is removed. Choose Done to finish.
+
+A fixed profile keeps its YAML shape. The editor writes `mode`, `pick` and `min_stay_min` only when they matter.
+
+## Weekday departure times
+
 Turn on **Edit weekday departure times** in the details form to set different outbound and return times for each weekday. Blank fields use the direction's default time. An overnight return uses the weekday when the commute starts.
 
 Weekday overrides shift the monitoring window by the same interval as the departure time. The core learns a separate usual route for each overridden weekday. See [Weekday schedules](weekday-schedules.md).
