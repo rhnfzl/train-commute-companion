@@ -113,14 +113,9 @@ class Choose:
     # the fresh healthy answers the connection was picked from (the latest poll): identity
     # (6.1) and the change from a kept leg (rule 1) are judged on them, never on the copy alone
     answers: tuple[ProviderAnswer, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ConfirmStation:
-    """Yes or Other train: the user boards at `station`, not where the direction starts."""
-
-    service_date: date | None
-    station: str
+    # Yes or a picked time: the user boards at this other station. It is confirmed together
+    # with the train, so a refused choice changes neither
+    station: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +126,7 @@ class SetPrompt:
     prompt: StationPrompt | None
 
 
-UserAction = Choose | Leaving | NotTravelling | ConfirmStation | SetPrompt
+UserAction = Choose | Leaving | NotTravelling | SetPrompt
 
 _STATION_REPLACES = (LockSource.AUTO, LockSource.LOCATION)
 _STATUS_SLOT = "at_station#"  # Q1: the station message of this occurrence was told
@@ -682,6 +677,9 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
     c = action.connection
     if not action.answers:
         return _refuse(s, ctx, "no fresh NS answer to check it against")
+    before = s
+    if action.station is not None:
+        s = _confirm_station(s, action.station)
     pool = merged_pool(action.answers)
     source = _ridden_source(s, c.legs[0].train, ctx.now)
     # the kept prefix comes from the journey the choice continues, never from another one
@@ -690,7 +688,7 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
     head = _missed_head(s, source)
     check = _choice_check(s, ctx, pool, c, source, head, done)
     if not check.ok:
-        return _refuse(s, ctx, check.reason)
+        return _refuse(before, ctx, check.reason)
     riding = source is not None or s.travelling
     new = journey_of(
         c,
@@ -713,8 +711,6 @@ def apply_action(s: OccurrenceState, ctx: Ctx, action: UserAction) -> Transition
         return _choose(s, ctx, action)
     if isinstance(action, SetPrompt):  # not a plan fact: polls in flight stay valid
         return Transition(replace(s, prompt=action.prompt), ())
-    if isinstance(action, ConfirmStation):
-        return Transition(bumped(s, _confirm_station(s, action.station)), ())
     gen = s.generation + 1
     if isinstance(action, Leaving):
         lock = None if s.lock is None else replace(s.lock, commitment=Commitment.COMMITTED)
@@ -746,9 +742,8 @@ def apply_action(s: OccurrenceState, ctx: Ctx, action: UserAction) -> Transition
 
 
 def _confirm_station(s: OccurrenceState, station: str) -> OccurrenceState:
-    """The user stands at `station`. A lock whose first train boards elsewhere and was not ridden
-    goes; the next poll or the user's pick follows a train from there. The question stays open
-    until a train is chosen, so a failed choice can be tried again."""
+    """The user stands at `station`, read only with the train chosen there (`Choose.station`).
+    A lock whose first train boards elsewhere and was not ridden goes."""
     s = replace(
         s,
         boarding_station=station,

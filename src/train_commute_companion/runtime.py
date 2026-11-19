@@ -54,7 +54,6 @@ from train_commute_companion.ledger import (
 )
 from train_commute_companion.lifecycle import (
     Choose,
-    ConfirmStation,
     PollAnswers,
     SetPrompt,
     UserAction,
@@ -1689,11 +1688,13 @@ class Runtime:
         service_date: date | None = None,
         direction: Direction | None = None,
         answers: tuple[ProviderAnswer, ...] | None = None,
+        station: str | None = None,
     ) -> Refused | None:
         """A train named by its clock time (shells): the core finds the occurrence, the station
         and the connection, with one live request under the shared budget (rule 14). A refusal
         of the choice itself is also pushed, loudly. `answers`: a fresh answer from the boarding
-        station the caller already holds, so no second request can fail after it."""
+        station the caller already holds, so no second request can fail after it. `station`:
+        an other boarding station, confirmed only together with the train chosen there."""
         now = self._clock.now()
         self._create_occurrences(now)
         cands = sorted(
@@ -1714,11 +1715,13 @@ class Runtime:
         )
         if isinstance(target, Refused):
             return target
+        if station is not None:
+            target = replace(target, station=station)
         occ = target.occ
         k = okey(occ.key)
         # rule 21: what the choice is judged on must still hold when it is written
         request = OccurrenceRequest.capture(occ)
-        if answers is None or target.station != boarding_origin(occ, target.ctx):
+        if answers is None or target.station != (station or boarding_origin(occ, target.ctx)):
             fetched = await self._fetch_choice(target, k)
             if isinstance(fetched, Refused):
                 return fetched
@@ -1732,7 +1735,7 @@ class Runtime:
             return gone
         if request.phase_for(now_occ) is ResultPhase.STALE:
             return Refused("your journey changed while NS answered; try again", RefusalKind.RETRY)
-        choices = [Choose(occ.key.service_date, c, answers) for c in ranked]
+        choices = [Choose(occ.key.service_date, c, answers, station) for c in ranked]
         d = occ.key.direction
         why = [self._choice_refusal(profile_id, d, c, gone) for c in choices]
         # the earliest arrival that passes; when none does, the earliest is refused loudly
@@ -1759,18 +1762,29 @@ class Runtime:
             return await self.act(pid, SetPrompt(day, None), d)
         if q.stage == "remember":
             return self._remember_station(found, q.station)
-        lock = found.lock
-        if (
-            lock is not None
-            and lock.commitment is Commitment.COMMITTED
-            and lock.legs[0].board_station != q.station
-        ):
+
+        def void(s: OccurrenceState | None) -> bool:
+            """Answered, or a train from elsewhere committed (a leave, a station fix)."""
+            lock = None if s is None else s.lock
+            return s is None or (
+                lock is not None
+                and lock.commitment is Commitment.COMMITTED
+                and lock.legs[0].board_station != q.station
+            )
+
+        if void(found):
             return Refused("this question has expired")
+        request = OccurrenceRequest.capture(found)
         got = await self._trips_from(found, q.station)
         if isinstance(got, Refused):
             return got
-        if self._open_prompt(prompt_id) is None:
-            return Refused("this question has expired")  # answered or void while NS answered
+        # rule 21: rechecked on what holds now, with no await before the write
+        now_occ = self._open_prompt(prompt_id)
+        if now_occ is None or void(now_occ):
+            return Refused("this question has expired")
+        if request.phase_for(now_occ) is ResultPhase.STALE:
+            return Refused("your journey changed while NS answered; try again", RefusalKind.RETRY)
+        found = now_occ
         if answer == "other":
             refused = self._offer_trains(found, q.station, q.name, got)
             await self._deliver()
@@ -1780,10 +1794,10 @@ class Runtime:
         else:
             train = present(q.train)
             at, number = train.planned_departure.astimezone(TZ).time(), train.train_number
-        refused = await self.act(pid, ConfirmStation(day, q.station), d)
-        refused = refused or await self.choose_at(
-            pid, at, train_number=number, service_date=day, direction=d, answers=(got,)
-        )
+        refused = await self.choose_at(
+            pid, at, train_number=number, service_date=day, direction=d, answers=(got,),
+            station=q.station,
+        )  # fmt: skip
         if refused is not None:
             return refused  # the question stays open
         if self._open_prompt(prompt_id) is not None:

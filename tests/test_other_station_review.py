@@ -19,7 +19,7 @@ from test_window_mode import rig_for as window_rig
 
 from train_commute_companion.disruptions import update_disruptions
 from train_commute_companion.location import Evidence, Fix, LocationEvent
-from train_commute_companion.model import DirectionState, EventKind
+from train_commute_companion.model import Direction, DirectionState, EventKind
 from train_commute_companion.providers.base import (
     ActiveDisruption,
     ActiveDisruptions,
@@ -424,3 +424,51 @@ async def test_one_precise_fix_at_a_configured_station_commits(tmp_path):
 
 async def test_one_precise_fix_at_a_remembered_station_commits(tmp_path):
     await _one_precise_fix_at_venlo(tmp_path, remembered=True)
+
+
+async def test_a_refused_pick_changes_nothing(tmp_path):
+    """The picked train is gone from NS data by the time it is tapped: the refusal leaves the
+    station, travel facts and question as they were, and no poll follows another train."""
+    rig, _ = await at_venlo(tmp_path)
+    (ask,) = of(rig, EventKind.STATION_ASK)
+    assert await rig.rt.answer_prompt(ask.facts.prompt_id, "other") is None
+    before = rig.occ(KEY)
+    assert before.prompt.stage == "pick" and ("t2006", "20:06") in before.prompt.choices
+    rig.provider.world = [c for c in rig.provider.world if c.legs[0].train.train_number != "6066"]
+    refused = await rig.rt.answer_prompt(before.prompt.id, "t2006")
+    assert refused is not None
+    s = rig.occ(KEY)
+    assert (s.lock, s.boarding_station, s.travelling, s.at_station, s.prompt) == (
+        before.lock,
+        before.boarding_station,
+        before.travelling,
+        before.at_station,
+        before.prompt,
+    )
+    await rig.run_until("20:10")
+    s = rig.occ(KEY)
+    assert s.boarding_station is None
+    assert s.lock is None or s.lock.legs[0].board_station != "VL"
+
+
+async def test_a_leave_while_ns_answers_voids_the_yes(tmp_path):
+    """I'm leaving commits the usual station's train while NS answers the Yes: the answer that
+    comes back must not replace it."""
+    rig = await station_rig(tmp_path)
+    await rig.run_until("16:20")
+    phone = Phone(rig)
+    await phone.fix(ROAD, "16:20")
+    await phone.fix(NEAR_VL, "16:22")
+    (ask,) = of(rig, EventKind.STATION_ASK)
+    usual = rig.occ(KEY).lock.legs[0].train
+
+    async def leave_meanwhile(q) -> None:
+        rig.provider.hook = None
+        assert await rig.rt.leaving("p1", direction=Direction.RETURN) is None
+
+    rig.provider.hook = leave_meanwhile
+    refused = await rig.rt.answer_prompt(ask.facts.prompt_id, "yes")
+    assert refused is not None
+    s = rig.occ(KEY)
+    assert s.lock.legs[0].train == usual and s.lock.commitment.value == "committed"
+    assert s.boarding_station is None
