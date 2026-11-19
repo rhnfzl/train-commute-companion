@@ -383,3 +383,46 @@ async def test_back_at_the_usual_station_follows_a_train_from_there(tmp_path):
     s = rig2.occ(KEY)
     assert s.boarding_station is None
     assert s.lock.legs[0].board_station == "RTD" and s.lock.legs[0].train.train_number == "3576"
+
+
+async def test_auto_lock_counts_as_unfollowed(tmp_path):
+    rig = await rig_for(tmp_path, other="other_stations: [VL]")
+    await rig.run_until("16:20")
+    s = rig.occ(KEY)
+    assert s.lock.source.value == "auto" and s.lock.commitment.value != "committed"
+    phone = Phone(rig)
+    await phone.fix(ROAD, "16:20")
+    assert await phone.fix(NEAR_VL, "16:22") == [("VL", "enter")]
+    s = rig.occ(KEY)
+    assert s.boarding_station == "VL" and s.lock.source.value == "station"
+    assert s.lock.legs[0].train.train_number == "6036"  # the 19:36, the next one from Venlo
+    assert s.direction_state is DirectionState.LOCKED
+
+
+async def test_committed_lock_counts_as_followed(tmp_path):
+    rig = await rig_for(tmp_path, other="other_stations: [VL]")
+    await rig.run_until("16:20")
+    assert await rig.rt.leaving("p1") is None  # the tap commits the 16:36
+    phone = Phone(rig)
+    await phone.fix(ROAD, "16:20")
+    calls = len(rig.provider.calls)
+    assert await phone.fix(NEAR_VL, "16:22") == []  # no zone: nothing is sent or asked
+    s = rig.occ(KEY)
+    assert s.boarding_station is None and s.lock.legs[0].board_station == "RTD"
+    assert all(q.origin != "VL" for q in rig.provider.calls[calls:])
+
+
+async def test_other_train_keeps_the_question_open_when_ns_fails(tmp_path):
+    from train_commute_companion.providers.base import ProviderError
+
+    rig, _ = await at_venlo(tmp_path)
+    (ask,) = of(rig, EventKind.STATION_ASK)
+    rig.provider.error = lambda q: ProviderError("down") if q.origin == "VL" else None
+    refused = await rig.rt.answer_prompt(ask.facts.prompt_id, "other")
+    assert refused is not None and "try again" in refused.text
+    s = rig.occ(KEY)
+    assert s.prompt is not None and s.prompt.id == ask.facts.prompt_id
+    assert s.boarding_station is None
+    rig.provider.error = lambda q: None
+    assert await rig.rt.answer_prompt(ask.facts.prompt_id, "other") is None
+    assert rig.occ(KEY).prompt.stage == "pick"

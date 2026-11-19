@@ -77,4 +77,4 @@ Location only adds alerts. It can make a warning arrive sooner, or tell the comp
 
 ## Other boarding station
 
-Boarding somewhere other than your usual station is noticed from your position. See [Other boarding station](other-boarding-station.md).
+Boarding somewhere other than your usual station is noticed from your position. See [Other boarding station](other-boarding-station.md). Near such a station, while no train is followed, a fix counts when its accuracy is within `other_station_radius_m` (default 500 m), not only within the station radius.

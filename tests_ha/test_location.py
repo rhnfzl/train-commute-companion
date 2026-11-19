@@ -679,3 +679,50 @@ async def test_stopped_location_owner_ignores_queued_sync(hass):
     assert tracker._tracked == {}
     assert tracker._unsub_state is None
     assert tracker._unsub_data is None
+
+
+OT = (52.2, 5.2)  # another station on no route of the profile
+NEAR_OT = (52.2036, 5.2)  # about 400 m north of it
+
+
+def other_world():
+    from builders import ONE_TRANSFER, make_connection, make_leg
+
+    return [
+        *ONE_TRANSFER,
+        make_connection([make_leg("OT", "RTD", "08:20", "09:00", number="9020")]),
+    ]
+
+
+async def at_other_station(hass, **extra):
+    h = await setup_tcc(hass, VIA_UT, now="07:50", world=other_world())
+    await drive(h, "07:56")  # the window opened: TCC's own guess, not yet confirmed
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    h.provider.positions = {**POSITIONS, "OT": OT}
+    await h.entry.runtime_data.coordinator.async_refresh()
+    set_person(hass, *NEAR_OT, gps_accuracy=30, **extra)
+    await hass.async_block_till_done()
+    return h
+
+
+async def test_a_fix_near_another_station_asks_once_through_the_tracker(hass):
+    h = await at_other_station(hass)
+    assert await spied(h) == [("OT", "enter")]
+    asks = [c for c in h.pushes if "are you taking the 08:20 from OT" in c.data["message"]]
+    assert len(asks) == 1
+    assert [a["title"] for a in asks[0].data["data"]["actions"]] == ["Yes", "Other train", "No"]
+    action = asks[0].data["data"]["actions"][0]["action"]
+    hass.bus.async_fire("mobile_app_notification_action", {"action": action})
+    await hass.async_block_till_done()
+    await h.entry.runtime_data.coordinator.async_refresh()
+    lock = hass.states.get("sensor.office_a_outbound_lock")
+    assert lock.attributes["source"] == "choose"
+    status = hass.states.get("sensor.office_a_outbound_status")
+    assert status.attributes["boarding_station"] == "OT"
+
+
+async def test_driving_past_another_station_asks_nothing_through_the_tracker(hass):
+    h = await at_other_station(hass, speed=13.0)
+    assert await spied(h) == [("OT", "enter")]
+    assert not any("are you taking" in c.data["message"] for c in h.pushes)

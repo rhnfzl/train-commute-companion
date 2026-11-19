@@ -46,6 +46,15 @@ A platform change now turns loud exactly 15 minutes before the expected departur
 
 Back up the integration and its state before upgrading. The older 0.2.5 core cannot read any state saved by 0.2.6, even without the new key. A downgrade needs that pre-upgrade backup, as described above.
 
+### Upgrade to 0.3.0
+
+Update through HACS and restart Home Assistant. Existing profiles, settings and saved state remain valid.
+
+A direction can follow any train in a time window, with an optional minimum stay and settings per day. See [Schedules](weekday-schedules.md#window-mode).
+With location on, boarding at another station is noticed. A known station is followed by itself, and a new one gets one question with buttons. See [Other boarding station](other-boarding-station.md). New services: `answer_prompt` and `forget_station`.
+
+Back up the integration and its state before upgrading. The older 0.2.6 core cannot read any state saved by 0.3.0. A downgrade needs that pre-upgrade backup, as described above.
+
 ## Set up
 
 1. Get an NS API key from the NS API portal.

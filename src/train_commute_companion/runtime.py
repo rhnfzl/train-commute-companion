@@ -1760,11 +1760,11 @@ class Runtime:
             at = time(int(answer[1:3]), int(answer[3:5]))
             refused = await self.choose_at(pid, at, service_date=day, direction=d)
             return refused or await self.act(pid, SetPrompt(day, None), d)
+        if answer == "other":
+            return await self._offer_trains(found, q.station, q.name)
         refused = await self.act(pid, ConfirmStation(day, q.station), d)
         if refused is not None:
             return refused
-        if answer == "other":
-            return await self._offer_trains(okey(found.key), q.name)
         train = present(q.train)
         refused = await self.choose_at(
             pid,
@@ -1788,23 +1788,28 @@ class Runtime:
         t = remember_prompt(s, ctx, name)
         self._apply({k: (t.state, t.events)}, kind=Change.ACTION)
 
-    async def _offer_trains(self, k: str, name: str) -> Refused | None:
-        s = self._writer.st.occurrences.get(k)
-        ctx = None if s is None else self._ctx(s, self._clock.now())
-        if s is None or ctx is None or s.boarding_station is None:
+    async def _offer_trains(
+        self, found: OccurrenceState, station: str, name: str
+    ) -> Refused | None:
+        """Other train: what leaves from `station`, asked before anything changes, so a failed
+        request leaves the question open to try again."""
+        k = okey(found.key)
+        ctx = self._ctx(found, self._clock.now())
+        if ctx is None:
             return Refused("this question has expired")
         p, d = ctx.profile, ctx.direction
-        q = Query.for_profile(p, s.boarding_station, p.destination(d), self._clock.now())
+        q = Query.for_profile(p, station, p.destination(d), self._clock.now())
         deadline = to_utc(self._clock.now()) + POLL_DEADLINE
         got = await self._gate.trips(q, True, ctx.schedule.window_end, deadline)
         self._track_key_rejection(got if isinstance(got, str) else None, k, self._clock.now())
         if isinstance(got, str):
             await self._deliver()
             return Refused(f"NS did not answer ({got}); try again", RefusalKind.RETRY)
+        refused = await self.act(p.id, ConfirmStation(found.key.service_date, station), d)
         s = self._writer.st.occurrences.get(k)
         ctx = None if s is None else self._ctx(s, self._clock.now())
-        if s is None or ctx is None or is_resolved(s) or s.boarding_station is None:
-            return Refused("this question has expired")
+        if refused is not None or s is None or ctx is None or s.boarding_station != station:
+            return refused or Refused("this question has expired")
         t = pick_prompt(s, ctx, got, name)
         self._apply({k: (t.state, t.events)}, kind=Change.ACTION)
         await self._deliver()

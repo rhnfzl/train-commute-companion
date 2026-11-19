@@ -10,7 +10,7 @@ Only while a trip is open and no train is followed yet. That is before the first
 
 These do not count:
 
-- Driving past. A fix at 8 m/s or faster, or a fresh in-vehicle motion activity (Home Assistant), is ignored.
+- Driving past. A fix at 8 m/s or faster, or a fresh in-vehicle motion activity, is ignored. Only the Home Assistant source sends speed and activity. With OwnTracks or Telegram, set `other_station_dwell_min` above 0 if passing stations causes questions.
 - A station stop while you ride a followed train.
 - A fix inside your home or work zone.
 - The station where this direction starts or ends.

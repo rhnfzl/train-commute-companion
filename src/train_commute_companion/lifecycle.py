@@ -760,7 +760,7 @@ def _confirm_station(s: OccurrenceState, station: str) -> OccurrenceState:
         return s
     if lock.legs[0].state in _DEPARTED:
         return s  # already riding: the station is where a later choice boards
-    return replace(s, lock=None)
+    return replace(s, lock=None, direction_state=DirectionState.IDLE)
 
 
 # --- follow, relock, restore (7.4, 7.12 rules 2, 3, 8, 21) ---
@@ -1961,7 +1961,9 @@ def _locate(
         if s.lock is not None and s.lock.legs[0].state in _DEPARTED:
             return Transition(s, ())  # riding from the other station through the usual one
         # back at the usual station after all: a train from the other one is not taken
-        s = replace(s, boarding_station=None, lock=None)
+        s = replace(s, boarding_station=None)
+        if s.lock is not None:
+            s = replace(s, lock=None, direction_state=DirectionState.IDLE)
     if event.zone == boarding_origin(s, ctx):
         # one evidence pool: a newer watched answer's cancellation also rules a train out (rule 1)
         return _at_first_station(s, ctx, None if answer is None else merged_pool(seen))
