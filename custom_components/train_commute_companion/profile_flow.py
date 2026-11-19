@@ -193,8 +193,11 @@ class ProfileEditorFlow:
                 f"{direction}_pick": journey.get("pick", "earliest"),
                 f"{direction}_min_stay": journey.get("min_stay_min", 0),
             }
+        for direction in ("outbound", "return"):
+            journey = profile.get(direction, {})
+            if journey.get("mode") == "window" and "first_train" not in journey:
+                schedule[f"{direction}_time"] = ""  # blank: a window day needs no first train
         return {
-            **schedule,
             "name": profile.get("name", "commute"),
             "days": profile.get("days", ["mon", "tue", "wed", "thu", "fri"]),
             "home_station": profile.get("home_station"),
@@ -211,6 +214,7 @@ class ProfileEditorFlow:
                     ("buffer", "buffer_min", 10),
                 )
             },
+            **schedule,  # last: a window profile's blank first train wins
         }
 
     def _profile_schema(self, defaults: Mapping[str, Any]) -> vol.Schema:

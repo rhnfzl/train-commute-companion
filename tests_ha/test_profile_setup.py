@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 import pytest
+import voluptuous as vol
 import yaml
 from ha_rig import NOTIFY, PROFILE, fake_phone, profiles_path, write_profiles
 from homeassistant.config_entries import SOURCE_USER
@@ -283,3 +284,49 @@ async def test_guided_window_profile_and_day_overrides_round_trip(hass, monkeypa
     assert saved["mode"] == "window" and saved["window"] == ["15:00", "20:00"]
     assert saved["min_stay_min"] == 480
     assert saved["by_weekday"] == {"fri": {"window": ["13:00", "18:00"], "min_stay_min": 300}}
+
+
+def shown(flow) -> dict:
+    """What the frontend sends back for an untouched form: suggested values and defaults."""
+    out = {}
+    for key in flow["data_schema"].schema:
+        suggested = (key.description or {}).get("suggested_value")
+        if suggested not in (None, ""):
+            out[str(key)] = suggested
+        elif not isinstance(key.default, type(vol.UNDEFINED)):
+            out[str(key)] = key.default()
+    return out
+
+
+async def test_reopening_a_window_profile_saves_it_unchanged(hass):
+    raw = yaml.safe_load(PROFILE)
+    raw["profiles"][0]["return"] = {
+        "mode": "window",
+        "window": ["15:00", "20:00"],
+        "pick": "on_leave",
+        "min_stay_min": 480,
+        "buffer_min": 5,
+        "transfers": [],
+    }
+    write_profiles(hass, yaml.safe_dump(raw))
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "k"},
+        options={"profiles_path": str(profiles_path(hass)), "notify_service": NOTIFY},
+    )
+    entry.add_to_hass(hass)
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    with patch(CATALOGUE_CALL, return_value=CATALOGUE):
+        flow = await hass.config_entries.options.async_configure(
+            flow["flow_id"], {"next_step_id": "profiles"}
+        )
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"profile": "edit:p1"}
+    )
+    assert "return_time" not in shown(flow)  # blank: no first train is invented
+    flow = await hass.config_entries.options.async_configure(flow["flow_id"], shown(flow))
+    assert flow["step_id"] == "profile_details"
+    flow = await hass.config_entries.options.async_configure(flow["flow_id"], shown(flow))
+    assert flow["type"] is FlowResultType.ABORT and flow["reason"] == "profile_saved"
+    saved = yaml.safe_load(profiles_path(hass).read_text())["profiles"][0]["return"]
+    assert saved == raw["profiles"][0]["return"]
