@@ -439,6 +439,7 @@ async def test_a_provisional_known_station_lock_whose_train_has_not_left_expires
     s = rig.occ(KEY)
     assert s.boarding_station is None and s.retained == ()
     assert s.lock is None or s.lock.legs[0].board_station != "VL"
+    await rig.run_until("22:00")  # past the 20:36 and the window end
     assert loud_after(rig, "19:49") == []
 
 

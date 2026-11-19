@@ -248,6 +248,20 @@ async def test_1118_known_venlo_delay_is_told_once_across_the_errand_timeout(tmp
     assert told[0].created_at < at("20:36") < told[1].created_at
 
 
+async def test_1118_known_venlo_kept_lock_never_seen_boarding_ends_quietly(tmp_path):
+    """The kept lock of a known station with no fix after the one near it: it is followed to its
+    end and let go quietly there (never seen boarding, v0.2.6), not told as a lost journey."""
+    rig = await rig_for(tmp_path, other="other_stations: [VL]")
+    await to_venlo(rig)
+    await rig.run_until("21:29")
+    assert following(rig) == VENLO_2006
+    await rig.run_until("23:59")
+    assert loud_after(rig, "19:50") == []
+    s = rig.occ(KEY)
+    assert s is None or (s.lock is None and s.retained == ())
+    assert rig.rt.state.journey_records[KEY].train_arrival == at("21:06")
+
+
 @pytest.mark.parametrize("known", [True, False])
 async def test_1118_blerick_fix_before_the_poll_sees_the_2006_leave(tmp_path, known):
     """The 20:06 leaves Venlo 7 min late, at 20:13, and the Blerick zone event lands before the
