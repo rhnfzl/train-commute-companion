@@ -67,12 +67,34 @@
           "skip_public_holidays": "Skip Dutch public holidays",
           "require_accessible": "Ask NS for accessible journeys (assistance can require booking)",
           "disabled_categories": "Disable alert categories on every destination (health warnings remain enabled)",
-          "outbound_time": "Outbound first train (HH:MM)",
-          "return_time": "Return first train (HH:MM)",
+          "outbound_time": "Outbound first train (HH:MM), optional in window mode",
+          "return_time": "Return first train (HH:MM), optional in window mode",
           "outbound_transfers": "Outbound transfer stations, in travel order",
           "return_transfers": "Return transfer stations, in travel order",
           "outbound_buffer": "Minutes from your door to the outbound platform",
-          "return_buffer": "Minutes from your door to the return platform"
+          "return_buffer": "Minutes from your door to the return platform",
+          "outbound_mode": "Outbound mode",
+          "outbound_window_start": "Outbound window: earliest departure (HH:MM)",
+          "outbound_window_end": "Outbound window: latest departure (HH:MM)",
+          "outbound_pick": "Outbound train choice in window mode",
+          "outbound_min_stay": "Outbound minimum stay in minutes, 0 for none",
+          "return_mode": "Return mode",
+          "return_window_start": "Return window: earliest departure (HH:MM)",
+          "return_window_end": "Return window: latest departure (HH:MM)",
+          "return_pick": "Return train choice in window mode",
+          "return_min_stay": "Return minimum stay in minutes, 0 for none"
+        },
+        "data_description": {
+          "outbound_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
+          "outbound_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
+          "outbound_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
+          "outbound_pick": "Pick the train when I leave follows no train until you leave. Then it takes the next train you can catch. Without location it uses the earliest train with silent misses.",
+          "outbound_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work.",
+          "return_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
+          "return_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
+          "return_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
+          "return_pick": "Pick the train when I leave follows no train until you leave. Then it takes the next train you can catch. Without location it uses the earliest train with silent misses.",
+          "return_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work."
         }
       },
       "profile_details": {
@@ -93,7 +115,8 @@
           "channel_routine": "Routine and compensation reminder destinations",
           "edit_weekday_times": "Set different departure times by weekday",
           "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
-          "quiet_repeat_misses": "Silent missed-train message after the first one of the day"
+          "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
+          "edit_day_overrides": "Set a different mode, window, train choice or stay for some days"
         },
         "data_description": {
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
@@ -122,6 +145,28 @@
           "return_fri": "Friday return",
           "return_sat": "Saturday return",
           "return_sun": "Sunday return"
+        }
+      },
+      "profile_day_pick": {
+        "title": "Settings by day",
+        "description": "Pick a day to change, or Done to finish. Days you set now: {overrides}.",
+        "data": {
+          "day": "Day"
+        }
+      },
+      "profile_day": {
+        "title": "Settings for {day}",
+        "description": "Leave a field on Same as every day, or blank, to use the normal setting. A window needs both times. {report}",
+        "data": {
+          "mode": "Mode",
+          "window_start": "Window: earliest departure (HH:MM)",
+          "window_end": "Window: latest departure (HH:MM)",
+          "pick": "Train choice in window mode",
+          "min_stay": "Minimum stay in minutes"
+        },
+        "data_description": {
+          "mode": "A fixed day uses the first train you set for that weekday, or the normal first train.",
+          "min_stay": "Window days only. Blank or 0 uses the normal setting."
         }
       }
     },
@@ -218,12 +263,34 @@
           "skip_public_holidays": "Skip Dutch public holidays",
           "require_accessible": "Ask NS for accessible journeys (assistance can require booking)",
           "disabled_categories": "Disable alert categories on every destination (health warnings remain enabled)",
-          "outbound_time": "Outbound first train (HH:MM)",
-          "return_time": "Return first train (HH:MM)",
+          "outbound_time": "Outbound first train (HH:MM), optional in window mode",
+          "return_time": "Return first train (HH:MM), optional in window mode",
           "outbound_transfers": "Outbound transfer stations, in travel order",
           "return_transfers": "Return transfer stations, in travel order",
           "outbound_buffer": "Minutes from your door to the outbound platform",
-          "return_buffer": "Minutes from your door to the return platform"
+          "return_buffer": "Minutes from your door to the return platform",
+          "outbound_mode": "Outbound mode",
+          "outbound_window_start": "Outbound window: earliest departure (HH:MM)",
+          "outbound_window_end": "Outbound window: latest departure (HH:MM)",
+          "outbound_pick": "Outbound train choice in window mode",
+          "outbound_min_stay": "Outbound minimum stay in minutes, 0 for none",
+          "return_mode": "Return mode",
+          "return_window_start": "Return window: earliest departure (HH:MM)",
+          "return_window_end": "Return window: latest departure (HH:MM)",
+          "return_pick": "Return train choice in window mode",
+          "return_min_stay": "Return minimum stay in minutes, 0 for none"
+        },
+        "data_description": {
+          "outbound_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
+          "outbound_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
+          "outbound_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
+          "outbound_pick": "Pick the train when I leave follows no train until you leave. Then it takes the next train you can catch. Without location it uses the earliest train with silent misses.",
+          "outbound_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work.",
+          "return_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
+          "return_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
+          "return_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
+          "return_pick": "Pick the train when I leave follows no train until you leave. Then it takes the next train you can catch. Without location it uses the earliest train with silent misses.",
+          "return_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work."
         }
       },
       "profile_details": {
@@ -244,7 +311,8 @@
           "channel_routine": "Routine and compensation reminder destinations",
           "edit_weekday_times": "Set different departure times by weekday",
           "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
-          "quiet_repeat_misses": "Silent missed-train message after the first one of the day"
+          "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
+          "edit_day_overrides": "Set a different mode, window, train choice or stay for some days"
         },
         "data_description": {
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
@@ -333,6 +401,28 @@
           "intent_id": "Arrival being confirmed",
           "confirmed": "I confirm this destination and my actual arrival time",
           "edit": "Edit details instead of saving"
+        }
+      },
+      "profile_day_pick": {
+        "title": "Settings by day",
+        "description": "Pick a day to change, or Done to finish. Days you set now: {overrides}.",
+        "data": {
+          "day": "Day"
+        }
+      },
+      "profile_day": {
+        "title": "Settings for {day}",
+        "description": "Leave a field on Same as every day, or blank, to use the normal setting. A window needs both times. {report}",
+        "data": {
+          "mode": "Mode",
+          "window_start": "Window: earliest departure (HH:MM)",
+          "window_end": "Window: latest departure (HH:MM)",
+          "pick": "Train choice in window mode",
+          "min_stay": "Minimum stay in minutes"
+        },
+        "data_description": {
+          "mode": "A fixed day uses the first train you set for that weekday, or the normal first train.",
+          "min_stay": "Window days only. Blank or 0 uses the normal setting."
         }
       }
     },

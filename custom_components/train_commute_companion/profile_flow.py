@@ -38,6 +38,20 @@ from .profile_editor import (
     validate_text,
 )
 
+MODE_OPTIONS: list[SelectOptionDict] = [
+    {"value": "fixed", "label": "Fixed: follow my usual train"},
+    {"value": "window", "label": "Window: follow any train between two times"},
+]
+PICK_OPTIONS: list[SelectOptionDict] = [
+    {"value": "earliest", "label": "Earliest train, missed trains make a sound"},
+    {"value": "earliest_silent", "label": "Earliest train, missed trains are silent"},
+    {"value": "on_leave", "label": "Pick the train when I leave"},
+]
+DAY_NAMES = dict(
+    zip(WEEKDAYS, ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+)
+_OPTIONAL_TEXT = ("time", "window_start", "window_end")
+
 CATEGORY_LABELS = {
     "journey": "Journey changes",
     "transfers": "Connections",
@@ -67,6 +81,7 @@ class ProfileEditorFlow:
     _profile_id: str | None = None
     _pending_profile: str | None = None
     _editor_values: dict[str, Any] | None = None
+    _day_target: tuple[str, str] | None = None
     _profile_phase = ReviewPhase.SELECTING
 
     def _profile_channels(self) -> frozenset[NotificationChannel]:
@@ -166,7 +181,20 @@ class ProfileEditorFlow:
         profile: dict[str, Any] = next(
             (p for p in self._document.data["profiles"] if p["id"] == self._profile_id), {}
         )
+        schedule: dict[str, Any] = {}
+        for direction in ("outbound", "return"):
+            journey = profile.get(direction, {})
+            window = journey.get("window")  # fixed mode: an explicit watch window is kept
+            window = window if isinstance(window, list) and len(window) == 2 else ["", ""]
+            schedule |= {
+                f"{direction}_mode": journey.get("mode", "fixed"),
+                f"{direction}_window_start": window[0],
+                f"{direction}_window_end": window[1],
+                f"{direction}_pick": journey.get("pick", "earliest"),
+                f"{direction}_min_stay": journey.get("min_stay_min", 0),
+            }
         return {
+            **schedule,
             "name": profile.get("name", "commute"),
             "days": profile.get("days", ["mon", "tue", "wed", "thu", "fri"]),
             "home_station": profile.get("home_station"),
@@ -225,7 +253,6 @@ class ProfileEditorFlow:
             ),
         }
         for direction in ("outbound", "return"):
-            fields[vol.Required(f"{direction}_time")] = str
             fields[vol.Required(f"{direction}_transfers")] = transfers
             fields[vol.Required(f"{direction}_buffer")] = NumberSelector(
                 NumberSelectorConfig(
@@ -235,13 +262,27 @@ class ProfileEditorFlow:
                 )
             )
         # Suggested values also preserve an intentionally cleared input after a validation error.
-        return vol.Schema(
-            {
-                vol.Required(str(key), description={"suggested_value": defaults[str(key)]}): value
-                for key, value in fields.items()
-                if str(key) in defaults
-            }
-        )
+        schema: dict[Any, Any] = {
+            vol.Required(str(key), description={"suggested_value": defaults[str(key)]}): value
+            for key, value in fields.items()
+            if str(key) in defaults
+        }
+        for direction in ("outbound", "return"):
+            # blank text comes back as no key: a window day needs no first train
+            for name in _OPTIONAL_TEXT:
+                key = f"{direction}_{name}"
+                schema[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = str
+            choices = (("mode", MODE_OPTIONS, "fixed"), ("pick", PICK_OPTIONS, "earliest"))
+            for name, options, default in choices:
+                key = f"{direction}_{name}"
+                schema[vol.Optional(key, default=defaults.get(key, default))] = SelectSelector(
+                    SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
+                )
+            key = f"{direction}_min_stay"
+            schema[vol.Optional(key, default=defaults.get(key, 0))] = NumberSelector(
+                NumberSelectorConfig(min=0, max=1440, step=1, mode=NumberSelectorMode.BOX)
+            )
+        return vol.Schema(schema)
 
     async def async_step_profile(
         self, user_input: Mapping[str, Any] | None = None
@@ -317,15 +358,13 @@ class ProfileEditorFlow:
             except EditorError as err:
                 errors["base"], report = err.code, err.report
             else:
+                self._editor_values = details
                 if user_input.get("edit_weekday_times", False):
-                    self._editor_values = details
                     return await self.async_step_profile_weekdays()
-                self._profile_phase = ReviewPhase.REVIEWING
-                return await self._profile_ready()
+                return await self._after_weekdays()
         fields: dict[Any, Any] = {}
-        fields[
-            vol.Optional("edit_weekday_times", default=values.get("edit_weekday_times", False))
-        ] = BooleanSelector()
+        for key in ("edit_weekday_times", "edit_day_overrides"):
+            fields[vol.Optional(key, default=values.get(key, False))] = BooleanSelector()
         for key in ("compensation_reminder", "quiet_repeat_misses"):
             fields[
                 vol.Optional(
@@ -434,8 +473,8 @@ class ProfileEditorFlow:
             except EditorError as err:
                 errors["base"], report = err.code, err.report
             else:
-                self._profile_phase = ReviewPhase.REVIEWING
-                return await self._profile_ready()
+                self._editor_values = details
+                return await self._after_weekdays()
         fields: dict[Any, Any] = {}
         for direction in ("outbound", "return"):
             saved = existing.get(direction, {}).get("first_train_by_weekday", {})
@@ -447,8 +486,151 @@ class ProfileEditorFlow:
             data_schema=vol.Schema(fields),
             errors=errors,
             description_placeholders={
-                "outbound_default": self._editor_values["outbound_time"],
-                "return_default": self._editor_values["return_time"],
+                "outbound_default": self._editor_values.get("outbound_time") or "none",
+                "return_default": self._editor_values.get("return_time") or "none",
+                "report": report,
+            },
+        )
+
+    async def _after_weekdays(self) -> ConfigFlowResult:
+        assert self._editor_values is not None
+        if self._editor_values.get("edit_day_overrides", False):
+            existing: dict[str, Any] = (
+                next(
+                    (p for p in self._document.data["profiles"] if p["id"] == self._profile_id), {}
+                )
+                if self._document is not None
+                else {}
+            )
+            for direction in ("outbound", "return"):
+                key = f"{direction}_by_weekday"
+                if key not in self._editor_values:
+                    saved = existing.get(direction, {}).get("by_weekday", {})
+                    self._editor_values[key] = dict(saved) if isinstance(saved, dict) else {}
+            return await self.async_step_profile_day_pick()
+        self._profile_phase = ReviewPhase.REVIEWING
+        return await self._profile_ready()
+
+    def _day_summary(self) -> str:
+        assert self._editor_values is not None
+        lines = [
+            f"{direction} {DAY_NAMES[day]}: " + ", ".join(f"{k} {v}" for k, v in override.items())
+            for direction in ("outbound", "return")
+            for day, override in self._editor_values.get(f"{direction}_by_weekday", {}).items()
+            if day in DAY_NAMES
+        ]
+        return "; ".join(lines) or "none"
+
+    async def async_step_profile_day_pick(
+        self, user_input: Mapping[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Day overrides, one day at a time: pick a day, edit it, come back, or finish."""
+        if self._profile_phase is not ReviewPhase.EDITING or self._editor_values is None:
+            return self._editor_error("invalid_profile")
+        if user_input is not None:
+            target = user_input.get("day", "done")
+            if target == "done":
+                self._profile_phase = ReviewPhase.REVIEWING
+                return await self._profile_ready()
+            direction, _, day = str(target).partition(":")
+            if direction not in ("outbound", "return") or day not in DAY_NAMES:
+                return self._editor_error("invalid_profile")
+            self._day_target = (direction, day)
+            return await self.async_step_profile_day()
+        options: list[SelectOptionDict] = [{"value": "done", "label": "Done"}]
+        options += [
+            {"value": f"{direction}:{day}", "label": f"{DAY_NAMES[day]} {direction}"}
+            for direction in ("outbound", "return")
+            for day in WEEKDAYS
+        ]
+        return self.async_show_form(
+            step_id="profile_day_pick",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("day", default="done"): SelectSelector(
+                        SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
+                    )
+                }
+            ),
+            description_placeholders={"overrides": self._day_summary()},
+        )
+
+    async def async_step_profile_day(
+        self, user_input: Mapping[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if (
+            self._profile_phase is not ReviewPhase.EDITING
+            or self._document is None
+            or self._editor_values is None
+            or self._catalogue is None
+            or self._day_target is None
+        ):
+            return self._editor_error("invalid_profile")
+        direction, day = self._day_target
+        key = f"{direction}_by_weekday"
+        saved: dict[str, Any] = dict(self._editor_values[key].get(day, {}))
+        errors: dict[str, str] = {}
+        report = ""
+        if user_input is not None:
+            override: dict[str, Any] = {}
+            for name in ("mode", "pick"):
+                if user_input.get(name, "default") != "default":
+                    override[name] = user_input[name]
+            start, end = (str(user_input.get(f"window_{e}", "")).strip() for e in ("start", "end"))
+            if start or end:
+                override["window"] = [start, end]
+            stay = user_input.get("min_stay")
+            if isinstance(stay, float) and stay.is_integer():
+                stay = int(stay)
+            if stay:
+                override["min_stay_min"] = stay
+            days = {k: v for k, v in self._editor_values[key].items() if k != day}
+            if override:
+                days[day] = override
+            details = {**self._editor_values, key: days}
+            try:
+                self._pending_profile = edit_profile(
+                    self._document,
+                    self._profile_id,
+                    details,
+                    frozenset(self._catalogue),
+                    datetime.now(TZ).date(),
+                    available_channels=self._profile_channels(),
+                )
+            except EditorError as err:
+                errors["base"], report = err.code, err.report
+                saved = override
+            else:
+                self._editor_values = details
+                return await self.async_step_profile_day_pick()
+        window = saved.get("window")
+        window = window if isinstance(window, list) and len(window) == 2 else ["", ""]
+        default: list[SelectOptionDict] = [{"value": "default", "label": "Same as every day"}]
+        fields: dict[Any, Any] = {
+            vol.Optional("mode", default=saved.get("mode", "default")): SelectSelector(
+                SelectSelectorConfig(
+                    options=default + MODE_OPTIONS, mode=SelectSelectorMode.DROPDOWN
+                )
+            ),
+            vol.Optional("window_start", description={"suggested_value": window[0]}): str,
+            vol.Optional("window_end", description={"suggested_value": window[1]}): str,
+            vol.Optional("pick", default=saved.get("pick", "default")): SelectSelector(
+                SelectSelectorConfig(
+                    options=default + PICK_OPTIONS, mode=SelectSelectorMode.DROPDOWN
+                )
+            ),
+            vol.Optional(
+                "min_stay", description={"suggested_value": saved.get("min_stay_min")}
+            ): NumberSelector(
+                NumberSelectorConfig(min=0, max=1440, step=1, mode=NumberSelectorMode.BOX)
+            ),
+        }
+        return self.async_show_form(
+            step_id="profile_day",
+            data_schema=vol.Schema(fields),
+            errors=errors,
+            description_placeholders={
+                "day": f"{DAY_NAMES[day]} {direction}",
                 "report": report,
             },
         )

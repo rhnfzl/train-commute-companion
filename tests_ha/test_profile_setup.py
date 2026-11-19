@@ -242,3 +242,44 @@ async def test_editor_rejects_new_file_created_during_notification_tests(hass, m
     assert flow["errors"] == {"base": "file_changed"}
     assert not hass.config_entries.async_entries(DOMAIN)
     assert profiles_path(hass).read_text() == PROFILE
+
+
+async def test_guided_window_profile_and_day_overrides_round_trip(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    step1 = {k: v for k, v in VALUES.items() if k != "return_time"}
+    window = {"return_mode": "window", "return_window_start": "15:00"}
+    flow = await configure(hass, await guided(hass), {**step1, **window})
+    assert flow["step_id"] == "profile" and flow["errors"]["base"] == "invalid_profile"
+    assert "return.window" in flow["description_placeholders"]["report"]
+    window["return_window_end"] = "20:00"
+    flow = await configure(hass, flow, {**step1, **window, "return_min_stay": 480})
+    flow = await details(hass, flow, edit_day_overrides=True)
+    assert flow["step_id"] == "profile_day_pick"
+    flow = await configure(hass, flow, {"day": "return:fri"})
+    assert flow["step_id"] == "profile_day"
+    flow = await configure(hass, flow, {"mode": "fixed", "pick": "default"})
+    assert flow["step_id"] == "profile_day" and flow["errors"]["base"] == "invalid_profile"
+    flow = await configure(
+        hass,
+        flow,
+        {
+            "mode": "default",
+            "window_start": "13:00",
+            "window_end": "18:00",
+            "min_stay": 300,
+            "pick": "default",
+        },
+    )
+    assert flow["step_id"] == "profile_day_pick"
+    assert "return Friday" in flow["description_placeholders"]["overrides"]
+    flow = await configure(hass, flow, {"day": "done"})
+    assert flow["step_id"] == "notify" and not profiles_path(hass).exists()
+    flow = await configure(hass, flow, {"notify_service": NOTIFY})
+    with patch("custom_components.train_commute_companion.async_setup_entry", return_value=True):
+        flow = await configure(hass, flow, {"next_step_id": "test_ok"})
+    assert flow["type"] is FlowResultType.CREATE_ENTRY
+    saved = yaml.safe_load(profiles_path(hass).read_text())["profiles"][0]["return"]
+    assert "first_train" not in saved
+    assert saved["mode"] == "window" and saved["window"] == ["15:00", "20:00"]
+    assert saved["min_stay_min"] == 480
+    assert saved["by_weekday"] == {"fri": {"window": ["13:00", "18:00"], "min_stay_min": 300}}
