@@ -39,9 +39,9 @@ return:
 
 `min_stay_min` keeps a window day from starting too soon after you arrived. The day starts at the later of the window start and your arrival plus the stay. The arrival is the newest arrival on the other direction in the 24 hours before the window. TCC uses the first time your phone was at the destination, else the train arrival NS showed. An arrival you confirmed yourself wins over both.
 
-With an arrival at 09:05 and 480 minutes, the return starts at 17:05. A start after the latest time is capped at the latest time.
+With an arrival at 09:05 and 480 minutes, the return starts at 17:05. A start after the latest time is capped at the latest time. Then TCC follows the first train from the latest time on.
 
-TCC sends no NS request before the stay ends. If you leave early, it still follows a train: a leave of work, a station or an I'm leaving tap starts it.
+TCC does not poll NS before the stay ends. If you leave early, it still follows a train: a leave of work, a station or an I'm leaving tap starts it.
 
 `min_stay_min` works on window days only.
 
