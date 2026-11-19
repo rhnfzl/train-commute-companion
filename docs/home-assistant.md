@@ -48,12 +48,13 @@ Back up the integration and its state before upgrading. The older 0.2.5 core can
 
 ### Upgrade to 0.3.0
 
-Update through HACS and restart Home Assistant. Existing profiles, settings and saved state remain valid.
+Update through HACS and restart Home Assistant. The integration installs the matching `train-commute-companion==0.3.0` core automatically.
+Existing profiles, settings and saved state remain valid. Every new profile key is optional, and a profile without them works as before.
 
 A direction can follow any train in a time window, with an optional minimum stay and settings per day. See [Schedules](weekday-schedules.md#window-mode).
 With location on, boarding at another station is noticed. A known station is followed by itself, and a new one gets one question with buttons. See [Other boarding station](other-boarding-station.md). New services: `answer_prompt` and `forget_station`.
 
-Back up the integration and its state before upgrading. The older 0.2.6 core cannot read any state saved by 0.3.0. A downgrade needs that pre-upgrade backup, as described above.
+Back up the integration and its state before upgrading. The older 0.2.6 core cannot read any state saved by 0.3.0, even on a day with no window and no other station. Its decoder rejects the new saved fields: `remembered_stations`; per trip `boarding_station`, `prompt`, `asked_stations` and `station_seen`; and per journey record `seen_at` and `train_arrival`. A downgrade needs that pre-upgrade backup, as described above.
 
 ## Set up
 
