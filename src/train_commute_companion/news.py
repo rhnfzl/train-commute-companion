@@ -53,6 +53,8 @@ _SILENT = frozenset(
         EventKind.CAN_SEE_TRAIN_AGAIN,
         EventKind.ALL_GOOD,
         EventKind.AT_STATION,
+        EventKind.STATION_ASK,
+        EventKind.STATION_REMEMBER,
         EventKind.NEARLY_ON_TIME,
         EventKind.BACK_TO_NORMAL,
         EventKind.RESTORED,

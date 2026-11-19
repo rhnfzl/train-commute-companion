@@ -37,6 +37,7 @@ def with_settings(route: Profile, settings: Profile) -> Profile:
             active_lead_min=settings.journey(d).active_lead_min,
             pick=settings.journey(d).pick,
             min_stay_min=settings.journey(d).min_stay_min,
+            other_stations=settings.journey(d).other_stations,
         )
 
     return replace(
@@ -180,7 +181,8 @@ def occurrence_ctx(st: PersistedState, s: OccurrenceState, now: datetime) -> Ctx
         arrived = stay_from(st, p, d, schedule.first_departure, present(schedule.last_departure))
         schedule = dated_schedule(p, d, commute_day, first, arrived)
     # a window day follows no usual train: a learned one of the fixed days says nothing there
-    return Ctx(p, d, schedule, sig if schedule.mode == "fixed" else None, now)
+    remembered = frozenset(st.remembered_stations.get(direction_key(p.id, d), ()))
+    return Ctx(p, d, schedule, sig if schedule.mode == "fixed" else None, now, remembered)
 
 
 def stay_from(

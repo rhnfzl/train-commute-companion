@@ -539,6 +539,8 @@ class LiveLedger:
                 and first.train == e.train
                 and first.state in (LegState.PENDING, LegState.BOARDING)
             )
+        if e.kind in (EventKind.STATION_ASK, EventKind.STATION_REMEMBER):  # while still open
+            return s.prompt is not None and s.prompt.id == alert_facts(e).prompt_id
         if e.kind is EventKind.NEXT_CONNECTION:  # "if you are not on it": while it is unfinished
             return unfinished
         if e.kind is EventKind.ALL_GOOD:

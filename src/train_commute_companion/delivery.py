@@ -34,6 +34,10 @@ JOURNEY_WARNINGS = frozenset(
         EventKind.STOPPED_FOLLOWING,
     }
 )
+# silent, but sent in quiet hours: the user is at a station now and a held question goes stale
+_ANSWER_NOW = frozenset(
+    {EventKind.ALL_GOOD, EventKind.AT_STATION, EventKind.STATION_ASK, EventKind.STATION_REMEMBER}
+)
 
 
 class DeliveryVerdict(StrEnum):
@@ -149,7 +153,7 @@ def revalidate(o: Obligation, ledger: Ledger, now: datetime) -> DeliveryVerdict:
         return DeliveryVerdict.DROP
     if (
         o.event.severity is Severity.SILENT
-        and kind not in (EventKind.ALL_GOOD, EventKind.AT_STATION)
+        and kind not in _ANSWER_NOW
         and ledger.in_quiet_hours(o.event.profile_id, now)
     ):
         return DeliveryVerdict.HOLD

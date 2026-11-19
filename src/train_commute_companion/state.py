@@ -201,6 +201,22 @@ class DisruptionNotice:
     receipts: Mapping[str, DisruptionReceipt] = field(default_factory=dict)
 
 
+PromptStage = Literal["ask", "remember", "pick"]
+
+
+@dataclass(frozen=True, slots=True)
+class StationPrompt:
+    """A question about an other boarding station. `id` is short (10 hex), so a button's callback
+    stays under Telegram's 64 bytes; it alone finds the occurrence."""
+
+    id: str
+    station: str
+    stage: PromptStage
+    train: TrainId | None  # ask: the train the question names
+    choices: tuple[tuple[str, str], ...]  # (answer, label)
+    created_at: datetime
+
+
 @dataclass(frozen=True, slots=True)
 class OccurrenceState:
     key: OccurrenceKey
@@ -247,6 +263,14 @@ class OccurrenceState:
     released: bool = False
     # a train was already missed from the origin place today (`quiet_repeat_misses`)
     missed_from_origin: bool = False
+    # other boarding station: where this occurrence boards when not at the profile origin (a
+    # confirmed or known station; None is the origin), the open question to the user, the
+    # stations already asked about (once per station per direction per day), and the first
+    # fix time per candidate station, for a dwell above 0
+    boarding_station: str | None = None
+    prompt: StationPrompt | None = None
+    asked_stations: frozenset[str] = frozenset()
+    station_seen: Mapping[str, datetime] = field(default_factory=dict)
 
     @property
     def phase(self) -> OccurrencePhase:

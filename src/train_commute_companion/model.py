@@ -99,6 +99,8 @@ class EventKind(StrEnum):
     CHOOSE_REFUSED = "choose_refused"
     NEXT_CONNECTION = "next_connection"
     AT_STATION = "at_station"  # Q1: the train followed now, once at the origin station
+    STATION_ASK = "station_ask"  # a question with answer buttons: are you boarding here?
+    STATION_REMEMBER = "station_remember"  # a question: remember this boarding station?
     DATA_UNCLEAR = "data_unclear"
 
 
@@ -291,6 +293,9 @@ class AlertFacts:
     disruption_targets: frozenset[str] | None = None
     arrival_record: str = ""
     arrival_revision: int = 0
+    # a question to the user: its id and its (answer, label) buttons; empty for any other alert
+    prompt_id: str = ""
+    choices: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,6 +446,8 @@ class UsualJourney:
     by_weekday: Mapping[str, DayOverride] = field(default_factory=dict)
     # False: window mode with no first_train; window[0] stands in where code needs a time
     first_train_set: bool = True
+    # other boarding stations TCC follows by itself when the phone is seen there
+    other_stations: tuple[str, ...] = ()
 
 
 NotificationChannel = Literal["primary", "email", "webhook"]
@@ -487,6 +494,11 @@ class LocationSettings:
     # Q12, source ha only: place role -> a Wi-Fi tracker (home/not_home), a motion activity sensor
     wifi: Mapping[str, str] = field(default_factory=dict)
     activity_entity: str | None = None
+    # other boarding station: how near a fix must be, how long it must stay, and whether a
+    # confirmed new station is offered to be remembered
+    other_station_radius_m: int = 500
+    other_station_dwell_min: int = 0
+    ask_to_remember_station: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -622,6 +634,8 @@ class Ctx:
     schedule: DatedSchedule
     signature: Signature | None
     now: datetime
+    # the stations the user asked TCC to remember for this profile and direction
+    remembered: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)

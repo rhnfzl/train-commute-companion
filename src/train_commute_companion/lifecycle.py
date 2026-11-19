@@ -145,6 +145,7 @@ def _plan(s: OccurrenceState) -> tuple[object, ...]:
         s.errand_deadline,
         s.not_travelling,
         s.cancellation_history,
+        s.boarding_station,
     )
 
 
@@ -279,6 +280,7 @@ QUIET_PASS = frozenset({
     EventKind.ROUTE_CHANGED, EventKind.PLATFORM_CHANGE, EventKind.NO_CONNECTION,
     EventKind.RESTORED, EventKind.STOPPED_FOLLOWING, EventKind.MISSED_FIRST_TRAIN,
     EventKind.MISSED_TRANSFER, EventKind.NEXT_CONNECTION, EventKind.AT_STATION,
+    EventKind.STATION_ASK, EventKind.STATION_REMEMBER,
 })  # fmt: skip
 
 

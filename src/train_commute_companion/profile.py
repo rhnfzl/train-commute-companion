@@ -126,6 +126,38 @@ def _transfers(
     return [s for s in found if s]
 
 
+def _other_stations(
+    c: _ProfileErrors, raw: object, name: str, known: frozenset[str] | None
+) -> list[str]:
+    if not isinstance(raw, list):
+        c.err(f"{name}.other_stations", "must be a list of station codes, [] for none")
+        return []
+    path = f"{name}.other_stations"
+    found = (_station(c, t, f"{path}[{i}]", known) for i, t in enumerate(raw))
+    return [s for s in found if s]
+
+
+def _check_other_stations(c: _ProfileErrors, p: Profile) -> None:
+    """Other boarding stations: never where the direction starts or ends, and only with a
+    location source that can see the phone there."""
+    for d in Direction:
+        name = "outbound" if d is Direction.OUTBOUND else "return"
+        others = p.journey(d).other_stations
+        for i, code in enumerate(others):
+            if code == p.origin(d):
+                c.err(
+                    f"{name}.other_stations[{i}]", f"{code} is already where this direction starts"
+                )
+            elif code == p.destination(d):
+                c.err(f"{name}.other_stations[{i}]", f"{code} is where this direction ends")
+        if others and p.location is None:
+            c.err(
+                f"{name}.other_stations",
+                "other_stations need a location block",
+                "add location, or remove other_stations",
+            )
+
+
 def _window(
     c: _ProfileErrors, raw: object, name: str, first: time | None
 ) -> tuple[time, time] | None:
@@ -282,6 +314,7 @@ def _journey(
             "earlier_train_advice",
             "day_offset",
             "active_lead_min",
+            "other_stations",
         ),
         name,
     )
@@ -294,6 +327,7 @@ def _journey(
     has_first = not windowed or raw.get("first_train") is not None
     first = c.time(raw.get("first_train"), f"{name}.first_train") if has_first else None
     transfers = _transfers(c, raw.get("transfers", []), name, known)
+    others = _other_stations(c, raw.get("other_stations", []), name, known)
     buf = c.integer(raw.get("buffer_min"), f"{name}.buffer_min", 0)
     advice = c.boolean(
         raw.get("earlier_train_advice", name == "return"), f"{name}.earlier_train_advice"
@@ -352,6 +386,7 @@ def _journey(
         stay,
         days,
         has_first,
+        tuple(others),
     )
     _check_days(c, j, name, raw)
     return None if len(c.errors) > n else j
@@ -457,7 +492,17 @@ def _location(c: _ProfileErrors, raw: object) -> tuple[bool, LocationSettings | 
         c.err("location", "must be a mapping or null")
         return False, None
     n = len(c.errors)
-    keys = ("source", "entity", "zones", "station_radius_m", "wifi", "activity_entity")
+    keys = (
+        "source",
+        "entity",
+        "zones",
+        "station_radius_m",
+        "wifi",
+        "activity_entity",
+        "other_station_radius_m",
+        "other_station_dwell_min",
+        "ask_to_remember_station",
+    )
     c.keys(raw, keys, "location")
     src, ent, zones = raw.get("source"), raw.get("entity"), raw.get("zones", {})
     wifi, activity = raw.get("wifi", {}), raw.get("activity_entity")
@@ -489,9 +534,22 @@ def _location(c: _ProfileErrors, raw: object) -> tuple[bool, LocationSettings | 
         )
     if (wifi or activity) and src != "ha":
         c.err("location", "wifi and activity_entity need source ha")
-    if source is None or len(c.errors) > n:
+    other_radius = raw.get("other_station_radius_m", 500)
+    if not _whole(other_radius, 1, 5000):
+        c.err("location.other_station_radius_m", "must be a whole number of metres from 1 to 5000")
+    dwell = raw.get("other_station_dwell_min", 0)
+    if not _whole(dwell, 0, 60):
+        c.err("location.other_station_dwell_min", "must be a whole number of minutes from 0 to 60")
+    ask = c.boolean(raw.get("ask_to_remember_station", True), "location.ask_to_remember_station")
+    if source is None or ask is None or len(c.errors) > n:
         return False, None
-    return True, LocationSettings(source, ent, dict(zones), radius, dict(wifi), activity)
+    return True, LocationSettings(
+        source, ent, dict(zones), radius, dict(wifi), activity, other_radius, dwell, ask
+    )
+
+
+def _whole(v: object, lo: int, hi: int) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
 
 
 def _date(c: _ProfileErrors, value: object, path: str) -> date | None:
@@ -680,7 +738,7 @@ def _profile(
         and c.pid
     ):
         return None, c.errors
-    return Profile(
+    profile = Profile(
         c.pid,
         name,
         ALLOWED_TRAVELLER,
@@ -697,7 +755,9 @@ def _profile(
         pauses,
         accessibility,
         digest,
-    ), []
+    )
+    _check_other_stations(c, profile)
+    return (None, c.errors) if c.errors else (profile, [])
 
 
 def _load_yaml(text: str) -> tuple[Any, list[ProfileProblem]]:
