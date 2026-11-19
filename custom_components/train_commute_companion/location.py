@@ -327,7 +327,7 @@ class LocationTracker:
                 self._since,
                 speed,
                 in_station_circle(data, profile, fix, zone),
-            ),  # fmt: skip
+            ),
         )
 
     async def _send(

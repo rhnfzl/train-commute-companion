@@ -2,8 +2,8 @@
 and its consequences live in the core; here only whether a fix is fit to read and its memory."""
 
 import asyncio
-import math
 import logging
+import math
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
