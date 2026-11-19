@@ -313,3 +313,21 @@ async def test_token_never_in_errors_or_logs(tg, caplog):  # Review Focus 4
 def test_telegram_error_carries_code_and_retry_after():
     e = TelegramError(429, 7, "Too Many Requests")
     assert (e.code, e.retry_after, str(e)) == (429, 7, "Too Many Requests")
+
+
+async def test_a_question_has_only_its_answer_buttons(tg, clock):
+    from train_commute_companion.model import AlertFacts
+
+    choices = (("yes", "Yes"), ("other", "Other train"), ("no", "No"))
+    e = replace(
+        event(Severity.SILENT),
+        kind=EventKind.STATION_ASK,
+        facts=AlertFacts(prompt_id="0123456789", choices=choices),
+    )
+    row = (await sent_markup(tg, clock, e))["inline_keyboard"][0]
+    assert [b["text"] for b in row] == ["Yes", "Other train", "No"]
+    assert [b["callback_data"] for b in row] == [
+        "q|0123456789|yes",
+        "q|0123456789|other",
+        "q|0123456789|no",
+    ]

@@ -36,6 +36,7 @@ from tcc_app.telegram import TelegramApi
 from webhook_receiver import Receiver
 
 from train_commute_companion.location import LocationEvent
+from train_commute_companion.messages import Refused
 from train_commute_companion.model import DirectionState, LegState
 from train_commute_companion.state import Commitment, LockSource
 from train_commute_companion.webhook import WebhookTestResult
@@ -785,3 +786,33 @@ def test_shell_state_rejects_a_bool_offset_and_syncs_what_it_saves(tmp_path, mon
     monkeypatch.setattr(os, "fsync", synced.append)
     save_state(path, ShellState(3))
     assert synced and load_state(path) == ShellState(3)
+
+
+async def test_a_question_button_answers_and_a_stale_one_says_so(app):
+    got: list[tuple[str, str]] = []
+
+    async def answer(prompt_id: str, answer: str):
+        got.append((prompt_id, answer))
+        return None if answer == "yes" else Refused("this question has expired")
+
+    app.rt.answer_prompt = answer
+    await app.bot.handle(tap("q|0123456789|yes", 1))
+    await app.bot.handle(tap("q|0123456789|no", 2))
+    assert got == [("0123456789", "yes"), ("0123456789", "no")]
+    assert app.texts() == ["this question has expired"]
+
+
+async def test_stations_lists_and_forget_removes_a_remembered_station(app):
+    await app.bot.handle(app.msg("/stations", 1))
+    seam.seed_state(app.rt, remembered_stations={"p1|return": ("VL",)})
+    seam.save_state(app.rt)
+    await app.bot.handle(app.msg("/stations", 2))
+    await app.bot.handle(app.msg("/forget vl", 3))
+    await app.bot.handle(app.msg("/forget vl", 4))
+    assert app.texts() == [
+        "No remembered boarding stations.",
+        "Remembered boarding stations:\nOffice A return: VL",
+        "Forgot VL.",
+        "VL is not a remembered boarding station.",
+    ]
+    assert app.rt.state.remembered_stations == {}
