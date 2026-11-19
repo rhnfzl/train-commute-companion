@@ -1961,7 +1961,11 @@ def _locate(
     if event.zone == p.origin(d) and s.prompt is not None and s.prompt.stage != "remember":
         s = replace(s, prompt=None)  # at the usual station after all: an older question is void
     if event.zone == p.origin(d) and s.boarding_station is not None:
-        if s.lock is not None and s.lock.legs[0].state in _DEPARTED:
+        # a fix can beat the poll that marks the train left: its departure time decides too
+        left = _boarding_departure(s, s.boarding_station, merged_pool(seen) if seen else None)
+        if s.lock is not None and (
+            s.lock.legs[0].state in _DEPARTED or (left is not None and left <= to_utc(event.at))
+        ):
             return Transition(s, ())  # riding from the other station through the usual one
         # back at the usual station after all: a train from the other one is not taken
         s = replace(s, boarding_station=None)
