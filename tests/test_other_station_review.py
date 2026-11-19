@@ -419,6 +419,29 @@ async def _one_precise_fix_at_venlo(tmp_path, other: str = "", remembered: bool 
     assert loud_after(rig, "19:49") == []
 
 
+async def test_a_provisional_known_station_lock_whose_train_has_not_left_expires_quietly(
+    tmp_path,
+):
+    """One wide fix near a known station and a train that leaves only after the 45 min errand
+    timeout: the provisional lock is let go quietly, as a walk past, and nothing is kept."""
+    rig = await station_rig(tmp_path, other="other_stations: [VL]")
+    late = make_connection([make_leg("VL", "AAA", "20:36", "21:36", number="6096")])
+    rig.provider.world = [*(c for c in rig.provider.world if c.origin != "VL"), late]
+    await replay_to_departure(rig)
+    await rig.run_until("19:48")
+    phone = Phone(rig)
+    await phone.fix(ROAD, "19:48")
+    await phone.fix(NEAR_VL, "19:50")
+    s = rig.occ(KEY)
+    assert s.boarding_station == "VL" and s.lock.commitment.value == "provisional"
+    assert s.lock.legs[0].train.train_number == "6096"
+    await rig.run_until("20:35:30")
+    s = rig.occ(KEY)
+    assert s.boarding_station is None and s.retained == ()
+    assert s.lock is None or s.lock.legs[0].board_station != "VL"
+    assert loud_after(rig, "19:49") == []
+
+
 async def test_one_precise_fix_at_a_configured_station_commits(tmp_path):
     await _one_precise_fix_at_venlo(tmp_path, other="other_stations: [VL]")
 

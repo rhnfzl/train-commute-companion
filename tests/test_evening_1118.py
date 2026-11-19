@@ -128,16 +128,6 @@ def following(rig: Rig) -> tuple[str | None, str, str] | None:
     return s.boarding_station, x.board_station, x.train.train_number
 
 
-def still_followed(rig: Rig) -> bool:
-    """The 20:06 from Venlo, as the lock or as a retained remainder. A known station's lock
-    is provisional (no fix in the station circle), so its errand timeout moves it to a retained
-    remainder mid-ride; that remainder keeps the locked-journey checks (rule 7)."""
-    s = rig.occ(KEY)
-    journeys = [] if s is None else [*((s.lock,) if s.lock else ()), *s.retained]
-    return any((j.legs[0].board_station, j.legs[0].train.train_number) == ("VL", "3681")
-               for j in journeys)  # fmt: skip
-
-
 VENLO_2006 = ("VL", "VL", "3681")
 
 
@@ -171,7 +161,9 @@ async def ride_home(rig: Rig, phone: Phone, zone_event: bool, between=None) -> N
         where = (BR[0] + f * (HT[0] - BR[0]), BR[1] + f * (HT[1] - BR[1]))
         await rig.run_until(f"{h:02d}:{m:02d}:00")
         await phone.fix(where, f"{h:02d}:{m:02d}:{sec:02d}", 1414, speed=30)
-        assert still_followed(rig), f"lost the 20:06 at {h:02d}:{m:02d}"
+        # also past 19:50:52 + 45 min: a known station's train that left stays the lock
+        assert following(rig) == VENLO_2006, f"lost the 20:06 at {h:02d}:{m:02d}"
+        assert rig.occ(KEY).retained == ()
     await rig.run_until("21:07:00")
     await phone.fix(off(HT, 900, 150), "21:07:20", 267)  # the city zone, too coarse to place
     await rig.run_until("21:09:30")
@@ -202,6 +194,12 @@ async def test_1118_known_venlo_follows_the_2006_home(tmp_path, zone_event, late
     assert [e.kind for e in rig.rt.events_log if e.kind is EventKind.STATION_ASK] == []
     await ride_home(rig, phone, zone_event)
     assert_quiet_end(rig)
+    record = rig.rt.state.journey_records[KEY]
+    assert record.train_arrival == at("21:14" if late else "21:06")
+    delays = [e for e in rig.rt.events_log if e.kind is EventKind.DELAYED]
+    assert [e.text for e in delays if e.created_at >= at("19:50")] == (
+        ["Office: your 20:06 VL to HT train is delayed 8 min, arriving 21:14."] if late else []
+    )
 
 
 @pytest.mark.parametrize("zone_event", [False, True])
@@ -227,20 +225,27 @@ async def test_1118_unknown_venlo_yes_follows_the_2006_home(tmp_path, zone_event
     assert rig.rt.state.journey_records[KEY].train_arrival == at("21:06")
 
 
-async def test_1118_known_venlo_delay_is_still_told_after_the_errand_timeout(tmp_path):
-    """The provisional lock becomes a retained remainder at 19:50:52 + 45 min; a delay of the
-    20:06 found after that is still told, so the train is still followed."""
+async def test_1118_known_venlo_delay_is_told_once_across_the_errand_timeout(tmp_path):
+    """The provisional lock's errand timeout (19:50:52 + 45 min) comes after the 20:06 left
+    Venlo: the lock is kept as it is, so a delay told before it is not told again after it,
+    and a later change is still told."""
     rig = await rig_for(tmp_path, other="other_stations: [VL]")
     await to_venlo(rig)
+    await rig.run_until("20:16")
+    rig.provider.world = world(late_arr=12)
     await rig.run_until("20:38")
-    assert following(rig) is None and still_followed(rig)
+    assert following(rig) == VENLO_2006 and rig.occ(KEY).retained == ()
     rig.provider.world = world(late_arr=25)
     await rig.run_until("20:50")
-    (late,) = [
-        e for e in rig.rt.events_log if e.kind is EventKind.DELAYED and e.created_at >= at("20:38")
+    told = [
+        e for e in rig.rt.events_log if e.kind is EventKind.DELAYED and e.created_at >= at("19:50")
     ]
-    assert "your 20:06 VL to HT train" in late.text and "arrives 25 min late" in late.text
-    assert late.severity is Severity.SILENT
+    assert [e.text for e in told] == [
+        "Office: your 20:06 VL to HT train leaves 0 min late and arrives 12 min late, arriving 21:18.",
+        "Office: your 20:06 VL to HT train leaves 0 min late and arrives 25 min late, arriving 21:31.",
+    ]
+    assert {e.severity for e in told} == {Severity.SILENT}
+    assert told[0].created_at < at("20:36") < told[1].created_at
 
 
 @pytest.mark.parametrize("known", [True, False])

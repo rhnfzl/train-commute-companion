@@ -38,7 +38,7 @@ from train_commute_companion.state import (
 
 def on_tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None = None) -> Transition:
     """Time-driven steps: the errand timeout (45 min) clears a provisional lock, keeping a
-    departed train retained; the auto lock when due (`answer` is the usual's query answer); a
+    departed train retained (an other station's departed train stays the lock); the auto lock when due (`answer` is the usual's query answer); a
     window closed with no lock; each journey's end by its last watch or its 150-min limit
     (rules 6, 7). Arrival acceptance itself runs on each poll. Only a poll passes the usual's
     answer; any other tick has none and writes no auto lock."""
@@ -52,7 +52,11 @@ def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transi
     now = to_utc(ctx.now)
     events: list[AlertEvent] = []
     lock = s.lock
-    if s.provisional_expired(now):
+    if s.provisional_expired(now) and _left_other_station(s):
+        # a known other station's train already left: it stays the lock and ends by the
+        # journey-end rules (quiet when never seen boarding), not mid-ride by the errand timeout
+        s = replace(s, errand_deadline=None)
+    elif s.provisional_expired(now):
         lock = present(lock)
         f = first_open(lock)
         retained = s.retained
@@ -110,6 +114,17 @@ def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transi
         elif not (end and _never_boarded(s, ctx, r, retained=True)):
             events += end
     return Transition(replace(s, retained=tuple(left)), tuple(events))
+
+
+def _left_other_station(s: OccurrenceState) -> bool:
+    """The lock boards at the other station and a poll saw its first train depart (RIDING is set
+    by the expected departure). shortcut: a train NS never identified stays PENDING and is
+    retained by its planned time as before; read the pool here if that case shows up."""
+    first = present(s.lock).legs[0]
+    return first.board_station == s.boarding_station and first.state in (
+        LegState.RIDING,
+        LegState.DONE,
+    )
 
 
 def _merge_retained(s: OccurrenceState) -> OccurrenceState:
