@@ -37,6 +37,10 @@ class Evidence:
     activity: str | None = None  # the phone's motion activity, as the phone names it
     activity_at: datetime | None = None  # when the phone reported that activity
     wifi: bool | None = None  # the event zone's place Wi-Fi: True connected, False not
+    # the fix lies inside station_radius_m of the event's station, accuracy known and within it
+    # too: proof the user waits there, also on a first fix that an other station's wider circle
+    # placed (`view.in_station_circle`)
+    in_station: bool | None = None
 
 
 NO_EVIDENCE = Evidence()

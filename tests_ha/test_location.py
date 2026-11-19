@@ -726,3 +726,29 @@ async def test_driving_past_another_station_asks_nothing_through_the_tracker(has
     h = await at_other_station(hass, speed=13.0)
     assert await spied(h) == [("OT", "enter")]
     assert not any("are you taking" in c.data["message"] for c in h.pushes)
+
+
+async def test_station_fix_carries_whether_it_is_inside_the_station_circle(hass):
+    """The core commits a known other station on a first fix only with this proof."""
+    h = await setup_tcc(hass, VIA_UT)
+    set_person(hass, *FAR)
+    await start_tracker(h)
+    seen = []
+
+    def spy_evidence(rt: Runtime) -> None:
+        orig = rt.report_location
+
+        async def spy(profile_id, event, *rest, **kw):
+            seen.append((event.zone, event.kind, event.evidence.in_station))
+            return await orig(profile_id, event, *rest, **kw)
+
+        rt.report_location = spy
+
+    await h.host.run(spy_evidence)
+    set_person(hass, 52.1, 5.1, gps_accuracy=20)
+    await hass.async_block_till_done()
+    set_person(hass, *FAR, gps_accuracy=20)
+    await hass.async_block_till_done()
+    set_person(hass, 52.1, 5.1)  # accuracy unknown: no proof
+    await hass.async_block_till_done()
+    assert seen == [("UT", "enter", True), ("UT", "leave", False), ("UT", "enter", False)]

@@ -22,7 +22,7 @@ from train_commute_companion.location import (
 )
 from train_commute_companion.model import present
 from train_commute_companion.runtime import Runtime
-from train_commute_companion.view import track_fix
+from train_commute_companion.view import in_station_circle, track_fix
 
 log = logging.getLogger(__name__)
 
@@ -155,5 +155,7 @@ class Follower:
             fix.at,
             lambda e: self._rt.report_location(pid, e, loc, fed_epoch),
             undelivered,
-            lambda _zone: Evidence(speed=speed),
+            lambda zone: Evidence(
+                speed=speed, in_station=in_station_circle(view, profile, fix, zone)
+            ),
         )

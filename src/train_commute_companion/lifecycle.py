@@ -2113,6 +2113,14 @@ def _at_other_station(
         return Transition(s, ())
     first_leg, dest = c.legs[0], c.legs[-1].alight.name
     when, name = hhmm(first_leg.train.planned_departure), first_leg.board.name
+    if known and ev.in_station:
+        # a first fix already inside the station circle: committed as a later one would be
+        here = replace(
+            s, boarding_station=zone, travelling=True, at_station=True, errand_deadline=None
+        )
+        new = journey_of(c, LockSource.STATION, Commitment.COMMITTED, answer.fetched_at)
+        written = present(write_lock(here, new, expect=None, now=ctx.now))
+        return _with_status(written, ctx, merged_pool((answer,)), f"at {name}: following your ")
     if known:
         # not at_station: the wide circle is no proof of boarding (`_never_boarded`)
         deadline = (at + ERRAND_TIMEOUT).astimezone(TZ)

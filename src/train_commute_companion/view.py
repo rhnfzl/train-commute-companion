@@ -341,11 +341,23 @@ def other_station_zones(
     )
     if near is None or not (near[1] in boarding or any(near[1] not in e for e in ends)):
         return []  # the nearest station is where a trip starts or ends, or none is known
-    dist, code = near
+    code = near[1]
     radius = loc.station_radius_m if code in boarding else loc.other_station_radius_m
-    if dist > radius or fix.acc > radius:
+    if not _within(fix, view.positions[code], radius):
         return []
     return [Zone(code, *view.positions[code], float(radius))]
+
+
+def _within(fix: Fix, at: tuple[float, float], radius: float) -> bool:
+    """The fix, its accuracy known, places the user within `radius` of `at`."""
+    return fix.acc is not None and fix.acc <= radius and distance_m(fix.lat, fix.lon, *at) <= radius
+
+
+def in_station_circle(view: RuntimeView, profile: Profile, fix: Fix, zone: str) -> bool:
+    """Q12: the fix is inside the station radius of station `zone`, as a confirmed boarding
+    station's circle judges it: proof of waiting there (`Evidence.in_station`)."""
+    loc, at = profile.location, view.positions.get(zone)
+    return loc is not None and at is not None and _within(fix, at, loc.station_radius_m)
 
 
 STILL_LEAD = timedelta(minutes=5)  # Q10: still fresh (STALE_LOCATION) when the departure poll runs

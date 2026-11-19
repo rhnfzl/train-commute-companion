@@ -391,3 +391,36 @@ async def test_real_boarding_at_a_known_station_with_one_far_fix(tmp_path):
     assert any("following your 20:06" in t for t in told)
     record = rig.rt.state.journey_records["p1|return|2026-10-27"]
     assert record.seen_at == at("21:20")
+
+
+async def _one_precise_fix_at_venlo(tmp_path, other: str = "", remembered: bool = False):
+    """One 30 m fix at the Venlo station point and then a phone at rest: the next train leaves
+    after the 45 min errand timeout would have let a provisional lock go."""
+    rig = await station_rig(tmp_path, other=other)
+    if remembered:
+        st = rig.rt.state
+        seam.seed_state(
+            rig.rt, remembered_stations={**st.remembered_stations, "p1|return": ("VL",)}
+        )
+    late = make_connection([make_leg("VL", "AAA", "20:36", "21:36", number="6096")])
+    rig.provider.world = [*(c for c in rig.provider.world if c.origin != "VL"), late]
+    await replay_to_departure(rig)
+    await rig.run_until("19:48")
+    phone = Phone(rig)
+    await phone.fix(ROAD, "19:48")
+    await phone.fix(VL, "19:50")
+    s = rig.occ(KEY)
+    assert s.boarding_station == "VL" and s.at_station
+    assert s.lock.commitment.value == "committed" and s.lock.legs[0].train.train_number == "6096"
+    await rig.run_until("20:40")
+    s = rig.occ(KEY)
+    assert s.boarding_station == "VL" and s.lock.legs[0].train.train_number == "6096"
+    assert loud_after(rig, "19:49") == []
+
+
+async def test_one_precise_fix_at_a_configured_station_commits(tmp_path):
+    await _one_precise_fix_at_venlo(tmp_path, other="other_stations: [VL]")
+
+
+async def test_one_precise_fix_at_a_remembered_station_commits(tmp_path):
+    await _one_precise_fix_at_venlo(tmp_path, remembered=True)

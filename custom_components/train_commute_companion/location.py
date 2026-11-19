@@ -34,7 +34,7 @@ from train_commute_companion.location import (
 )
 from train_commute_companion.model import LocationSettings
 from train_commute_companion.runtime import Runtime
-from train_commute_companion.view import still_due, track_fix
+from train_commute_companion.view import in_station_circle, still_due, track_fix
 
 from .coordinator import TccCoordinator
 from .host import RuntimeHost, RuntimeNotRunning
@@ -75,6 +75,7 @@ def evidence(
     zone: str,
     since: datetime,
     speed: float | None = None,
+    in_station: bool | None = None,
 ) -> Evidence:
     """Q12: the optional signals beside a position: the fix's speed, the phone's motion activity
     with when it was reported, and the Wi-Fi of the place `zone` names, when configured.
@@ -94,7 +95,7 @@ def evidence(
     for role, entity in loc.wifi.items():
         if loc.zones.get(role, role) == zone and (w := hass.states.get(entity)) is not None:
             wifi = {"home": True, "not_home": False}.get(w.state)
-    return Evidence(speed, activity, activity_at, wifi)
+    return Evidence(speed, activity, activity_at, wifi, in_station)
 
 
 def place_zones(hass: HomeAssistant, loc: LocationSettings) -> list[Zone]:
@@ -319,7 +320,14 @@ class LocationTracker:
             at,
             lambda e: self._send(pid, gen, e, source, epoch),
             lambda: self._lift_timer(pid),
-            lambda zone: evidence(self._hass, source, zone, self._since, speed),
+            lambda zone: evidence(
+                self._hass,
+                source,
+                zone,
+                self._since,
+                speed,
+                in_station_circle(data, profile, fix, zone),
+            ),  # fmt: skip
         )
 
     async def _send(

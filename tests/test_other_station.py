@@ -11,7 +11,7 @@ from test_never_boarded import KEY, PROFILE, evening, replay_to_departure
 
 from train_commute_companion.location import NO_EVIDENCE, Evidence, Fix, LocationEvent, Zone
 from train_commute_companion.model import Direction, DirectionState, EventKind, Severity
-from train_commute_companion.view import track_fix
+from train_commute_companion.view import in_station_circle, track_fix
 
 RTD = (51.3700, 6.1500)
 VL = (51.3640, 6.1720)
@@ -67,8 +67,10 @@ class Phone:
         if got is None:
             return []
         self.track, events = got
+        fix = Fix(*where, at(hhmm), acc)
         for zone, kind in events:
-            await rig.rt.report_location("p1", LocationEvent(zone, kind, at(hhmm), ev))
+            here = replace(ev, in_station=in_station_circle(view, p, fix, zone))
+            await rig.rt.report_location("p1", LocationEvent(zone, kind, at(hhmm), here))
         return [(z, k) for z, k in events]
 
 
