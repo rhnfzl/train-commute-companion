@@ -52,6 +52,19 @@ async def test_on_leave_tells_a_sprinter_only_notice_before_any_train_is_followe
     assert "geen Sprinters" in sent[0].text and "Until about 16:45" in sent[0].text
 
 
+async def test_earliest_pick_keeps_a_sprinter_only_notice_quiet_for_its_intercity(tmp_path):
+    """The contrast: under pick earliest the Intercity is followed from the window start, so the
+    same notice is judged by its type and not sent. The on_leave result is the missing lock."""
+    rig = Rig(tmp_path, "06:30")
+    rig.write(text=Q11_PROFILE.replace("pick: on_leave", "pick: earliest"))
+    rig.provider.world = intercities()
+    rig.provider.disruptions = incident("geen Sprinters", "geen Sprinters")
+    await rig.rt.start()
+    await rig.run_until("07:30")
+    assert rig.occ().lock is not None
+    assert [e for e in rig.notifier.attempts if e.kind is EventKind.DISRUPTION] == []
+
+
 # --- a day override switches the mode at runtime ---
 
 SAT = DAY + timedelta(days=4)  # 2026-10-31

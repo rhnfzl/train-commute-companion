@@ -1,8 +1,9 @@
 """The real 2026-11-18 evening, fix by fix, with the real stations: home 's-Hertogenbosch (HT),
 work Blerick (BR). Three trains from Blerick were let go, the user drove off at 17:40, sent one
 fix about 409 m from Venlo (VL) at 19:50 and rode the 20:06 from Venlo home. That train calls at
-Blerick, and at 20:14 the phone reported the Blerick station zone from on board. Distances,
-accuracies and speeds are the real ones; positions are placed at those distances."""
+Blerick, and at 20:14 the phone reported the Blerick station zone from on board. Up to 17:43 the
+fixes go in as `test_never_boarded` resolves them (zone events); from 17:44:04 on they are raw
+fixes with the real distances, accuracies and speeds, placed at those distances."""
 
 import math
 
@@ -263,3 +264,19 @@ async def test_1118_blerick_fix_before_the_poll_sees_the_2006_leave(tmp_path, kn
     await phone.fix(off(HT, 40, 300), "21:09:44", 31)
     await rig.run_until("22:00")
     assert loud_after(rig, "17:21:30") == []
+
+
+async def test_1118_blerick_before_a_late_2006_leaves_venlo_takes_blerick(tmp_path):
+    """The other side of the departure check: the 20:06 is still at Venlo, 20 min late, when the
+    user turns up at Blerick. That is back at the usual station, so a train from there is taken."""
+    rig = await rig_for(tmp_path, late=20, late_arr=20)
+    await to_venlo(rig)
+    (ask,) = [e for e in rig.rt.events_log if e.kind is EventKind.STATION_ASK]
+    await rig.run_until("19:52")
+    assert await rig.rt.answer_prompt(ask.facts.prompt_id, "yes") is None
+    assert following(rig) == VENLO_2006
+    await rig.run_until("20:14:30")
+    rig.clock.set("20:14:37")
+    await rig.rt.report_location("p1", LocationEvent("BR", "enter", at("20:14:37")))
+    s = rig.occ(KEY)
+    assert s.boarding_station is None and s.lock.legs[0].board_station == "BR"

@@ -447,3 +447,6 @@ async def test_editing_a_located_profile_shows_and_saves_other_stations_and_day_
     assert again["return_other_stations"] == ["BBB"]
     assert again["other_station_radius_m"] == 400 and again["other_station_dwell_min"] == 2
     assert again["ask_to_remember_station"] is False
+    flow = await step(flow, {**again, "edit_day_overrides": True})
+    assert flow["step_id"] == "profile_day_pick"
+    assert "return Friday" in flow["description_placeholders"]["overrides"]
