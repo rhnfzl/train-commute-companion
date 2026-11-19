@@ -141,6 +141,7 @@ async def test_window_no_train_in_window_says_so_once(tmp_path):
 
 async def test_window_mode_sends_no_usual_missing_or_left_note(tmp_path):
     rig = await rig_for(tmp_path, loc="null", now="07:40")  # started late: 07:00 already left
+    rig.provider.window = timedelta(hours=1)  # like NS: trains that left are not in the answer
     await rig.run_until("09:00")
     assert first_train(rig) == "08:00"  # the earliest one still catchable at 07:40 + 10
     assert told(rig, EventKind.MISSING) == []
@@ -270,10 +271,48 @@ async def test_lookahead_skips_window_days(tmp_path):
 async def test_min_stay_capped_at_latest_time_still_follows_a_train(tmp_path):
     out = '{first_train: "12:22", buffer_min: 10}'
     noon = make_connection([make_leg("AAA", "RTD", "12:22", "13:00", number="1222")])
-    rig = await rig_for(tmp_path, out, STAY_RET, now="11:50", world=[noon, *evenings()])
+    late = [c for c in evenings() if f"{c.legs[0].train.planned_departure:%H:%M}" != "20:00"]
+    rig = await rig_for(tmp_path, out, STAY_RET, now="11:50", world=[noon, *late])
     await rig.run_until("12:05")
     await report(rig, "enter", "12:05", zone="AAA")
     await rig.run_until("14:50")
     assert stay_start(rig) == "20:00"  # 13:00 + 8 h is past the latest time: capped there
     await rig.run_until("19:42")
-    assert first_train(rig, RET_KEY) == "20:00"
+    assert first_train(rig, RET_KEY) == "20:30"  # the first one from the latest time on
+    assert told(rig, EventKind.NO_CONNECTION) == []
+
+
+def changes() -> list:
+    """AAA to UT to RTD every half hour from 07:00: 20 min, a 10 min change, 20 min."""
+
+    def hm(minute: int) -> str:
+        return f"{minute // 60:02d}:{minute % 60:02d}"
+
+    out = []
+    for i, start in enumerate(range(7 * 60, 10 * 60, 30)):
+        first = make_leg("AAA", "UT", hm(start), hm(start + 20), number=f"1{i:02d}")
+        second = make_leg("UT", "RTD", hm(start + 30), hm(start + 50), number=f"2{i:02d}")
+        out.append(make_connection([first, second]))
+    return out
+
+
+SILENT_CHANGES = (
+    '{mode: window, window: ["07:00", "10:00"], buffer_min: 10, transfers: [UT], '
+    "pick: earliest_silent}"
+)
+
+
+async def test_window_silent_miss_at_the_station_and_a_missed_change_stays_loud(tmp_path):
+    extra = "    transfer_min: {UT: 4}\n"
+    rig = await rig_for(tmp_path, out=SILENT_CHANGES, extra=extra, world=changes())
+    await rig.run_until("06:55")
+    await report(rig, "enter", "06:55", zone="AAA")
+    await rig.run_until("07:12")
+    await report(rig, "still", "07:12", zone="AAA")  # the 07:00 left 12 min ago
+    assert [s for _, s in told(rig, EventKind.MISSED_FIRST_TRAIN)] == [Severity.SILENT]
+    assert first_train(rig) == "07:30"
+    await rig.run_until("07:52")
+    await report(rig, "enter", "07:52", zone="UT")
+    await rig.run_until("08:12")
+    await report(rig, "still", "08:12", zone="UT")  # the 08:00 change left 12 min ago
+    assert [s for _, s in told(rig, EventKind.MISSED_TRANSFER)] == [Severity.LOUD]

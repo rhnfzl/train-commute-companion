@@ -472,12 +472,14 @@ def _locked_tail(
 
 def _lock_earliest(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transition:
     """Window mode: the earliest good train from the window start (or the stay end) up to the
-    latest time. A user already travelling gets the next train they can catch."""
+    latest time. A user already travelling gets the next train they can catch, and so does a
+    day whose stay was capped at the latest time."""
     sch = ctx.schedule
     last = present(sch.last_departure)
     floor = None if s.travelling else sch.first_departure
+    capped = to_utc(sch.first_departure) >= to_utc(last)
     c = find_next_good(s, ctx, answer, not_before=floor)
-    if c is None or (not s.travelling and _departure(c) > to_utc(last)):
+    if c is None or (not s.travelling and not capped and _departure(c) > to_utc(last)):
         if s.missing_sent:
             return Transition(s, ())
         start = hhmm(sch.first_departure)
@@ -781,6 +783,8 @@ def queries_needed(s: OccurrenceState, ctx: Ctx) -> list[Query]:
         early = window and s.travelling
         start = ctx.now if early else max(ctx.schedule.first_departure, ctx.now, key=to_utc)
         add(p.origin(d), start)
+    elif s.lock is None and window:  # the earliest still catchable: NS omits trains before
+        add(p.origin(d), max(ctx.schedule.first_departure, ctx.now, key=to_utc))
     elif s.lock is None:  # the usual at its effective departure, also when past (6.3)
         add(p.origin(d), ctx.schedule.first_departure)
     else:

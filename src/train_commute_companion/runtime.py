@@ -1141,7 +1141,7 @@ class Runtime:
             self._apply({k: (t.state, t.events)})
             return  # the window only selects the first train (rule 19)
         if not followed and not s.travelling and to_utc(now) < to_utc(ctx.schedule.window_start):
-            return  # a minimum stay has not ended: no NS request is spent yet
+            return  # a minimum stay has not ended: no poll is spent yet
         gen, end = s.generation, ctx.schedule.window_end
         asked = _lock_trains(s)  # Q5: a poll counts toward a gap only for the lock it asked for
         deadline = to_utc(now) + POLL_DEADLINE  # one hard deadline for every request (7.1)
