@@ -2,6 +2,7 @@
 and its consequences live in the core; here only whether a fix is fit to read and its memory."""
 
 import asyncio
+import math
 import logging
 from collections.abc import Coroutine
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from train_commute_companion.location import (
     send_zone_events,
     without_current_report,
 )
+from train_commute_companion.model import present
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.view import track_fix
 
@@ -50,15 +52,20 @@ SPEED_SPAN = (timedelta(seconds=30), timedelta(minutes=15))
 
 def moved_speed(prev: Fix | None, fix: Fix) -> float | None:
     """Q12: m/s between two fixes of one source, their accuracy taken off; None when they are
-    too close or too far apart in time to tell. Telegram sends no speed, and OwnTracks may send
+    too close or too far apart in time to tell, or when either accuracy is unknown: GPS jitter
+    in one station would read as riding. Telegram sends no speed, and OwnTracks may send
     0 while stopped, so driving past a station still reads as riding and asks nothing."""
-    if prev is None:
+    if prev is None or not _known_acc(prev.acc) or not _known_acc(fix.acc):
         return None
     dt = fix.at - prev.at
     if not SPEED_SPAN[0] <= dt <= SPEED_SPAN[1]:
         return None
-    moved = distance_m(prev.lat, prev.lon, fix.lat, fix.lon) - (prev.acc or 0) - (fix.acc or 0)
+    moved = distance_m(prev.lat, prev.lon, fix.lat, fix.lon) - present(prev.acc) - present(fix.acc)
     return max(moved, 0.0) / dt.total_seconds()
+
+
+def _known_acc(acc: float | None) -> bool:
+    return acc is not None and math.isfinite(acc) and acc >= 0
 
 
 @dataclass(slots=True)

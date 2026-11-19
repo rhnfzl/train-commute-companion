@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
@@ -263,6 +264,38 @@ def test_moved_speed_between_two_fixes():
     assert moved_speed(a, Fix(52.009, 5.0, at("08:40"), 10)) is None  # too far apart
 
 
+def test_moved_speed_needs_a_known_accuracy():
+    """Two fixes standing still in one station, 144 m either side of its centre, 30 s apart:
+    with no accuracy the jitter would read as 9.6 m/s, a false riding sign, so it tells nothing."""
+    from tcc_app.follow import moved_speed
+
+    step = 144 / 111_195  # degrees of latitude for 144 m
+    a = Fix(52.1 - step, 5.1, at("08:20"))
+    b = Fix(52.1 + step, 5.1, at("08:20:30"))
+    assert moved_speed(a, b) is None
+    assert moved_speed(a, replace(b, acc=10)) is None
+    assert moved_speed(replace(a, acc=10), b) is None
+    assert moved_speed(replace(a, acc=-5), replace(b, acc=10)) is None
+    assert moved_speed(replace(a, acc=10), replace(b, acc=10)) is not None
+
+
+async def test_stationary_jitter_with_unknown_accuracy_is_no_riding_sign(app):
+    seen = []
+    orig = app.rt.report_location
+
+    async def spy(profile_id, event, *rest, **kw):
+        seen.append(event.evidence.speed)
+        return await orig(profile_id, event, *rest, **kw)
+
+    app.rt.report_location = spy
+    step = 144 / 111_195
+    await feed(app, *FAR, "08:00")
+    await feed(app, 52.1 - step, 5.1, "08:20")  # enter
+    await feed(app, 52.1 + step, 5.1, "08:21:30")
+    await feed(app, 52.1 - step, 5.1, "08:22")  # the report: 288 m in 30 s while standing
+    assert len(seen) == 2 and seen == [None, None]
+
+
 async def test_speed_between_fixes_reaches_the_core(app):
     """Telegram sends no speed: the speed between two fixes is the riding sign (Q12), so a
     station passed by car or train is no stop."""
@@ -274,7 +307,7 @@ async def test_speed_between_fixes_reaches_the_core(app):
         return await orig(profile_id, event, *rest, **kw)
 
     app.rt.report_location = spy
-    await feed(app, *FAR, "08:20")
-    await feed(app, *UT, "08:30")  # about 100 km in 10 minutes
+    await feed(app, *FAR, "08:20", acc=20)
+    await feed(app, *UT, "08:30", acc=20)  # about 100 km in 10 minutes
     ((zone, kind, speed),) = seen
     assert (zone, kind) == ("UT", "enter") and speed is not None and speed >= 8
