@@ -17,6 +17,7 @@ from test_other_station import rig_for as station_rig
 from test_window_mode import FIXED_OUT, STAY_RET, commute_day, first_train, stay_start
 from test_window_mode import rig_for as window_rig
 
+from train_commute_companion.calendar import TZ
 from train_commute_companion.disruptions import update_disruptions
 from train_commute_companion.location import Evidence, Fix, LocationEvent
 from train_commute_companion.model import Direction, DirectionState, EventKind
@@ -472,3 +473,49 @@ async def test_a_leave_while_ns_answers_voids_the_yes(tmp_path):
     s = rig.occ(KEY)
     assert s.lock.legs[0].train == usual and s.lock.commitment.value == "committed"
     assert s.boarding_station is None
+
+
+async def test_a_pick_refused_by_the_check_changes_nothing(tmp_path):
+    """The picked train is still in NS data but cancelled when it is tapped: the choice itself
+    is refused, loudly, and the station and travel facts stay as they were."""
+    rig, _ = await at_venlo(tmp_path)
+    (ask,) = of(rig, EventKind.STATION_ASK)
+    assert await rig.rt.answer_prompt(ask.facts.prompt_id, "other") is None
+    before = rig.occ(KEY)
+    gone = make_connection([make_leg("VL", "AAA", "20:06", "21:06", number="6066", cancelled=True)])
+    rig.provider.world = [
+        gone if c.legs[0].train.train_number == "6066" else c for c in rig.provider.world
+    ]
+    refused = await rig.rt.answer_prompt(before.prompt.id, "t2006")
+    assert refused is not None and "choice refused: leg cancelled" in refused.text
+    s = rig.occ(KEY)
+    assert (s.lock, s.boarding_station, s.travelling, s.at_station, s.prompt) == (
+        before.lock,
+        before.boarding_station,
+        before.travelling,
+        before.at_station,
+        before.prompt,
+    )
+    assert of(rig, EventKind.CHOOSE_REFUSED)
+
+
+async def test_a_choice_while_ns_answers_asks_to_try_the_yes_again(tmp_path):
+    rig = await station_rig(tmp_path)
+    await rig.run_until("16:20")
+    phone = Phone(rig)
+    await phone.fix(ROAD, "16:20")
+    await phone.fix(NEAR_VL, "16:22")
+    (ask,) = of(rig, EventKind.STATION_ASK)
+    usual = rig.occ(KEY).lock.legs[0].train
+    when = usual.planned_departure.astimezone(TZ).time()
+
+    async def choose_meanwhile(q) -> None:
+        rig.provider.hook = None
+        assert await rig.rt.choose_at("p1", when, direction=Direction.RETURN) is None
+
+    rig.provider.hook = choose_meanwhile
+    refused = await rig.rt.answer_prompt(ask.facts.prompt_id, "yes")
+    assert refused is not None and "try again" in refused.text
+    s = rig.occ(KEY)
+    assert s.lock.source.value == "choose" and s.lock.legs[0].train == usual
+    assert s.boarding_station is None and s.prompt is not None
