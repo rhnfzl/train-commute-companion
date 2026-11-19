@@ -1823,7 +1823,10 @@ def location_queries(s: OccurrenceState, ctx: Ctx, event: LocationEvent) -> list
     lock, zone = s.lock, event.zone
     if event.kind == "leave" or lock is None:
         return []
-    if not any(x.state in _MISSABLE and x.board_station == zone for x in lock.legs):
+    stations = {zone}
+    if zone == ctx.profile.origin(ctx.direction) and s.boarding_station is not None:
+        stations.add(s.boarding_station)  # at the usual station: has the other one's train left?
+    if not any(x.state in _MISSABLE and x.board_station in stations for x in lock.legs):
         return []
     return queries_needed(s, ctx)
 
