@@ -27,6 +27,7 @@ Data: NS. You bring your own NS API key; none is bundled. This project is not ma
 - **Pauses for holidays.** Set an inclusive date range and monitoring resumes afterward. [Holiday pauses](docs/holiday-pauses.md).
 - **Uses weekday departure times.** Set different first trains within one profile while preserving already-followed journeys. [Schedules](docs/weekday-schedules.md).
 - **Follows any train in a time window.** No usual train needed, with an optional minimum stay and settings per day. [Schedules](docs/weekday-schedules.md#window-mode).
+- **Notices another boarding station.** With location on, it follows a known station by itself and asks once at a new one. [Other boarding station](docs/other-boarding-station.md).
 - **Shows train context.** Optional NS composition, listed capacity and candidate vehicle coordinates include source limits. [Train context](docs/train-context.md).
 - **Loud only when it matters.** Alerts you must not miss ring; small updates arrive silently.
 - **Says when NS is unclear.** When NS gives two different answers about the same train, you get both, so you can decide.

@@ -13,7 +13,7 @@ The Home Assistant profile form provides the same category list. Choosing a cate
 
 | Category | Notifications |
 | --- | --- |
-| `journey` | Cancellation, cut-short journey, changed route, missed first train, no connection, restored train service |
+| `journey` | Cancellation, cut-short journey, changed route, missed first train, no connection, restored train service, questions about another boarding station |
 | `transfers` | Broken transfer, transfer at risk, missed transfer |
 | `advice` | Leave now, withdrawn earlier-train advice, next connection |
 | `delays` | Delay, nearly on time, back to normal |

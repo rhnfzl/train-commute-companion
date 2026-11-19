@@ -41,6 +41,10 @@ Turn on **Set a different mode, window, train choice or stay for some days** in 
 
 A fixed profile keeps its YAML shape. The editor writes `mode`, `pick` and `min_stay_min` only when they matter.
 
+## Other boarding stations
+
+When the profile has a location block, the details form shows the [other boarding station](other-boarding-station.md) settings: other stations per direction, the distance, the minutes at a station before it counts, and whether to offer to remember a new station. A default is written only when it is already in the file.
+
 ## Weekday departure times
 
 Turn on **Edit weekday departure times** in the details form to set different outbound and return times for each weekday. Blank fields use the direction's default time. An overnight return uses the weekday when the commute starts.

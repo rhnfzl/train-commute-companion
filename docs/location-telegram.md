@@ -32,3 +32,7 @@ A phone often reports a position minutes late, even on the train, so a report fr
 Arriving at the station where your journey starts sends one quiet message with the train now followed, its platform, whether it is on time and when it arrives. If that arrival shows you missed your train, the miss and the next train come in one message. Leaving and re-entering the zone does not repeat it.
 
 Location only adds alerts. It can make a warning arrive sooner, or tell the companion you are still at a station after your train left. It never removes or delays a warning that times alone would give. The one exception is the silent "has left, if you are not on it" note, which is skipped when you were at the boarding station.
+
+## Other boarding station
+
+Boarding somewhere other than your usual station is noticed from your position. See [Other boarding station](other-boarding-station.md).

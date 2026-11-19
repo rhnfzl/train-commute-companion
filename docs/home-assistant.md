@@ -122,12 +122,18 @@ A service or button used when there is nothing to act on, or with an unknown pro
 An active journey is unchanged. An older skip without its saved previous state is refused.
 `leaving` and `choose` do not undo a saved skip. Resume first, then choose or leave.
 
+`train_commute_companion.answer_prompt` answers a question about [another boarding station](other-boarding-station.md). It takes `prompt_id` and `answer` from the question's event. An expired question or an unknown answer fails with a message.
+
+`train_commute_companion.forget_station` takes `profile`, `direction` and `station`. It removes a remembered boarding station. The status sensor lists them in its `remembered_stations` attribute. Its `boarding_station` attribute is the station a journey boards at when that is not the usual one.
+
 `train_commute_companion.reload_profiles` takes no fields. It reads and applies the profiles file before returning.
 An invalid file, a superseded read, or a failed storage write raises an error. The last valid profiles keep running.
 
 ### Event
 
 Every alert fires the event `train_commute_companion_alert` before the push, so automations see it even if the phone cannot be reached. Fields: `config_entry_id`, `device_id`, `profile_id`, `profile_name`, `direction`, `service_date`, `leg_index`, `kind`, `severity` (`loud` or `silent`), `train_operating_date`, `train_number`, `train_departure`, `text`, `key`, `created_at`.
+
+A question (`kind` `station_ask` or `station_remember`) also has `prompt_id` (10 lowercase hex characters) and `choices`, a list of `{"answer": ..., "label": ...}`. Answers never contain spaces or `|`. Call `answer_prompt` with the `prompt_id` and one `answer`. The companion app push of a question has the same answers as action buttons (`TCC_ANSWER|<prompt_id>|<answer>`), and tapping one answers it.
 
 When copies of your train in one NS answer disagree, for example on a time or a platform, you get one loud alert with `kind` `data_unclear` that shows each copy's values; check the NS app or the station boards. It comes once per train per day, again only when the values change; the look-ahead may also tell it once ahead of the day.
 

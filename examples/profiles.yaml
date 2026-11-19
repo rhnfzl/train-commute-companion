@@ -31,6 +31,7 @@ profiles:
       # min_stay_min: 480           # start no earlier than 8 h after you arrived
       # by_weekday:                 # other settings on single days
       #   fri: {window: ["13:00", "18:00"], min_stay_min: 300}
+      # other_stations: [VL]        # board here too, see docs/other-boarding-station.md
     transfer_min: { UT: 4 }   # minutes you need to change trains, for every transfer station
     alerts:
       earlier_train_threshold_min: 10   # advise an earlier train from this much delay
@@ -45,6 +46,9 @@ profiles:
     #   station_radius_m: 150
     #   wifi: { home: device_tracker.phone_wifi }   # optional: proves a miss at home sooner
     #   activity_entity: sensor.phone_activity      # optional: phone motion (riding or at rest)
+    #   other_station_radius_m: 500    # another boarding station counts this near
+    #   other_station_dwell_min: 0     # 0: one fix is enough
+    #   ask_to_remember_station: true  # after Yes at a new station, offer to remember it
   - id: "p2"
     name: "office_b"
     traveller: "me"
