@@ -171,3 +171,33 @@ async def test_a_stay_ending_at_the_latest_time_keeps_the_latest_bound(tmp_path)
     await rig.run_until("19:42")
     assert first_train(rig, RET_KEY) is None
     assert len(told(rig, EventKind.NO_CONNECTION)) == 1
+
+
+UT = (51.4500, 6.0000)
+
+
+async def at_a_transfer_station(tmp_path, acc):
+    """UT is a transfer station of the return route; no train is followed at 19:50."""
+    rig = await station_rig(tmp_path, extra="    transfer_min: {UT: 4}\n", other="transfers: [UT]")
+    rig.provider.positions = {**rig.provider.positions, "UT": UT}
+    rig.provider.world.append(
+        make_connection([make_leg("UT", "AAA", "20:10", "21:00", number="9")])
+    )
+    await replay_to_departure(rig)
+    await rig.run_until("19:48")
+    assert rig.occ(KEY).lock is None
+    phone = Phone(rig)
+    await phone.fix(ROAD, "19:48")
+    await phone.fix((UT[0] + 0.0005, UT[1]), "19:50", acc=acc)
+    return rig
+
+
+async def test_an_unknown_accuracy_fix_at_a_route_station_asks_nothing(tmp_path):
+    rig = await at_a_transfer_station(tmp_path, acc=None)
+    assert of(rig, EventKind.STATION_ASK) == []
+
+
+async def test_a_known_accuracy_fix_at_a_route_station_still_asks(tmp_path):
+    rig = await at_a_transfer_station(tmp_path, acc=20)
+    (ask,) = of(rig, EventKind.STATION_ASK)
+    assert "20:10 from UT" in ask.text

@@ -281,7 +281,14 @@ def track_fix(
         return None
     running = running_stations(view.occurrences, profile.id)
     others = other_station_zones(view, profile, fix, places)
-    route = station_zones(profile, loc.station_radius_m, view.positions, running)
+    # a transfer station no followed train runs through is an other station like any: only
+    # `other_station_zones` places a fix there, under its checks (known accuracy, no place)
+    used = {profile.home_station, profile.work_station, *running}
+    route = [
+        z
+        for z in station_zones(profile, loc.station_radius_m, view.positions, running)
+        if z.name in used
+    ]
     zones = [*route, *others, *places]
     if fix.acc is not None and fix.acc > loc.station_radius_m and others:
         # only an other station's wider circle can place a fix this coarse
