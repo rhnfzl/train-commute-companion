@@ -388,11 +388,9 @@ def find_next_good(
     earliest good one; elsewhere the usual route wins."""
     at = station or boarding_origin(s, ctx)
     floor = None if not_before is None else to_utc(not_before)
-    transfers = ctx.profile.journey(ctx.direction).transfers
-    earliest = earliest or ctx.schedule.mode == "window" or at == s.boarding_station
     c, _ = choose_replacement(
         answer,
-        usual_remaining=None if earliest else remaining_pattern(transfers, at),
+        usual_remaining=None if earliest else _usual_route(s, ctx, at),
         candidates=[
             c
             for c in answer.connections
@@ -402,6 +400,14 @@ def find_next_good(
         **_good_kw(s, ctx, at, kept, n_before),
     )
     return c
+
+
+def _usual_route(s: OccurrenceState, ctx: Ctx, station: str) -> tuple[str, ...] | None:
+    """The transfer stations a replacement from `station` prefers; None on a window day or from
+    an other boarding station, where the earliest good train wins."""
+    if ctx.schedule.mode == "window" or station == s.boarding_station:
+        return None
+    return remaining_pattern(ctx.profile.journey(ctx.direction).transfers, station)
 
 
 def _departure(c: Connection) -> datetime:
@@ -1066,7 +1072,7 @@ def _relock(
     if j and kept is None:
         note = f"{text}; the change from your current train is not in NS data, check the NS app."
         return Transition(_progress(s, legs), (make_event(ctx, kind, sev, note, train),))
-    usual = remaining_pattern(p.journey(d).transfers, station)
+    usual = _usual_route(s, ctx, station)
     # an older answer's running copy of the train being replaced is no replacement for it
     cands = [c for c in pool.connections if history is None or c.legs[0].train != history.train]
     c, how = choose_replacement(
@@ -1093,7 +1099,8 @@ def _relock(
     named = tuple(train_ident(x.train) for x in c.legs)
     key_facts = f"{text}|" + ",".join(named)
     late_now = classify_leg(c.legs[0], c.legs[0].alight.code).dep_delay_min
-    route, crowd = (f", new route via {via}" if how == "new_route" else ""), crowd_text(c.legs)
+    moved = how == "new_route" and usual is not None  # no usual route to move from
+    route, crowd = (f", new route via {via}" if moved else ""), crowd_text(c.legs)
     if cut.at_station:
         clause = f" Next: {status_text(c.legs, late_now)}."
     elif cut.leave_by:  # the crowd note stays last: the ledger strips and re-appends it there

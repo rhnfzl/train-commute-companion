@@ -6,6 +6,8 @@ from runtime_rig import at
 from test_never_boarded import KEY, replay_to_departure
 from test_other_station import NEAR_VL, ROAD, Phone, loud_after, of
 from test_other_station import rig_for as station_rig
+from test_window_mode import first_train, told
+from test_window_mode import rig_for as window_rig
 
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.model import EventKind, Severity
@@ -56,3 +58,23 @@ async def test_a_cancelled_guess_at_an_other_station_is_told_quietly(tmp_path):
     assert cancel.severity is Severity.SILENT
     assert rig.occ(KEY).lock.legs[0].train.train_number == "6096"  # the relock still moves
     assert loud_after(rig, "19:49") == []
+
+
+async def test_a_window_replacement_takes_the_earliest_good_train(tmp_path):
+    """Window days have no usual route: a cancellation moves to the next good train, not to the
+    one that matches the transfer stations."""
+    out = '{mode: window, window: ["07:00", "10:00"], buffer_min: 10, transfers: [UT]}'
+    direct = make_leg("AAA", "RTD", "07:00", "07:40", number="700")
+    later = make_connection([make_leg("AAA", "RTD", "07:10", "07:50", number="710")])
+    first = make_leg("AAA", "UT", "07:30", "07:50", number="730")
+    second = make_leg("UT", "RTD", "08:00", "08:20", number="800")
+    world = [make_connection([direct]), later, make_connection([first, second])]
+    rig = await window_rig(tmp_path, out=out, extra="    transfer_min: {UT: 4}\n", world=world)
+    await rig.run_until("06:37")
+    assert first_train(rig) == "07:00"
+    gone = make_leg("AAA", "RTD", "07:00", "07:40", number="700", cancelled=True)
+    rig.provider.world = [make_connection([gone]), later, make_connection([first, second])]
+    await rig.run_until("06:45")
+    assert first_train(rig) == "07:10"
+    (cancel,) = told(rig, EventKind.CANCELLED)
+    assert "new route" not in cancel[0] and "Next good connection: 07:10" in cancel[0]
