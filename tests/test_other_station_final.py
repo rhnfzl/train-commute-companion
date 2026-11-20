@@ -1,6 +1,9 @@
 """Other boarding station and window mode: the cases the final 0.3.0 review found. Each one
 failed before its fix."""
 
+from dataclasses import replace
+from datetime import time
+
 from builders import make_connection, make_leg
 from runtime_rig import Rig, at
 from test_never_boarded import KEY, PROFILE, evening, replay_to_departure
@@ -9,8 +12,10 @@ from test_other_station import rig_for as station_rig
 from test_window_mode import OUT_KEY
 from test_window_mode import rig_for as window_rig
 
+from train_commute_companion.lifecycle_lock import journey_of
 from train_commute_companion.model import EventKind, Severity
 from train_commute_companion.providers.base import ProviderError
+from train_commute_companion.state import Commitment, LockSource
 
 S2 = (51.55, 5.95)
 
@@ -104,6 +109,41 @@ async def test_yes_at_another_station_drops_the_departed_usual_guess(tmp_path):
     assert loud_sent(rig, "16:21") == []
 
 
+async def _known_vl_with_two_retained(tmp_path):
+    """Before VL is noticed: TCC's uncommitted 19:06 guess and a committed 19:36, both retained."""
+    rig = await station_rig(tmp_path, other="other_stations: [VL]")
+    await replay_to_departure(rig)
+    await rig.run_until("19:48")
+    by = {c.legs[0].train.planned_departure.strftime("%H:%M"): c for c in rig.provider.world}
+    guess = journey_of(by["19:06"], LockSource.AUTO, Commitment.INTENDED)
+    ridden = journey_of(by["19:36"], LockSource.STATION, Commitment.COMMITTED)
+    s = rig.occ(KEY)
+    rig.occ_set(replace(s, lock=None, retained=(guess, ridden)), KEY)
+    phone = Phone(rig)
+    await phone.fix(ROAD, "19:48")
+    return rig, phone
+
+
+def _retained_trains(rig) -> list[str]:
+    return [r.legs[0].train.planned_departure.strftime("%H:%M") for r in rig.occ(KEY).retained]
+
+
+async def test_a_fix_inside_a_known_station_drops_an_uncommitted_guess(tmp_path):
+    rig, phone = await _known_vl_with_two_retained(tmp_path)
+    await phone.fix(NEAR_VL, "19:50")  # the wide circle proves nothing yet
+    assert _retained_trains(rig) == ["19:06", "19:36"]
+    assert await phone.fix(VL, "19:55") == [("VL", "report")]
+    assert rig.occ(KEY).lock.commitment is Commitment.COMMITTED
+    assert _retained_trains(rig) == ["19:36"]
+
+
+async def test_a_first_fix_inside_a_known_station_drops_an_uncommitted_guess(tmp_path):
+    rig, phone = await _known_vl_with_two_retained(tmp_path)
+    await phone.fix(VL, "19:50")
+    assert rig.occ(KEY).lock.commitment is Commitment.COMMITTED
+    assert _retained_trains(rig) == ["19:36"]
+
+
 # --- the watchdog never warns loudly about a train the user was not shown to take ---
 
 
@@ -193,3 +233,11 @@ async def test_other_train_offers_only_trains_inside_the_window(tmp_path):
     assert pick.stage == "pick" and pick.choices == (("t1956", "19:56"),)
     assert await rig.rt.answer_prompt(pick.id, "t1956") is None
     assert rig.occ(KEY).lock.legs[0].train.train_number == "6056"
+
+
+async def test_a_window_day_refuses_a_train_before_the_window_opens(tmp_path):
+    """The window is 07:00 to 10:00; polling starts 25 min early, but a 06:45 is outside it."""
+    rig = await window_rig(tmp_path)
+    await rig.run_until("06:40")
+    refused = await rig.rt.choose_at("p1", time(6, 45))
+    assert refused is not None and refused.text == "06:45 is outside the outbound window"
