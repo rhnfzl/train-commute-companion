@@ -176,7 +176,7 @@
         },
         "data_description": {
           "mode": "A fixed day uses the first train you set for that weekday, or the normal first train.",
-          "min_stay": "Window days only. Blank or 0 uses the normal setting."
+          "min_stay": "Window days only. Blank uses the normal setting; 0 turns the stay off that day."
         }
       }
     },
@@ -442,7 +442,7 @@
         },
         "data_description": {
           "mode": "A fixed day uses the first train you set for that weekday, or the normal first train.",
-          "min_stay": "Window days only. Blank or 0 uses the normal setting."
+          "min_stay": "Window days only. Blank uses the normal setting; 0 turns the stay off that day."
         }
       }
     },

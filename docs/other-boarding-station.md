@@ -41,7 +41,7 @@ The [profile editor](profile-editor.md) has the same settings.
 
 A station in `other_stations` is followed by itself when no train is followed yet. The companion follows the next train you can catch there to the normal destination of that direction. You get one quiet message that names the station and the train.
 
-This first fix may be up to 500 m away, for example from a cafe near the station. So the train is only a guess until a fix inside the usual station distance (`station_radius_m`). If you never come that close, the train is let go quietly, like any train you were never seen boarding. You get no "you missed" message for it.
+This first fix may be up to 500 m away, for example from a cafe near the station. So the train is only a guess until a fix inside the usual station distance (`station_radius_m`). Until then, messages about it, a cancellation included, are quiet. If you never come that close, the train is let go quietly, like any train you were never seen boarding. You get no "you missed" message for it.
 
 While TCC still holds its own guess of a train from your usual station, a known station is asked about instead, with the same buttons as below.
 
@@ -53,7 +53,7 @@ At any other station you get one quiet question: "are you taking the 20:06 from 
 - **Other train**: you get the next trains from there as buttons. Tap one to follow it. Until you tap one, nothing changes.
 - **No**: nothing happens.
 
-No answer means nothing happens. You are asked at most once per station, per direction, per day.
+No answer means nothing happens. You are asked at most once per station, per direction, per day. A transfer station of your route counts as an other station while no train you follow runs through it.
 
 Nothing changes until NS answers. If NS does not answer, the question stays open, so you can tap again. A question expires when you turn up at your usual station, or when a train from elsewhere is already confirmed.
 
