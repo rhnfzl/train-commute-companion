@@ -14,6 +14,7 @@ from test_window_mode import (
     RET_KEY,
     STAY_RET,
     commute_day,
+    evenings,
     first_train,
     report,
     ride_to_work,
@@ -153,3 +154,20 @@ async def test_a_phone_at_work_the_next_morning_is_no_arrival(tmp_path):
     await rig.run_until("12:00")
     await report(rig, "enter", "12:00", zone="work")  # over 150 min after the train arrived
     assert rig.rt.state.journey_records[OUT_KEY].seen_at is None
+
+
+async def test_a_stay_ending_at_the_latest_time_keeps_the_latest_bound(tmp_path):
+    """12:00 + 8 h ends at 20:00 exactly: not past the latest time, so no train after it."""
+    out = '{first_train: "11:22", buffer_min: 10}'
+    late = make_connection([make_leg("AAA", "RTD", "11:22", "12:00", number="1122")])
+    trains = [c for c in evenings() if f"{c.legs[0].train.planned_departure:%H:%M}" != "20:00"]
+    rig = await window_rig(tmp_path, out, STAY_RET, now="10:50", world=[late, *trains])
+    await rig.run_until("11:05")
+    await report(rig, "enter", "11:05", zone="AAA")
+    await rig.run_until("14:50")
+    assert stay_start(rig) == "20:00"
+    s = rig.rt.state.occurrences[RET_KEY]
+    assert rig.rt._ctx(s, rig.clock.now()).schedule.pick == "earliest"
+    await rig.run_until("19:42")
+    assert first_train(rig, RET_KEY) is None
+    assert len(told(rig, EventKind.NO_CONNECTION)) == 1

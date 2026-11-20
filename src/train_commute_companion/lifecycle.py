@@ -510,7 +510,7 @@ def _lock_earliest(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Tran
     sch = ctx.schedule
     last = present(sch.last_departure)
     floor = None if s.travelling else sch.first_departure
-    capped = to_utc(sch.first_departure) >= to_utc(last)
+    capped = sch.stay_capped
     c = find_next_good(s, ctx, answer, not_before=floor)
     if c is None or (not s.travelling and not capped and _departure(c) > to_utc(last)):
         if s.missing_sent:

@@ -417,6 +417,8 @@ class DatedSchedule:
     mode: Mode = "fixed"
     pick: Pick = "earliest"
     last_departure: datetime | None = None  # window mode: the latest departure TCC may pick
+    # window mode: the minimum stay ends after the latest time, so any later train is followed
+    stay_capped: bool = False
 
 
 @dataclass(frozen=True, slots=True)

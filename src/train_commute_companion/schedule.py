@@ -75,10 +75,11 @@ def _window_schedule(
     start = _local(datetime.combine(service_date, j.window[0]), "start")
     end_day = service_date + timedelta(days=1 if j.window[1] < j.window[0] else 0)
     end = _local(datetime.combine(end_day, j.window[1]), "end")
-    pick = j.pick
+    pick, capped = j.pick, False
     if j.min_stay_min and stay_from is not None:
         stayed = stay_from.astimezone(UTC) + timedelta(minutes=j.min_stay_min)
-        if stayed > end.astimezone(UTC) and pick == "earliest":
+        capped = stayed > end.astimezone(UTC)
+        if capped and pick == "earliest":
             pick = "earliest_silent"
         start = min(max(start.astimezone(UTC), stayed), end.astimezone(UTC)).astimezone(TZ)
     return DatedSchedule(
@@ -89,6 +90,7 @@ def _window_schedule(
         "window",
         pick,
         end,
+        capped,
     )
 
 
