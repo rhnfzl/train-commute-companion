@@ -4,10 +4,13 @@ failed before its fix."""
 from builders import make_connection, make_leg
 from runtime_rig import at
 from test_never_boarded import KEY, replay_to_departure
-from test_other_station import NEAR_VL, ROAD, Phone, of
+from test_other_station import NEAR_VL, ROAD, VL, Phone, of
 from test_other_station import rig_for as station_rig
+from test_window_mode import OUT_KEY
+from test_window_mode import rig_for as window_rig
 
 from train_commute_companion.model import EventKind, Severity
+from train_commute_companion.providers.base import ProviderError
 
 S2 = (51.55, 5.95)
 
@@ -74,8 +77,7 @@ async def test_a_retained_known_station_guess_stays_silent(tmp_path):
     gone = make_connection([make_leg("VL", "AAA", "20:06", "21:06", number="6066", cancelled=True)])
     rig.provider.world = [*rig.provider.world, gone]
     await rig.run_until("21:35")
-    loud = loud_sent(rig, "19:49")
-    assert [x for x in loud if x[0] is not EventKind.CANNOT_SEE_TRAIN] == []
+    assert loud_sent(rig, "19:49") == []
 
 
 async def test_yes_at_another_station_drops_the_departed_usual_guess(tmp_path):
@@ -100,3 +102,44 @@ async def test_yes_at_another_station_drops_the_departed_usual_guess(tmp_path):
     rig.provider.world = [c for c in world if c.legs[0].train.train_number != "3562"]
     await rig.run_until("17:00")
     assert loud_sent(rig, "16:21") == []
+
+
+# --- the watchdog never warns loudly about a train the user was not shown to take ---
+
+
+def down(q):
+    return ProviderError("down")
+
+
+async def test_ns_failing_during_a_known_station_guess_warns_only_once_committed(tmp_path):
+    rig = await station_rig(tmp_path, other="other_stations: [VL]")
+    await replay_to_departure(rig)
+    await rig.run_until("19:48")
+    phone = Phone(rig)
+    await phone.fix(ROAD, "19:48")
+    await phone.fix(NEAR_VL, "19:50")
+    assert rig.occ(KEY).lock.commitment.value == "provisional"
+    rig.provider.error = down
+    await rig.run_until("19:58")
+    assert loud_sent(rig, "19:49") == []
+    assert await phone.fix(VL, "19:59") == [("VL", "report")]  # inside the circle: committed
+    assert rig.occ(KEY).lock.commitment.value == "committed"
+    await rig.run_until("20:02")
+    assert EventKind.CANNOT_SEE_TRAIN in [k for k, _ in loud_sent(rig, "19:49")]
+
+
+async def test_on_leave_before_leaving_watches_no_invented_train(tmp_path):
+    on_leave = '{mode: window, window: ["07:00", "10:00"], buffer_min: 10, pick: on_leave}'
+    rig = await window_rig(tmp_path, out=on_leave)
+    rig.provider.error = down
+    await rig.run_until("07:30")
+    assert rig.occ(OUT_KEY).lock is None
+    assert loud_sent(rig, "06:00") == []
+
+
+async def test_fixed_day_keeps_the_usual_train_watch_before_a_lock(tmp_path):
+    """0.2.6: before a lock a fixed day still watches its usual train."""
+    rig = await window_rig(tmp_path, out='{first_train: "08:00", buffer_min: 10}')
+    rig.provider.error = down
+    await rig.run_until("07:55")
+    assert EventKind.CANNOT_SEE_TRAIN in [k for k, _ in loud_sent(rig, "06:00")]

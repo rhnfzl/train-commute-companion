@@ -59,6 +59,7 @@ from train_commute_companion.lifecycle import (
     UserAction,
     apply_action,
     boarding_origin,
+    guess,
     is_resolved,
     location_queries,
     make_event,
@@ -73,6 +74,7 @@ from train_commute_companion.lifecycle import (
     quiet_watch,
     remember_prompt,
     target_occurrence,
+    unproven_station,
     whole_day_keys,
 )
 from train_commute_companion.lifecycle_end import arrival_evidence, may_archive, on_tick
@@ -1295,7 +1297,9 @@ class Runtime:
         seen = self._memory.seen.get(k, {})
         out = []
         main = (s.lock,) if s.lock and s.direction_state is not DirectionState.DONE else ()
-        for j in (*main, *s.retained):
+        # a guess at an other station is no train the user was shown to take: not watched
+        main = () if unproven_station(s) else main
+        for j in (*main, *(r for r in s.retained if not guess(r))):
             for x in j.legs:
                 if x.state in (LegState.CANCELLED, LegState.RELOCKED, LegState.MISSED):
                     continue  # a missed train is not watched (Q2)
@@ -1310,12 +1314,12 @@ class Runtime:
                     Provenance.REPORTED, Provenance.REPORTED, None,
                 )  # fmt: skip
                 out.append(replace(base, riding_or_watched=riding))
-        if (
-            s.lock is None and not s.retained and k in self._memory.before
-        ):  # before a lock (rule 13)
+        if s.lock is not None or s.retained or ctx.schedule.pick == "on_leave":
+            return out  # on_leave follows no train before leaving: none is watched
+        if k in self._memory.before:  # before a lock (rule 13)
             head, *onward = self._memory.before[k]  # any usual leg (rule 13)
             out += [replace(head, departure=ctx.schedule.first_departure), *onward]
-        elif s.lock is None and not s.retained:  # never answered yet: by board age only
+        else:  # never answered yet: by board age only
             first = ctx.schedule.first_departure
             last_ok = board_health(s.poll_records, now).last_ok_at
             ok = Provenance.REPORTED
