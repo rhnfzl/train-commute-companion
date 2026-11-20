@@ -43,7 +43,7 @@ With an arrival at 09:05 and 480 minutes, the return starts at 17:05. A start af
 
 If NS changes the arrival of the train you came on, the stay moves with it.
 
-TCC does not poll NS before the stay ends. If you leave early, it still follows a train: a leave of work, a station or an I'm leaving tap starts it.
+Polling starts `active_lead_min` minutes before the effective earliest departure, the later of the window start and the end of the stay. In the example above with `buffer_min: 5` and the default lead of `buffer_min + 15`, polling starts at 16:45 and the earliest train TCC picks leaves at 17:05 or later. If you leave early, it still follows a train: a leave of work, a station or an I'm leaving tap starts it.
 
 `min_stay_min` works on window days only. A day can set `min_stay_min: 0` to turn off the stay it would get from the direction.
 
