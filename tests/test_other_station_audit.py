@@ -1,16 +1,27 @@
 """Other boarding station and window mode: the cases the 0.3.0 second-eye audit found. Each one
 failed before its fix."""
 
+from datetime import time
+
 from builders import make_connection, make_leg
 from runtime_rig import at
 from test_never_boarded import KEY, replay_to_departure
-from test_other_station import NEAR_VL, ROAD, Phone, loud_after, of
+from test_other_station import AAA, NEAR_VL, ROAD, RTD, VL, Phone, loud_after, of
 from test_other_station import rig_for as station_rig
-from test_window_mode import first_train, told
+from test_window_mode import (
+    FIXED_OUT,
+    RET_KEY,
+    STAY_RET,
+    commute_day,
+    first_train,
+    ride_to_work,
+    stay_start,
+    told,
+)
 from test_window_mode import rig_for as window_rig
 
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.model import EventKind, Severity
+from train_commute_companion.model import Direction, EventKind, Severity
 
 
 async def known_vl_far_fix(tmp_path):
@@ -78,3 +89,42 @@ async def test_a_window_replacement_takes_the_earliest_good_train(tmp_path):
     assert first_train(rig) == "07:10"
     (cancel,) = told(rig, EventKind.CANCELLED)
     assert "new route" not in cancel[0] and "Next good connection: 07:10" in cancel[0]
+
+
+async def stay_day_at_venlo(tmp_path):
+    """Return window 15:00-20:00 with an 8 h stay from 09:05: watched from 16:45. At 15:30
+    the phone is at VL, an unknown station."""
+    rig = await window_rig(tmp_path, FIXED_OUT, STAY_RET, now="07:50", world=commute_day())
+    rig.provider.positions = {"RTD": RTD, "VL": VL, "AAA": AAA}
+    rig.provider.world += [
+        make_connection([make_leg("VL", "AAA", dep, arr, number=n)])
+        for dep, arr, n in (("15:36", "16:36", "6036"), ("16:06", "17:06", "6066"))
+    ]
+    await ride_to_work(rig, phone=True)
+    await rig.run_until("15:30")
+    assert stay_start(rig) == "17:05"
+    await rig.rt.report_location("p1", LocationEvent("VL", "enter", at("15:30")))
+    (ask,) = of(rig, EventKind.STATION_ASK)
+    assert "15:36 from VL" in ask.text
+    return rig, ask
+
+
+async def test_yes_to_an_early_train_inside_the_stay_follows_it(tmp_path):
+    rig, ask = await stay_day_at_venlo(tmp_path)
+    assert await rig.rt.answer_prompt(ask.facts.prompt_id, "yes") is None
+    assert first_train(rig, RET_KEY) == "15:36"
+
+
+async def test_a_pick_of_an_early_train_inside_the_stay_follows_it(tmp_path):
+    rig, ask = await stay_day_at_venlo(tmp_path)
+    assert await rig.rt.answer_prompt(ask.facts.prompt_id, "other") is None
+    assert await rig.rt.answer_prompt(rig.occ(RET_KEY).prompt.id, "t1606") is None
+    assert first_train(rig, RET_KEY) == "16:06"
+
+
+async def test_a_choice_after_the_latest_time_is_still_refused(tmp_path):
+    rig = await window_rig(tmp_path, FIXED_OUT, STAY_RET, now="07:50", world=commute_day())
+    await ride_to_work(rig, phone=True)
+    await rig.run_until("15:20")
+    late = await rig.rt.choose_at("p1", time(20, 30), direction=Direction.RETURN)
+    assert late is not None and "outside the return window" in late.text
