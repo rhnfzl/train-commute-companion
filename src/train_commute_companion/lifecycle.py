@@ -1709,6 +1709,8 @@ def on_poll(s: OccurrenceState, ctx: Ctx, poll: PollAnswers) -> Transition:
     follow = live and home is None
     t = (_restore(s, ctx, pool) or _follow(s, ctx, pool, asked)) if follow else Transition(s, ())
     quiet = quiet_events(t.state, ctx, (*events, *t.events))
+    if unproven_station(start):
+        quiet = tuple(replace(e, severity=Severity.SILENT) for e in quiet)
     return keep_stated(bumped(start, t.state), quiet)
 
 
@@ -1948,6 +1950,8 @@ def _locate(
         if event.zone == place_zone(p, p.origin(d)):
             return _left_origin(s, ctx, event, answer)
         return Transition(s, ())
+    if event.zone == s.boarding_station and unproven_station(s) and not event.evidence.in_station:
+        return Transition(s, ())  # the wide circle proves neither boarding nor a miss (Q12)
     seen = (*((answer,) if answer is not None else ()), *watched)  # `location_queries`
     missed = _missed(s, ctx, event, merged_pool(seen)) if seen else None
     if missed is not None:
@@ -1975,6 +1979,19 @@ def _locate(
     if other_station_candidate(s, ctx, event):
         return _at_other_station(s, ctx, event, answer)
     return Transition(s, ())
+
+
+def unproven_station(s: OccurrenceState) -> bool:
+    """A train followed from an other station that only its wide circle noticed: no fix inside
+    the station radius yet, so it is a guess. It commits on such a fix (accepted 2026-11-20) and
+    tells nothing loud before that."""
+    lock = s.lock
+    return (
+        s.boarding_station is not None
+        and not s.at_station
+        and lock is not None
+        and lock.commitment is not Commitment.COMMITTED
+    )
 
 
 def other_station_candidate(s: OccurrenceState, ctx: Ctx, event: LocationEvent) -> bool:
