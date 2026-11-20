@@ -97,8 +97,10 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
             "prompt": None,
             "asked_stations": [],
             "station_seen": {},
-            "station_visits": {},
+            # seeded from zone_reports so the 30-minute guard survives the upgrade
+            "station_visits": occurrence.get("zone_reports", {}),
         }
+        assert occurrence["station_visits"]  # the fixture holds a report: not a vacuous check
         for journey in (occurrence["lock"], *occurrence["retained"]):
             if journey is not None:
                 journey["unproven"] = False  # 0.3.0 other-station guess default

@@ -59,6 +59,29 @@ async def test_leaving_a_known_station_keeps_the_30_minute_guard(tmp_path):
     assert at("19:50") == rig.occ(KEY).station_visits["VL"]
 
 
+async def test_state_saved_before_station_visits_keeps_the_30_minute_guard(tmp_path):
+    import json
+
+    rig = await station_rig(tmp_path, other="other_stations: [VL]")
+    _s2_trains(rig)
+    await replay_to_departure(rig)
+    await rig.run_until("19:48")
+    phone = Phone(rig)
+    await phone.fix(ROAD, "19:48")
+    assert await phone.fix(NEAR_VL, "19:50") == [("VL", "enter")]
+    raw = json.loads(rig.store.text)
+    for occ in raw["occurrences"].values():  # as 0.2.6 or an early 0.3.0 dev build saved it
+        del occ["station_visits"]
+    assert raw["occurrences"][KEY]["zone_reports"]["VL"]
+    rig.store.text = json.dumps(raw)
+    await rig.restart()
+    phone = Phone(rig)
+    await phone.fix((S2[0] + 0.001, S2[1]), "19:55", acc=20)
+    await phone.fix((S2[0] + 0.001, S2[1]), "19:57", acc=20)
+    assert of(rig, EventKind.STATION_ASK) == []
+    assert rig.occ(KEY).station_visits["VL"] == at("19:50")
+
+
 # --- a retained guess keeps the silent rule; a confirmed station drops an older guess ---
 
 

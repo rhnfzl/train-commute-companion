@@ -276,7 +276,8 @@ class OccurrenceState:
     asked_stations: frozenset[str] = frozenset()
     station_seen: Mapping[str, datetime] = field(default_factory=dict)
     # the latest presence per zone that a leave never erases: the RIDE_GAP guard reads it, so
-    # walking out of a station circle does not forget that the user was just there
+    # walking out of a station circle does not forget that the user was just there; an older
+    # store seeds it from `zone_reports` on load (`store.read_state`)
     station_visits: Mapping[str, datetime] = field(default_factory=dict)
 
     @property

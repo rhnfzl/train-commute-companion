@@ -168,6 +168,9 @@ def read_state(version: object, raw: Any) -> PersistedState:
     """The state saved under `version`, as the current model has it. Raises ValueError for a
     version this code cannot read."""
     _check_version(version)
+    for s in raw.get("occurrences", {}).values():
+        # a store from before `station_visits` keeps its presence for the 30-minute guard
+        s.setdefault("station_visits", dict(s.get("zone_reports", {})))
     if version == _V1:
         return _from_v1(raw)
     st: PersistedState = decode(PersistedState, raw)
