@@ -752,3 +752,25 @@ async def test_station_fix_carries_whether_it_is_inside_the_station_circle(hass)
     set_person(hass, 52.1, 5.1)  # accuracy unknown: no proof
     await hass.async_block_till_done()
     assert seen == [("UT", "enter", True), ("UT", "leave", False), ("UT", "enter", False)]
+
+
+async def test_a_vouch_carries_whether_the_fix_is_inside_the_station_circle(hass):  # Q12
+    h = await setup_tcc(hass, VIA_UT, now="08:00")
+    await start_tracker(h)
+    seen = []
+    await drive(h, "08:18")
+    set_person(hass, 52.0, 5.0, gps_accuracy=10)  # inside AAA's circle, after the 08:12 left
+    await drive(h, "08:20")
+
+    async def spy(rt):
+        report = rt.report_location
+
+        async def wrapped(profile_id, event, *rest, **kw):
+            seen.append((event.kind, event.evidence.in_station))
+            return await report(profile_id, event, *rest, **kw)
+
+        rt.report_location = wrapped
+
+    await h.host.run(spy)
+    await drive(h, "08:26")
+    assert ("still", True) in seen

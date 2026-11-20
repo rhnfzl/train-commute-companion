@@ -227,7 +227,20 @@ class LocationTracker:
             if (track := self._tracks.get(pid)) is None or track.zone != zone:
                 return
             try:
-                ev = evidence(self._hass, profile.location, zone, self._since)
+                # the vouch carries the proof a throttled fix inside the circle could not send
+                state = self._hass.states.get(self._tracked.get(pid, ("",))[0])
+                pos = None if state is None else _fix(state)
+                inside = (
+                    state is not None
+                    and pos is not None
+                    and in_station_circle(
+                        self._coordinator.data,
+                        profile,
+                        Fix(*pos, state.last_updated, _acc(state)),
+                        zone,
+                    )
+                )
+                ev = evidence(self._hass, profile.location, zone, self._since, None, inside)
                 event = LocationEvent(zone, "still", at, ev)
                 if not await self._send(pid, gen, event, profile.location, epoch):
                     self._still_sent.get(pid, set()).discard(key)

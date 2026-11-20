@@ -25,7 +25,7 @@ from test_window_mode import (
 from test_window_mode import rig_for as window_rig
 
 from train_commute_companion.lifecycle import is_resolved
-from train_commute_companion.location import LocationEvent
+from train_commute_companion.location import Evidence, LocationEvent
 from train_commute_companion.model import Direction, DirectionState, EventKind, Severity
 
 
@@ -149,7 +149,7 @@ async def test_a_late_phone_arrival_moves_the_minimum_stay(tmp_path):
     assert stay_start(rig) == "17:35"
 
 
-async def test_a_phone_at_work_the_next_morning_is_no_arrival(tmp_path):
+async def test_a_phone_at_work_long_after_the_train_is_no_arrival(tmp_path):
     rig = await window_rig(tmp_path, FIXED_OUT, STAY_RET, now="07:50", world=commute_day())
     await ride_to_work(rig, phone=False)
     await rig.run_until("12:00")
@@ -230,3 +230,24 @@ async def test_yes_to_remember_after_the_window_closed_has_expired(tmp_path):
     refused = await rig.rt.answer_prompt(pid, "remember")
     assert refused is not None and refused.text == "this question has expired"
     assert rig.rt.state.remembered_stations == {}
+
+
+async def test_a_vouch_inside_the_station_circle_commits_the_guess(tmp_path):
+    """A fix inside the circle a minute after the far one is throttled (same zone, inside 2 min),
+    so the vouch is the first event with the proof: it commits the lock."""
+    rig, phone = await known_vl_far_fix(tmp_path)
+    assert await phone.fix(VL, "19:51") == []
+    rig.clock.set("20:01")
+    proof = Evidence(in_station=True)
+    await rig.rt.report_location("p1", LocationEvent("VL", "still", at("20:01"), proof))
+    assert rig.occ(KEY).lock.commitment.value == "committed"
+
+
+async def test_the_relocked_guess_ends_quietly(tmp_path):
+    rig, _ = await known_vl_far_fix(tmp_path)
+    gone = make_connection([make_leg("VL", "AAA", "20:06", "21:06", number="6066", cancelled=True)])
+    rig.provider.world = [
+        gone if c.legs[0].train.train_number == "6066" else c for c in rig.provider.world
+    ]
+    await rig.run_until("21:45")
+    assert loud_after(rig, "19:49") == []
