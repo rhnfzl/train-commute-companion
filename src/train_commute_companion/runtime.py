@@ -1760,10 +1760,10 @@ class Runtime:
         if answer not in dict(q.choices):
             return Refused("unknown answer")
         pid, d, day = found.key.profile_id, found.key.direction, found.key.service_date
-        if answer in ("no", "forget"):
+        if q.stage == "remember":  # also once the trip ended: one strict write either way
+            return self._remember_station(found, q.station if answer == "remember" else None)
+        if answer == "no":
             return await self.act(pid, SetPrompt(day, None), d)
-        if q.stage == "remember":
-            return self._remember_station(found, q.station)
 
         def void(s: OccurrenceState | None) -> bool:
             """Answered, or a train from elsewhere committed (a leave, a station fix)."""
@@ -1810,12 +1810,20 @@ class Runtime:
         return refused
 
     def _open_prompt(self, prompt_id: str) -> OccurrenceState | None:
+        """The occurrence asking `prompt_id`. Remember outlives the trip, not its window."""
+        now = self._clock.now()
+
+        def open_(s: OccurrenceState) -> bool:
+            if not is_resolved(s):
+                return True
+            ctx = self._ctx(s, now)
+            remember = s.prompt is not None and s.prompt.stage == "remember"
+            return remember and ctx is not None and to_utc(now) < to_utc(ctx.schedule.window_end)
+
         return next(
             (
                 s for s in self._writer.st.occurrences.values()
-                if s.prompt is not None
-                and s.prompt.id == prompt_id
-                and (not is_resolved(s) or s.prompt.stage == "remember")
+                if s.prompt is not None and s.prompt.id == prompt_id and open_(s)
             ),
             None,
         )  # fmt: skip
@@ -1862,19 +1870,18 @@ class Runtime:
         self._apply({k: (t.state, t.events)}, kind=Change.ACTION)
         return None
 
-    def _remember_station(self, s: OccurrenceState, station: str) -> Refused | None:
-        """Remembered in TCC's own state, never in the profile file; the question closes."""
+    def _remember_station(self, s: OccurrenceState, station: str | None) -> Refused | None:
+        """Remembered in TCC's own state, never in the profile file; the question closes. None
+        (No) only closes it."""
         if self._writer.waiting:
             return Refused("An earlier choice is not saved yet. Try again.", RefusalKind.RETRY)
         st, k = self._writer.st, direction_key(s.key.profile_id, s.key.direction)
         have = st.remembered_stations.get(k, ())
         occ = st.occurrences.get(okey(s.key), s)
+        kept = have if station is None or station in have else (*have, station)
         candidate = replace(
             st,
-            remembered_stations={
-                **st.remembered_stations,
-                k: have if station in have else (*have, station),
-            },
+            remembered_stations={**st.remembered_stations, **({k: kept} if kept else {})},
             occurrences={**st.occurrences, okey(s.key): replace(occ, prompt=None)},
         )
         if not self._writer.commit_strict(candidate):

@@ -1,12 +1,13 @@
 """Other boarding station and window mode: the cases the 0.3.0 second-eye audit found. Each one
 failed before its fix."""
 
+from dataclasses import replace
 from datetime import time
 
 from builders import make_connection, make_leg
 from runtime_rig import at
 from test_never_boarded import KEY, replay_to_departure
-from test_other_station import AAA, NEAR_VL, ROAD, RTD, VL, Phone, loud_after, of
+from test_other_station import AAA, NEAR_VL, ROAD, RTD, VL, Phone, at_venlo, loud_after, of
 from test_other_station import rig_for as station_rig
 from test_window_mode import (
     FIXED_OUT,
@@ -25,7 +26,7 @@ from test_window_mode import rig_for as window_rig
 
 from train_commute_companion.lifecycle import is_resolved
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.model import Direction, EventKind, Severity
+from train_commute_companion.model import Direction, DirectionState, EventKind, Severity
 
 
 async def known_vl_far_fix(tmp_path):
@@ -201,3 +202,31 @@ async def test_a_known_accuracy_fix_at_a_route_station_still_asks(tmp_path):
     rig = await at_a_transfer_station(tmp_path, acc=20)
     (ask,) = of(rig, EventKind.STATION_ASK)
     assert "20:10 from UT" in ask.text
+
+
+async def remember_asked_and_arrived(tmp_path):
+    rig, _ = await at_venlo(tmp_path)
+    (ask,) = of(rig, EventKind.STATION_ASK)
+    await rig.rt.answer_prompt(ask.facts.prompt_id, "yes")
+    (remember,) = of(rig, EventKind.STATION_REMEMBER)
+    s = rig.occ(KEY)
+    rig.occ_set(replace(s, direction_state=DirectionState.DONE), KEY)  # arrived home
+    assert is_resolved(rig.occ(KEY))
+    return rig, remember.facts.prompt_id
+
+
+async def test_no_to_remember_after_the_trip_ended_closes_the_question(tmp_path):
+    rig, pid = await remember_asked_and_arrived(tmp_path)
+    assert await rig.rt.answer_prompt(pid, "forget") is None
+    assert rig.occ(KEY).prompt is None and rig.rt.state.remembered_stations == {}
+    refused = await rig.rt.answer_prompt(pid, "remember")
+    assert refused is not None and refused.text == "this question has expired"
+
+
+async def test_yes_to_remember_after_the_window_closed_has_expired(tmp_path):
+    rig, pid = await remember_asked_and_arrived(tmp_path)
+    rig.clock.set("21:32")  # the return window ends 21:30; nothing archived it yet
+    assert rig.occ(KEY) is not None
+    refused = await rig.rt.answer_prompt(pid, "remember")
+    assert refused is not None and refused.text == "this question has expired"
+    assert rig.rt.state.remembered_stations == {}
