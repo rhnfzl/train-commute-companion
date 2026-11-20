@@ -99,6 +99,9 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
             "station_seen": {},
             "station_visits": {},
         }
+        for journey in (occurrence["lock"], *occurrence["retained"]):
+            if journey is not None:
+                journey["unproven"] = False  # 0.3.0 other-station guess default
     raw["state"]["remembered_stations"] = {}
     for cfg in (raw["state"]["config"], *raw["state"]["config_snapshots"].values()):
         for profile in cfg["profiles"]:

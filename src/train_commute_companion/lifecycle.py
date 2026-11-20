@@ -65,6 +65,7 @@ from train_commute_companion.model import (
     TransferState,
     alert_facts,
     display_name,
+    held,
     okey,
     present,
     train_ident,
@@ -757,12 +758,25 @@ def _confirm_station(s: OccurrenceState, station: str) -> OccurrenceState:
         travelling=True,
         errand_deadline=None,
     )
-    lock = s.lock
+    s, lock = _drop_guesses(s), s.lock
     if lock is None or lock.legs[0].board_station == station:
         return s
-    if lock.legs[0].state in _DEPARTED:
+    if lock.commitment is Commitment.COMMITTED and lock.legs[0].state in _DEPARTED:
         return s  # already riding: the station is where a later choice boards
+    # a guess, also one whose train has left: the user stands here, so is not on it
     return replace(s, lock=None, direction_state=DirectionState.IDLE)
+
+
+def guess(j: Journey) -> bool:
+    """A retained journey that keeps the silent rule of `unproven_station`."""
+    return j.unproven and j.commitment is not Commitment.COMMITTED
+
+
+def _drop_guesses(s: OccurrenceState) -> OccurrenceState:
+    """The user is confirmed at a station before its train: no retained journey never shown
+    boarded is a train they are on."""
+    kept = tuple(r for r in s.retained if r.commitment is Commitment.COMMITTED)
+    return s if kept == s.retained else replace(s, retained=kept)
 
 
 # --- follow, relock, restore (7.4, 7.12 rules 2, 3, 8, 21) ---
@@ -939,7 +953,9 @@ def _journey(
 ) -> Journey:
     arrival = tail[-1].alight.planned_arrival if tail else None
     legs = (*prefix, *(progress_of(x) for x in tail))
-    return Journey(legs, source, lock.commitment, arrival or lock.planned_final_arrival)
+    return Journey(
+        legs, source, lock.commitment, arrival or lock.planned_final_arrival, unproven=lock.unproven
+    )
 
 
 def _progress(s: OccurrenceState, legs: Sequence[LegProgress]) -> OccurrenceState:
@@ -1673,6 +1689,8 @@ def _follow_retained(
         t = _follow(alone, ctx, pool, asked, relock=False)
         retained.append(present(t.state.lock))
         for e in t.events:
+            if guess(r):
+                e = held(e)
             text = f"{display_name(e.profile_name)}: {on}{e.body}"
             tail = f":retained:{train_ident(first)}"
             key = e.key + tail
@@ -1717,7 +1735,7 @@ def on_poll(s: OccurrenceState, ctx: Ctx, poll: PollAnswers) -> Transition:
     t = (_restore(s, ctx, pool) or _follow(s, ctx, pool, asked)) if follow else Transition(s, ())
     quiet = quiet_events(t.state, ctx, (*events, *t.events))
     if unproven_station(start):
-        quiet = tuple(replace(e, severity=Severity.SILENT) for e in quiet)
+        quiet = tuple(held(e) for e in quiet)
     return keep_stated(bumped(start, t.state), quiet)
 
 
@@ -2138,8 +2156,10 @@ def _at_other_station(
     when, name = hhmm(first_leg.train.planned_departure), first_leg.board.name
     if known and ev.in_station:
         # a first fix already inside the station circle: committed as a later one would be
-        here = replace(
-            s, boarding_station=zone, travelling=True, at_station=True, errand_deadline=None
+        here = _drop_guesses(
+            replace(
+                s, boarding_station=zone, travelling=True, at_station=True, errand_deadline=None
+            )
         )
         new = journey_of(c, LockSource.STATION, Commitment.COMMITTED, answer.fetched_at)
         written = present(write_lock(here, new, expect=None, now=ctx.now))
@@ -2149,7 +2169,7 @@ def _at_other_station(
         deadline = (at + ERRAND_TIMEOUT).astimezone(TZ)
         here = replace(s, boarding_station=zone, travelling=True, errand_deadline=deadline)
         new = journey_of(c, LockSource.LOCATION, Commitment.PROVISIONAL, answer.fetched_at)
-        written = present(write_lock(here, new, expect=None, now=ctx.now))
+        written = present(write_lock(here, replace(new, unproven=True), expect=None, now=ctx.now))
         pool = merged_pool((answer,))
         return _with_status(written, ctx, pool, f"at {name}: following your ")
     pid = prompt_id(s.key, zone, "ask", ctx.now)
@@ -2197,6 +2217,8 @@ def _at_first_station(s: OccurrenceState, ctx: Ctx, pool: Pool | None) -> Transi
     """Commit the lock; an auto or location lock is replaced by a station lock (7.2)."""
     lock = s.lock
     s = replace(s, at_station=True, travelling=True, errand_deadline=None)
+    if s.boarding_station is not None:  # confirmed at the other station
+        s = _drop_guesses(s)
     new = None if lock is None else replace(lock, commitment=Commitment.COMMITTED)
     if pool is not None and (lock is None or lock.source in _STATION_REPLACES):
         c = find_next_good(s, ctx, pool)

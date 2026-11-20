@@ -13,6 +13,7 @@ from train_commute_companion.lifecycle import (
     make_event,
     on_prefix,
     place_zone,
+    unproven_station,
 )
 from train_commute_companion.lifecycle_lock import may_be_on
 from train_commute_companion.model import (
@@ -61,7 +62,8 @@ def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transi
         f = first_open(lock)
         retained = s.retained
         if f < len(lock.legs) and may_be_on(lock.legs[f], now):
-            retained += (replace(lock, legs=lock.legs[f:]),)
+            unproven = lock.unproven or unproven_station(s)
+            retained += (replace(lock, legs=lock.legs[f:], unproven=unproven),)
         state = s.direction_state
         # a known other station followed by itself and let go: the usual origin again
         back = lock.legs[0].board_station == s.boarding_station

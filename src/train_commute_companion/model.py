@@ -296,6 +296,8 @@ class AlertFacts:
     # a question to the user: its id and its (answer, label) buttons; empty for any other alert
     prompt_id: str = ""
     choices: tuple[tuple[str, str], ...] = ()
+    # silent by a rule, not by its kind (a guess at an other station): never escalated
+    held: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +349,11 @@ def legacy_facts(e: AlertEvent) -> AlertFacts:
 def alert_facts(e: AlertEvent) -> AlertFacts:
     """What an alert states. The one reading of a stored `facts` of None."""
     return legacy_facts(e) if e.facts is None else e.facts
+
+
+def held(e: AlertEvent) -> AlertEvent:
+    """Silent, and kept silent: escalation (rule 4) never makes it loud on a repeat."""
+    return replace(e, severity=Severity.SILENT, facts=replace(alert_facts(e), held=True))
 
 
 class AdvicePhase(StrEnum):

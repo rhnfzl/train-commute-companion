@@ -30,6 +30,7 @@ from train_commute_companion.model import (
     TrainId,
     TransferCheck,
     TransferState,
+    alert_facts,
     present,
     train_ident,
 )
@@ -358,6 +359,7 @@ def news_of(
         # each poll restates a platform move timed by the expected departure; this planned,
         # whole-minute clock made it loud up to a minute early (2026-11-18)
         and e.kind is not EventKind.PLATFORM_CHANGE
+        and not alert_facts(e).held
     ]
     loud = set(escalations(sent, facts, now))
     # a known fact that turned loud itself (an arrival now past the limit) goes once more

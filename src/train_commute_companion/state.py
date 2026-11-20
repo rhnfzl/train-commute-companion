@@ -173,6 +173,9 @@ class Journey:
     commitment: Commitment
     planned_final_arrival: datetime
     plan: PlannedJourney | None = None
+    # taken at an other station that only its wide circle noticed (`unproven_station`): until
+    # committed it stays silent, also once retained, where the occurrence no longer says so
+    unproven: bool = False
 
 
 @dataclass(frozen=True, slots=True)
