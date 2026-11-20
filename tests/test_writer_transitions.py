@@ -97,6 +97,7 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
             "prompt": None,
             "asked_stations": [],
             "station_seen": {},
+            "station_visits": {},
         }
     raw["state"]["remembered_stations"] = {}
     for cfg in (raw["state"]["config"], *raw["state"]["config_snapshots"].values()):

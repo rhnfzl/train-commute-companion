@@ -1882,6 +1882,10 @@ def on_location(
             )
     elif prev is None or (at > to_utc(prev) and (boards is None or at < boards)):
         s = replace(s, zone_reports={**s.zone_reports, event.zone: event.at})
+    if event.kind != "leave" and (
+        (last := s.station_visits.get(event.zone)) is None or at > to_utc(last)
+    ):
+        s = replace(s, station_visits={**s.station_visits, event.zone: event.at})
     t = _locate(s, ctx, event, answer, watched)
     # rule 21: a lock, catchability or missed-leg change raises the generation; a repeat
     # report that changes none of them keeps polls in flight
@@ -2117,7 +2121,7 @@ def _at_other_station(
     }
     if any(
         z != zone and z not in places and at - to_utc(t) < RIDE_GAP
-        for z, t in s.zone_reports.items()
+        for z, t in s.station_visits.items()
     ):
         return Transition(s, ())  # at another station minutes ago: a stop of a train ridden
     known = s.lock is None and (
