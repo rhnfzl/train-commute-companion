@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Literal
 
-from train_commute_companion.calendar import TZ
+from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.location import (
     STALE_LOCATION,
     Evidence,
@@ -57,7 +57,7 @@ def moved_speed(prev: Fix | None, fix: Fix) -> float | None:
     0 while stopped, so driving past a station still reads as riding and asks nothing."""
     if prev is None or not _known_acc(prev.acc) or not _known_acc(fix.acc):
         return None
-    dt = fix.at - prev.at
+    dt = to_utc(fix.at) - to_utc(prev.at)  # one ZoneInfo subtracts wall clocks over DST
     if not SPEED_SPAN[0] <= dt <= SPEED_SPAN[1]:
         return None
     moved = distance_m(prev.lat, prev.lon, fix.lat, fix.lon) - present(prev.acc) - present(fix.acc)

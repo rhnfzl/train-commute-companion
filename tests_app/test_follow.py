@@ -311,3 +311,12 @@ async def test_speed_between_fixes_reaches_the_core(app):
     await feed(app, *UT, "08:30", acc=20)  # about 100 km in 10 minutes
     ((zone, kind, speed),) = seen
     assert (zone, kind) == ("UT", "enter") and speed is not None and speed >= 8
+
+
+def test_moved_speed_across_the_autumn_clock_change():
+    """02:59:30 summer time to 02:00:30 winter time is 60 s, not minus 59 min."""
+    from tcc_app.follow import moved_speed
+
+    a = Fix(52.0, 5.0, datetime(2026, 10, 25, 2, 59, 30, tzinfo=AMS), 10)
+    b = Fix(52.009, 5.0, datetime(2026, 10, 25, 2, 0, 30, tzinfo=AMS, fold=1), 10)
+    assert 15 < (moved_speed(a, b) or 0) < 17
