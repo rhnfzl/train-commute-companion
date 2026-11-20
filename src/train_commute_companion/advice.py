@@ -133,6 +133,8 @@ def _advice_applies(s: OccurrenceState, ctx: Ctx) -> bool:
     locked train is within the buffer: the escape train's catchability ends advice itself."""
     if not ctx.profile.journey(ctx.direction).earlier_train_advice or s.not_travelling:
         return False
+    if ctx.schedule.mode == "window":  # no usual train: the earliest one is already followed
+        return False
     if s.direction_state is DirectionState.IDLE:
         return True
     return (

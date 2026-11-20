@@ -53,6 +53,8 @@ _SILENT = frozenset(
         EventKind.CAN_SEE_TRAIN_AGAIN,
         EventKind.ALL_GOOD,
         EventKind.AT_STATION,
+        EventKind.STATION_ASK,
+        EventKind.STATION_REMEMBER,
         EventKind.NEARLY_ON_TIME,
         EventKind.BACK_TO_NORMAL,
         EventKind.RESTORED,
@@ -356,6 +358,7 @@ def news_of(
         # each poll restates a platform move timed by the expected departure; this planned,
         # whole-minute clock made it loud up to a minute early (2026-11-18)
         and e.kind is not EventKind.PLATFORM_CHANGE
+        and not (e.facts is not None and e.facts.held)
     ]
     loud = set(escalations(sent, facts, now))
     # a known fact that turned loud itself (an arrival now past the limit) goes once more

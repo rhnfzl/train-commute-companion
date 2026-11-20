@@ -310,3 +310,41 @@ async def test_detached_runtime_failure_is_reported_once(hass, caplog):
     release.set()
     await asyncio.gather(*pending, return_exceptions=True)
     assert caplog.text.count("command failed after its caller stopped waiting") == 1
+
+
+async def test_answer_prompt_with_an_unknown_id_is_refused(hass):
+    await setup_tcc(hass, PROFILE)
+    with pytest.raises(ServiceValidationError, match="this question has expired"):
+        await call(hass, "answer_prompt", prompt_id="0123456789", answer="yes")
+
+
+async def test_a_phone_button_answers_the_question(hass, monkeypatch):
+    await setup_tcc(hass, PROFILE)
+    got: list[tuple[str, str]] = []
+
+    async def spy(data, prompt_id, answer):
+        got.append((prompt_id, answer))
+
+    monkeypatch.setattr(services, "do_answer_prompt", spy)
+    hass.bus.async_fire("mobile_app_notification_action", {"action": "TCC_ANSWER|0123456789|no"})
+    hass.bus.async_fire("mobile_app_notification_action", {"action": "SOMETHING_ELSE"})
+    await hass.async_block_till_done()
+    assert got == [("0123456789", "no")]
+
+
+async def test_forget_station_takes_a_remembered_station_off_the_list(hass):
+    h = await setup_tcc(hass, PROFILE)
+    remembered = {"p1|return": ("VL", "UT")}
+    await h.host.run(lambda rt: _seed(rt, remembered_stations=remembered))
+    await settle(hass)
+    status = "sensor.office_a_return_status"
+    assert attr(hass, status, "remembered_stations") == ["VL", "UT"]
+    await call(hass, "forget_station", profile="office_a", direction="return", station="vl")
+    assert attr(hass, status, "remembered_stations") == ["UT"]
+    with pytest.raises(ServiceValidationError, match="not a remembered station"):
+        await call(hass, "forget_station", profile="office_a", direction="return", station="VL")
+
+
+async def _seed(rt, **changes) -> None:
+    seam.seed_state(rt, **changes)
+    seam.save_state(rt)

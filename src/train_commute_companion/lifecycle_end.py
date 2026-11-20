@@ -13,6 +13,7 @@ from train_commute_companion.lifecycle import (
     make_event,
     on_prefix,
     place_zone,
+    unproven_station,
 )
 from train_commute_companion.lifecycle_lock import may_be_on
 from train_commute_companion.model import (
@@ -22,6 +23,7 @@ from train_commute_companion.model import (
     DirectionState,
     EventKind,
     LegState,
+    Profile,
     Severity,
     present,
 )
@@ -37,7 +39,7 @@ from train_commute_companion.state import (
 
 def on_tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None = None) -> Transition:
     """Time-driven steps: the errand timeout (45 min) clears a provisional lock, keeping a
-    departed train retained; the auto lock when due (`answer` is the usual's query answer); a
+    departed train retained (an other station's departed train stays the lock); the auto lock when due (`answer` is the usual's query answer); a
     window closed with no lock; each journey's end by its last watch or its 150-min limit
     (rules 6, 7). Arrival acceptance itself runs on each poll. Only a poll passes the usual's
     answer; any other tick has none and writes no auto lock."""
@@ -51,16 +53,24 @@ def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transi
     now = to_utc(ctx.now)
     events: list[AlertEvent] = []
     lock = s.lock
-    if s.provisional_expired(now):
+    if s.provisional_expired(now) and _left_other_station(s):
+        # a known other station's train already left: it stays the lock and ends by the
+        # journey-end rules (quiet when never seen boarding), not mid-ride by the errand timeout
+        s = replace(s, errand_deadline=None)
+    elif s.provisional_expired(now):
         lock = present(lock)
         f = first_open(lock)
         retained = s.retained
         if f < len(lock.legs) and may_be_on(lock.legs[f], now):
-            retained += (replace(lock, legs=lock.legs[f:]),)
+            unproven = lock.unproven or unproven_station(s)
+            retained += (replace(lock, legs=lock.legs[f:], unproven=unproven),)
         state = s.direction_state
+        # a known other station followed by itself and let go: the usual origin again
+        back = lock.legs[0].board_station == s.boarding_station
         s = replace(
             s,
             lock=None,
+            boarding_station=None if back else s.boarding_station,
             retained=retained,
             travelling=False,
             tap_at=None,
@@ -78,7 +88,8 @@ def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transi
         and s.direction_state is not DirectionState.DONE
         and now >= to_utc(ctx.schedule.window_end)
     ):
-        if not s.released:  # a train the user never boarded is no lost journey
+        # a train the user never boarded is no lost journey; on_leave with no leave is no trip
+        if not s.released and ctx.schedule.pick != "on_leave":
             text = "I stopped following your journey, check the NS app."
             events.append(make_event(ctx, EventKind.STOPPED_FOLLOWING, Severity.LOUD, text))
         s = replace(s, direction_state=DirectionState.DONE)
@@ -105,6 +116,17 @@ def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transi
         elif not (end and _never_boarded(s, ctx, r, retained=True)):
             events += end
     return Transition(replace(s, retained=tuple(left)), tuple(events))
+
+
+def _left_other_station(s: OccurrenceState) -> bool:
+    """The lock boards at the other station and a poll saw its first train depart (RIDING is set
+    by the expected departure). shortcut: a train NS never identified stays PENDING and is
+    retained by its planned time as before; read the pool here if that case shows up."""
+    first = present(s.lock).legs[0]
+    return first.board_station == s.boarding_station and first.state in (
+        LegState.RIDING,
+        LegState.DONE,
+    )
 
 
 def _merge_retained(s: OccurrenceState) -> OccurrenceState:
@@ -135,6 +157,24 @@ def _arrived(s: OccurrenceState, ctx: Ctx, last: LegProgress) -> bool:
     p, d = ctx.profile, ctx.direction
     zones = {last.alight_stop, p.destination(d), place_zone(p, p.destination(d))}
     return any((t := s.zone_reports.get(z)) is not None and to_utc(t) > to_utc(when) for z in zones)
+
+
+def arrival_evidence(s: OccurrenceState, p: Profile) -> tuple[datetime | None, datetime | None]:
+    """(first phone presence at the destination, accepted train arrival), each None while
+    unknown. A report from before the locked train left is not an arrival."""
+    d, lock = s.key.direction, s.lock
+    last = lock.legs[-1] if lock is not None else None
+    train = None
+    if last is not None and last.state is LegState.DONE:
+        train = last.accept_value or last.accepted_at
+    zones = {p.destination(d), place_zone(p, p.destination(d))}
+    if last is not None:
+        zones.add(last.alight_stop)
+    after = None if lock is None else to_utc(lock.legs[0].train.planned_departure)
+    seen = [
+        t for z, t in s.zone_reports.items() if z in zones and (after is None or to_utc(t) >= after)
+    ]
+    return (min(seen, key=to_utc) if seen else None), train
 
 
 def _never_boarded(s: OccurrenceState, ctx: Ctx, j: Journey, *, retained: bool) -> bool:

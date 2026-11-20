@@ -66,8 +66,12 @@ def _occ(view: RuntimeView, pid: str, d: Direction) -> OccurrenceView | None:
 
 def _status_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
     occ, others = shown_and_others(view, pid, d)
+    # boarding stations the user asked TCC to remember; removable with forget_station
+    remembered = list(view.remembered.get(direction_key(pid, d), ()))
     if occ is None:
         return {
+            "remembered_stations": remembered,
+            "boarding_station": None,
             "service_date": None,
             "not_travelling": False,
             "route_changed": False,
@@ -83,6 +87,8 @@ def _status_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
         }
     info = next(i for i in view.directions if i.profile_id == pid and i.direction is d)
     return {
+        "remembered_stations": remembered,
+        "boarding_station": occ.boarding_station,
         "service_date": occ.key.service_date.isoformat(),
         "not_travelling": occ.not_travelling,
         "original_train_state": occ.direction_state.value,
@@ -147,6 +153,8 @@ def _lock_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
     }
     if occ.usual_departure is not None:
         attrs["usual_departure"] = f"{occ.usual_departure:%H:%M}"
+    if occ.window is not None:  # a window day has no usual train
+        attrs["window"] = [f"{t:%H:%M}" for t in occ.window]
     return attrs
 
 

@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
@@ -106,7 +107,8 @@ async def test_late_out_of_order_and_inaccurate_fixes_send_nothing(app):  # Revi
     await feed(app, *FAR, "08:20")
     await feed(app, *FAR, "08:30")
     await feed(app, *UT, "08:25", now="08:31")  # queued in a tunnel, delivered late
-    await feed(app, *UT, "08:31", acc=400)  # worse than the 150 m station radius
+    # worse than the 150 m station radius and the 500 m other station radius
+    await feed(app, *UT, "08:31", acc=600)
     assert spied(app) == []
     await feed(app, *UT, "08:32", acc=20)
     assert spied(app) == [("UT", "enter")]
@@ -220,7 +222,7 @@ async def test_telegram_location_messages_reach_the_follower(app):
     spied(app)
     steps = [
         ("08:20", location_update("message", "08:20", *FAR)),
-        ("08:22", location_update("edited_message", "08:22", *UT, horizontal_accuracy=400)),
+        ("08:22", location_update("edited_message", "08:22", *UT, horizontal_accuracy=600)),
         ("08:23", location_update("edited_message", "08:23", "52.1", 5.1)),
         ("08:24", location_update("edited_message", "08:24", *UT, horizontal_accuracy=10)),
     ]
@@ -249,3 +251,72 @@ async def test_telegram_fix_with_a_malformed_accuracy_is_not_trusted(app):
         await app.bot.handle(update)
         await app.follower.drain()
     assert spied(app) == []
+
+
+def test_moved_speed_between_two_fixes():
+    from tcc_app.follow import moved_speed
+
+    a = Fix(52.0, 5.0, at("08:20"), 10)
+    b = Fix(52.009, 5.0, at("08:21"), 10)  # about 1 km a minute later
+    assert 15 < moved_speed(a, b) < 17
+    assert moved_speed(None, b) is None
+    assert moved_speed(a, Fix(52.009, 5.0, at("08:20:10"), 10)) is None  # too close in time
+    assert moved_speed(a, Fix(52.009, 5.0, at("08:40"), 10)) is None  # too far apart
+
+
+def test_moved_speed_needs_a_known_accuracy():
+    """Two fixes standing still in one station, 144 m either side of its centre, 30 s apart:
+    with no accuracy the jitter would read as 9.6 m/s, a false riding sign, so it tells nothing."""
+    from tcc_app.follow import moved_speed
+
+    step = 144 / 111_195  # degrees of latitude for 144 m
+    a = Fix(52.1 - step, 5.1, at("08:20"))
+    b = Fix(52.1 + step, 5.1, at("08:20:30"))
+    assert moved_speed(a, b) is None
+    assert moved_speed(a, replace(b, acc=10)) is None
+    assert moved_speed(replace(a, acc=10), b) is None
+    assert moved_speed(replace(a, acc=-5), replace(b, acc=10)) is None
+    assert moved_speed(replace(a, acc=10), replace(b, acc=10)) is not None
+
+
+async def test_stationary_jitter_with_unknown_accuracy_is_no_riding_sign(app):
+    seen = []
+    orig = app.rt.report_location
+
+    async def spy(profile_id, event, *rest, **kw):
+        seen.append(event.evidence.speed)
+        return await orig(profile_id, event, *rest, **kw)
+
+    app.rt.report_location = spy
+    step = 144 / 111_195
+    await feed(app, *FAR, "08:00")
+    await feed(app, 52.1 - step, 5.1, "08:20")  # enter
+    await feed(app, 52.1 + step, 5.1, "08:21:30")
+    await feed(app, 52.1 - step, 5.1, "08:22")  # the report: 288 m in 30 s while standing
+    assert len(seen) == 2 and seen == [None, None]
+
+
+async def test_speed_between_fixes_reaches_the_core(app):
+    """Telegram sends no speed: the speed between two fixes is the riding sign (Q12), so a
+    station passed by car or train is no stop."""
+    seen = []
+    orig = app.rt.report_location
+
+    async def spy(profile_id, event, *rest, **kw):
+        seen.append((event.zone, event.kind, event.evidence.speed))
+        return await orig(profile_id, event, *rest, **kw)
+
+    app.rt.report_location = spy
+    await feed(app, *FAR, "08:20", acc=20)
+    await feed(app, *UT, "08:30", acc=20)  # about 100 km in 10 minutes
+    ((zone, kind, speed),) = seen
+    assert (zone, kind) == ("UT", "enter") and speed is not None and speed >= 8
+
+
+def test_moved_speed_across_the_autumn_clock_change():
+    """02:59:30 summer time to 02:00:30 winter time is 60 s, not minus 59 min."""
+    from tcc_app.follow import moved_speed
+
+    a = Fix(52.0, 5.0, datetime(2026, 10, 25, 2, 59, 30, tzinfo=AMS), 10)
+    b = Fix(52.009, 5.0, datetime(2026, 10, 25, 2, 0, 30, tzinfo=AMS, fold=1), 10)
+    assert 15 < (moved_speed(a, b) or 0) < 17

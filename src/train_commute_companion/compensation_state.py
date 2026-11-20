@@ -51,6 +51,10 @@ class JourneyRecord:
     revision: int = 0
     confirmations: tuple[ArrivalConfirmation, ...] = ()
     reminder_created: bool = False
+    # the first phone presence at the destination and the accepted train arrival, each written
+    # once, so a minimum stay can count from them after the occurrence is archived
+    seen_at: datetime | None = None
+    train_arrival: datetime | None = None
 
     @property
     def plan_phase(self) -> PlanPhase:

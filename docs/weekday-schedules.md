@@ -1,4 +1,73 @@
-# Weekday departure times
+# Schedules
+
+Each direction runs in one of two modes. Fixed mode follows your usual train. It is the default, and existing profiles stay in fixed mode. Window mode follows any train between two times.
+
+## Window mode
+
+```yaml
+outbound:
+  mode: window
+  window: ["07:00", "10:00"]
+  buffer_min: 10
+```
+
+In window mode `window` holds the earliest and the latest departure. Both are included. The latest time is always required. `first_train` is optional.
+
+TCC starts watching `active_lead_min` before the earliest departure (default `buffer_min` + 15). It follows the earliest good train in the window, also when a later train takes your usual route. If a train is missed, it follows the next one, like fixed mode does. If no train leaves in the window, it says so once.
+
+There is no usual train on a window day. So look-ahead does not probe that day, no timetable is learned or adopted, and the earlier train advice is off. The weekly works digest still runs. Compensation reminders use the train TCC followed.
+
+## Train choice
+
+`pick` chooses how a window day picks its train:
+
+- `earliest` (default): the earliest good train. A missed train makes a sound.
+- `earliest_silent`: the earliest good train. A missed first train is silent. A missed change still makes a sound.
+- `on_leave`: no train until you leave. Only line problems are told before that. When you leave home (or work on the way back), tap I'm leaving, or reach a station, TCC follows the next train you can catch. If nothing happens, the window closes quietly. Without a location block this works like `earliest_silent`.
+
+`alerts.quiet_repeat_misses` still applies in every mode.
+
+## Minimum stay
+
+```yaml
+return:
+  mode: window
+  window: ["15:00", "20:00"]
+  min_stay_min: 480
+  buffer_min: 5
+```
+
+`min_stay_min` keeps a window day from starting too soon after you arrived. The day starts at the later of the window start and your arrival plus the stay. The arrival is the newest arrival on the other direction in the 24 hours before the window. TCC uses the first time your phone was at the destination, else the train arrival NS showed. An arrival you confirmed yourself wins over both.
+
+With an arrival at 09:05 and 480 minutes, the return starts at 17:05. A start after the latest time is capped at the latest time. Then TCC follows the first train from the latest time on, and a missed train is silent that day: you may still be in your stay when it leaves.
+
+If NS changes the arrival of the train you came on, the stay moves with it.
+
+Polling starts `active_lead_min` minutes before the effective earliest departure, the later of the window start and the end of the stay. In the example above with `buffer_min: 5` and the default lead of `buffer_min + 15`, polling starts at 16:45 and the earliest train TCC picks leaves at 17:05 or later. If you leave early, it still follows a train: a leave of work, a station or an I'm leaving tap starts it.
+
+`min_stay_min` works on window days only. A day can set `min_stay_min: 0` to turn off the stay it would get from the direction.
+
+## Settings by day
+
+`by_weekday` changes `mode`, `window`, `pick` and `min_stay_min` for single days, weekends included. A day without an entry uses the direction's own settings.
+
+```yaml
+return:
+  first_train: "17:52"
+  buffer_min: 5
+  first_train_by_weekday:
+    sat: "10:12"
+  by_weekday:
+    fri: {mode: window, window: ["13:00", "18:00"], min_stay_min: 300}
+```
+
+An edited `pick` or `min_stay_min` of one day applies from the next trip, not to a trip already running.
+
+A window day in a fixed direction needs its own `window`. A fixed day in a window direction needs a first train: `first_train_by_weekday` for that day, or `first_train`. Its watch window is 60 minutes before to 120 minutes after that train, unless the day sets one. The first train per day stays in `first_train_by_weekday`, described below.
+
+The Home Assistant profile editor can set all of this. See [Profile editor](profile-editor.md).
+
+## Weekday departure times
 
 One commute profile can use different usual departure times on different weekdays. This avoids separate profiles when the route stays the same.
 

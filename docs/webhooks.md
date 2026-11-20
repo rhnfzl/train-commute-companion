@@ -69,6 +69,8 @@ An example (times carry their offset; this one shows them in UTC):
 }
 ```
 
+Questions about [another boarding station](other-boarding-station.md) arrive as kinds `station_ask` and `station_remember`, with text only. The payload has no answer buttons; answer them in Home Assistant or Telegram.
+
 ## Verify a delivery
 
 Check every request before you act on it. This function needs only the Python standard library:

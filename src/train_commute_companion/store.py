@@ -91,6 +91,9 @@ class PersistedState:
     webhook_down: Mapping[str, datetime] = field(default_factory=dict)
     works_digest_weeks: Mapping[str, date] = field(default_factory=dict)
     journey_records: Mapping[str, JourneyRecord] = field(default_factory=dict)
+    # "<profile_id>|<direction>" -> the boarding stations the user asked TCC to remember;
+    # kept here, never written to the profile file
+    remembered_stations: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 class Store(Protocol):
@@ -165,6 +168,9 @@ def read_state(version: object, raw: Any) -> PersistedState:
     """The state saved under `version`, as the current model has it. Raises ValueError for a
     version this code cannot read."""
     _check_version(version)
+    for s in raw.get("occurrences", {}).values():
+        # a store from before `station_visits` keeps its presence for the 30-minute guard
+        s.setdefault("station_visits", dict(s.get("zone_reports", {})))
     if version == _V1:
         return _from_v1(raw)
     st: PersistedState = decode(PersistedState, raw)

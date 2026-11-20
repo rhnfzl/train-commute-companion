@@ -3,22 +3,26 @@ and its consequences live in the core; here only whether a fix is fit to read an
 
 import asyncio
 import logging
+import math
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Literal
 
-from train_commute_companion.calendar import TZ
+from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.location import (
     STALE_LOCATION,
+    Evidence,
     Fix,
     ZoneTrack,
+    distance_m,
     send_zone_events,
     without_current_report,
 )
+from train_commute_companion.model import present
 from train_commute_companion.runtime import Runtime
-from train_commute_companion.view import track_fix
+from train_commute_companion.view import in_station_circle, track_fix
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +47,27 @@ def stamp(v: object) -> datetime | None:
         return None
 
 
+SPEED_SPAN = (timedelta(seconds=30), timedelta(minutes=15))
+
+
+def moved_speed(prev: Fix | None, fix: Fix) -> float | None:
+    """Q12: m/s between two fixes of one source, their accuracy taken off; None when they are
+    too close or too far apart in time to tell, or when either accuracy is unknown: GPS jitter
+    in one station would read as riding. Telegram sends no speed, and OwnTracks may send
+    0 while stopped, so driving past a station still reads as riding and asks nothing."""
+    if prev is None or not _known_acc(prev.acc) or not _known_acc(fix.acc):
+        return None
+    dt = to_utc(fix.at) - to_utc(prev.at)  # one ZoneInfo subtracts wall clocks over DST
+    if not SPEED_SPAN[0] <= dt <= SPEED_SPAN[1]:
+        return None
+    moved = distance_m(prev.lat, prev.lon, fix.lat, fix.lon) - present(prev.acc) - present(fix.acc)
+    return max(moved, 0.0) / dt.total_seconds()
+
+
+def _known_acc(acc: float | None) -> bool:
+    return acc is not None and math.isfinite(acc) and acc >= 0
+
+
 @dataclass(slots=True)
 class _Memory:
     """One profile's last fix under one source epoch; `last_at` in UTC."""
@@ -50,6 +75,7 @@ class _Memory:
     epoch: int
     last_at: datetime
     track: ZoneTrack
+    fix: Fix | None = None
 
 
 class Follower:
@@ -116,11 +142,20 @@ class Follower:
         if step is None:
             return
         track, events = step
-        mem = self._memory[pid] = _Memory(fed_epoch, at, track)
+        # the faster of the two: a reported 0 at a red light hides no drive between fixes
+        moved = moved_speed(known.fix if known else None, fix)
+        speed = max((v for v in (fix.speed, moved) if v is not None), default=None)
+        mem = self._memory[pid] = _Memory(fed_epoch, at, track, fix)
 
         def undelivered() -> None:
             mem.track = without_current_report(mem.track)
 
         await send_zone_events(
-            events, fix.at, lambda e: self._rt.report_location(pid, e, loc, fed_epoch), undelivered
+            events,
+            fix.at,
+            lambda e: self._rt.report_location(pid, e, loc, fed_epoch),
+            undelivered,
+            lambda zone: Evidence(
+                speed=speed, in_station=in_station_circle(view, profile, fix, zone)
+            ),
         )

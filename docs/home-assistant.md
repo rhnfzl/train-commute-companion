@@ -46,6 +46,16 @@ A platform change now turns loud exactly 15 minutes before the expected departur
 
 Back up the integration and its state before upgrading. The older 0.2.5 core cannot read any state saved by 0.2.6, even without the new key. A downgrade needs that pre-upgrade backup, as described above.
 
+### Upgrade to 0.3.0
+
+Update through HACS and restart Home Assistant. The integration installs the matching `train-commute-companion==0.3.0` core automatically.
+Existing profiles, settings and saved state remain valid. Every new profile key is optional, and a profile without them works as before.
+
+A direction can follow any train in a time window, with an optional minimum stay and settings per day. See [Schedules](weekday-schedules.md#window-mode).
+With location on, boarding at another station is noticed. A known station is followed by itself, and a new one gets one question with buttons. See [Other boarding station](other-boarding-station.md). New services: `answer_prompt` and `forget_station`.
+
+Back up the integration and its state before upgrading. The older 0.2.6 core cannot read any state saved by 0.3.0, even on a day with no window and no other station. Its decoder rejects the new saved fields: `remembered_stations`; per trip `boarding_station`, `prompt`, `asked_stations` and `station_seen`; and per journey record `seen_at` and `train_arrival`. A downgrade needs that pre-upgrade backup, as described above.
+
 ## Set up
 
 1. Get an NS API key from the NS API portal.
@@ -98,7 +108,7 @@ The file is checked again about every 10 seconds. A valid edit becomes the activ
 
 Per profile and direction (`outbound`, `return`):
 
-- Sensors: status, lock (the trains you are following), next connection, earlier train advice, works ahead, one sensor per leg and one per transfer. The lock sensor shows the usual train from the moment the window opens. Its `usual_departure` attribute is the usual first train for that day (`HH:MM`), so an automation can tell when you took a later train. An automation that treats "locked" as "commute active" should check the time instead (see the quiet early watch in [notification preferences](notification-preferences.md)).
+- Sensors: status, lock (the trains you are following), next connection, earlier train advice, works ahead, one sensor per leg and one per transfer. The lock sensor shows the usual train from the moment the window opens. Its `usual_departure` attribute is the usual first train for that day (`HH:MM`), so an automation can tell when you took a later train. A window day has no usual train: it shows a `window` attribute with the earliest and latest departure instead (`["07:00", "10:00"]`, the start moved by a minimum stay). An automation that treats "locked" as "commute active" should check the time instead (see the quiet early watch in [notification preferences](notification-preferences.md)).
 - Buttons: leaving, not travelling, choose next.
 
 Per profile: a health sensor and a "not travelling today" button.
@@ -122,12 +132,18 @@ A service or button used when there is nothing to act on, or with an unknown pro
 An active journey is unchanged. An older skip without its saved previous state is refused.
 `leaving` and `choose` do not undo a saved skip. Resume first, then choose or leave.
 
+`train_commute_companion.answer_prompt` answers a question about [another boarding station](other-boarding-station.md). It takes `prompt_id` and `answer` from the question's event. An expired question or an unknown answer fails with a message.
+
+`train_commute_companion.forget_station` takes `profile`, `direction` and `station`. It removes a remembered boarding station. The status sensor lists them in its `remembered_stations` attribute. Its `boarding_station` attribute is the station a journey boards at when that is not the usual one.
+
 `train_commute_companion.reload_profiles` takes no fields. It reads and applies the profiles file before returning.
 An invalid file, a superseded read, or a failed storage write raises an error. The last valid profiles keep running.
 
 ### Event
 
 Every alert fires the event `train_commute_companion_alert` before the push, so automations see it even if the phone cannot be reached. Fields: `config_entry_id`, `device_id`, `profile_id`, `profile_name`, `direction`, `service_date`, `leg_index`, `kind`, `severity` (`loud` or `silent`), `train_operating_date`, `train_number`, `train_departure`, `text`, `key`, `created_at`.
+
+A question (`kind` `station_ask` or `station_remember`) also has `prompt_id` (10 lowercase hex characters) and `choices`, a list of `{"answer": ..., "label": ...}`. Answers never contain spaces or `|`. Call `answer_prompt` with the `prompt_id` and one `answer`. The companion app push of a question has the same answers as action buttons (`TCC_ANSWER|<prompt_id>|<answer>`), and tapping one answers it.
 
 When copies of your train in one NS answer disagree, for example on a time or a platform, you get one loud alert with `kind` `data_unclear` that shows each copy's values; check the NS app or the station boards. It comes once per train per day, again only when the values change; the look-ahead may also tell it once ahead of the day.
 

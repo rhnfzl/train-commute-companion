@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 
 from train_commute_companion.calendar import TZ, floor_to_minute, resolve_local, to_utc
-from train_commute_companion.lifecycle import first_open, target_occurrence
+from train_commute_companion.lifecycle import (
+    boarding_origin,
+    departure_span,
+    first_open,
+    target_occurrence,
+)
 from train_commute_companion.messages import Refused
 from train_commute_companion.model import Connection, Ctx, Leaving, LegState
 from train_commute_companion.providers.base import ProviderAnswer
@@ -30,8 +35,7 @@ def _where_and_when(s: OccurrenceState, ctx: Ctx) -> tuple[str, datetime, dateti
         # an onward train continues the kept incoming leg: dated from it, not the window
         lo = to_utc(s.lock.legs[n - 1].train.planned_departure)
         return s.lock.legs[n - 1].alight_stop, lo, lo + timedelta(days=1)
-    w = ctx.schedule
-    return ctx.profile.origin(ctx.direction), to_utc(w.window_start), to_utc(w.window_end)
+    return boarding_origin(s, ctx), *departure_span(s, ctx)
 
 
 def choice_target(

@@ -156,7 +156,7 @@ def _stations(state: OccurrenceState, ctx: Ctx, legs: Sequence[_Leg]) -> set[str
     if state.lock or state.retained:
         return set().union(*(leg[0] for leg in legs))
     return {
-        ctx.profile.origin(ctx.direction),
+        state.boarding_station or ctx.profile.origin(ctx.direction),
         ctx.profile.destination(ctx.direction),
         *ctx.profile.journey(ctx.direction).transfers,
     }

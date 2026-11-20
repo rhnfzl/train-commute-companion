@@ -282,7 +282,7 @@ def _current_body(
     answers: tuple[ProviderAnswer, ...],
 ) -> str | None:
     if e.kind is EventKind.LEAVE_NOW:
-        origin = origin_answer(answers, ctx)
+        origin = origin_answer(answers, ctx, s)
         c = (
             None
             if origin is None
@@ -539,6 +539,8 @@ class LiveLedger:
                 and first.train == e.train
                 and first.state in (LegState.PENDING, LegState.BOARDING)
             )
+        if e.kind in (EventKind.STATION_ASK, EventKind.STATION_REMEMBER):  # while still open
+            return s.prompt is not None and s.prompt.id == alert_facts(e).prompt_id
         if e.kind is EventKind.NEXT_CONNECTION:  # "if you are not on it": while it is unfinished
             return unfinished
         if e.kind is EventKind.ALL_GOOD:
@@ -564,7 +566,7 @@ class LiveLedger:
 
     def _advice_holds(self, e: AlertEvent, s: OccurrenceState) -> bool:
         ctx, answers = self._ctx(s), self._memory.boards.get(okey(s.key), ())
-        a, origin = s.advice, None if ctx is None else origin_answer(answers, ctx)
+        a, origin = s.advice, None if ctx is None else origin_answer(answers, ctx, s)
         if a is None or ctx is None or origin is None:
             return False
         if e.kind is EventKind.LEAVE_NOW:

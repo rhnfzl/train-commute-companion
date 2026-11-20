@@ -4,10 +4,11 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import date, time
+from functools import partial
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import Event, HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 
@@ -40,6 +41,16 @@ CHOOSE_SCHEMA = vol.Schema(
 )
 LEAVING_SCHEMA = vol.Schema(BASE)
 NOT_TRAVELLING_SCHEMA = vol.Schema({**BASE, vol.Optional("whole_day", default=False): cv.boolean})
+ANSWER_PROMPT_SCHEMA = vol.Schema(
+    {vol.Required("prompt_id"): cv.string, vol.Required("answer"): cv.string}
+)
+FORGET_STATION_SCHEMA = vol.Schema(
+    {
+        vol.Required("profile"): cv.string,
+        vol.Required("direction"): vol.Coerce(Direction),
+        vol.Required("station"): cv.string,
+    }
+)
 
 
 def resolve_profile(hass: HomeAssistant, profile: str) -> tuple[TccData, str, str]:
@@ -207,6 +218,49 @@ async def _handle_travelling(call: ServiceCall) -> None:
     )
 
 
+async def do_answer_prompt(data: TccData, prompt_id: str, answer: str) -> None:
+    """A button on a question about an other boarding station; the id finds the journey."""
+    refused = await _call_runtime(data, lambda rt: rt.answer_prompt(prompt_id, answer))
+    await _refresh_or_refuse(data, refused)
+
+
+def loaded(hass: HomeAssistant) -> TccData:
+    entries = hass.config_entries.async_loaded_entries(DOMAIN)
+    if not entries:
+        raise ServiceValidationError("Train Commute Companion is not loaded")
+    data: TccData = entries[0].runtime_data
+    return data
+
+
+async def _handle_answer_prompt(call: ServiceCall) -> None:
+    d = call.data
+    await do_answer_prompt(loaded(call.hass), d["prompt_id"], d["answer"])
+
+
+async def _handle_forget_station(call: ServiceCall) -> None:
+    d = call.data
+    data, pid, _ = resolve_profile(call.hass, d["profile"])
+    station, direction = d["station"].strip().upper(), d["direction"]
+    refused = await _call_runtime(data, lambda rt: rt.forget_station(pid, direction, station))
+    await _refresh_or_refuse(data, refused)
+
+
+MOBILE_ACTION = "mobile_app_notification_action"
+
+
+async def _on_mobile_action(hass: HomeAssistant, event: Event) -> None:
+    """A companion app button on a question; anything else, or a stale answer, is logged."""
+    from .notifier import parse_answer_action
+
+    parsed = parse_answer_action(event.data.get("action"))
+    if parsed is None:
+        return
+    try:
+        await do_answer_prompt(loaded(hass), *parsed)
+    except HomeAssistantError as err:
+        _LOGGER.info("answer from the phone not taken: %s", err)
+
+
 async def _handle_reload_profiles(call: ServiceCall) -> None:
     entries = call.hass.config_entries.async_loaded_entries(DOMAIN)
     if not entries:
@@ -229,3 +283,10 @@ def async_setup_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(DOMAIN, "travelling", _handle_travelling, NOT_TRAVELLING_SCHEMA)
     hass.services.async_register(DOMAIN, "reload_profiles", _handle_reload_profiles, vol.Schema({}))
+    hass.services.async_register(
+        DOMAIN, "answer_prompt", _handle_answer_prompt, ANSWER_PROMPT_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN, "forget_station", _handle_forget_station, FORGET_STATION_SCHEMA
+    )
+    hass.bus.async_listen(MOBILE_ACTION, partial(_on_mobile_action, hass))

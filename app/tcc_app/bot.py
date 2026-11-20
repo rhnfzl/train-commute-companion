@@ -17,7 +17,7 @@ from typing import Any, TypeVar
 from train_commute_companion.compensation import ArrivalError, arrival_text
 from train_commute_companion.compensation import confirm as check_arrival
 from train_commute_companion.location import Fix, number
-from train_commute_companion.messages import Refused
+from train_commute_companion.messages import RefusalKind, Refused
 from train_commute_companion.model import Direction, display_name
 from train_commute_companion.recovery_state import RecoveryActionKind
 from train_commute_companion.runtime import Runtime
@@ -45,6 +45,7 @@ from .commands import (
     render_selected_recovery,
     render_status,
     render_webhook_tests,
+    stations_text,
     status_buttons,
 )
 from .follow import FUTURE_LIMIT, Follower, stamp
@@ -70,6 +71,8 @@ HELP = (
     "/leaving [profile] [outbound|return]: I'm leaving now\n"
     "/arrived: enter and review an actual destination arrival with a full date and timezone\n"
     "/skip [profile] [outbound|return|day] [YYYY-MM-DD]: not travelling, alerts for it stop\n"
+    "/stations: the boarding stations TCC remembers\n"
+    "/forget STATION: stop remembering that boarding station\n"
     "/test: send the loud and the silent test alert (and test each webhook)\n"
     "/help: this list\n"
     "Data: NS"
@@ -336,6 +339,10 @@ class Bot:
             )
         elif word == "/arrived":
             await self._arrival_review(args)
+        elif word == "/stations":
+            await self._reply(stations_text(self._rt.view()))
+        elif word == "/forget":
+            await self._forget(args)
         elif word in ("/choose", "/leaving", "/skip"):
             await self._targeted(word, args)
 
@@ -371,6 +378,9 @@ class Bot:
         parts = data.split("|") if isinstance(data, str) else []
         if parts[:1] == ["av"] and len(parts) == 2:
             await self._arrival_confirm(parts[1])
+            return
+        if parts[:1] == ["q"] and len(parts) == 3:
+            await self._answer(parts[1], parts[2])
             return
         if parts[:1] == ["ok"] and len(parts) == 2:
             await self._confirm(parts[1])
@@ -631,6 +641,32 @@ class Bot:
     ) -> None:  # fmt: skip
         refused = await self._call_runtime(self._rt.choose_at(pid, at, train, day, direction))
         await self._reply(f"Locked the {at:%H:%M} for {name}." if refused is None else refused.text)
+
+    async def _answer(self, prompt_id: str, answer: str) -> None:
+        """A button on a question; TCC's own next message is the reply, a refusal says why not."""
+        refused = await self._call_runtime(self._rt.answer_prompt(prompt_id, answer))
+        if refused is not None:
+            await self._reply(refused.text)
+
+    async def _forget(self, args: Sequence[str]) -> None:
+        if len(args) != 1:
+            await self._reply("Usage: /forget STATION, for example /forget VL")
+            return
+        code, done, failed = args[0].upper(), 0, None
+        for info in self._rt.view().directions:
+            forgot = self._rt.forget_station(info.profile_id, info.direction, code)
+            refused = await self._call_runtime(forgot)
+            done += refused is None
+            if refused is not None and refused.kind is RefusalKind.RETRY:
+                failed = refused  # still remembered there: say so, never "not remembered"
+        if failed is not None:
+            await self._reply(
+                f"Forgot {code} for some trips, but: {failed.text}" if done else failed.text
+            )
+            return
+        await self._reply(
+            f"Forgot {code}." if done else f"{code} is not a remembered boarding station."
+        )
 
     async def _leaving(self, pid: str, day: date | None, direction: Direction | None) -> None:
         refused = await self._call_runtime(self._rt.leaving(pid, day, direction))

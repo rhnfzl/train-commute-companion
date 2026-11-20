@@ -145,7 +145,7 @@ def edit_profile(
     for direction in ("outbound", "return"):
         journey = copy.deepcopy(profile.get(direction, {}))
         profile[direction] = journey
-        journey["first_train"] = values[f"{direction}_time"]
+        _write_schedule(journey, direction, values)
         journey["transfers"] = values[f"{direction}_transfers"]
         buffer = values[f"{direction}_buffer"]
         if isinstance(buffer, float) and buffer.is_integer():
@@ -160,9 +160,19 @@ def edit_profile(
                 journey["first_train_by_weekday"] = copy.deepcopy(overrides)
             else:
                 journey.pop("first_train_by_weekday", None)
+        days_key = f"{direction}_by_weekday"
+        if days_key in values:
+            days = values[days_key]
+            if not isinstance(days, dict):
+                raise EditorError("invalid_profile")
+            if days:
+                journey["by_weekday"] = copy.deepcopy(days)
+            else:
+                journey.pop("by_weekday", None)
         for station in journey["transfers"]:
             minimum.setdefault(station, FALLBACK_MIN)
     minimum.update(values.get("transfer_min", {}))
+    _write_other_stations(profile, values)
     action = values.get("pause_action", "keep")
     if action not in ("keep", "add", "replace", "clear"):
         raise EditorError("invalid_profile")
@@ -176,6 +186,80 @@ def edit_profile(
     text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
     validate_text(text, known, today, available_channels)
     return text
+
+
+def _text(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _write_schedule(journey: dict[str, Any], direction: str, values: Mapping[str, Any]) -> None:
+    """The first train, mode, window, pick and minimum stay of one direction. A fixed profile
+    keeps its shape: `mode`, `pick` and `min_stay_min` are written only when they matter."""
+    first = _text(values.get(f"{direction}_time"))
+    mode = values.get(f"{direction}_mode", journey.get("mode", "fixed"))
+    if mode not in ("fixed", "window"):
+        raise EditorError("invalid_profile")
+    if mode == "window" or "mode" in journey:
+        journey["mode"] = mode
+    start, end = (_text(values.get(f"{direction}_window_{edge}")) for edge in ("start", "end"))
+    if mode == "window" or start or end:
+        journey["window"] = [start, end]
+    elif f"{direction}_mode" in values:
+        # the form showed the window and it came back blank: the default watch window
+        journey.pop("window", None)
+    if first or mode == "fixed":
+        journey["first_train"] = first or values.get(f"{direction}_time")
+    else:
+        journey.pop("first_train", None)
+    if f"{direction}_pick" in values:
+        pick = values[f"{direction}_pick"]
+        if pick == "earliest":
+            journey.pop("pick", None)
+        else:
+            journey["pick"] = pick
+    if f"{direction}_min_stay" in values:
+        stay = values[f"{direction}_min_stay"]
+        if isinstance(stay, float) and stay.is_integer():
+            stay = int(stay)
+        if stay:
+            journey["min_stay_min"] = stay
+        else:
+            journey.pop("min_stay_min", None)
+
+
+OTHER_STATION_DEFAULTS = {
+    "other_station_radius_m": 500,
+    "other_station_dwell_min": 0,
+    "ask_to_remember_station": True,
+}
+
+
+def _write_other_stations(profile: dict[str, Any], values: Mapping[str, Any]) -> None:
+    """Other boarding stations per direction and their location settings. A default is written
+    only when the key is already in the file, so an untouched profile keeps its shape."""
+    for direction in ("outbound", "return"):
+        key = f"{direction}_other_stations"
+        if key not in values:
+            continue
+        codes = values[key]
+        if not isinstance(codes, list):
+            raise EditorError("invalid_profile")
+        journey = profile[direction]
+        if codes or "other_stations" in journey:
+            journey["other_stations"] = list(codes)
+    location = profile.get("location")
+    if not isinstance(location, dict):
+        return
+    location = copy.deepcopy(location)
+    for key, default in OTHER_STATION_DEFAULTS.items():
+        if key not in values:
+            continue
+        value = values[key]
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        if value != default or key in location:
+            location[key] = value
+    profile["location"] = location
 
 
 class WritePhase(StrEnum):

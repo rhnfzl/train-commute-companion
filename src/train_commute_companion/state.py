@@ -173,6 +173,9 @@ class Journey:
     commitment: Commitment
     planned_final_arrival: datetime
     plan: PlannedJourney | None = None
+    # taken at an other station that only its wide circle noticed (`unproven_station`): until
+    # committed it stays silent, also once retained, where the occurrence no longer says so
+    unproven: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +202,23 @@ class DisruptionNotice:
     instance: str = ""
     audience: frozenset[str] | None = None
     receipts: Mapping[str, DisruptionReceipt] = field(default_factory=dict)
+
+
+PromptStage = Literal["ask", "remember", "pick"]
+
+
+@dataclass(frozen=True, slots=True)
+class StationPrompt:
+    """A question about an other boarding station. `id` is short (10 hex), so a button's callback
+    stays under Telegram's 64 bytes; it alone finds the occurrence."""
+
+    id: str
+    station: str
+    stage: PromptStage
+    train: TrainId | None  # ask: the train the question names
+    choices: tuple[tuple[str, str], ...]  # (answer, label)
+    created_at: datetime
+    name: str = ""  # the station as NS names it, for the question texts
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +267,18 @@ class OccurrenceState:
     released: bool = False
     # a train was already missed from the origin place today (`quiet_repeat_misses`)
     missed_from_origin: bool = False
+    # other boarding station: where this occurrence boards when not at the profile origin (a
+    # confirmed or known station; None is the origin), the open question to the user, the
+    # stations already asked about (once per station per direction per day), and the first
+    # fix time per candidate station, for a dwell above 0
+    boarding_station: str | None = None
+    prompt: StationPrompt | None = None
+    asked_stations: frozenset[str] = frozenset()
+    station_seen: Mapping[str, datetime] = field(default_factory=dict)
+    # the latest presence per zone that a leave never erases: the RIDE_GAP guard reads it, so
+    # walking out of a station circle does not forget that the user was just there; an older
+    # store seeds it from `zone_reports` on load (`store.read_state`)
+    station_visits: Mapping[str, datetime] = field(default_factory=dict)
 
     @property
     def phase(self) -> OccurrencePhase:

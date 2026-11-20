@@ -384,3 +384,110 @@ def test_profile_commit_requires_a_staged_file(tmp_path):
     with pytest.raises(EditorError, match="save_failed"):
         transaction.commit()
     assert not path.exists()
+
+
+WINDOW_FORM = {
+    **{k: v for k, v in VALUES.items() if k != "return_time"},
+    "outbound_mode": "fixed",
+    "outbound_pick": "earliest",
+    "outbound_min_stay": 0,
+    "return_mode": "window",
+    "return_window_start": "15:00",
+    "return_window_end": "20:00",
+    "return_pick": "earliest_silent",
+    "return_min_stay": 480.0,
+}
+
+
+def test_window_mode_saves_without_a_first_train_and_back_to_fixed(tmp_path):
+    doc = document(tmp_path)
+    text = edit_profile(doc, "p1", WINDOW_FORM, KNOWN, TODAY)
+    saved = yaml.safe_load(text)["profiles"][0]
+    assert saved["return"] | {"transfers": []} == {
+        "mode": "window",
+        "window": ["15:00", "20:00"],
+        "pick": "earliest_silent",
+        "min_stay_min": 480,
+        "buffer_min": 5,
+        "transfers": [],
+    }
+    assert "mode" not in saved["outbound"] and "pick" not in saved["outbound"]
+    doc = document(tmp_path, text)
+    back = {
+        **WINDOW_FORM,
+        "return_mode": "fixed",
+        "return_time": "17:52",
+        "return_pick": "earliest",
+        "return_min_stay": 0,
+    }
+    del back["return_window_start"], back["return_window_end"]
+    saved = yaml.safe_load(edit_profile(doc, "p1", back, KNOWN, TODAY))["profiles"][0]["return"]
+    assert saved["mode"] == "fixed" and saved["first_train"] == "17:52"
+    assert not {"window", "pick", "min_stay_min"} & saved.keys()
+
+
+def test_window_mode_without_a_latest_time_is_refused(tmp_path):
+    doc = document(tmp_path)
+    form = {**WINDOW_FORM}
+    del form["return_window_end"]
+    with pytest.raises(EditorError) as err:
+        edit_profile(doc, "p1", form, KNOWN, TODAY)
+    assert "return.window[1]" in err.value.report
+
+
+def test_a_fixed_profile_keeps_its_shape_through_the_new_form(tmp_path):
+    raw = yaml.safe_load(PROFILE)
+    raw["profiles"][0]["return"]["window"] = ["16:52", "19:52"]
+    doc = document(tmp_path, yaml.safe_dump(raw))
+    form = {
+        **VALUES,
+        **{f"{d}_{k}": v for d in ("outbound", "return") for k, v in
+           (("mode", "fixed"), ("pick", "earliest"), ("min_stay", 0))},
+        "return_window_start": "16:52",
+        "return_window_end": "19:52",
+    }  # fmt: skip
+    before = yaml.safe_load(edit_profile(doc, "p1", VALUES, KNOWN, TODAY))
+    assert yaml.safe_load(edit_profile(doc, "p1", form, KNOWN, TODAY)) == before
+
+
+def test_day_overrides_are_written_and_removed(tmp_path):
+    doc = document(tmp_path)
+    days = {"fri": {"mode": "window", "window": ["13:00", "18:00"]}}
+    text = edit_profile(doc, "p1", {**VALUES, "return_by_weekday": days}, KNOWN, TODAY)
+    profiles, errors = parse_profiles(text, KNOWN)
+    assert not errors and profiles[0].return_.by_weekday["fri"].mode == "window"
+    doc = document(tmp_path, text)
+    text = edit_profile(doc, "p1", {**VALUES, "return_by_weekday": {}}, KNOWN, TODAY)
+    assert "by_weekday" not in yaml.safe_load(text)["profiles"][0]["return"]
+
+
+def test_other_stations_and_their_settings_are_written_only_when_set(tmp_path):
+    raw = yaml.safe_load(PROFILE)
+    raw["profiles"][0]["location"] = {"source": "ha", "entity": "person.me"}
+    doc = document(tmp_path, yaml.safe_dump(raw, sort_keys=False))
+    untouched = {
+        **VALUES,
+        "outbound_other_stations": [],
+        "return_other_stations": [],
+        "other_station_radius_m": 500.0,
+        "other_station_dwell_min": 0.0,
+        "ask_to_remember_station": True,
+    }
+    same = yaml.safe_load(edit_profile(doc, "p1", untouched, KNOWN, TODAY))["profiles"][0]
+    assert "other_stations" not in same["return"]
+    assert same["location"] == {"source": "ha", "entity": "person.me"}
+    changed = {
+        **untouched,
+        "return_other_stations": ["BBB"],
+        "other_station_radius_m": 300.0,
+        "ask_to_remember_station": False,
+    }
+    text = edit_profile(doc, "p1", changed, KNOWN, TODAY)
+    (p, *_), errors = parse_profiles(text, KNOWN)
+    assert not errors
+    assert p.return_.other_stations == ("BBB",)
+    assert p.location is not None
+    assert (p.location.other_station_radius_m, p.location.ask_to_remember_station) == (300, False)
+    assert isinstance(
+        yaml.safe_load(text)["profiles"][0]["location"]["other_station_radius_m"], int
+    )

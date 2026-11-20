@@ -24,6 +24,8 @@ _GROUPS: dict[NotificationCategory, frozenset[EventKind]] = {
             EventKind.MISSED_FIRST_TRAIN,
             EventKind.NO_CONNECTION,
             EventKind.RESTORED,
+            EventKind.STATION_ASK,  # the user asked for these questions: never routine
+            EventKind.STATION_REMEMBER,
         }
     ),
     "transfers": frozenset(

@@ -74,3 +74,7 @@ With no Wi-Fi or activity entity set, misses come only from waiting 12 minutes, 
 Arriving at the station where your journey starts sends one quiet message with the train now followed, its platform, whether it is on time and when it arrives. If that arrival shows you missed your train, the miss and the next train come in one message. Leaving and re-entering the zone does not repeat it.
 
 Location only adds alerts. It can make a warning arrive sooner, or tell the companion you are still at a station after your train left. It never removes or delays a warning that times alone would give. The exceptions are the silent "has left, if you are not on it" note, which is skipped when you were at the boarding station, and replaced by the missed message when Wi-Fi already proved the miss, and the "I stopped following" message for a train you were never seen boarding.
+
+## Other boarding station
+
+Boarding somewhere other than your usual station is noticed from your position. See [Other boarding station](other-boarding-station.md). Near such a station, while no train is followed, a fix counts when its accuracy is within `other_station_radius_m` (default 500 m), not only within the station radius.

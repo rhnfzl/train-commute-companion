@@ -48,9 +48,12 @@ def test_dst_fold_survives():
 def test_file_without_newer_fields_loads_with_defaults():
     raw = json.loads(dumps(occ(journey([L1, L2], RIDE))))
     del raw["zone_reports"]
+    del raw["station_visits"]  # 0.2.6 and early 0.3.0 dev state
     del raw["lock"]["legs"][0]["onward_from"]
+    del raw["lock"]["unproven"]
     back = loads(OccurrenceState, json.dumps(raw))
     assert back.zone_reports == {} and back.lock.legs[0].onward_from is None
+    assert back.station_visits == {} and back.lock.unproven is False
 
 
 @pytest.mark.parametrize(

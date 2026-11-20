@@ -26,6 +26,8 @@ async def async_get_config_entry_diagnostics(
             "notifications_paused": data.coordinator.notification_paused(),
             "notifications_quiet": data.coordinator.notification_quiet(),
             "requests": view.requests,
+            # a count only: which stations would reveal a travel routine
+            "remembered_station_count": sum(len(v) for v in view.remembered.values()),
             "journeys": [
                 {
                     "direction": o.key.direction.value,

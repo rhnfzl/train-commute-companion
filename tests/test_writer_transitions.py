@@ -92,13 +92,39 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
         occurrence["wifi_reports"] = {}
         occurrence["released"] = False  # 2026-11-18 defaults for an older store
         occurrence["missed_from_origin"] = False
+        occurrence |= {  # 0.3.0 other boarding station defaults
+            "boarding_station": None,
+            "prompt": None,
+            "asked_stations": [],
+            "station_seen": {},
+            # seeded from zone_reports so the 30-minute guard survives the upgrade
+            "station_visits": occurrence.get("zone_reports", {}),
+        }
+        assert occurrence["station_visits"]  # the fixture holds a report: not a vacuous check
+        for journey in (occurrence["lock"], *occurrence["retained"]):
+            if journey is not None:
+                journey["unproven"] = False  # 0.3.0 other-station guess default
+    raw["state"]["remembered_stations"] = {}
     for cfg in (raw["state"]["config"], *raw["state"]["config_snapshots"].values()):
         for profile in cfg["profiles"]:
             for d in ("outbound", "return_"):
                 profile[d]["active_lead_min"] = None  # Q9 default for an older store
+                profile[d] |= {  # 0.3.0 window mode defaults
+                    "mode": "fixed",
+                    "pick": "earliest",
+                    "min_stay_min": None,
+                    "by_weekday": {},
+                    "first_train_set": True,
+                    "other_stations": [],
+                }
             profile["alerts"]["quiet_repeat_misses"] = False  # 2026-11-18 default
             if profile["location"] is not None:  # Q12 defaults
                 profile["location"] |= {"wifi": {}, "activity_entity": None}
+                profile["location"] |= {  # 0.3.0 other boarding station defaults
+                    "other_station_radius_m": 500,
+                    "other_station_dwell_min": 0,
+                    "ask_to_remember_station": True,
+                }
     assert encode(state) == raw["state"]
     store.save(state)
     assert JsonFileStore(path).load() == state

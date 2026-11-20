@@ -12,7 +12,7 @@ from typing import Any
 
 import httpx
 
-from train_commute_companion.model import AlertEvent, Severity
+from train_commute_companion.model import AlertEvent, Severity, alert_facts
 
 log = logging.getLogger(__name__)
 
@@ -108,11 +108,20 @@ def callback_data(*parts: str) -> str | None:
 
 
 def alert_buttons(event: AlertEvent) -> dict[str, Any] | None:
-    """`I'm leaving` and `Not travelling` for a journey alert. None for an application warning,
-    and for a look-ahead message: it names a future day with no occurrence to act on."""
+    """`I'm leaving` and `Not travelling` for a journey alert, or a question's own answers. None
+    for an application warning, and for a look-ahead message: it names a future day with no
+    occurrence to act on."""
     d, day = event.direction, event.service_date
     if not event.profile_id or d is None or day is None or event.key.startswith("lookahead|"):
         return None
+    facts = alert_facts(event)
+    if facts.choices:  # a question: only its own answers
+        answers = [
+            {"text": label, "callback_data": data}
+            for answer, label in facts.choices
+            if (data := callback_data("q", facts.prompt_id, answer)) is not None
+        ]
+        return {"inline_keyboard": [answers]} if answers else None
     row = [
         {"text": label, "callback_data": data}
         for label, tag in (("I'm leaving", "l"), ("Not travelling", "s"))

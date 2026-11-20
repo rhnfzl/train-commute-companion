@@ -57,6 +57,8 @@ async def probe_direction(
     histories = {x: st.baselines.get(direction_key(p.id, x), BaselineHistory()) for x in Direction}
     results: list[ProbeResult] = []
     for day in probe_dates(p, today, direction=d, histories=histories):
+        if p.journey_on(d, day).mode == "window":
+            continue  # no usual train to probe, seed or adopt on a window day
         base = baseline_on(hist, p, d, service_date(p, d, day))
         got = await fetch(probe_queries(p, d, day, base))
         if isinstance(got, str):

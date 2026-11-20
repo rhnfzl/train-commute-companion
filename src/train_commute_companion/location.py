@@ -37,6 +37,10 @@ class Evidence:
     activity: str | None = None  # the phone's motion activity, as the phone names it
     activity_at: datetime | None = None  # when the phone reported that activity
     wifi: bool | None = None  # the event zone's place Wi-Fi: True connected, False not
+    # the fix lies inside station_radius_m of the event's station, accuracy known and within it
+    # too: proof the user waits there, also on a first fix that an other station's wider circle
+    # placed (`view.in_station_circle`)
+    in_station: bool | None = None
 
 
 NO_EVIDENCE = Evidence()
@@ -60,6 +64,7 @@ class Fix:
     at: datetime
     acc: float | None = None
     regions: frozenset[str] = frozenset()
+    speed: float | None = None  # m/s, when the source reports one (Q12 riding sign)
 
 
 def number(v: object) -> float | None:
@@ -73,7 +78,7 @@ def number(v: object) -> float | None:
     return f if math.isfinite(f) else None
 
 
-def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp, dl = p2 - p1, math.radians(lon2 - lon1)
     h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
@@ -83,12 +88,12 @@ def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 def clear_of(fix: Fix, zones: Sequence[Zone]) -> bool:
     """Q12: the whole uncertainty circle of `fix` lies outside every zone."""
     acc = fix.acc or 0.0
-    return all(_distance_m(fix.lat, fix.lon, z.lat, z.lon) > z.radius_m + acc for z in zones)
+    return all(distance_m(fix.lat, fix.lon, z.lat, z.lon) > z.radius_m + acc for z in zones)
 
 
 def resolve_zone(lat: float, lon: float, zones: Sequence[Zone]) -> str | None:
     """The smallest zone containing the point (a station inside a city zone wins), else None."""
-    inside = [z for z in zones if _distance_m(lat, lon, z.lat, z.lon) <= z.radius_m]
+    inside = [z for z in zones if distance_m(lat, lon, z.lat, z.lon) <= z.radius_m]
     return min(inside, key=lambda z: z.radius_m).name if inside else None
 
 

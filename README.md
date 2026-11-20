@@ -8,13 +8,18 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.10%2B-18BCF2.svg)](https://www.home-assistant.io/)
 [![License](https://img.shields.io/github/license/rhnfzl/train-commute-companion)](LICENSE)
 
-Follows your usual NS train journey and tells you when something changes: a delay, a cancelled train, a platform change or a transfer you can no longer make.
+Follows your train journey, a fixed train or any train in a time window, and tells you when something changes: a delay, a cancelled train, a platform change or a transfer you can no longer make.
 
 Data: NS. You bring your own NS API key; none is bundled. This project is not made by or linked to NS.
 
 [![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=rhnfzl&repository=train-commute-companion&category=integration)
 
 ## What it does
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/how-it-works-dark.svg">
+  <img src="docs/images/how-it-works-light.svg" alt="You plan a fixed train, a time window or a minimum stay. It watches live train data, your phone and planned works. It rings for what matters, stays quiet for small changes and asks with one tap at another station.">
+</picture>
 
 - **Follows your trains.** You describe your usual trips once, in a small YAML file. On a travel day it picks your train and watches it.
 - **Tells you what changed.** Delays, cancellations, platform changes, a train cut short, a new route, a transfer at risk or broken, and a train you missed.
@@ -25,7 +30,9 @@ Data: NS. You bring your own NS API key; none is bundled. This project is not ma
 - **Shows crowd forecasts.** NS forecasts appear with your trains and alternatives; changed forecasts can send silent updates. [Crowd forecasts](docs/crowd-forecasts.md).
 - **Changes plans and alerts.** Resume a skipped journey and control quiet or paused notifications in [Home Assistant](docs/home-assistant.md).
 - **Pauses for holidays.** Set an inclusive date range and monitoring resumes afterward. [Holiday pauses](docs/holiday-pauses.md).
-- **Uses weekday departure times.** Set different first trains within one profile while preserving already-followed journeys. [Weekday schedules](docs/weekday-schedules.md).
+- **Uses weekday departure times.** Set different first trains within one profile while preserving already-followed journeys. [Schedules](docs/weekday-schedules.md).
+- **Follows any train in a time window.** No usual train needed, with an optional minimum stay and settings per day. [Schedules](docs/weekday-schedules.md#window-mode).
+- **Notices another boarding station.** With location on, it follows a known station by itself and asks once at a new one. [Other boarding station](docs/other-boarding-station.md).
 - **Shows train context.** Optional NS composition, listed capacity and candidate vehicle coordinates include source limits. [Train context](docs/train-context.md).
 - **Loud only when it matters.** Alerts you must not miss ring; small updates arrive silently.
 - **Says when NS is unclear.** When NS gives two different answers about the same train, you get both, so you can decide.
@@ -64,21 +71,16 @@ A timetable app knows your train. It does not know where you are. With location 
 - see that you are still at home when your train leaves, and tell you the next train and when to leave;
 - see that you are on the train, so a late phone position does not cause a false "you missed it";
 - pick the next train you can catch when you leave home before your usual train leaves.
+- notice that you are at another station and follow a train from there, or ask you first.
 
 Phones often report a position minutes late. A position just after the departure does not prove a miss. The companion also checks movement, Wi-Fi, activity and time:
 
-```mermaid
-flowchart TD
-    A["Your train leaves"] --> B{"Any sign you ride?<br/>Left the zone, 8 m/s or more,<br/>or Automotive"}
-    B -- yes --> C["Keep following your train"]
-    B -- no --> D{"Tracker still places you at home/work<br/>or at your boarding station?"}
-    D -- no --> C
-    D -- yes --> E{"Proof?<br/>Home/work Wi-Fi on, buffer over 5 min;<br/>or Stationary/Walking, 3 min after departure;<br/>or still there after 12 min"}
-    E -- no --> C
-    E -- yes --> F["You missed it: next train.<br/>At home/work also: leave by"]
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/where-you-are-dark.svg">
+  <img src="docs/images/where-you-are-light.svg" alt="When your train leaves: any sign you ride keeps the train followed. Still at home, work or the station with proof means you missed it, with the next train and when to leave. Without proof you get a quiet note. With no train followed near another station: a listed or remembered station is followed by itself, a new one asks Yes, Other train or No, then whether to remember it.">
+</picture>
 
-Activity counts only when reported after the departure and at most 5 minutes ago. Without proof the train stays followed, and you may get a quiet "has left. If you are not on it, next train" note. Regular train alerts still apply. Full rules: [Missed trains](docs/location-ha.md#missed-trains). Other sources: [OwnTracks](docs/location-owntracks.md), [Telegram](docs/location-telegram.md).
+Activity counts only when reported after the departure and at most 5 minutes ago. Without proof the train stays followed, and you may get a quiet "has left. If you are not on it, next train" note. Regular train alerts still apply. Full rules: [Missed trains](docs/location-ha.md#missed-trains) and [Other boarding station](docs/other-boarding-station.md). Other sources: [OwnTracks](docs/location-owntracks.md), [Telegram](docs/location-telegram.md).
 
 ### Phone setup (Home Assistant companion app)
 
@@ -117,6 +119,10 @@ uv run --python 3.14 --group ha mypy --explicit-package-bases --namespace-packag
 The [Validate workflow](.github/workflows/validate.yml) runs these same commands, and a release runs them before it publishes. Each night it also runs `tests_ha` against the newest Home Assistant test package, because the integration calls private `mobile_app` code.
 
 [Live NS checks](docs/live-testing.md) run separately with your own key and capture alerts locally.
+
+## Diagrams
+
+The pictures are [Excalidraw](https://excalidraw.com) drawings. To change one, open its `.excalidraw` file from [docs/images](docs/images) in Excalidraw, edit it, and export the light and dark SVG again.
 
 ## License
 

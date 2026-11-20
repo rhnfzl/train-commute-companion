@@ -593,6 +593,18 @@ def recovery_progress_buttons(selected: SelectedRecovery) -> dict[str, Any]:
     return {"inline_keyboard": rows}
 
 
+def stations_text(view: RuntimeView) -> str:
+    """The boarding stations TCC remembers, per profile and direction."""
+    lines = [
+        f"{display_name(i.profile_name)} {i.direction.value}: {', '.join(codes)}"
+        for i in view.directions
+        if (codes := view.remembered.get(direction_key(i.profile_id, i.direction)))
+    ]
+    if not lines:
+        return "No remembered boarding stations."
+    return "Remembered boarding stations:\n" + "\n".join(lines)
+
+
 def command_word(text: str) -> str:
     words = text.split()
     return words[0].lower().split("@", 1)[0] if words else ""

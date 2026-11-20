@@ -12,15 +12,19 @@ from train_commute_companion.model import (
     AccessibilitySettings,
     AlertSettings,
     Config,
+    DayOverride,
     Direction,
     LocationSettings,
     LocationSource,
+    Mode,
     NotificationCategory,
     NotificationChannel,
+    Pick,
     Profile,
     ProfileProblem,
     UsualJourney,
     WorksDigestSettings,
+    resolve_day,
 )
 from train_commute_companion.notification_policy import validate_channels
 from train_commute_companion.overlap import overlap_pairs
@@ -122,6 +126,38 @@ def _transfers(
     return [s for s in found if s]
 
 
+def _other_stations(
+    c: _ProfileErrors, raw: object, name: str, known: frozenset[str] | None
+) -> list[str]:
+    if not isinstance(raw, list):
+        c.err(f"{name}.other_stations", "must be a list of station codes, [] for none")
+        return []
+    path = f"{name}.other_stations"
+    found = (_station(c, t, f"{path}[{i}]", known) for i, t in enumerate(raw))
+    return [s for s in found if s]
+
+
+def _check_other_stations(c: _ProfileErrors, p: Profile) -> None:
+    """Other boarding stations: never where the direction starts or ends, and only with a
+    location source that can see the phone there."""
+    for d in Direction:
+        name = "outbound" if d is Direction.OUTBOUND else "return"
+        others = p.journey(d).other_stations
+        for i, code in enumerate(others):
+            if code == p.origin(d):
+                c.err(
+                    f"{name}.other_stations[{i}]", f"{code} is already where this direction starts"
+                )
+            elif code == p.destination(d):
+                c.err(f"{name}.other_stations[{i}]", f"{code} is where this direction ends")
+        if others and p.location is None:
+            c.err(
+                f"{name}.other_stations",
+                "other_stations need a location block",
+                "add location, or remove other_stations",
+            )
+
+
 def _window(
     c: _ProfileErrors, raw: object, name: str, first: time | None
 ) -> tuple[time, time] | None:
@@ -158,6 +194,112 @@ def _check_window(
         )
 
 
+_MODES: tuple[Mode, ...] = get_args(Mode)
+_PICKS: tuple[Pick, ...] = get_args(Pick)
+_DAY_KEYS = ("mode", "window", "pick", "min_stay_min")
+_NEEDS_WINDOW = "mode window needs a window: the earliest and latest departure"
+_WINDOW_EXAMPLE = 'for example ["07:00", "10:00"]'
+_EMPTY_WINDOW = "window is empty: the latest time must differ from the earliest"
+
+
+def _mode(c: _ProfileErrors, v: object, path: str) -> Mode | None:
+    found = next((m for m in _MODES if m == v), None)
+    if found is None:
+        c.err(path, f"must be fixed or window, got {v!r}")
+    return found
+
+
+def _pick(c: _ProfileErrors, v: object, path: str) -> Pick | None:
+    found = next((m for m in _PICKS if m == v), None)
+    if found is None:
+        c.err(path, f"must be earliest, earliest_silent or on_leave, got {v!r}")
+    return found
+
+
+def _stay(c: _ProfileErrors, v: object, path: str, low: int = 1) -> int | None:
+    """`low` 0 for a day: 0 turns off the stay the day would inherit."""
+    if isinstance(v, int) and not isinstance(v, bool) and low <= v <= MINUTES_PER_DAY:
+        return v
+    c.err(path, f"must be a whole number of minutes from {low} to 1440, got {v!r}")
+    return None
+
+
+def _range(c: _ProfileErrors, raw: object, name: str) -> tuple[time, time] | None:
+    """A window-mode window: the earliest and latest departure, never empty."""
+    window = _window(c, raw, name, None)
+    if window is not None and window[0] == window[1]:
+        c.err(f"{name}.window", _EMPTY_WINDOW)
+        return None
+    return window
+
+
+def _day_override(c: _ProfileErrors, raw: object, path: str) -> DayOverride | None:
+    if not isinstance(raw, dict):
+        c.err(path, "must be a mapping of mode, window, pick or min_stay_min")
+        return None
+    if "first_train" in raw:  # a likely first try: point to where a day's first train lives
+        day, name = path.rsplit(".", 1)[1], path.split(".by_weekday")[0]
+        c.err(
+            f"{path}.first_train",
+            "a day's first train is set in first_train_by_weekday",
+            f'set {name}.first_train_by_weekday.{day}: "{raw["first_train"]}"',
+        )
+    c.keys({k: v for k, v in raw.items() if k != "first_train"}, _DAY_KEYS, path)
+    return DayOverride(
+        _mode(c, raw["mode"], f"{path}.mode") if "mode" in raw else None,
+        _range(c, raw["window"], path) if "window" in raw else None,
+        _pick(c, raw["pick"], f"{path}.pick") if "pick" in raw else None,
+        _stay(c, raw["min_stay_min"], f"{path}.min_stay_min", 0) if "min_stay_min" in raw else None,
+    )
+
+
+def _by_weekday(c: _ProfileErrors, raw: object, name: str) -> dict[str, DayOverride]:
+    if not isinstance(raw, dict):
+        c.err(f"{name}.by_weekday", "must map mon through sun to overrides")
+        return {}
+    c.keys(raw, WEEKDAYS, f"{name}.by_weekday")
+    out = {}
+    for day, value in raw.items():
+        o = _day_override(c, value, f"{name}.by_weekday.{day}")
+        if o is not None and day in WEEKDAYS:
+            out[day] = o
+    return out
+
+
+def _check_days(c: _ProfileErrors, j: UsualJourney, name: str, raw: Mapping[str, Any]) -> None:
+    """Every weekday as it resolves, judged by the same `resolve_day` the runtime uses."""
+    any_window = False
+    for day in WEEKDAYS:
+        r = resolve_day(j, day, True)
+        o = j.by_weekday.get(day)
+        at = f"{name}.by_weekday.{day}"
+        if r.mode == "window":
+            any_window = True
+            if o is not None and o.window is None and j.mode == "fixed":
+                c.err(f"{at}.window", _NEEDS_WINDOW, _WINDOW_EXAMPLE)
+            continue
+        if o is None:
+            continue
+        if not r.first_train_set:
+            c.err(
+                f"{at}.mode",
+                f"mode fixed needs a first train on {day}",
+                f"set {name}.first_train_by_weekday.{day} or {name}.first_train",
+            )
+        elif o.window is not None or j.mode == "window":
+            _check_window(c, at, r.first_train, r.window, j.buffer_min)
+        for key in ("pick", "min_stay_min"):
+            if getattr(o, key) not in (None, 0):  # a stay of 0 is off, also on a fixed day
+                c.err(f"{at}.{key}", f"{key} has no effect on a fixed day")
+    for key in ("pick", "min_stay_min"):
+        if key in raw and not any_window:
+            c.err(
+                f"{name}.{key}",
+                f"{key} has no effect: no day uses mode window",
+                f"set mode: window, or remove {key}",
+            )
+
+
 def _journey(
     c: _ProfileErrors, raw: object, name: str, known: frozenset[str] | None, *, allow_offset: bool
 ) -> UsualJourney | None:
@@ -168,14 +310,19 @@ def _journey(
     c.keys(
         raw,
         (
+            "mode",
             "first_train",
             "first_train_by_weekday",
             "transfers",
             "window",
+            "pick",
+            "min_stay_min",
+            "by_weekday",
             "buffer_min",
             "earlier_train_advice",
             "day_offset",
             "active_lead_min",
+            "other_stations",
         ),
         name,
     )
@@ -183,8 +330,12 @@ def _journey(
         c.err(
             f"{name}.day_offset", "day_offset is allowed on return only", "remove it from outbound"
         )
-    first = c.time(raw.get("first_train"), f"{name}.first_train")
+    mode = _mode(c, raw.get("mode", "fixed"), f"{name}.mode")
+    windowed = mode == "window"
+    has_first = not windowed or raw.get("first_train") is not None
+    first = c.time(raw.get("first_train"), f"{name}.first_train") if has_first else None
     transfers = _transfers(c, raw.get("transfers", []), name, known)
+    others = _other_stations(c, raw.get("other_stations", []), name, known)
     buf = c.integer(raw.get("buffer_min"), f"{name}.buffer_min", 0)
     advice = c.boolean(
         raw.get("earlier_train_advice", name == "return"), f"{name}.earlier_train_advice"
@@ -202,9 +353,17 @@ def _journey(
                 " you need to leave",
                 f"set it to {buf + ACTIVE_EXTRA_MIN} or remove it for the default",
             )
-    window = _window(c, raw.get("window"), name, first)
-    if first and window and buf is not None:
-        _check_window(c, name, first, window, buf)
+    if windowed:
+        window = _range(c, raw.get("window"), name)
+        if raw.get("window") is None:
+            c.err(f"{name}.window", _NEEDS_WINDOW, _WINDOW_EXAMPLE)
+    else:
+        window = _window(c, raw.get("window"), name, first)
+        if first and window and buf is not None:
+            _check_window(c, name, first, window, buf)
+    pick = _pick(c, raw["pick"], f"{name}.pick") if "pick" in raw else "earliest"
+    stay = _stay(c, raw["min_stay_min"], f"{name}.min_stay_min") if "min_stay_min" in raw else None
+    days = _by_weekday(c, raw.get("by_weekday", {}), name)
     raw_weekdays = raw.get("first_train_by_weekday", {})
     weekday_times: dict[str, time] = {}
     if not isinstance(raw_weekdays, dict):
@@ -215,9 +374,30 @@ def _journey(
             parsed = c.time(value, f"{name}.first_train_by_weekday.{weekday}")
             if parsed is not None and weekday in WEEKDAYS:
                 weekday_times[weekday] = parsed
-    if len(c.errors) > n or first is None or window is None or buf is None or advice is None:
+    if window is not None and first is None and windowed:
+        first = window[
+            0
+        ]  # window mode: no usual train; window start stands in for code that needs a time
+    if mode is None or first is None or window is None or buf is None or advice is None:
         return None
-    return UsualJourney(first, tuple(transfers), window, buf, advice, offset, weekday_times, lead)
+    j = UsualJourney(
+        first,
+        tuple(transfers),
+        window,
+        buf,
+        advice,
+        offset,
+        weekday_times,
+        lead,
+        mode,
+        pick or "earliest",  # a bad pick is already reported; the days are still checked
+        stay,
+        days,
+        has_first,
+        tuple(others),
+    )
+    _check_days(c, j, name, raw)
+    return None if len(c.errors) > n else j
 
 
 def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
@@ -320,7 +500,17 @@ def _location(c: _ProfileErrors, raw: object) -> tuple[bool, LocationSettings | 
         c.err("location", "must be a mapping or null")
         return False, None
     n = len(c.errors)
-    keys = ("source", "entity", "zones", "station_radius_m", "wifi", "activity_entity")
+    keys = (
+        "source",
+        "entity",
+        "zones",
+        "station_radius_m",
+        "wifi",
+        "activity_entity",
+        "other_station_radius_m",
+        "other_station_dwell_min",
+        "ask_to_remember_station",
+    )
     c.keys(raw, keys, "location")
     src, ent, zones = raw.get("source"), raw.get("entity"), raw.get("zones", {})
     wifi, activity = raw.get("wifi", {}), raw.get("activity_entity")
@@ -352,9 +542,22 @@ def _location(c: _ProfileErrors, raw: object) -> tuple[bool, LocationSettings | 
         )
     if (wifi or activity) and src != "ha":
         c.err("location", "wifi and activity_entity need source ha")
-    if source is None or len(c.errors) > n:
+    other_radius = raw.get("other_station_radius_m", 500)
+    if not _whole(other_radius, 1, 5000):
+        c.err("location.other_station_radius_m", "must be a whole number of metres from 1 to 5000")
+    dwell = raw.get("other_station_dwell_min", 0)
+    if not _whole(dwell, 0, 60):
+        c.err("location.other_station_dwell_min", "must be a whole number of minutes from 0 to 60")
+    ask = c.boolean(raw.get("ask_to_remember_station", True), "location.ask_to_remember_station")
+    if source is None or ask is None or len(c.errors) > n:
         return False, None
-    return True, LocationSettings(source, ent, dict(zones), radius, dict(wifi), activity)
+    return True, LocationSettings(
+        source, ent, dict(zones), radius, dict(wifi), activity, other_radius, dwell, ask
+    )
+
+
+def _whole(v: object, lo: int, hi: int) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
 
 
 def _date(c: _ProfileErrors, value: object, path: str) -> date | None:
@@ -543,7 +746,7 @@ def _profile(
         and c.pid
     ):
         return None, c.errors
-    return Profile(
+    profile = Profile(
         c.pid,
         name,
         ALLOWED_TRAVELLER,
@@ -560,7 +763,9 @@ def _profile(
         pauses,
         accessibility,
         digest,
-    ), []
+    )
+    _check_other_stations(c, profile)
+    return (None, c.errors) if c.errors else (profile, [])
 
 
 def _load_yaml(text: str) -> tuple[Any, list[ProfileProblem]]:
@@ -694,6 +899,11 @@ def _times(p: Profile) -> list[tuple[str, time]]:
         j = p.journey(d)
         out.append((f"{d.value}.first_train", j.first_train))
         out += [(f"{d.value}.window[{i}]", t) for i, t in enumerate(j.window)]
+        for weekday, o in j.by_weekday.items():
+            out += [
+                (f"{d.value}.by_weekday.{weekday}.window[{i}]", t)
+                for i, t in enumerate(o.window or ())
+            ]
         for weekday, first in j.first_train_by_weekday.items():
             out.append((f"{d.value}.first_train_by_weekday.{weekday}", first))
             dated = p.journey_on(d, date(2026, 10, 26) + timedelta(days=WEEKDAYS.index(weekday)))

@@ -4549,7 +4549,7 @@ wheels = [
 
 [[package]]
 name = "train-commute-companion"
-version = "0.2.6"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

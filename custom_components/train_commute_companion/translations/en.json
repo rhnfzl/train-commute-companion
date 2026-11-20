@@ -67,12 +67,34 @@
           "skip_public_holidays": "Skip Dutch public holidays",
           "require_accessible": "Ask NS for accessible journeys (assistance can require booking)",
           "disabled_categories": "Disable alert categories on every destination (health warnings remain enabled)",
-          "outbound_time": "Outbound first train (HH:MM)",
-          "return_time": "Return first train (HH:MM)",
+          "outbound_time": "Outbound first train (HH:MM), optional in window mode",
+          "return_time": "Return first train (HH:MM), optional in window mode",
           "outbound_transfers": "Outbound transfer stations, in travel order",
           "return_transfers": "Return transfer stations, in travel order",
           "outbound_buffer": "Minutes from your door to the outbound platform",
-          "return_buffer": "Minutes from your door to the return platform"
+          "return_buffer": "Minutes from your door to the return platform",
+          "outbound_mode": "Outbound mode",
+          "outbound_window_start": "Outbound window: earliest departure (HH:MM)",
+          "outbound_window_end": "Outbound window: latest departure (HH:MM)",
+          "outbound_pick": "Outbound train choice in window mode",
+          "outbound_min_stay": "Outbound minimum stay in minutes, 0 for none",
+          "return_mode": "Return mode",
+          "return_window_start": "Return window: earliest departure (HH:MM)",
+          "return_window_end": "Return window: latest departure (HH:MM)",
+          "return_pick": "Return train choice in window mode",
+          "return_min_stay": "Return minimum stay in minutes, 0 for none"
+        },
+        "data_description": {
+          "outbound_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
+          "outbound_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
+          "outbound_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
+          "outbound_pick": "Pick the train when I leave follows no train until you leave. Then it takes the next train you can catch. Without location it uses the earliest train with silent misses.",
+          "outbound_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work.",
+          "return_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
+          "return_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
+          "return_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
+          "return_pick": "Pick the train when I leave follows no train until you leave. Then it takes the next train you can catch. Without location it uses the earliest train with silent misses.",
+          "return_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work."
         }
       },
       "profile_details": {
@@ -93,11 +115,22 @@
           "channel_routine": "Routine and compensation reminder destinations",
           "edit_weekday_times": "Set different departure times by weekday",
           "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
-          "quiet_repeat_misses": "Silent missed-train message after the first one of the day"
+          "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
+          "edit_day_overrides": "Set a different mode, window, train choice or stay for some days",
+          "outbound_other_stations": "Other outbound boarding stations",
+          "return_other_stations": "Other return boarding stations",
+          "other_station_radius_m": "Other station distance in metres",
+          "other_station_dwell_min": "Minutes at another station before it counts",
+          "ask_to_remember_station": "Offer to remember a new boarding station"
         },
         "data_description": {
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
-          "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently."
+          "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently.",
+          "outbound_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",
+          "return_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",
+          "other_station_radius_m": "How near your phone must be to a station. Default 500.",
+          "other_station_dwell_min": "0 means one location fix is enough. Default 0.",
+          "ask_to_remember_station": "After you say Yes at a new station, TCC asks once whether to remember it."
         }
       },
       "profile_error": {
@@ -122,6 +155,28 @@
           "return_fri": "Friday return",
           "return_sat": "Saturday return",
           "return_sun": "Sunday return"
+        }
+      },
+      "profile_day_pick": {
+        "title": "Settings by day",
+        "description": "Pick a day to change, or Done to finish. Days you set now: {overrides}.",
+        "data": {
+          "day": "Day"
+        }
+      },
+      "profile_day": {
+        "title": "Settings for {day}",
+        "description": "Leave a field on Same as every day, or blank, to use the normal setting. A window needs both times. {report}",
+        "data": {
+          "mode": "Mode",
+          "window_start": "Window: earliest departure (HH:MM)",
+          "window_end": "Window: latest departure (HH:MM)",
+          "pick": "Train choice in window mode",
+          "min_stay": "Minimum stay in minutes"
+        },
+        "data_description": {
+          "mode": "A fixed day uses the first train you set for that weekday, or the normal first train.",
+          "min_stay": "Window days only. Blank uses the normal setting; 0 turns the stay off that day."
         }
       }
     },
@@ -218,12 +273,34 @@
           "skip_public_holidays": "Skip Dutch public holidays",
           "require_accessible": "Ask NS for accessible journeys (assistance can require booking)",
           "disabled_categories": "Disable alert categories on every destination (health warnings remain enabled)",
-          "outbound_time": "Outbound first train (HH:MM)",
-          "return_time": "Return first train (HH:MM)",
+          "outbound_time": "Outbound first train (HH:MM), optional in window mode",
+          "return_time": "Return first train (HH:MM), optional in window mode",
           "outbound_transfers": "Outbound transfer stations, in travel order",
           "return_transfers": "Return transfer stations, in travel order",
           "outbound_buffer": "Minutes from your door to the outbound platform",
-          "return_buffer": "Minutes from your door to the return platform"
+          "return_buffer": "Minutes from your door to the return platform",
+          "outbound_mode": "Outbound mode",
+          "outbound_window_start": "Outbound window: earliest departure (HH:MM)",
+          "outbound_window_end": "Outbound window: latest departure (HH:MM)",
+          "outbound_pick": "Outbound train choice in window mode",
+          "outbound_min_stay": "Outbound minimum stay in minutes, 0 for none",
+          "return_mode": "Return mode",
+          "return_window_start": "Return window: earliest departure (HH:MM)",
+          "return_window_end": "Return window: latest departure (HH:MM)",
+          "return_pick": "Return train choice in window mode",
+          "return_min_stay": "Return minimum stay in minutes, 0 for none"
+        },
+        "data_description": {
+          "outbound_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
+          "outbound_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
+          "outbound_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
+          "outbound_pick": "Pick the train when I leave follows no train until you leave. Then it takes the next train you can catch. Without location it uses the earliest train with silent misses.",
+          "outbound_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work.",
+          "return_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
+          "return_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
+          "return_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
+          "return_pick": "Pick the train when I leave follows no train until you leave. Then it takes the next train you can catch. Without location it uses the earliest train with silent misses.",
+          "return_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work."
         }
       },
       "profile_details": {
@@ -244,11 +321,22 @@
           "channel_routine": "Routine and compensation reminder destinations",
           "edit_weekday_times": "Set different departure times by weekday",
           "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
-          "quiet_repeat_misses": "Silent missed-train message after the first one of the day"
+          "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
+          "edit_day_overrides": "Set a different mode, window, train choice or stay for some days",
+          "outbound_other_stations": "Other outbound boarding stations",
+          "return_other_stations": "Other return boarding stations",
+          "other_station_radius_m": "Other station distance in metres",
+          "other_station_dwell_min": "Minutes at another station before it counts",
+          "ask_to_remember_station": "Offer to remember a new boarding station"
         },
         "data_description": {
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
-          "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently."
+          "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently.",
+          "outbound_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",
+          "return_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",
+          "other_station_radius_m": "How near your phone must be to a station. Default 500.",
+          "other_station_dwell_min": "0 means one location fix is enough. Default 0.",
+          "ask_to_remember_station": "After you say Yes at a new station, TCC asks once whether to remember it."
         }
       },
       "profile_error": {
@@ -333,6 +421,28 @@
           "intent_id": "Arrival being confirmed",
           "confirmed": "I confirm this destination and my actual arrival time",
           "edit": "Edit details instead of saving"
+        }
+      },
+      "profile_day_pick": {
+        "title": "Settings by day",
+        "description": "Pick a day to change, or Done to finish. Days you set now: {overrides}.",
+        "data": {
+          "day": "Day"
+        }
+      },
+      "profile_day": {
+        "title": "Settings for {day}",
+        "description": "Leave a field on Same as every day, or blank, to use the normal setting. A window needs both times. {report}",
+        "data": {
+          "mode": "Mode",
+          "window_start": "Window: earliest departure (HH:MM)",
+          "window_end": "Window: latest departure (HH:MM)",
+          "pick": "Train choice in window mode",
+          "min_stay": "Minimum stay in minutes"
+        },
+        "data_description": {
+          "mode": "A fixed day uses the first train you set for that weekday, or the normal first train.",
+          "min_stay": "Window days only. Blank uses the normal setting; 0 turns the stay off that day."
         }
       }
     },
@@ -662,6 +772,38 @@
     "reload_profiles": {
       "name": "Reload profiles",
       "description": "Apply the current profiles file. An invalid file leaves the last valid profiles active."
+    },
+    "answer_prompt": {
+      "name": "Answer a question",
+      "description": "Answer a question about another boarding station, as its button does.",
+      "fields": {
+        "prompt_id": {
+          "name": "Question id",
+          "description": "The prompt_id of the alert event."
+        },
+        "answer": {
+          "name": "Answer",
+          "description": "One answer from the alert's choices, for example yes."
+        }
+      }
+    },
+    "forget_station": {
+      "name": "Forget a station",
+      "description": "Take a remembered boarding station off the list.",
+      "fields": {
+        "profile": {
+          "name": "Profile",
+          "description": "The profile's name or id."
+        },
+        "direction": {
+          "name": "Direction",
+          "description": "Outbound or return trips."
+        },
+        "station": {
+          "name": "Station",
+          "description": "The station code, for example VL."
+        }
+      }
     }
   }
 }

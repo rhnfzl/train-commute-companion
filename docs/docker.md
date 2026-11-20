@@ -39,10 +39,12 @@ Run every command below from the `examples/` directory of this checkout, where t
 - `/choose [profile] [outbound|return] HH:MM [train number] [YYYY-MM-DD]`: lock that train
 - `/leaving [profile] [outbound|return]`: I'm leaving now
 - `/skip [profile] [outbound|return|day] [YYYY-MM-DD]`: not travelling, alerts for it stop
+- `/stations`: the boarding stations the companion remembers
+- `/forget STATION`: stop remembering that boarding station
 - `/test`: send the loud and the silent test alert (and test each webhook)
 - `/help`: this list
 
-The same actions are buttons under the alerts and the `/status` reply.
+The same actions are buttons under the alerts and the `/status` reply. A question about [another boarding station](other-boarding-station.md) shows only its own answer buttons.
 
 ## Settings
 
