@@ -10,16 +10,19 @@ from test_other_station import AAA, NEAR_VL, ROAD, RTD, VL, Phone, loud_after, o
 from test_other_station import rig_for as station_rig
 from test_window_mode import (
     FIXED_OUT,
+    OUT_KEY,
     RET_KEY,
     STAY_RET,
     commute_day,
     first_train,
+    report,
     ride_to_work,
     stay_start,
     told,
 )
 from test_window_mode import rig_for as window_rig
 
+from train_commute_companion.lifecycle import is_resolved
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.model import Direction, EventKind, Severity
 
@@ -128,3 +131,25 @@ async def test_a_choice_after_the_latest_time_is_still_refused(tmp_path):
     await rig.run_until("15:20")
     late = await rig.rt.choose_at("p1", time(20, 30), direction=Direction.RETURN)
     assert late is not None and "outside the return window" in late.text
+
+
+async def test_a_late_phone_arrival_moves_the_minimum_stay(tmp_path):
+    """The 08:12 arrives 08:50; the phone first reaches work at 09:35, after following ended."""
+    rig = await window_rig(tmp_path, FIXED_OUT, STAY_RET, now="07:50", world=commute_day())
+    await ride_to_work(rig, phone=False)
+    await rig.run_until("09:35")
+    s = rig.occ(OUT_KEY)
+    assert s is None or is_resolved(s)
+    await report(rig, "enter", "09:35", zone="work")
+    await report(rig, "report", "10:00", zone="work")  # only the first presence counts
+    assert rig.rt.state.journey_records[OUT_KEY].seen_at == at("09:35")
+    await rig.run_until("14:50")
+    assert stay_start(rig) == "17:35"
+
+
+async def test_a_phone_at_work_the_next_morning_is_no_arrival(tmp_path):
+    rig = await window_rig(tmp_path, FIXED_OUT, STAY_RET, now="07:50", world=commute_day())
+    await ride_to_work(rig, phone=False)
+    await rig.run_until("12:00")
+    await report(rig, "enter", "12:00", zone="work")  # over 150 min after the train arrived
+    assert rig.rt.state.journey_records[OUT_KEY].seen_at is None

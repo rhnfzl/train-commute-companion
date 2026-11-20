@@ -68,6 +68,7 @@ from train_commute_companion.lifecycle import (
     origin_answer,
     other_station_candidate,
     pick_prompt,
+    place_zone,
     queries_needed,
     quiet_watch,
     remember_prompt,
@@ -89,6 +90,7 @@ from train_commute_companion.messages import (
     no_journey,
 )
 from train_commute_companion.model import (
+    FOLLOW_LIMIT,
     AlertEvent,
     AlertFacts,
     AlertSettings,
@@ -1957,6 +1959,8 @@ class Runtime:
                 return True
             return source is not None and ctx.profile.location != source
 
+        if not (epoch is not None and epoch != self._loc_epoch.get(profile_id, 0)):
+            self._note_late_arrival(profile_id, event, source)
         answered = True
         mine = [k for k, s in self._writer.st.occurrences.items() if s.key.profile_id == profile_id]
         for k in mine:
@@ -1996,6 +2000,34 @@ class Runtime:
             self._apply({k: (t.state, t.events)})
         await self._deliver()
         return answered
+
+    def _note_late_arrival(
+        self, profile_id: str, event: LocationEvent, source: LocationSettings | None
+    ) -> None:
+        """The phone's first presence at a trip's destination once following ended (the
+        occurrence resolved or archived): the minimum stay counts from it (`stay_from`). Only
+        within FOLLOW_LIMIT of the train's arrival, for the newest such trip, never overwritten."""
+        st, p = self._writer.st, find_profile(self._writer.st.config, profile_id)
+        if event.kind == "leave" or event.zone is None or p is None:
+            return
+        if source is not None and p.location != source:
+            return
+        at = to_utc(event.at)
+        found = [
+            (k, r)
+            for k, r in st.journey_records.items()
+            if r.key.profile_id == profile_id
+            and r.seen_at is None
+            and r.train_arrival is not None
+            and event.zone in (r.destination, place_zone(p, r.destination))
+            and to_utc(r.train_arrival) <= at < to_utc(r.train_arrival) + FOLLOW_LIMIT
+            and ((s := st.occurrences.get(k)) is None or is_resolved(s))
+        ]
+        if not found:
+            return
+        k, r = max(found, key=lambda kr: to_utc(present(kr[1].train_arrival)))
+        records = {**st.journey_records, k: replace(r, seen_at=event.at)}
+        self._writer.commit(replace(st, journey_records=records), Change.ACTION)
 
     # --- reload (5.2, rule 10) ---
 
