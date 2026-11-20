@@ -36,8 +36,8 @@ from tcc_app.telegram import TelegramApi
 from webhook_receiver import Receiver
 
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.messages import Refused
-from train_commute_companion.model import DirectionState, LegState
+from train_commute_companion.messages import RefusalKind, Refused
+from train_commute_companion.model import Direction, DirectionState, LegState
 from train_commute_companion.state import Commitment, LockSource
 from train_commute_companion.webhook import WebhookTestResult
 
@@ -816,3 +816,21 @@ async def test_stations_lists_and_forget_removes_a_remembered_station(app):
         "VL is not a remembered boarding station.",
     ]
     assert app.rt.state.remembered_stations == {}
+
+
+async def test_forget_reports_a_failed_or_partial_removal(app):
+    retry = Refused("The change was not saved. Try again.", RefusalKind.RETRY)
+    gone = Refused("VL is not a remembered station of outbound trips")
+    results = {Direction.OUTBOUND: None, Direction.RETURN: retry}
+
+    async def forget(pid, direction, code):
+        return results[direction]
+
+    app.rt.forget_station = forget
+    await app.bot.handle(app.msg("/forget vl", 1))
+    results[Direction.OUTBOUND] = gone
+    await app.bot.handle(app.msg("/forget vl", 2))
+    assert app.texts() == [
+        "Forgot VL for some trips, but: The change was not saved. Try again.",
+        "The change was not saved. Try again.",
+    ]

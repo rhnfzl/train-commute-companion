@@ -17,7 +17,7 @@ from typing import Any, TypeVar
 from train_commute_companion.compensation import ArrivalError, arrival_text
 from train_commute_companion.compensation import confirm as check_arrival
 from train_commute_companion.location import Fix, number
-from train_commute_companion.messages import Refused
+from train_commute_companion.messages import RefusalKind, Refused
 from train_commute_companion.model import Direction, display_name
 from train_commute_companion.recovery_state import RecoveryActionKind
 from train_commute_companion.runtime import Runtime
@@ -652,10 +652,18 @@ class Bot:
         if len(args) != 1:
             await self._reply("Usage: /forget STATION, for example /forget VL")
             return
-        code, done = args[0].upper(), 0
+        code, done, failed = args[0].upper(), 0, None
         for info in self._rt.view().directions:
             forgot = self._rt.forget_station(info.profile_id, info.direction, code)
-            done += await self._call_runtime(forgot) is None
+            refused = await self._call_runtime(forgot)
+            done += refused is None
+            if refused is not None and refused.kind is RefusalKind.RETRY:
+                failed = refused  # still remembered there: say so, never "not remembered"
+        if failed is not None:
+            await self._reply(
+                f"Forgot {code} for some trips, but: {failed.text}" if done else failed.text
+            )
+            return
         await self._reply(
             f"Forgot {code}." if done else f"{code} is not a remembered boarding station."
         )
