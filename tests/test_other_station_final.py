@@ -2,9 +2,9 @@
 failed before its fix."""
 
 from builders import make_connection, make_leg
-from runtime_rig import at
-from test_never_boarded import KEY, replay_to_departure
-from test_other_station import NEAR_VL, ROAD, VL, Phone, of
+from runtime_rig import Rig, at
+from test_never_boarded import KEY, PROFILE, evening, replay_to_departure
+from test_other_station import AAA, LOCATED, NEAR_VL, ROAD, RTD, VL, Phone, of, venlo
 from test_other_station import rig_for as station_rig
 from test_window_mode import OUT_KEY
 from test_window_mode import rig_for as window_rig
@@ -143,3 +143,53 @@ async def test_fixed_day_keeps_the_usual_train_watch_before_a_lock(tmp_path):
     rig.provider.error = down
     await rig.run_until("07:55")
     assert EventKind.CANNOT_SEE_TRAIN in [k for k, _ in loud_sent(rig, "06:00")]
+
+
+# --- one time rule for the station question, its buttons and the answer ---
+
+
+async def window_station_rig(tmp_path, other: str = "", world: list | None = None) -> Rig:
+    """A 19:00 to 20:00 on_leave return window; VL trains at 19:36, 20:06 and 20:36."""
+    rig = Rig(tmp_path, "18:30")
+    old = 'return: {first_train: "16:36", buffer_min: 2, active_lead_min: 45, window: ["15:45", "21:30"]}'
+    ret = '{mode: window, window: ["19:00", "20:00"], buffer_min: 2, pick: on_leave' + other + "}"
+    text = PROFILE.replace("LOCATION", LOCATED)
+    assert old in text
+    rig.write(text=text.replace(old, "return: " + ret))
+    rig.provider.world = [*evening(), *venlo(), *(world or [])]
+    rig.provider.positions = {"RTD": RTD, "VL": VL, "AAA": AAA}
+    await rig.rt.start()
+    await rig.run_until("19:48")
+    return rig
+
+
+async def test_no_question_about_a_train_after_the_latest_time(tmp_path):
+    rig = await window_station_rig(tmp_path)
+    phone = Phone(rig)
+    await phone.fix(ROAD, "19:48")
+    assert await phone.fix(NEAR_VL, "19:50") == [("VL", "enter")]
+    assert of(rig, EventKind.STATION_ASK) == []  # the next VL train, 20:06, is after 20:00
+    assert rig.occ(KEY).lock is None
+
+
+async def test_a_known_station_follows_no_train_after_the_latest_time(tmp_path):
+    rig = await window_station_rig(tmp_path, other=", other_stations: [VL]")
+    phone = Phone(rig)
+    await phone.fix(ROAD, "19:48")
+    await phone.fix(NEAR_VL, "19:50")
+    assert rig.occ(KEY).lock is None
+
+
+async def test_other_train_offers_only_trains_inside_the_window(tmp_path):
+    late = make_connection([make_leg("VL", "AAA", "19:56", "20:56", number="6056")])
+    rig = await window_station_rig(tmp_path, world=[late])
+    phone = Phone(rig)
+    await phone.fix(ROAD, "19:48")
+    await phone.fix(NEAR_VL, "19:50")
+    (ask,) = of(rig, EventKind.STATION_ASK)
+    assert "19:56" in ask.text
+    assert await rig.rt.answer_prompt(ask.facts.prompt_id, "other") is None
+    pick = rig.occ(KEY).prompt
+    assert pick.stage == "pick" and pick.choices == (("t1956", "19:56"),)
+    assert await rig.rt.answer_prompt(pick.id, "t1956") is None
+    assert rig.occ(KEY).lock.legs[0].train.train_number == "6056"

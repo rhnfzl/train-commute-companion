@@ -6,12 +6,16 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 
 from train_commute_companion.calendar import TZ, floor_to_minute, resolve_local, to_utc
-from train_commute_companion.lifecycle import boarding_origin, first_open, target_occurrence
+from train_commute_companion.lifecycle import (
+    boarding_origin,
+    departure_span,
+    first_open,
+    target_occurrence,
+)
 from train_commute_companion.messages import Refused
 from train_commute_companion.model import Connection, Ctx, Leaving, LegState
 from train_commute_companion.providers.base import ProviderAnswer
 from train_commute_companion.revisions import occurrence_ctx
-from train_commute_companion.schedule import dated_schedule
 from train_commute_companion.state import LegProgress, OccurrenceState
 from train_commute_companion.store import PersistedState
 
@@ -31,12 +35,7 @@ def _where_and_when(s: OccurrenceState, ctx: Ctx) -> tuple[str, datetime, dateti
         # an onward train continues the kept incoming leg: dated from it, not the window
         lo = to_utc(s.lock.legs[n - 1].train.planned_departure)
         return s.lock.legs[n - 1].alight_stop, lo, lo + timedelta(days=1)
-    w = ctx.schedule
-    if w.mode == "window":
-        # a train before the minimum stay ends is still followed: only the window bounds it
-        p, d = ctx.profile, ctx.direction
-        w = dated_schedule(p, d, s.key.service_date - timedelta(days=p.journey(d).day_offset), None)
-    return boarding_origin(s, ctx), to_utc(w.window_start), to_utc(w.window_end)
+    return boarding_origin(s, ctx), *departure_span(s, ctx)
 
 
 def choice_target(

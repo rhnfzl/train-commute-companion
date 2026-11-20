@@ -80,7 +80,7 @@ from train_commute_companion.replacement import (
     choose_replacement,
     max_transfers,
 )
-from train_commute_companion.schedule import active_lead
+from train_commute_companion.schedule import active_lead, dated_schedule
 from train_commute_companion.state import (
     ACCEPT_AFTER,
     ACCEPT_APART,
@@ -382,13 +382,15 @@ def find_next_good(
     n_before: int = 0,
     not_before: datetime | None = None,
     earliest: bool = False,
+    span: tuple[datetime, datetime] | None = None,
 ) -> Connection | None:
-    """The next good connection from `station` (default the origin), not starting on `after`
-    and not leaving before `not_before`. Both only leave the ranking: identity is judged on the
-    whole answer (6.1). A window day and an other boarding station (`earliest`) take the
-    earliest good one; elsewhere the usual route wins."""
+    """The next good connection from `station` (default the origin), not starting on `after`,
+    not leaving before `not_before` and planned inside `span` (`departure_span`). These only
+    leave the ranking: identity is judged on the whole answer (6.1). A window day and an other
+    boarding station (`earliest`) take the earliest good one; elsewhere the usual route wins."""
     at = station or boarding_origin(s, ctx)
     floor = None if not_before is None else to_utc(not_before)
+    lo, hi = span or (None, None)
     c, _ = choose_replacement(
         answer,
         usual_remaining=None if earliest else _usual_route(s, ctx, at),
@@ -397,10 +399,24 @@ def find_next_good(
             for c in answer.connections
             if (after is None or c.legs[0].train != after)
             and (floor is None or _departure(c) >= floor)
+            and (lo is None or hi is None or lo <= to_utc(c.legs[0].train.planned_departure) < hi)
         ],
         **_good_kw(s, ctx, at, kept, n_before),
     )
     return c
+
+
+def departure_span(s: OccurrenceState, ctx: Ctx) -> tuple[datetime, datetime]:
+    """The UTC span [lo, hi) the planned first departure of a new train must fall in: the
+    day's own window, up to and including its latest time. One rule for the station question,
+    its buttons and the answer to them (`choice`). A minimum stay does not narrow it: a train
+    before the stay ends is still followed."""
+    w = ctx.schedule
+    if w.mode != "window":
+        return to_utc(w.window_start), to_utc(w.window_end)
+    p, d = ctx.profile, ctx.direction
+    w = dated_schedule(p, d, s.key.service_date - timedelta(days=p.journey(d).day_offset), None)
+    return to_utc(w.first_departure), to_utc(w.window_end)
 
 
 def _usual_route(s: OccurrenceState, ctx: Ctx, station: str) -> tuple[str, ...] | None:
@@ -2094,9 +2110,11 @@ def pick_prompt(
     is confirmed yet, so an unanswered question changes nothing."""
     found: list[Connection] = []
     floor: datetime | None = None
-    here = replace(s, at_station=True)
+    here, span = replace(s, at_station=True), departure_span(s, ctx)
     for _ in range(PICK_MAX):
-        c = find_next_good(here, ctx, answer, station=station, not_before=floor, earliest=True)
+        c = find_next_good(
+            here, ctx, answer, station=station, not_before=floor, earliest=True, span=span
+        )
         if c is None:
             break
         found.append(c)
@@ -2149,9 +2167,12 @@ def _at_other_station(
         return Transition(s, ())
     if answer is None or answer.query.origin != zone:
         return Transition(s, ())  # the next report asks NS again
-    c = find_next_good(replace(s, at_station=True), ctx, answer, station=zone, earliest=True)
+    span = departure_span(s, ctx)
+    c = find_next_good(
+        replace(s, at_station=True), ctx, answer, station=zone, earliest=True, span=span
+    )
     if c is None:
-        return Transition(s, ())
+        return Transition(s, ())  # no train inside the window there: nothing asked or followed
     first_leg, dest = c.legs[0], c.legs[-1].alight.name
     when, name = hhmm(first_leg.train.planned_departure), first_leg.board.name
     if known and ev.in_station:
