@@ -59,6 +59,8 @@ _GROUPS: dict[NotificationCategory, frozenset[EventKind]] = {
             EventKind.WEEKLY_RECAP,
             EventKind.AFTER_TRIP_NOTE,
             EventKind.DAILY_BRIEF,
+            EventKind.ARRIVAL_PROMPT,
+            EventKind.STATION_NAVIGATION,
         }
     ),
 }
@@ -93,7 +95,17 @@ def channels_for(
         selected = frozenset()
     else:
         selected = settings.channels.get(category, CHANNELS)
+    if kind in (EventKind.ARRIVAL_PROMPT, EventKind.STATION_NAVIGATION):
+        selected &= {"primary"}
     return selected if primary_enabled else selected - {"primary"}
+
+
+def arrival_prompt_enabled(settings: AlertSettings) -> bool:
+    return bool(
+        settings.compensation_reminder
+        and settings.arrival_prompt
+        and "primary" in channels_for(settings, EventKind.ARRIVAL_PROMPT)
+    )
 
 
 def channel_enabled(

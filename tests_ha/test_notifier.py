@@ -39,6 +39,7 @@ from train_commute_companion.model import (
     Severity,
     TrainId,
 )
+from train_commute_companion.navigation import station_links
 from train_commute_companion.serde import decode, encode
 
 EXPECTED_KEYS = {
@@ -101,6 +102,19 @@ async def test_apple_collapse_identifier_fits_relay_limit(hass, monkeypatch):
     first, retried = [call.data["data"]["tag"] for call in calls]
     assert len(first.encode("utf-8")) <= 64
     assert first == retried
+
+
+async def test_station_navigation_uses_companion_uri_actions(hass, monkeypatch):
+    calls = fake_phone(hass, monkeypatch)
+    maps = station_links({"UT": (52.09, 5.11)}, "UT")
+    event = replace(
+        make_event(), kind=EventKind.STATION_NAVIGATION, facts=AlertFacts(navigation=maps)
+    )
+    assert await send_from_thread(hass, event)
+    assert calls[0].data["data"]["actions"] == [
+        {"action": "URI", "title": "Apple Maps", "uri": maps[0]},
+        {"action": "URI", "title": "Google Maps", "uri": maps[1]},
+    ]
 
 
 async def test_loud_payload_critical_when_chosen(hass, monkeypatch):

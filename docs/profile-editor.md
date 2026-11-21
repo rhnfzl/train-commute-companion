@@ -70,6 +70,10 @@ Turn off **Show leave-by time** to hide leave-by text and the status sensor's ti
 
 **Suggest extra time for weather** controls `alerts.weather_allowance` and defaults to on.
 It adjusts leave-by text only when weather and leave-by text are enabled. See the [weather allowance table](weather.md#suggested-extra-time-before-departure).
+
+**Ask whether I arrived around the time NS reported** controls `alerts.arrival_prompt`.
+It defaults to on and only applies when you enable [compensation reminders](compensation-reminders.md).
+**Show map buttons for my boarding station** controls `alerts.navigate` and defaults to on.
 See [Notification preferences](notification-preferences.md).
 
 **Remind me to leave if I am still home or at work** controls `alerts.location_leave_now` and defaults to on.
@@ -115,6 +119,11 @@ Checks due together share one planned-works listing. The brief reuses recent tri
 A mock weekday profile had one outbound transfer and a direct return. Its regular seven-day lookahead used 20 trip requests and one works listing. With both daily checks enabled and empty caches, the morning used 22 trip requests, one works listing and one disruption listing. A separate evening check added four trip requests and one works listing for tomorrow. Live polling, optional weather and retries are outside these counts. Both checks use the shared NS request budget and cooldown.
 
 ## Timetable lookahead
+
+When the lookahead confirms a new departure for a fixed commute, the configured Home Assistant phone can show **Update timetable**.
+Tap it to save the new departure in the profile. The companion follows the old timetable until the confirmed change date.
+A new timetable or profile edit invalidates the earlier button.
+Set `alerts.timetable_update: false` to hide the button. The alert still names the YAML field to edit from the change date.
 
 The daily timetable check looks for planned works and changes to your usual trains. Each profile defaults to the next seven calendar days, starting tomorrow.
 

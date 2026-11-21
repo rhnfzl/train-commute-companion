@@ -1,15 +1,17 @@
 """Telegram arrival records require an explicit reviewed date, offset and destination."""
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 from app_rig import CHAT, STRANGER, TOKEN, FakeTelegram
 from runtime_rig import PROFILE, Rig, at
 from tcc_app import bot as bot_module
 from tcc_app.bot import Bot
-from tcc_app.telegram import TelegramApi
+from tcc_app.telegram import TelegramApi, alert_buttons
 
 from train_commute_companion.messages import Refused
+from train_commute_companion.model import okey
 
 
 @pytest.fixture
@@ -63,6 +65,49 @@ async def test_reviewed_arrival_and_duplicate_callback(app):
     rig.clock.jump(1)
     await bot.handle(tap(data))
     assert outbound(rig).revision == 1
+
+
+@pytest.mark.parametrize("answer", ["yes", "other"])
+async def test_prompt_callback_uses_bound_private_sender(app, answer):
+    rig, tg, bot = app
+    rig.path.write_text(rig.path.read_text() + "    alerts: {compensation_reminder: true}\n")
+    assert await rig.rt.reload() is None
+    rig.rt._arrival_recipient = lambda: bot.arrival_recipient
+    original = outbound(rig)
+    record, obligation = rig.rt._arrival_question(
+        original, rig.rt.config.profiles[0], at("09:54"), rig.rt.now()
+    )
+    assert rig.rt._writer.commit_strict(
+        replace(
+            rig.rt.state,
+            obligations=(*rig.rt.state.obligations, obligation),
+            journey_records={**rig.rt.state.journey_records, okey(record.key): record},
+        )
+    )
+    await rig.rt._deliver()
+    assert outbound(rig).prompt.delivered
+    buttons = alert_buttons(obligation.event)["inline_keyboard"][0]
+    assert [b["text"] for b in buttons] == ["Yes", "Other time"]
+    data = next(b["callback_data"] for b in buttons if b["callback_data"].endswith("|" + answer))
+    assert len(data.encode()) <= 64
+
+    def callback(sender, chat_type="private"):
+        update = tap(data)
+        update["callback_query"]["from"] = {"id": sender}
+        update["callback_query"]["message"]["chat"]["type"] = chat_type
+        return update
+
+    for foreign in (callback(STRANGER), callback(CHAT, "group")):
+        await bot.handle(foreign)
+        assert not tg.sent and outbound(rig).arrived_at is None
+
+    await bot.handle(callback(CHAT))
+    if answer == "yes":
+        assert outbound(rig).arrived_at == at("09:54")
+        assert "Arrival saved." in tg.sent[-1]["text"]
+    else:
+        assert outbound(rig).arrived_at is None
+        assert "/arrived p1 outbound 2026-10-27 RTD" in tg.sent[-1]["text"]
 
 
 async def test_arrival_button_is_named_and_removed_once_saved(app):

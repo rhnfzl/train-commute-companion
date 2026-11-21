@@ -58,6 +58,8 @@ def profile_token(profile: Profile) -> str:
     data.pop("brief")
     data["alerts"].pop("daily_brief")
     data["alerts"].pop("quick_trip")
+    for key in ("arrival_prompt", "navigate", "compensation_details", "timetable_update"):
+        data["alerts"].pop(key)
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 

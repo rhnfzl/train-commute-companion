@@ -183,6 +183,7 @@ def test_unanimous_adoption_one_silent_message_file_unchanged():  # Q2 fixtures
     (ev,) = events
     assert ev.kind is EventKind.TIMETABLE_ADOPTED and ev.severity is Severity.SILENT
     assert "NS moved your 08:12 to 08:15 from Tuesday 27 Oct" in ev.text
+    assert 'set outbound.first_train to "08:15"' in ev.text
     assert first_train(h, MON) == time(8, 12) and first_train(h, TUE) == time(8, 15)
     assert h.versions[-1].confirmed and h.versions[-1].effective_from == TUE
     assert P.outbound.first_train == time(8, 12)  # the user's file is never rewritten

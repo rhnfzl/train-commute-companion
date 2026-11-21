@@ -77,22 +77,35 @@ def effective_profile(
 
 def profile_for(st: PersistedState, s: OccurrenceState) -> Profile | None:
     p = effective_profile(st.config_snapshots, st.config, s)
-    return None if p is None else inherited_location(st, p)
+    return None if p is None else inherited_preferences(st, p)
 
 
-def inherited_location(st: PersistedState, p: Profile) -> Profile:
-    """An inherited source can revoke tracking and departure reminders for its travel plan."""
+def inherited_preferences(st: PersistedState, p: Profile) -> Profile:
+    """A source profile can revoke private data and alerts for its saved trip."""
     plan = st.travel_plans.get(p.id) if p.travel_plan else None
     if plan is None or plan.inherits is None:
         return p
     source = find_profile(st.config, plan.inherits)
     location = p.location if source is not None and p.location == source.location else None
-    reminder = p.alerts.location_leave_now and (
-        source is not None and source.alerts.location_leave_now
+    alerts = p.alerts
+    live = source.alerts if source is not None else None
+    updated = replace(
+        alerts,
+        location_leave_now=alerts.location_leave_now
+        and live is not None
+        and live.location_leave_now,
+        arrival_prompt=alerts.arrival_prompt and live is not None and live.arrival_prompt,
+        compensation_reminder=alerts.compensation_reminder
+        and live is not None
+        and live.compensation_reminder,
+        compensation_details=alerts.compensation_details
+        and live is not None
+        and live.compensation_details,
+        navigate=alerts.navigate and live is not None and live.navigate,
     )
-    if location == p.location and reminder == p.alerts.location_leave_now:
+    if location == p.location and updated == alerts:
         return p
-    return replace(p, location=location, alerts=replace(p.alerts, location_leave_now=reminder))
+    return replace(p, location=location, alerts=updated)
 
 
 def routing_profile(st: PersistedState, pid: str, revision: int | None = None) -> Profile | None:
@@ -101,9 +114,9 @@ def routing_profile(st: PersistedState, pid: str, revision: int | None = None) -
         return regular
     stored = find_profile(st.config_snapshots.get(revision), pid) if revision is not None else None
     if stored is not None and stored.travel_plan:
-        return inherited_location(st, stored)
+        return inherited_preferences(st, stored)
     plan = st.travel_plans.get(pid)
-    return inherited_location(st, plan.profile) if plan is not None else None
+    return inherited_preferences(st, plan.profile) if plan is not None else None
 
 
 def commute_day_for(p: Profile, d: Direction, service_day: date) -> date:
@@ -147,7 +160,7 @@ def changed_weekdays(old: Profile, new: Profile, d: Direction) -> frozenset[int]
 def migrate_baselines(
     old: Profile, new: Profile, d: Direction, history: BaselineHistory, today: date
 ) -> BaselineHistory:
-    """Retain actual learned signatures only where the configured departure is unchanged."""
+    """Keep learned signatures for unchanged departures and accepted timetable edits."""
     a, b = old.journey(d), new.journey(d)
     floor = max(history.floor, history.latest or 0)
     if not route_geometry_same(old, new, d):
@@ -155,8 +168,16 @@ def migrate_baselines(
     scoped_old, scoped_new = bool(a.first_train_by_weekday), bool(b.first_train_by_weekday)
     if not scoped_old and not scoped_new:
         base = history.in_force(today)
-        if a.first_train == b.first_train or (
-            base is not None and base.signature.legs[0].departure == b.first_train
+        adopted = history.latest_confirmed(None)
+        if (
+            a.first_train == b.first_train
+            or (base is not None and base.signature.legs[0].departure == b.first_train)
+            or (
+                adopted is not None
+                and adopted.update_nonce is not None
+                and adopted.signature.legs
+                and adopted.signature.legs[0].departure == b.first_train
+            )
         ):
             return history
         return BaselineHistory((), floor)
@@ -164,6 +185,16 @@ def migrate_baselines(
         return BaselineHistory((), floor)
     changed = changed_weekdays(old, new, d)
     if scoped_old:
+        matching = {
+            weekday
+            for weekday in changed
+            if (adopted := history.latest_confirmed(weekday)) is not None
+            and adopted.update_nonce is not None
+            and adopted.signature.legs
+            and adopted.signature.legs[0].departure
+            == new.journey_on(d, commute_day_for(new, d, adopted.effective_from)).first_train
+        }
+        changed -= matching
         retained = tuple(v for v in history.versions if v.commute_weekday not in changed)
         return history if retained == history.versions else BaselineHistory(retained, floor)
     versions = []

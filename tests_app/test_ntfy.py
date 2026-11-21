@@ -23,6 +23,7 @@ from train_commute_companion.lookahead_probe import bundle_key
 from train_commute_companion.lookahead_run import ProbedRun
 from train_commute_companion.model import (
     AlertEvent,
+    AlertFacts,
     AlertSettings,
     Direction,
     EventKind,
@@ -157,6 +158,24 @@ async def test_priorities_only_send_text_no_callbacks_and_never_follow_redirects
     assert (
         TOPIC not in caplog.text and TOKEN not in caplog.text and "other.invalid" not in caplog.text
     )
+
+
+async def test_ntfy_includes_public_station_map_links_in_text():
+    requests = []
+
+    def receive(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200)
+
+    maps = ("https://maps.apple.com/?ll=52.09,5.11", "https://maps.google.com/?q=52.09,5.11")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(receive)) as client:
+        notifier = NtfyNotifier(NtfySettings(TOPIC, TOKEN), client, TickClock(at("07:50")).now)
+        event = replace(
+            alert(), kind=EventKind.STATION_NAVIGATION, facts=AlertFacts(navigation=maps)
+        )
+        assert await notifier.send(event)
+    (message,) = requests
+    assert message["message"] == "\n".join((event.text, *maps))
 
 
 @pytest.mark.parametrize("failure", [401, 403, 429, 500, "timeout"])

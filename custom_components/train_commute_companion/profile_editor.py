@@ -24,6 +24,7 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.notification_policy import CATEGORIES
 from train_commute_companion.profile import load_config, station_code
+from train_commute_companion.timetable_update import TimetableEdit
 from train_commute_companion.transfer import FALLBACK_MIN
 
 from .store import file_lock
@@ -168,6 +169,10 @@ def edit_profile(
     defaults = AlertSettings()
     for key in (
         "compensation_reminder",
+        "compensation_details",
+        "timetable_update",
+        "arrival_prompt",
+        "navigate",
         "quiet_repeat_misses",
         "weather",
         "leave_by",
@@ -298,6 +303,51 @@ def edit_profile(
         profile["pauses"].append(
             {"start": values.get("pause_start"), "end": values.get("pause_end")}
         )
+    text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    validate_text(text, known, today, available_channels, profile_index=index)
+    return text
+
+
+def edit_timetable(
+    document: ProfileDocument,
+    edit: TimetableEdit,
+    expected: Config,
+    known: frozenset[str],
+    today: date,
+    available_channels: frozenset[NotificationChannel],
+) -> str:
+    if document.content is None:
+        raise EditorError("file_changed")
+    parsed, errors = load_config(
+        document.content.decode("utf-8-sig"),
+        known,
+        None,
+        today,
+        available_channels=available_channels,
+    )
+    if parsed is None or errors or parsed.profiles != expected.profiles:
+        raise EditorError("file_changed")
+    index = next((i for i, p in enumerate(parsed.profiles) if p.id == edit.profile_id), None)
+    if index is None:
+        raise EditorError("file_changed")
+    data = copy.deepcopy(document.data)
+    profile = copy.deepcopy(data["profiles"][index])
+    data["profiles"][index] = profile
+    journey = copy.deepcopy(profile[edit.direction.value])
+    profile[edit.direction.value] = journey
+    if edit.weekday is None:
+        journey["first_train"] = f"{edit.departure:%H:%M}"
+    else:
+        journey.setdefault("first_train_by_weekday", {})[edit.weekday] = f"{edit.departure:%H:%M}"
+    for day, (start, end) in edit.windows:
+        hours = [f"{start:%H:%M}", f"{end:%H:%M}"]
+        if day is None:
+            if isinstance(journey.get("window"), list):
+                journey["window"] = hours
+        else:
+            target = copy.deepcopy(journey["by_weekday"][day])
+            target["window"] = hours
+            journey["by_weekday"][day] = target
     text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
     validate_text(text, known, today, available_channels, profile_index=index)
     return text

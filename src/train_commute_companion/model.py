@@ -104,6 +104,8 @@ class EventKind(StrEnum):
     COMPENSATION_REMINDER = "compensation_reminder"
     WEEKLY_RECAP = "weekly_recap"
     AFTER_TRIP_NOTE = "after_trip_note"
+    ARRIVAL_PROMPT = "arrival_prompt"
+    STATION_NAVIGATION = "station_navigation"
     TIMETABLE_ADOPTED = "timetable_adopted"
     EARLIER_TRAIN_WITHDRAWN = "earlier_train_withdrawn"
     OFFLINE = "offline"
@@ -313,6 +315,7 @@ class AlertFacts:
     # None marks stored alerts written before arrival-limit protection was recorded.
     past_latest_arrival: bool | None = None
     arrival_deadline: datetime | None = None
+    navigation: tuple[str, str] | None = None  # Apple Maps and Google Maps
 
 
 @dataclass(frozen=True, slots=True)
@@ -546,6 +549,10 @@ class AlertSettings:
     quick_trip: bool = True
     daily_brief: bool = True
     location_leave_now: bool = True
+    arrival_prompt: bool = True
+    navigate: bool = True
+    compensation_details: bool = True
+    timetable_update: bool = True
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]

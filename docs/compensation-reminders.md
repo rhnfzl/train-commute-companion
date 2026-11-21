@@ -36,6 +36,16 @@ A failed storage write refuses the action. It cannot activate later without anot
 
 Telegram delivery confirmation is required before Telegram accepts arrival actions.
 
+### Confirm a suggested arrival time
+
+With compensation reminders enabled, the companion can ask once when NS reports a tracked train arriving at your destination at least 30 minutes after the saved plan.
+The question is silent and goes to your configured Home Assistant phone or confirmed private Telegram chat.
+Choose **Yes** to confirm that you arrived about the displayed Amsterdam time.
+Choose **Other time** to enter and review your own time under Configure > Arrival in Home Assistant or with `/arrived` in Telegram.
+The question expires two hours after the displayed time. A missed prompt can be handled through the same manual controls.
+If delivery cannot be verified, use the manual controls to record your arrival.
+To keep compensation reminders and turn off the question, set `alerts.arrival_prompt: false`.
+
 ### Home Assistant
 
 Open Configure > Arrival on the integration. Choose the saved journey, confirm its destination and enter your actual arrival with the date/time picker.
@@ -66,6 +76,12 @@ Reminders use the existing `routine` notification category, quiet hours and chan
 Disabling `routine` suppresses the reminder. Direct arrival feedback still includes the official NS link.
 A reminder expires seven days after it is created.
 This expiry is a product rule, not an NS claim deadline.
+
+The reminder includes a **Journey details** block you can copy into the NS form.
+It shows the service date, saved stations, planned trains and times when available.
+Check the planned stations and trains against the journey you took.
+The block labels the NS-reported train arrival and your confirmed arrival separately.
+Set `alerts.compensation_details: false` to keep the reminder and omit the block.
 
 A journey can create at most one reminder across corrections and restarts.
 A correction invalidates an unsent reminder. It does not retract a message already accepted by a recipient.
