@@ -357,6 +357,7 @@ class HaNotifier:
         *,
         enabled_entity: str | None = None,
         quiet_entity: str | None = None,
+        profile_allowed: Callable[[str], bool] | None = None,
     ) -> None:
         self.hass = hass
         self._receipt_target = mobile_target(hass, service)
@@ -367,6 +368,7 @@ class HaNotifier:
         self.loud_style = loud_style
         self.enabled_entity = enabled_entity
         self.quiet_entity = quiet_entity
+        self._profile_allowed = profile_allowed
         self._fired: set[tuple[str, Direction | None, str, Severity, Any]] = set()
         # this notifier's work on hass.loop (sends and relay fallbacks), cancelled on unload
         self._tasks: set[asyncio.Task[None]] = set()
@@ -545,7 +547,11 @@ class HaNotifier:
             self._tasks.discard(me)
 
     async def _deliver(self, event: AlertEvent) -> bool:
-        if self.paused:
+        if self.paused or (
+            event.profile_id
+            and self._profile_allowed is not None
+            and not self._profile_allowed(event.profile_id)
+        ):
             raise NotificationPaused
         if event.kind is EventKind.WAKE_ALARM and not self._wake_allowed():
             raise NotificationPaused

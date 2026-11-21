@@ -403,7 +403,7 @@ def test_validate_description_has_location_caveat_verbatim():
         desc = data["options"]["step"]["validate"]["description"]
         assert desc == "{report}\n\n" + CAVEAT
         assert data["config"]["create_entry"]["guided"] == (
-            "Add more commutes later under Configure > Add or edit profiles."
+            "Use Add commute profile on the integration page to add another commute."
         )
     a = (ROOT / "custom_components" / DOMAIN / "strings.json").read_text()
     assert a == (ROOT / "custom_components" / DOMAIN / "translations/en.json").read_text()

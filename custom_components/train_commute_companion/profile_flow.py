@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.config_entries import ConfigFlowResult, SubentryFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.selector import (
@@ -115,10 +115,10 @@ async def station_catalogue(hass: HomeAssistant, key: str) -> Stations:
     return await NsProvider(key, get_async_client(hass), lambda: datetime.now(TZ)).stations()
 
 
-class ProfileEditorFlow:
+class ProfileEditorFlow[Result: (ConfigFlowResult, SubentryFlowResult)]:
     hass: HomeAssistant
-    async_show_form: Callable[..., ConfigFlowResult]
-    async_show_menu: Callable[..., ConfigFlowResult]
+    async_show_form: Callable[..., Result]
+    async_show_menu: Callable[..., Result]
     _editor_key: str = ""
     _editor_path: str = ""
     _editor_create: bool = False
@@ -187,7 +187,7 @@ class ProfileEditorFlow:
             roots += tuple(Path(p) for p in self.hass.config.allowlist_external_dirs)
         return roots
 
-    def _editor_error(self, code: str, report: str = "") -> ConfigFlowResult:
+    def _editor_error(self, code: str, report: str = "") -> Result:
         return self.async_show_form(
             step_id="profile_error",
             data_schema=vol.Schema({}),
@@ -197,7 +197,7 @@ class ProfileEditorFlow:
 
     async def _begin_editor(
         self, key: str, path: str, *, create: bool = False, catalogue: Stations | None = None
-    ) -> ConfigFlowResult:
+    ) -> Result:
         if self._profile_phase in (
             ReviewPhase.PREVIEWING,
             ReviewPhase.COMMITTING,
@@ -224,6 +224,7 @@ class ProfileEditorFlow:
                     known,
                     datetime.now(TZ).date(),
                     create=create,
+                    allow_empty=True,
                 )
             )
         except AuthError:
@@ -238,16 +239,12 @@ class ProfileEditorFlow:
             return await self.async_step_profile()
         return await self.async_step_profiles()
 
-    async def async_step_profile_error(
-        self, user_input: Mapping[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_profile_error(self, user_input: Mapping[str, Any] | None = None) -> Result:
         return await self._begin_editor(
             self._editor_key, self._editor_path, create=self._editor_create
         )
 
-    async def async_step_profiles(
-        self, user_input: Mapping[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_profiles(self, user_input: Mapping[str, Any] | None = None) -> Result:
         if (
             self._profile_phase
             in (ReviewPhase.PREVIEWING, ReviewPhase.COMMITTING, ReviewPhase.COMPLETE)
@@ -503,9 +500,7 @@ class ProfileEditorFlow:
             values["edit_day_overrides"] = True
         self._editor_values = values
 
-    async def async_step_profile(
-        self, user_input: Mapping[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_profile(self, user_input: Mapping[str, Any] | None = None) -> Result:
         if (
             self._profile_phase is not ReviewPhase.EDITING
             or self._document is None
@@ -555,7 +550,7 @@ class ProfileEditorFlow:
 
     async def async_step_profile_details(
         self, user_input: Mapping[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    ) -> Result:
         if (
             self._profile_phase is not ReviewPhase.EDITING
             or self._document is None
@@ -809,7 +804,7 @@ class ProfileEditorFlow:
             description_placeholders={"stations": labels, "pauses": pauses, "report": report},
         )
 
-    async def _after_profile_details(self) -> ConfigFlowResult:
+    async def _after_profile_details(self) -> Result:
         assert self._editor_values is not None
         if self._editor_values.get("edit_weekday_times", False):
             return await self.async_step_profile_weekdays()
@@ -817,7 +812,7 @@ class ProfileEditorFlow:
 
     async def async_step_profile_location(
         self, user_input: Mapping[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    ) -> Result:
         if (
             self._profile_phase is not ReviewPhase.EDITING
             or self._document is None
@@ -897,7 +892,7 @@ class ProfileEditorFlow:
 
     async def async_step_profile_weekdays(
         self, user_input: Mapping[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    ) -> Result:
         if (
             self._profile_phase is not ReviewPhase.EDITING
             or self._document is None
@@ -942,7 +937,7 @@ class ProfileEditorFlow:
             },
         )
 
-    async def _after_weekdays(self) -> ConfigFlowResult:
+    async def _after_weekdays(self) -> Result:
         assert self._editor_values is not None
         if self._editor_values.get("edit_day_overrides", False):
             existing: dict[str, Any] = (
@@ -972,7 +967,7 @@ class ProfileEditorFlow:
 
     async def async_step_profile_day_pick(
         self, user_input: Mapping[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    ) -> Result:
         """Day overrides, one day at a time: pick a day, edit it, come back, or finish."""
         if self._profile_phase is not ReviewPhase.EDITING or self._editor_values is None:
             return self._editor_error("invalid_profile")
@@ -1020,9 +1015,7 @@ class ProfileEditorFlow:
             description_placeholders={"overrides": self._day_summary(), "report": report},
         )
 
-    async def async_step_profile_day(
-        self, user_input: Mapping[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_profile_day(self, user_input: Mapping[str, Any] | None = None) -> Result:
         if (
             self._profile_phase is not ReviewPhase.EDITING
             or self._document is None
@@ -1109,7 +1102,7 @@ class ProfileEditorFlow:
             },
         )
 
-    async def _finish_editor(self) -> ConfigFlowResult:
+    async def _finish_editor(self) -> Result:
         assert self._pending_profile is not None and self._catalogue is not None
         self._profile_phase = ReviewPhase.PREVIEWING
         try:
@@ -1139,7 +1132,7 @@ class ProfileEditorFlow:
 
     async def async_step_profile_preview(
         self, user_input: Mapping[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    ) -> Result:
         if self._profile_phase is not ReviewPhase.REVIEWING or self._preview is None:
             return self._editor_error("invalid_profile")
         if user_input is not None:
@@ -1174,5 +1167,5 @@ class ProfileEditorFlow:
             raise
         self._profile_phase = ReviewPhase.COMPLETE
 
-    async def _profile_ready(self) -> ConfigFlowResult:
+    async def _profile_ready(self) -> Result:
         raise NotImplementedError
