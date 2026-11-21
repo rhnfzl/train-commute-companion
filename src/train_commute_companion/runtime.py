@@ -546,13 +546,18 @@ class Runtime:
 
     @staticmethod
     def _weather_points(o: OccurrenceView) -> tuple[tuple[str, datetime], ...]:
-        if (
-            o.resolved
-            or o.not_travelling
-            or not o.legs
-            or o.selected_recovery is not None
-            and o.selected_recovery.status == "active"
-        ):
+        if o.not_travelling:
+            return ()
+        selected = o.selected_recovery
+        if selected is not None and selected.status == "active":
+            steps = selected.itinerary.steps
+            if not steps:
+                return ()
+            return (
+                (steps[0].origin.station_code, steps[0].departure),
+                (steps[-1].destination.station_code, steps[-1].arrival),
+            )
+        if o.resolved or not o.legs:
             return ()
         first, last = o.legs[0], o.legs[-1]
         arrival = last.arrival or last.planned_arrival

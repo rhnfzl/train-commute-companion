@@ -5,7 +5,11 @@ from datetime import UTC, timedelta
 import httpx
 import pytest
 from builders import cut_stop
+from recovery_sample import NOW as RECOVERY_NOW
+from recovery_sample import answer as recovery_answer
 from runtime_rig import PROFILE, Rig
+from test_runtime_recovery import PROFILE as RECOVERY_PROFILE
+from test_runtime_recovery import follow, occurrence
 
 from train_commute_companion.model import EventKind
 from train_commute_companion.profile import parse_profiles
@@ -229,3 +233,39 @@ async def test_new_and_still_running_removed_profiles_share_station_forecasts(tm
         assert len(calls) == 2
         assert all(len(o.weather) == 2 for o in active)
         await rig.rt.stop_weather()
+
+
+async def test_selected_recovery_weather_uses_the_accepted_itinerary(tmp_path):
+    rig = weather_rig(tmp_path, None, RECOVERY_PROFILE)
+    rig.clock.t = RECOVERY_NOW
+    rig.provider.world = list(recovery_answer().connections)
+    rig.provider.positions = {"UT": (52.1, 5.1), "GD": (52.0, 4.7), "RTD": (51.9, 4.5)}
+
+    def respond(request):
+        return httpx.Response(200, json=forecast_for(rig.clock.now()))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        rig.rt._weather = WeatherProvider(client, rig.clock.now)
+        await rig.rt.start()
+        try:
+            await rig.rt.weather_idle()
+            selected = await follow(rig)
+            await rig.rt.poll_once()
+            await rig.rt.weather_idle()
+            shown = occurrence(rig)
+            steps = selected.itinerary.steps
+            expected = (
+                (steps[0].origin.station_code, steps[0].departure),
+                (steps[-1].destination.station_code, steps[-1].arrival),
+            )
+            assert Runtime._weather_points(shown) == expected
+            assert [(w.station, w.when) for w in shown.weather] == list(expected)
+            assert all(w.forecast is not None for w in shown.weather)
+            assert Runtime._weather_points(replace(shown, legs=())) == expected
+            assert Runtime._weather_points(replace(shown, resolved=True)) == expected
+            assert Runtime._weather_points(replace(shown, not_travelling=True)) == ()
+            rig.provider.positions.pop(steps[0].origin.station_code)
+            assert [(w.station, w.when) for w in occurrence(rig).weather] == [expected[-1]]
+        finally:
+            await rig.rt.stop_weather()
+            await rig.rt._recovery.stop()

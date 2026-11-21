@@ -146,6 +146,9 @@ def test_multipolygon_and_severity_without_enrichment():
         lambda x: x["metadata"].__setitem__("generated_at", (NOW + timedelta(hours=1)).isoformat()),
         lambda x: x["metadata"].__setitem__("schema_version", "unknown"),
         lambda x: x["metadata"].__setitem__("publication_type", "test"),
+        lambda x: x["warnings"][0].__setitem__("operational_status", "Unknown"),
+        lambda x: x["warnings"][0].__setitem__("operational_status", None),
+        lambda x: x["warnings"][0].pop("operational_status"),
         lambda x: x.__setitem__("num_warnings", 2),
         lambda x: x["warnings"][0]["parts"][0].__setitem__("severity", "unknown"),
         lambda x: x["warnings"][0]["parts"][0]["area"].__setitem__("coordinates", []),
@@ -164,6 +167,8 @@ def test_unknown_warning_source_never_becomes_no_warnings(change):
         ("status", "cancelled"),
         ("status", "expired"),
         ("operational_status", "Test"),
+        ("operational_status", "Exercise"),
+        ("operational_status", "System"),
         ("warning_type", "potentially-dangerous-weather"),
     ],
 )

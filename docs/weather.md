@@ -35,7 +35,7 @@ Telegram `/status`, MCP journey status and Home Assistant's status sensor attrib
 Fresh weather also accompanies routine on-time and at-station phone messages when already available.
 The initial message can precede the first weather response.
 Weather adds no separate notification and does not change train selection, schedules, departure advice or travel buffers.
-Selected recovery journeys currently have no weather context.
+Selected recovery journeys use the accepted itinerary's departure and arrival endpoints and times. An endpoint without a known station coordinate has no weather context. Street or phone coordinates are never substituted.
 
 ## Official KNMI warnings need your key
 

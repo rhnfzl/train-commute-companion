@@ -276,8 +276,11 @@ def parse_warnings(raw: object, checked_at: datetime) -> WarningSnapshot:
         item = _object(raw_set)
         parts = _array(item.get("parts"))
         total += len(parts)
+        operational = item.get("operational_status")
+        if operational not in ("Actual", "Exercise", "System", "Test"):
+            raise ValueError("warning operational status unsupported")
         if (
-            item.get("operational_status", "Actual") != "Actual"
+            operational != "Actual"
             or item.get("domain", "public") != "public"
             or item.get("status", "active") in ("cancelled", "expired")
             or item.get("warning_type") == "potentially-dangerous-weather"
