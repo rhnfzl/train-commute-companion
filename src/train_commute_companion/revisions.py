@@ -48,6 +48,7 @@ def with_settings(route: Profile, settings: Profile) -> Profile:
         route,
         name=settings.name,
         alerts=settings.alerts,
+        brief=settings.brief,
         location=settings.location,
         transfer_min=settings.transfer_min,
         outbound=j(Direction.OUTBOUND),

@@ -163,6 +163,69 @@ def snapshot(app: App, key: str = OUT) -> tuple[Any, ...]:
 # --- commands ---
 
 
+async def test_quick_trip_uses_confirmed_saved_pair_in_the_bound_private_chat(
+    tmp_path, tg, monkeypatch
+):
+    from tcc_app.travel_actions import TravelActions
+    from tcc_app.travel_preferences import TravelPreferences
+
+    from train_commute_companion.model import Stations
+
+    rig = Rig(tmp_path)
+    await rig.rt.start()
+    tick = 0
+    monkeypatch.setattr("train_commute_companion.runtime.monotonic", lambda: tick)
+    rig.rt.known_stations = Stations({"AAA": ("Alpha Central",), "RTD": ("Rotterdam Centraal",)})
+    rig.provider.world = [make_connection([make_leg("AAA", "RTD", "08:25", "09:05")])]
+    preferences = TravelPreferences(tmp_path / "travel-preferences.json", rig.rt.now)
+    actions = TravelActions(rig.rt, {}, tmp_path / "agents.json", preferences)
+    path = tmp_path / "telegram.json"
+    a = App(
+        rig,
+        tg,
+        path,
+        Bot(TelegramApi(TOKEN, tg.client()), rig.rt, CHAT, path, travel_actions=actions),
+    )
+    change = {
+        "action": "save",
+        "preference": {
+            "name": "Office run",
+            "origin": "Alpha Central",
+            "destination": "Rotterdam Centraal",
+            "arrival_by": "08:00",
+        },
+    }
+    review = preferences.preview(change)
+
+    async def send(text, chat=CHAT, kind="private"):
+        update = a.msg(text, chat=chat)
+        update["message"]["chat"]["type"] = kind
+        await a.bot.handle(update)
+
+    calls = list(rig.provider.calls)
+    try:
+        await send("/trip Alpha Central -> Rotterdam Centraal", chat=STRANGER)
+        await send("/trip AAA RTD", kind="group")
+        assert not tg.sent and rig.provider.calls == calls
+        await send("/trip saved Office run")
+        assert "No saved travel preference" in a.texts()[-1]
+        assert rig.provider.calls == calls
+        assert preferences.save(change, review["review_token"], "confirm")["status"] == "saved"
+        await send("/trip saved office RUN")
+        assert "Alpha Central to Rotterdam Centraal" in a.texts()[-1]
+        assert "08:25" in a.texts()[-1]
+        assert len(rig.provider.calls) == len(calls) + 1
+        assert rig.provider.calls[-1].at == rig.rt.now()
+        await send("/trip Alpha Central -> Rotterdam Centraal")
+        assert "30 seconds" in a.texts()[-1]
+        tick += 30
+        await send("/trip Alpha Central -> Rotterdam Centraal")
+        assert "Alpha Central to Rotterdam Centraal" in a.texts()[-1]
+        assert len(rig.provider.calls) == len(calls) + 2
+    finally:
+        await a.bot.close()
+
+
 async def test_choose_locks_and_replies(app):
     await app.bot.handle(app.msg("/choose 08:44"))
     assert only_occurrence(app.rt).lock.legs[0].train.planned_departure == at("08:44")

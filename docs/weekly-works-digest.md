@@ -13,7 +13,7 @@ works_digest:
 
 Use `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, or `sun`. Quote the time as `HH:MM`.
 Remove the setting, or set it to `null`, to turn the digest off.
-Both Docker and Home Assistant read this portable YAML setting. The visual profile editor preserves it when editing other settings.
+Both Docker and Home Assistant read this portable YAML setting. In the Home Assistant profile editor, choose a day and time in the details form. Choose **Off** for the day to turn the digest off.
 
 ## Dates and evidence
 

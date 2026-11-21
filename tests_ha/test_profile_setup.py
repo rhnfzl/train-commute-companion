@@ -1,25 +1,38 @@
+import asyncio
+from dataclasses import replace
+from datetime import date, datetime
 from itertools import permutations
+from threading import Event
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import voluptuous as vol
 import yaml
+from builders import make_leg
 from ha_rig import NOTIFY, PROFILE, fake_phone, profiles_path, write_profiles
 from homeassistant.config_entries import SOURCE_USER
+from homeassistant.const import CONF_WEBHOOK_ID
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+from runtime_rig import Rig
 
 from custom_components.train_commute_companion import validate
 from custom_components.train_commute_companion.const import DOMAIN
+from custom_components.train_commute_companion.host import Parts, RuntimeHost
 from custom_components.train_commute_companion.profile_flow import ProfileEditorFlow
-from train_commute_companion.model import Stations
-from train_commute_companion.providers.base import ProviderError
+from train_commute_companion.calendar import TZ
+from train_commute_companion.model import Connection, Provenance, Stations
+from train_commute_companion.providers.base import ProviderAnswer, ProviderError, Query, RateLimited
 
 CATALOGUE = Stations(
     {"AAA": ["Home station"], "UT": ["Utrecht Centraal", "Utrecht"], "RTD": ["Rotterdam Centraal"]}
 )
 CHECK = "custom_components.train_commute_companion.config_flow.check_key"
 CATALOGUE_CALL = "custom_components.train_commute_companion.profile_flow.station_catalogue"
+TRIPS = "train_commute_companion.providers.ns.NsProvider.trips"
 VALUES = {
     "name": "commute",
     "days": ["mon", "tue"],
@@ -40,6 +53,12 @@ VALUES = {
 @pytest.fixture(autouse=True)
 def editor_config_directory(hass, tmp_path):
     hass.config.config_dir = str(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def no_ns_trip_requests():
+    with patch(TRIPS, side_effect=ProviderError):
+        yield
 
 
 async def configure(hass, flow, values):
@@ -74,6 +93,9 @@ async def test_guided_profile_waits_for_phone_confirmation_before_writing(hass, 
     assert shown(flow)["custom_timetable_horizon"] is True
     assert shown(flow)["timetable_horizon_unit"] == "calendar_days"
     assert shown(flow)["timetable_horizon_count"] == 7
+    assert shown(flow)["daily_brief"] is True
+    assert shown(flow)["brief_at"] == shown(flow)["brief_evening_at"] == ""
+    assert shown(flow)["brief_only_if_something"] is False
     flow = await details(
         hass, flow, pause_action="add", pause_start="2027-04-01", pause_end="2027-04-07"
     )
@@ -108,6 +130,360 @@ async def test_recurrence_form_accepts_monthly_rule_without_start(hass):
     flow = await guided(hass)
     flow = await configure(hass, flow, {**VALUES, "days": ["mon"], "repeat_monthly": 1.0})
     assert flow["step_id"] == "profile_details"
+
+
+async def test_guided_preview_uses_dated_override_after_holiday_and_pause(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+
+    class PreviewClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 12, 24, 18, tzinfo=TZ).astimezone(tz)
+
+    monkeypatch.setattr(
+        "custom_components.train_commute_companion.profile_flow.datetime", PreviewClock
+    )
+    hass.states.async_set("zone.home", "0", {"latitude": 52.01123, "longitude": 5.06123})
+    catalogue = Stations(
+        {**CATALOGUE.labels, "BBB": ["Zuid"]},
+        {"AAA": (52.05, 5.0), "RTD": (51.9, 4.4), "UT": (52.09, 5.1), "BBB": (52.01, 5.06)},
+    )
+    initial = await guided(hass, catalogue)
+    selector = next(v for k, v in initial["data_schema"].schema.items() if str(k) == "home_station")
+    assert selector.config["options"] == [
+        "Zuid",
+        "Home station",
+        "Utrecht Centraal",
+        "Rotterdam Centraal",
+    ]
+    latest = await configure(hass, initial, {**VALUES, "days": ["fri", "mon", "tue"]})
+    latest = await details(
+        hass,
+        latest,
+        edit_weekday_times=True,
+        pause_action="add",
+        pause_start="2026-12-28",
+        pause_end="2026-12-28",
+    )
+
+    async def answer(query):
+        assert (query.origin, query.destination, query.via) == ("AAA", "RTD", "UT")
+        assert query.at == datetime(2026, 12, 29, 9, 5, tzinfo=TZ)
+        first = make_leg("AAA", "UT", "09:05", "09:25", day=date(2026, 12, 29))
+        first = replace(first, stops=(replace(first.board, planned_track="7a"), first.alight))
+        second = make_leg("UT", "RTD", "09:35", "10:01", day=date(2026, 12, 29), number="2345")
+        return ProviderAnswer(query, (Connection((first, second), "", None),), PreviewClock.now(TZ))
+
+    with patch(TRIPS, side_effect=answer) as trips:
+        latest = await configure(hass, latest, {"outbound_tue": "09:05"})
+    assert trips.await_count == 1
+    assert latest["step_id"] == "profile_preview"
+    assert latest["description_placeholders"] == {
+        "departure": "2026-12-29 09:05",
+        "platform": "7a",
+        "route": "Home station → Utrecht Centraal → Rotterdam Centraal",
+    }
+    assert not profiles_path(hass).exists()
+    latest = await configure(hass, latest, {})
+    assert latest["step_id"] == "notify" and not profiles_path(hass).exists()
+
+
+def mobile_activity(hass, name):
+    mobile = MockConfigEntry(domain="mobile_app", data={CONF_WEBHOOK_ID: f"hook-{name}"})
+    mobile.add_to_hass(hass)
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=mobile.entry_id, identifiers={("mobile_app", name)}
+    )
+    registry = er.async_get(hass)
+    tracker = registry.async_get_or_create(
+        "device_tracker",
+        "mobile_app",
+        name,
+        config_entry=mobile,
+        device_id=device.id,
+        suggested_object_id=name,
+    )
+    activity = registry.async_get_or_create(
+        "sensor",
+        "mobile_app",
+        f"hook-{name}_detected_activity",
+        config_entry=mobile,
+        device_id=device.id,
+        suggested_object_id=f"{name}_renamed",
+    )
+    return tracker.entity_id, activity.entity_id
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+async def test_location_suggests_only_the_selected_persons_unique_mobile_device(
+    hass, monkeypatch, ambiguous
+):
+    fake_phone(hass, monkeypatch)
+    tracker, activity = mobile_activity(hass, "alice_phone")
+    other_tracker, _ = mobile_activity(hass, "bob_phone")
+    hass.states.async_set(
+        "person.alice",
+        "home",
+        {
+            "device_trackers": [tracker, other_tracker] if ambiguous else [tracker],
+            "source": tracker,
+        },
+    )
+    hass.states.async_set("person.bob", "home", {"device_trackers": [other_tracker]})
+    hass.states.async_set("zone.office", "0")
+    hass.states.async_set("device_tracker.office_wifi", "home", {"source_type": "router"})
+    flow = await configure(hass, await guided(hass), VALUES)
+    flow = await details(hass, flow, ha_person="person.alice")
+    assert flow["step_id"] == "profile_location"
+    assert shown(flow).get("ha_activity") == (None if ambiguous else activity)
+    flow = await configure(
+        hass,
+        flow,
+        {
+            "ha_work_zone": "zone.office",
+            "ha_work_wifi": "device_tracker.office_wifi",
+        },
+    )
+    assert flow["step_id"] == "notify"
+    flow = await configure(hass, flow, {"notify_service": NOTIFY})
+    with patch("custom_components.train_commute_companion.async_setup_entry", return_value=True):
+        flow = await configure(hass, flow, {"next_step_id": "test_ok"})
+    assert flow["type"] is FlowResultType.CREATE_ENTRY
+    saved = yaml.safe_load(profiles_path(hass).read_text())["profiles"][0]
+    assert saved["location"] == {
+        "source": "ha",
+        "entity": "person.alice",
+        "zones": {"work": "zone.office"},
+        "wifi": {"work": "device_tracker.office_wifi"},
+    }
+
+
+async def test_options_keeps_non_ha_location_until_person_is_selected(hass):
+    tracker, activity = mobile_activity(hass, "alice_phone")
+    hass.states.async_set("person.alice", "home", {"device_trackers": [tracker]})
+    raw = yaml.safe_load(PROFILE)
+    old = {
+        "source": "owntracks",
+        "zones": {"home": "Home", "other": "Other"},
+        "other_station_dwell_min": 7,
+    }
+    raw["profiles"][0]["location"] = old
+    raw["profiles"][0]["alerts"] = {"quiet_hours": ["21:00", "06:00"]}
+    raw["profiles"][0]["works_digest"] = {"day": "fri", "time": "18:00"}
+    write_profiles(hass, yaml.safe_dump(raw))
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "k"},
+        options={"profiles_path": str(profiles_path(hass)), "notify_service": NOTIFY},
+    )
+    entry.add_to_hass(hass)
+
+    async def step(flow, values):
+        return await hass.config_entries.options.async_configure(flow["flow_id"], values)
+
+    async def edit():
+        flow = await hass.config_entries.options.async_init(entry.entry_id)
+        with patch(CATALOGUE_CALL, return_value=CATALOGUE):
+            flow = await step(flow, {"next_step_id": "profiles"})
+        flow = await step(flow, {"profile": "edit:p1"})
+        return await step(flow, shown(flow))
+
+    def saved():
+        return yaml.safe_load(profiles_path(hass).read_text())["profiles"][0]
+
+    flow = await edit()
+    defaults = shown(flow)
+    assert (defaults["quiet_start"], defaults["quiet_end"]) == ("21:00", "06:00")
+    assert (defaults["works_digest_day"], defaults["works_digest_time"]) == ("fri", "18:00")
+    # HA omits optional text fields the user clears, even when the form suggested a value.
+    for key in ("quiet_start", "quiet_end", "works_digest_time"):
+        defaults.pop(key)
+    result = await step(flow, {**defaults, "works_digest_day": "off", "disable_ha_location": True})
+    assert result["reason"] == "profile_saved"
+
+    assert saved()["location"] == old
+    assert "quiet_hours" not in saved()["alerts"] and "works_digest" not in saved()
+
+    flow = await edit()
+    flow = await step(flow, {**shown(flow), "ha_person": "person.alice"})
+    assert shown(flow)["ha_activity"] == activity
+    result = await step(flow, {})
+    assert result["reason"] == "profile_saved"
+    assert saved()["id"] == "p1"
+    assert saved()["location"] == {
+        "source": "ha",
+        "entity": "person.alice",
+        "zones": {"other": "Other"},
+        "other_station_dwell_min": 7,
+    }
+
+    flow = await edit()
+    flow = await step(flow, {**shown(flow), "ha_person": "person.alice"})
+    assert "ha_activity" not in shown(flow)  # clearing a suggestion sticks on future edits
+    result = await step(flow, {})
+    assert result["reason"] == "profile_saved"
+
+
+@pytest.mark.parametrize("runtime_state", ["ready", "cooldown", "unloading"])
+async def test_options_preview_shares_the_runtime_request_gate(hass, tmp_path, runtime_state):
+    write_profiles(hass, PROFILE)
+    rig = Rig(tmp_path)
+    await rig.rt.start()
+    rig.rt.known_stations = CATALOGUE
+    if runtime_state == "cooldown":
+        rig.provider.error = lambda _: RateLimited()
+        query = Query("AAA", "RTD", rig.rt.now())
+        assert await rig.rt._gate.trips(query, False, None) == "rate"
+        rig.provider.error = lambda _: None
+    before = rig.rt.requests
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "k"},
+        options={"profiles_path": str(profiles_path(hass)), "notify_service": NOTIFY},
+    )
+    entry.add_to_hass(hass)
+
+    async def run(fn):
+        return await fn(rig.rt)
+
+    entry.runtime_data = SimpleNamespace(host=SimpleNamespace(run=run))
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+
+    async def step(values):
+        return await hass.config_entries.options.async_configure(flow["flow_id"], values)
+
+    with patch(CATALOGUE_CALL, return_value=CATALOGUE) as direct_catalogue:
+        flow = await step({"next_step_id": "profiles"})
+    assert direct_catalogue.await_count == 0
+    flow = await step({"profile": "edit:p1"})
+    flow = await step(shown(flow))
+    with patch(TRIPS, side_effect=ProviderError("wrong provider")) as direct:
+        if runtime_state == "unloading":
+            entered = Event()
+
+            async def preview(_):
+                entered.set()
+                await asyncio.Future()
+
+            async def idle():
+                await asyncio.Future()
+
+            async def close():
+                pass
+
+            runtime = SimpleNamespace(run_forever=idle, preview_trip=preview)
+            host = RuntimeHost(lambda: Parts(runtime, rig.clock, close), retired=Event())
+            await host.start()
+            entry.runtime_data.host = host
+            pending = asyncio.create_task(step(shown(flow)))
+            try:
+                assert await asyncio.to_thread(entered.wait, 2)
+                await host.stop()
+                result = await pending
+            finally:
+                await host.stop()
+        else:
+            result = await step(shown(flow))
+    assert result["reason"] == "profile_saved"
+    assert direct.await_count == 0
+    assert rig.rt.requests == before + int(runtime_state == "ready")
+
+
+async def test_initial_setup_preview_reuses_its_cooldown(hass):
+    flow = ProfileEditorFlow()
+    flow.hass = hass
+    flow._editor_key = "test"
+    query = Query("AAA", "RTD", datetime.now(TZ))
+    with patch(TRIPS, side_effect=RateLimited()) as provider:
+        assert await flow._preview_trips(query) == "rate"
+        assert await flow._preview_trips(query) == "rate"
+    assert provider.await_count == flow._preview_gate.requests == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "planned_window",
+        "empty",
+        "off_date",
+        "stale",
+        "timeout",
+        "cancelled",
+        "unreachable",
+        "late_arrival",
+        "meets_arrival",
+        "recurring",
+    ],
+)
+async def test_preview_uses_only_current_dated_timetable_evidence(hass, monkeypatch, case):
+    fake_phone(hass, monkeypatch)
+
+    class PreviewClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 20, 18, tzinfo=TZ).astimezone(tz)
+
+    monkeypatch.setattr(
+        "custom_components.train_commute_companion.profile_flow.datetime", PreviewClock
+    )
+    if case == "timeout":
+        monkeypatch.setattr(
+            "custom_components.train_commute_companion.profile_preview.PREVIEW_TIMEOUT_S", 0
+        )
+    flow = await guided(hass)
+    values = {**VALUES, "days": ["mon"], "outbound_transfers": []}
+    day = 30 if case == "recurring" else 23
+    if case == "recurring":
+        values |= {"repeat_start_date": "2026-11-16", "repeat_every_weeks": 2}
+    is_window = case in ("planned_window", "late_arrival", "meets_arrival")
+    if is_window:
+        values |= {
+            "outbound_mode": "window",
+            "outbound_time": "",
+            "outbound_window_start": "08:00",
+            "outbound_window_end": "09:00",
+        }
+    if case in ("late_arrival", "meets_arrival"):
+        values |= {
+            "outbound_pick": "arrive_by",
+            "outbound_arrive_by": "09:00",
+            "outbound_walk_after_min": 10,
+        }
+    flow = await configure(hass, flow, values)
+
+    async def answer(query):
+        assert (query.origin, query.destination, query.via) == ("AAA", "RTD", None)
+        assert query.at == datetime(2026, 11, day, 8, 0 if is_window else 12, tzinfo=TZ)
+        if case == "timeout":
+            await asyncio.Future()
+        leg = make_leg(
+            "AAA",
+            "RTD",
+            "08:12",
+            "08:55" if case == "late_arrival" else "08:50" if case == "meets_arrival" else "09:12",
+            day=date(2026, 11, 24 if case == "off_date" else day),
+            provenance=Provenance.PLANNED,
+        )
+        fetched = datetime(2026, 11, 19, tzinfo=TZ) if case == "stale" else PreviewClock.now(TZ)
+        if case == "unreachable":
+            leg = replace(leg, reachable=False)
+        status = "CANCELLED" if case == "cancelled" else "NORMAL"
+        connections = () if case == "empty" else (Connection((leg,), status, None),)
+        return ProviderAnswer(query, connections, fetched)
+
+    with patch(TRIPS, side_effect=answer) as trips:
+        flow = await configure(hass, flow, {"pause_action": "keep"})
+    assert trips.await_count == 1
+    assert not profiles_path(hass).exists()
+    if case in ("planned_window", "meets_arrival", "recurring"):
+        assert flow["step_id"] == "profile_preview"
+        assert flow["description_placeholders"] == {
+            "departure": f"2026-11-{day} 08:12",
+            "platform": "?",
+            "route": "Home station → Rotterdam Centraal",
+        }
+    else:
+        assert flow["step_id"] == "notify"
 
 
 async def test_guided_setup_never_writes_over_an_existing_file(hass):
@@ -442,7 +818,9 @@ async def test_options_profile_edit_preserves_advanced_settings(
         "timetable_horizon_unit": "commute_dates",
         "timetable_horizon_count": 14,
         **({"alert_history": saved_history} if saved_history is not None else {}),
+        "daily_brief": False,
     }
+    raw["profiles"][0]["brief"] = {"at": "06:45", "evening_at": "19:30", "only_if_something": True}
     write_profiles(hass, yaml.safe_dump(raw))
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -471,6 +849,10 @@ async def test_options_profile_edit_preserves_advanced_settings(
     assert shown(flow)["custom_timetable_horizon"] is False
     assert shown(flow)["timetable_horizon_unit"] == "commute_dates"
     assert shown(flow)["timetable_horizon_count"] == 14
+    assert shown(flow)["daily_brief"] is False
+    assert shown(flow)["brief_at"] == "06:45"
+    assert shown(flow)["brief_evening_at"] == "19:30"
+    assert shown(flow)["brief_only_if_something"] is True
     count_selector = next(
         selector
         for field, selector in flow["data_schema"].schema.items()
@@ -500,6 +882,10 @@ async def test_options_profile_edit_preserves_advanced_settings(
             "ntfy_enabled": False,
             "alert_history": not saved_history,
             "calendar_feed": False,
+            "daily_brief": True,
+            "brief_at": "",
+            "brief_evening_at": "21:00",
+            "brief_only_if_something": False,
         },
     )
     assert flow["type"] is FlowResultType.ABORT and flow["reason"] == "profile_saved"
@@ -521,7 +907,9 @@ async def test_options_profile_edit_preserves_advanced_settings(
         "calendar_feed": False,
         **({"live_today": False} if not live_today else {}),
         **({"telegram_status_pin": False} if not telegram_status_pin else {}),
+        "daily_brief": True,
     }
+    assert saved["profiles"][0]["brief"] == {"evening_at": "21:00"}
     assert saved["profiles"][1] == raw["profiles"][1]
 
 

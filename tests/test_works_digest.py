@@ -15,7 +15,7 @@ from train_commute_companion.profile import load_config
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer
 from train_commute_companion.serde import dumps, encode, loads
 from train_commute_companion.store import PersistedState
-from train_commute_companion.works_digest import check_week, due_week
+from train_commute_companion.works_digest import check_week, due_week, profile_token
 
 TEXT = PROFILE[: PROFILE.index('  - id: "p2"')] + "    works_digest: {day: tue, time: '07:00'}\n"
 
@@ -28,6 +28,30 @@ def profile(text=TEXT):
 
 def digests(rig):
     return [event for event in rig.notifier.attempts if event.kind is EventKind.WORKS_DIGEST]
+
+
+def test_daily_brief_settings_keep_the_identity_of_saved_weekly_digests():
+    p = profile()
+    data = encode(p)
+    data.pop("repeat")
+    data.pop("brief")
+    for key in (
+        "daily_brief",
+        "quick_trip",
+        "commute_stats",
+        "weekly_recap",
+        "after_trip_note",
+        "alert_history",
+        "calendar_feed",
+    ):
+        data["alerts"].pop(key)
+    legacy = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+    updated = replace(
+        p,
+        alerts=replace(p.alerts, daily_brief=False, quick_trip=False),
+        brief=replace(p.brief, at=time(7)),
+    )
+    assert profile_token(updated) == profile_token(p) == legacy
 
 
 async def rig_at(tmp_path, when=None):
@@ -140,6 +164,9 @@ async def test_old_pending_digest_survives_upgrade_to_recurring_profiles(tmp_pat
         "calendar_feed",
     ):
         legacy["alerts"].pop(key)
+    legacy.pop("brief")
+    legacy["alerts"].pop("daily_brief")
+    legacy["alerts"].pop("quick_trip")
     token = hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
     obligations = tuple(
         replace(o, digest_token=token) if o.id == queued.id else o for o in rig.rt.state.obligations

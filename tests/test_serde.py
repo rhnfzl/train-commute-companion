@@ -26,10 +26,14 @@ def test_ledger_facts_stay_plain_lists_on_disk():
     led = loads(LookAheadLedger, stored)
     assert led.facts["o"] == (LookAheadFact("adopt:2", "moved", False, True),)
     assert led.facts["o"][0].warning
+    assert led.last_evening is None
     assert json.loads(dumps(led)) == {
         "adoption_ids": {},
         "adoption_receipts": {},
         **json.loads(stored),
+        "last_evening": None,
+        "last_evening_attempt": None,
+        "evening_failures": 0,
     }
 
 

@@ -68,6 +68,15 @@ async def step(hass, r, data):
     return await hass.config_entries.flow.async_configure(r["flow_id"], data)
 
 
+async def test_initial_setup_can_skip_creating_a_commute_profile(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    with patch(CHECK_KEY, return_value=KNOWN):
+        r = await step(hass, r, {"api_key": "k", "skip_profile": True})
+    assert r["step_id"] == "notify"
+    assert not profiles_path(hass).exists()
+
+
 async def file_step(hass):
     """The user step with "Use an existing YAML file" on: the path form comes next."""
     r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
@@ -167,7 +176,7 @@ async def test_the_phone_form_names_the_phone_it_will_test(hass, monkeypatch):
 async def test_user_step_errors(hass, monkeypatch):
     fake_phone(hass, monkeypatch)
     r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
-    assert {str(k) for k in r["data_schema"].schema} == {"api_key", "existing_file"}
+    assert {str(k) for k in r["data_schema"].schema} == {"api_key", "existing_file", "skip_profile"}
     for bad, error in ((AuthError, "invalid_auth"), (ProviderError, "cannot_connect")):
         with patch(CHECK_KEY, side_effect=bad):
             r = await step(hass, r, {"api_key": "k", "existing_file": True})
@@ -226,9 +235,10 @@ async def test_a_path_that_climbs_out_of_the_config_folder_errors(hass):
 
 async def test_a_fresh_install_goes_from_the_key_straight_to_the_station_forms(hass):
     r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    stations = Stations({c: [c] for c in KNOWN})
     with (
-        patch(CHECK_KEY, return_value=KNOWN),
-        patch(CATALOGUE_CALL, return_value=Stations({c: [c] for c in KNOWN})),
+        patch(CHECK_KEY, return_value=stations),
+        patch(CATALOGUE_CALL, side_effect=AssertionError("catalogue fetched twice")),
     ):
         r = await step(hass, r, {"api_key": "k"})
     assert r["step_id"] == "profile"
@@ -430,6 +440,16 @@ async def test_options_settings_path_checked_like_setup(hass, monkeypatch):
         assert r["type"] is FlowResultType.FORM and r["errors"] == {"profiles_path": error}
         hass.config_entries.options.async_abort(r["flow_id"])
     assert dict(entry.options) == before
+
+
+async def test_standalone_settings_allow_the_saved_missing_profile_path(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    tablet = fake_phone(hass, monkeypatch, "mobile_app_tablet")
+    unused = Path(hass.config.config_dir) / "commute-later.yaml"
+    entry = add_entry(hass, profiles_path=str(unused))
+    r = await settings(hass, entry, **current(entry, notify_service="mobile_app_tablet"))
+    assert r["type"] is FlowResultType.MENU and r["step_id"] == "test"
+    assert [level(c) for c in tablet] == ["time-sensitive", "passive"]
 
 
 async def test_options_settings_refuse_a_broken_profiles_file(hass, monkeypatch):

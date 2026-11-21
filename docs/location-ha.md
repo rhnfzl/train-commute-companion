@@ -6,7 +6,13 @@ Location is off by default. A profile works fully on times alone.
 
 ## Turn it on
 
-In the profile file, give the profile a `location` block:
+During guided setup, or under **Configure > Add or edit profiles**, choose a Home Assistant person in the details form. Then pick home and work zones. A blank home zone uses `zone.home`. A blank work zone leaves that role unset.
+
+Choose optional Wi-Fi trackers and a motion activity sensor for the selected person. A match can be suggested when Home Assistant links the person to one mobile device. A Wi-Fi tracker must report presence on the network for the place you assign to it. Clear an optional field to remove it.
+
+Leave the person field empty to keep the current source, including OwnTracks or Telegram. Select **Disable Home Assistant location** to stop using that source and keep its settings. Select the person again to re-enable it.
+
+In the profile file, the same choices appear in the `location` block:
 
 ```yaml
 location:
@@ -22,6 +28,7 @@ location:
 ```
 
 - `source: ha` reads the position from Home Assistant.
+- `enabled: false` stops reading location and keeps the settings for later.
 - `entity` is a `person` or a `device_tracker` that reports `latitude` and `longitude`. A tracker that only says `home` or `not_home` (a router, for example) has no coordinates and is ignored, so it can never cause a "left home" or a missed-train warning.
 - `zones` maps the roles `home` and `work` to Home Assistant zone entities. `home` falls back to `zone.home`. A role whose zone does not exist is skipped.
 - `station_radius_m` is the size of every station zone in metres. The default is 150.

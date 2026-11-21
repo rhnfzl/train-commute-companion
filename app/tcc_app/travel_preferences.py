@@ -135,6 +135,10 @@ class TravelPreferences:
             "preferences": [dict(self._preferences[key]) for key in sorted(self._preferences)],
         }
 
+    def saved_route(self, name: str) -> tuple[str, str] | None:
+        preference = self._preferences.get(name.strip().casefold())
+        return (preference["origin"], preference["destination"]) if preference else None
+
     def preview(self, change: object) -> dict[str, Any]:
         if not self._safe:
             return result("retry", "Travel preferences are unavailable.")

@@ -3,14 +3,16 @@
     "step": {
       "user": {
         "title": "Train Commute Companion",
-        "description": "Enter your NS API key. Next you pick your stations and times.",
+        "description": "Enter your NS API key. Choose whether to set up a commute.",
         "data": {
           "api_key": "NS API key",
-          "existing_file": "Use an existing YAML file"
+          "existing_file": "Use an existing YAML file",
+          "skip_profile": "Set up without a commute profile"
         },
         "data_description": {
           "api_key": "Your NS API key from the NS API portal.",
-          "existing_file": "Leave off to set up your commute with station-name forms. Turn on if you already have a profiles file."
+          "existing_file": "Leave off to set up your commute with station-name forms. Turn on if you already have a profiles file.",
+          "skip_profile": "Choose this to check trains without setting up a commute. Setup uses an existing profiles file first."
         }
       },
       "profiles_file": {
@@ -66,7 +68,7 @@
       },
       "profile": {
         "title": "Your commute",
-        "description": "Choose transfer stations in travel order. Existing advanced settings stay in the file. {report}",
+        "description": "Choose transfer stations in travel order. Existing advanced settings stay in the file. {report}\n\nStations near zone.home, when available: {nearby}",
         "data": {
           "name": "Profile name",
           "home_station": "Home station",
@@ -167,7 +169,18 @@
           "commute_stats": "Record commute statistics",
           "weekly_recap": "Send a silent weekly recap",
           "after_trip_note": "Send a silent note after a journey",
-          "alert_history": "Keep sent alert history"
+          "alert_history": "Keep sent alert history",
+          "daily_brief": "Daily commute brief and evening check",
+          "brief_at": "Morning brief time",
+          "brief_evening_at": "Evening check time",
+          "brief_only_if_something": "Morning brief only when there is something to act on",
+          "quick_trip": "Allow quick trip checks",
+          "ha_person": "Person for Home Assistant location",
+          "disable_ha_location": "Disable Home Assistant location",
+          "quiet_start": "Quiet hours start (HH:MM)",
+          "quiet_end": "Quiet hours end (HH:MM)",
+          "works_digest_day": "Weekly planned-works summary day",
+          "works_digest_time": "Weekly planned-works summary time (HH:MM)"
         },
         "data_description": {
           "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
@@ -190,7 +203,18 @@
           "telegram_status_pin": "Include this profile in the silent status pin in the confirmed private Telegram chat. Docker only. Enabled by default.",
           "ntfy_enabled": "Send this profile’s alerts through ntfy when configured in the Docker app. Enabled by default. Email, webhooks and Home Assistant phone alerts keep their own settings.",
           "arrive_by": "On by default. Off uses the earliest catchable train in the departure window and ignores the arrival target.",
-          "alert_history": "Save recent sent alerts locally and show them on the private Docker Today page. Off by default."
+          "alert_history": "Save recent sent alerts locally and show them on the private Docker Today page. Off by default.",
+          "daily_brief": "On by default. Sends a brief on travel days and checks the next commute in the evening.",
+          "brief_at": "Use HH:MM in Amsterdam time. Leave blank for the host's lookahead time, normally 06:00.",
+          "brief_evening_at": "Use HH:MM in Amsterdam time. Leave blank for 20:00.",
+          "brief_only_if_something": "Skip the morning brief on routine days. The evening check always stays quiet when there is nothing to act on.",
+          "quick_trip": "On by default. Turn this off to disable quick trip checks for the whole companion.",
+          "ha_person": "Choose a person to enable or edit Home Assistant location. Leave blank to keep the current location source.",
+          "disable_ha_location": "Stops using Home Assistant location and keeps the saved location settings.",
+          "quiet_start": "Enter two different times. Clear both fields to turn off quiet hours.",
+          "quiet_end": "Can be on the following day. Loud alerts still arrive during quiet hours.",
+          "works_digest_day": "Choose Off to turn off the weekly summary.",
+          "works_digest_time": "Required when you choose a day. Use Netherlands local time."
         }
       },
       "profile_error": {
@@ -244,6 +268,25 @@
           "walk_after_min": "Defaults to 0.",
           "prefer_direct_min": "Defaults to 15. Enter 0 to turn off the preference for direct trains."
         }
+      },
+      "profile_location": {
+        "title": "Home Assistant location",
+        "description": "Choose zones and optional phone sensors for {person}. Leave optional fields empty to clear them. Home defaults to zone.home.\n\nWi-Fi tracker on the same device, when found: {wifi_hint}\n\n{report}",
+        "data": {
+          "ha_home_zone": "Home zone",
+          "ha_work_zone": "Work zone",
+          "ha_home_wifi": "Home Wi-Fi tracker",
+          "ha_work_wifi": "Work Wi-Fi tracker",
+          "ha_activity": "Motion activity sensor"
+        },
+        "data_description": {
+          "ha_home_wifi": "Choose a tracker that reports home while your phone is on this network.",
+          "ha_work_wifi": "Choose a tracker that reports home while your phone is on this network."
+        }
+      },
+      "profile_preview": {
+        "title": "Preview your next commute",
+        "description": "NS timetable for {departure}, local time.\n\n{route}\n\nDeparture platform: {platform} (? means unknown).\n\nThe journey can change. For a flexible window, this shows one possible train."
       }
     },
     "error": {
@@ -260,7 +303,9 @@
       "file_broken": "The file at this path has a problem: {report}. Fix the file, or enter the path of another profiles file.",
       "same_station": "Home and work must be different stations.",
       "days_clash": "Your profile {other} already runs on one of these days. Pick other days, or change {other} first.",
-      "name_taken": "Another profile already has this name. Pick another name."
+      "name_taken": "Another profile already has this name. Pick another name.",
+      "invalid_location_person": "Choose an available person or disable Home Assistant location.",
+      "invalid_location_entity": "Choose a compatible entity or leave this field empty."
     },
     "create_entry": {
       "guided": "Add more commutes later under Configure > Add or edit profiles."
@@ -339,7 +384,7 @@
       },
       "profile": {
         "title": "Your commute",
-        "description": "Choose transfer stations in travel order. Existing advanced settings stay in the file. {report}",
+        "description": "Choose transfer stations in travel order. Existing advanced settings stay in the file. {report}\n\nStations near zone.home, when available: {nearby}",
         "data": {
           "name": "Profile name",
           "home_station": "Home station",
@@ -440,7 +485,18 @@
           "commute_stats": "Record commute statistics",
           "weekly_recap": "Send a silent weekly recap",
           "after_trip_note": "Send a silent note after a journey",
-          "alert_history": "Keep sent alert history"
+          "alert_history": "Keep sent alert history",
+          "daily_brief": "Daily commute brief and evening check",
+          "brief_at": "Morning brief time",
+          "brief_evening_at": "Evening check time",
+          "brief_only_if_something": "Morning brief only when there is something to act on",
+          "quick_trip": "Allow quick trip checks",
+          "ha_person": "Person for Home Assistant location",
+          "disable_ha_location": "Disable Home Assistant location",
+          "quiet_start": "Quiet hours start (HH:MM)",
+          "quiet_end": "Quiet hours end (HH:MM)",
+          "works_digest_day": "Weekly planned-works summary day",
+          "works_digest_time": "Weekly planned-works summary time (HH:MM)"
         },
         "data_description": {
           "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
@@ -463,7 +519,18 @@
           "telegram_status_pin": "Include this profile in the silent status pin in the confirmed private Telegram chat. Docker only. Enabled by default.",
           "ntfy_enabled": "Send this profile’s alerts through ntfy when configured in the Docker app. Enabled by default. Email, webhooks and Home Assistant phone alerts keep their own settings.",
           "arrive_by": "On by default. Off uses the earliest catchable train in the departure window and ignores the arrival target.",
-          "alert_history": "Save recent sent alerts locally and show them on the private Docker Today page. Off by default."
+          "alert_history": "Save recent sent alerts locally and show them on the private Docker Today page. Off by default.",
+          "daily_brief": "On by default. Sends a brief on travel days and checks the next commute in the evening.",
+          "brief_at": "Use HH:MM in Amsterdam time. Leave blank for the host's lookahead time, normally 06:00.",
+          "brief_evening_at": "Use HH:MM in Amsterdam time. Leave blank for 20:00.",
+          "brief_only_if_something": "Skip the morning brief on routine days. The evening check always stays quiet when there is nothing to act on.",
+          "quick_trip": "On by default. Turn this off to disable quick trip checks for the whole companion.",
+          "ha_person": "Choose a person to enable or edit Home Assistant location. Leave blank to keep the current location source.",
+          "disable_ha_location": "Stops using Home Assistant location and keeps the saved location settings.",
+          "quiet_start": "Enter two different times. Clear both fields to turn off quiet hours.",
+          "quiet_end": "Can be on the following day. Loud alerts still arrive during quiet hours.",
+          "works_digest_day": "Choose Off to turn off the weekly summary.",
+          "works_digest_time": "Required when you choose a day. Use Netherlands local time."
         }
       },
       "profile_error": {
@@ -587,6 +654,25 @@
         "data_description": {
           "knmi_api_key": "Sent only to the KNMI API, never to Open-Meteo or download hosts."
         }
+      },
+      "profile_location": {
+        "title": "Home Assistant location",
+        "description": "Choose zones and optional phone sensors for {person}. Leave optional fields empty to clear them. Home defaults to zone.home.\n\nWi-Fi tracker on the same device, when found: {wifi_hint}\n\n{report}",
+        "data": {
+          "ha_home_zone": "Home zone",
+          "ha_work_zone": "Work zone",
+          "ha_home_wifi": "Home Wi-Fi tracker",
+          "ha_work_wifi": "Work Wi-Fi tracker",
+          "ha_activity": "Motion activity sensor"
+        },
+        "data_description": {
+          "ha_home_wifi": "Choose a tracker that reports home while your phone is on this network.",
+          "ha_work_wifi": "Choose a tracker that reports home while your phone is on this network."
+        }
+      },
+      "profile_preview": {
+        "title": "Preview your next commute",
+        "description": "NS timetable for {departure}, local time.\n\n{route}\n\nDeparture platform: {platform} (? means unknown).\n\nThe journey can change. For a flexible window, this shows one possible train."
       }
     },
     "error": {
@@ -613,7 +699,9 @@
       "same_station": "Home and work must be different stations.",
       "days_clash": "Your profile {other} already runs on one of these days. Pick other days, or change {other} first.",
       "name_taken": "Another profile already has this name. Pick another name.",
-      "file_broken": "The file at this path has a problem: {report}. Fix the file, or enter the path of another profiles file."
+      "file_broken": "The file at this path has a problem: {report}. Fix the file, or enter the path of another profiles file.",
+      "invalid_location_person": "Choose an available person or disable Home Assistant location.",
+      "invalid_location_entity": "Choose a compatible entity or leave this field empty."
     },
     "abort": {
       "validated": "Checked. Nothing was changed.",
@@ -723,6 +811,18 @@
         "return_fri": "Friday return",
         "return_sat": "Saturday return",
         "return_sun": "Sunday return"
+      }
+    },
+    "works_digest_day": {
+      "options": {
+        "off": "Off",
+        "mon": "Monday",
+        "tue": "Tuesday",
+        "wed": "Wednesday",
+        "thu": "Thursday",
+        "fri": "Friday",
+        "sat": "Saturday",
+        "sun": "Sunday"
       }
     }
   },
@@ -1051,6 +1151,20 @@
         "station": {
           "name": "Station",
           "description": "The station code, for example VL."
+        }
+      }
+    },
+    "check_trip": {
+      "name": "Check a trip",
+      "description": "Show up to three upcoming train options between two stations.",
+      "fields": {
+        "origin": {
+          "name": "Origin",
+          "description": "NS station code or full station name."
+        },
+        "destination": {
+          "name": "Destination",
+          "description": "NS station code or full station name."
         }
       }
     }

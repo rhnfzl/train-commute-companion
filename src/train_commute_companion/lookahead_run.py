@@ -4,11 +4,12 @@ to the state as stored by then, with the owed webhook copies following its messa
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.lookahead import carried_ids, render_message, run_lookahead
 from train_commute_companion.lookahead_probe import (
+    ProbePlan,
     ProbeResult,
     adopt_key,
     bundle_key,
@@ -16,6 +17,7 @@ from train_commute_companion.lookahead_probe import (
     probe_dates,
     probe_queries,
     service_date,
+    travels_on,
 )
 from train_commute_companion.model import Direction, Obligation, Profile, direction_key, present
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
@@ -47,9 +49,10 @@ class ProbedRun:
     results: tuple[ProbeResult, ...]
     probe_finished: bool = True
     travel_revision: int = 0
+    evening_day: date | None = None
 
 
-def _skipped_dates(st: PersistedState, p: Profile, d: Direction) -> set[date]:
+def skipped_dates(st: PersistedState, p: Profile, d: Direction) -> set[date]:
     return {
         s.key.service_date
         for s in st.occurrences.values()
@@ -64,27 +67,48 @@ async def probe_direction(
     works: PlannedWorks,
     start: datetime,
     fetch: Callable[[Sequence[Query]], Awaitable[tuple[ProviderAnswer, ...] | PollFailure]],
+    *,
+    day: date | None = None,
+    evening: bool = False,
+    snapshot: Sequence[ProviderAnswer] = (),
 ) -> ProbedRun | None:
     """Keep dated observations before a failed custom probe. The writer checks agreement."""
     config = present(st.config)
     today = start.astimezone(TZ).date()
+    if evening and day != today + timedelta(days=1):
+        return None
     hist = st.baselines.get(direction_key(p.id, d), BaselineHistory())
     histories = {x: st.baselines.get(direction_key(p.id, x), BaselineHistory()) for x in Direction}
     results: list[ProbeResult] = []
-    plan = probe_dates(
-        p,
-        today,
-        direction=d,
-        histories=histories,
-        skipped=_skipped_dates(st, p, d),
-        replaced=lambda sd: travel_replaces(st, p, d, commute_day_for(p, d, sd)),
+    skipped = skipped_dates(st, p, d)
+
+    def replaced(sd: date) -> bool:
+        return travel_replaces(st, p, d, commute_day_for(p, d, sd))
+
+    plan = (
+        probe_dates(p, today, direction=d, histories=histories, skipped=skipped, replaced=replaced)
+        if day is None
+        else ProbePlan((day,) if travels_on(p, d, day, skipped, replaced=replaced) else (), True)
     )
-    for day in plan.dates:
-        if p.journey_on(d, day).mode == "window":
+    for target in plan.dates:
+        if p.journey_on(d, target).mode == "window":
             continue  # no usual train to probe, seed or adopt on a window day
-        base = baseline_on(hist, p, d, service_date(p, d, day))
-        got = await fetch(probe_queries(p, d, day, base))
+        base = baseline_on(hist, p, d, service_date(p, d, target))
+        queries = probe_queries(p, d, target, base)
+        if day is not None and not evening:
+            queries = queries[-1:]
+        got = tuple(snapshot) or await fetch(queries)
         if isinstance(got, str):
+            if evening:
+                return ProbedRun(
+                    start,
+                    config.revision,
+                    hist.latest,
+                    (),
+                    False,
+                    travel_revision=st.travel_revision,
+                    evening_day=day,
+                )
             if not p.alerts.custom_timetable_horizon or not results:
                 return None
             return ProbedRun(
@@ -92,17 +116,19 @@ async def probe_direction(
                 config.revision,
                 hist.latest,
                 tuple(results),
-                probe_finished=False,
+                False,
                 travel_revision=st.travel_revision,
+                evening_day=day if evening else None,
             )
-        results += evaluate(p, d, day, got, works, base)
+        results += evaluate(p, d, target, got, works, base, dated=day is not None)
     return ProbedRun(
         start,
         config.revision,
         hist.latest,
         tuple(results),
-        probe_finished=plan.complete,
+        plan.complete and (not evening or works.coverage == "complete"),
         travel_revision=st.travel_revision,
+        evening_day=day if evening else None,
     )
 
 
@@ -120,6 +146,15 @@ def apply_run(
     messages; None when it is discarded (rule 21), and then those copies are left as they were."""
     cfg = st.config
     if cfg is None or st.travel_revision != run.travel_revision:
+        return None
+    skipped = skipped_dates(st, p, d)
+
+    def replaced(sd: date) -> bool:
+        return travel_replaces(st, p, d, commute_day_for(p, d, sd))
+
+    if run.evening_day is not None and not travels_on(
+        p, d, run.evening_day, skipped, replaced=replaced
+    ):
         return None
     dk = direction_key(p.id, d)
     # write time: the ledger as stored now with this run's start stamps (rule 21)
@@ -157,11 +192,12 @@ def apply_run(
         now=run.start,
         others=[x for x in cfg.profiles if x.id != p.id],
         bases=all_bases,
-        skipped=_skipped_dates(st, p, d),
+        skipped=skipped,
         probe_finished=run.probe_finished,
-        replaced=lambda sd: travel_replaces(st, p, d, commute_day_for(p, d, sd)),
+        replaced=replaced,
         awaiting_adoption=awaiting,
         track_adoptions=track_adoptions,
+        evening_day=run.evening_day,
     )
     if out is None:
         log.info("look-ahead for %s discarded: configuration or baseline changed", dk)
@@ -171,17 +207,19 @@ def apply_run(
     mine = {o.id for o in stored.pending}
     return replace(
         st,
-        baselines={**st.baselines, dk: new_hist},
+        baselines={**st.baselines, dk: new_hist} if run.evening_day is None else st.baselines,
         lookahead={**st.lookahead, dk: new_ledger},
         obligations=(*(o for o in st.obligations if o.id not in mine), *new_ledger.pending),
     )
 
 
-def directions_due(st: PersistedState, since: datetime | None) -> list[tuple[str, Direction]]:
+def directions_due(
+    st: PersistedState, since: datetime | None, *, profile_id: str | None = None
+) -> list[tuple[str, Direction]]:
     """Directions that need a daily attempt. An explicit run passes no start time."""
     due = []
     for p in st.config.profiles if st.config else ():
-        if p.home_station == p.work_station:
+        if p.home_station == p.work_station or profile_id is not None and p.id != profile_id:
             continue
         for d in Direction:
             ledger = st.lookahead.get(direction_key(p.id, d))

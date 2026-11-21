@@ -363,6 +363,28 @@ class LiveLedger:
     def _occurrence(self, key: OccurrenceKey) -> OccurrenceState | None:
         return self._state.occurrences.get(okey(key))
 
+    def _brief_text(self, o: Obligation) -> str | None:
+        from train_commute_companion.daily_brief import current_text
+        from train_commute_companion.view import occurrence_view
+
+        profile = find_profile(self._state.config, o.event.profile_id)
+        if profile is None:
+            return None
+        now = self._now()
+        observations = {}
+        for row in o.brief_rows:
+            key = OccurrenceKey(o.event.profile_id, row.direction, row.service_date)
+            state = self._occurrence(key)
+            if (
+                state is not None
+                and (ctx := occurrence_ctx(self._written(), state, now)) is not None
+                and same_route(ctx.profile, profile)
+            ):
+                observations[row.direction] = occurrence_view(
+                    state, ctx, self._memory.boards.get(okey(key), ())
+                )
+        return current_text(self._state, o, now, observations)
+
     def _alerts(self, o: Obligation) -> AlertSettings:
         p = routing_profile(self._state, o.event.profile_id, o.route_revision)
         return AlertSettings() if p is None else p.alerts
@@ -459,6 +481,8 @@ class LiveLedger:
                 profile.alerts.weekly_recap
                 and self._state.commute_recap_weeks.get(profile.id) == o.event.service_date
             )
+        if o.event.kind is EventKind.DAILY_BRIEF:
+            return self._brief_text(o) is not None
         if o.event.kind is EventKind.COMPENSATION_REMINDER:
             facts = alert_facts(o.event)
             record = self._state.journey_records.get(facts.arrival_record)
@@ -748,6 +772,9 @@ class LiveLedger:
     def _current(
         self, o: Obligation, destination: str | None, *, for_copy: bool
     ) -> AlertEvent | None:
+        if o.event.kind is EventKind.DAILY_BRIEF:
+            text = self._brief_text(o)
+            return None if text is None else replace(o.event, text=text)
         if o.look_ahead is not None:
             pid, direction, day = o.look_ahead
             # A correction belongs only to destinations that received its adoption.

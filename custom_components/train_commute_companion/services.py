@@ -8,7 +8,7 @@ from functools import partial
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.core import Event, HomeAssistant, ServiceCall
+from homeassistant.core import Event, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.service import async_register_admin_service
@@ -41,6 +41,7 @@ CHOOSE_SCHEMA = vol.Schema(
     }
 )
 LEAVING_SCHEMA = vol.Schema(BASE)
+CHECK_TRIP_SCHEMA = vol.Schema({vol.Required("origin"): str, vol.Required("destination"): str})
 NOT_TRAVELLING_SCHEMA = vol.Schema({**BASE, vol.Optional("whole_day", default=False): cv.boolean})
 ANSWER_PROMPT_SCHEMA = vol.Schema(
     {vol.Required("prompt_id"): cv.string, vol.Required("answer"): cv.string}
@@ -233,6 +234,17 @@ def loaded(hass: HomeAssistant) -> TccData:
     return data
 
 
+async def _handle_check_trip(call: ServiceCall) -> ServiceResponse:
+    data = loaded(call.hass)
+    origin, destination = call.data["origin"], call.data["destination"]
+    result = await _call_runtime(data, lambda rt: rt.check_trip(origin, destination))
+    if isinstance(result, Refused):
+        if result.kind is RefusalKind.RETRY:
+            raise HomeAssistantError(result.text)
+        raise ServiceValidationError(result.text)
+    return result
+
+
 async def _handle_answer_prompt(call: ServiceCall) -> None:
     d = call.data
     await do_answer_prompt(loaded(call.hass), d["prompt_id"], d["answer"])
@@ -289,6 +301,13 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async_setup_arrival_services(hass)
     async_setup_recovery_services(hass)
     hass.services.async_register(DOMAIN, "choose", _handle_choose, CHOOSE_SCHEMA)
+    hass.services.async_register(
+        DOMAIN,
+        "check_trip",
+        _handle_check_trip,
+        CHECK_TRIP_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
     hass.services.async_register(DOMAIN, "leaving", _handle_leaving, LEAVING_SCHEMA)
     hass.services.async_register(
         DOMAIN, "not_travelling", _handle_not_travelling, NOT_TRAVELLING_SCHEMA

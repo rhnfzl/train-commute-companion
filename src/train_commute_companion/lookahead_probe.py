@@ -353,6 +353,23 @@ class ProbePlan:
     complete: bool
 
 
+def travels_on(
+    p: Profile,
+    direction: Direction,
+    day: date,
+    skipped: Collection[date],
+    *,
+    replaced: Callable[[date], bool] | None = None,
+) -> bool:
+    sd = service_date(p, direction, day)
+    return (
+        p.commutes_on(day)
+        and not p.paused_on(sd)
+        and sd not in skipped
+        and (replaced is None or not replaced(sd))
+    )
+
+
 def probe_dates(
     p: Profile,
     today: date,
@@ -376,10 +393,7 @@ def probe_dates(
     out: list[date] = []
     for i in range(1, scan + 1):
         day = today + timedelta(days=i)
-        if not p.commutes_on(day):
-            continue
-        sd = service_date(p, direction, day)
-        if p.paused_on(sd) or sd in skipped or (replaced is not None and replaced(sd)):
+        if not travels_on(p, direction, day, skipped, replaced=replaced):
             continue
         if not legacy and p.journey_on(direction, day).mode == "window":
             continue
@@ -476,6 +490,33 @@ def _covered(c: Connection, works: PlannedWorks) -> bool:
         and any(w.lists(s) for s in stops)
         for w in works.items
     )
+
+
+def works_titles(results: Sequence[ProbeResult], works: PlannedWorks) -> tuple[str, ...]:
+    titles = set()
+    for result in results:
+        connection = result.connection
+        if connection is None or not connection.legs:
+            continue
+        start = connection.legs[0].board.planned_departure
+        end = connection.legs[-1].alight.planned_arrival
+        if start is None or end is None:
+            continue
+        identifiers = {
+            name
+            for leg in connection.legs
+            for stop in leg.stops
+            for name in (stop.code, stop.uic)
+            if name is not None
+        }
+        for work in works.items:
+            if (
+                work.start.astimezone(UTC) <= end.astimezone(UTC)
+                and work.end.astimezone(UTC) > start.astimezone(UTC)
+                and identifiers & work.stations
+            ):
+                titles.add(work.title)
+    return tuple(sorted(titles))
 
 
 def _trains(c: Connection) -> tuple[tuple[TrainId, str, str], ...]:
@@ -697,6 +738,8 @@ def evaluate(
     answers: Sequence[ProviderAnswer],
     works: PlannedWorks,
     base: BaselineVersion | None,
+    *,
+    dated: bool = False,
 ) -> list[ProbeResult]:
     """Probe results for one commute day and direction. A probe without its answer gives no
     result (an empty probe is not an observation, look-ahead 16)."""
@@ -711,7 +754,8 @@ def evaluate(
     first = present(deps[0])  # a journey's first departure is always known
 
     whole_ans = by_route.get((st[0], st[-1]))
-    if p.alerts.custom_timetable_horizon and whole_ans is not None:
+    dated = dated or p.alerts.custom_timetable_horizon
+    if dated and whole_ans is not None:
         whole_ans = replace(
             whole_ans,
             connections=tuple(
@@ -742,7 +786,7 @@ def evaluate(
                 st[i],
                 st[i + 1],
                 ref,
-                same_date=p.alerts.custom_timetable_horizon,
+                same_date=dated,
             ),
         )
         for i, ref in enumerate(refs)
