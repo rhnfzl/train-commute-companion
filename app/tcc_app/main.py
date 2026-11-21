@@ -214,7 +214,15 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         primary_destination=lambda: notifier.destination_id,
     )
     follower = Follower(rt)
-    bot = Bot(api, rt, s.chat_id, s.state_dir / "telegram.json", follower, webhook_test)
+    bot = Bot(
+        api,
+        rt,
+        s.chat_id,
+        s.state_dir / "telegram.json",
+        follower,
+        webhook_test,
+        notifier.bind_chat,
+    )
     return App(s, rt, notifier, bot, follower, webhooks)
 
 

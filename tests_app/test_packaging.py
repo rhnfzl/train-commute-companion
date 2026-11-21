@@ -62,7 +62,7 @@ def test_documented_setup_builds_from_examples_and_recreates_on_env_changes():
 def test_core_and_app_process_never_import_the_sdk():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["dependencies"] == ["PyYAML>=6.0.1", "httpx>=0.27", "tzdata"]
-    assert project["optional-dependencies"]["app"] == ["mcp>=2.3,<3"]
+    assert project["optional-dependencies"]["app"] == ["mcp>=2.3,<3", "segno>=1.6.6,<2"]
     for f in (ROOT / "src").rglob("*.py"):
         assert not re.search(r"^\s*(import|from) mcp\b", f.read_text(), re.MULTILINE), f
     code = "import sys, tcc_app.main; print('mcp' in sys.modules)"

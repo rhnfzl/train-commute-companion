@@ -1,11 +1,25 @@
 """Own Telegram proof, cursor and review transitions independently of journey progress."""
 
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from .commands import ArrivalInput
+
+
+@dataclass(frozen=True, slots=True)
+class SetupClaim:
+    code: str = field(repr=False)
+    created_at: datetime
+
+    def accepts(self, code: str, now: datetime) -> bool:
+        age = now.astimezone(UTC) - self.created_at.astimezone(UTC)
+        return (
+            timedelta() <= age < timedelta(minutes=15)
+            and code.isascii()
+            and secrets.compare_digest(code.encode(), self.code.encode())
+        )
 
 
 class ProofPhase(StrEnum):

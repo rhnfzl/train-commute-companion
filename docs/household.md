@@ -34,7 +34,7 @@ Create two separate Telegram bots with BotFather. Edit each `.env` with its own 
 
 Never reuse a bot token. Two pollers for one bot can consume each other's updates and cause Telegram conflicts.
 
-Leave both `TELEGRAM_CHAT_ID` values blank until each chat is identified. Set each private profile file to its owner's stations and schedule.
+Leave both `TELEGRAM_CHAT_ID` values blank to use private setup links. Set each private profile file to its owner's stations and schedule.
 
 Validate and start the apps:
 
@@ -46,20 +46,32 @@ docker compose -f compose.household.yaml run --rm --no-deps bob tcc check-profil
 docker compose -f compose.household.yaml up -d alice bob
 ```
 
-Each traveller now messages their own bot from a private chat. Read each chat ID separately:
+Read each companion's private setup link and terminal QR separately:
 
 ```sh
 docker compose -f compose.household.yaml logs alice
 docker compose -f compose.household.yaml logs bob
 ```
 
-Put the correct positive chat ID into each owner's `.env`. Never configure a group chat. Apply the settings:
+Each traveller opens only their companion's link or scans its QR, then presses **Start** in their own private Telegram chat.
+The first valid claim saves that chat in its companion's `/data/telegram.json`. No chat-ID copy or container recreation is needed.
+Each traveller confirms the loud and silent test alerts with **I got both**. Send `/test` to retry the alerts.
+Health stays 503 until that companion's delivery confirmation. Commands, buttons and live location remain limited to its chosen chat.
+
+Setup links expire after 15 minutes and become invalid on restart. Restart only the unclaimed companion to print a new link.
+Keep setup logs private. Anyone with the unexpired link can claim that companion first. QR generation stays local.
+Groups, channels, wrong codes and reused links cannot replace a saved claim. Restarts reuse each saved binding and confirmation separately.
+An unreadable Telegram state disables automatic claiming without replacing the file. Restore a valid backup or use manual setup.
+
+For manual setup, set a known positive private `TELEGRAM_CHAT_ID` in the intended owner's `.env`.
+Send that bot a private message and read its ignored-chat log line if you need the ID. Apply only that owner's change, for example:
 
 ```sh
-docker compose -f compose.household.yaml up -d --force-recreate alice bob
+docker compose -f compose.household.yaml up -d --force-recreate alice
 ```
 
-Each traveller sends `/start` to their own bot and confirms its loud and silent test alerts. Confirmation is separate for each companion. `/status`, buttons and live location work only through that companion's configured private chat.
+Send `/start` from the manual chat and confirm its loud and silent tests. Never configure a group chat.
+A manual chat overrides the saved claim while configured. Removing the override restores the claimed chat. Delivery confirmation never transfers between chats.
 
 ## Image version
 
@@ -86,7 +98,7 @@ Use that token for the full health report and [Today](docker.md#today-web-status
 The token grants access to every profile in that companion. Storage failures or unsafe token files stop that companion's startup.
 
 For OwnTracks or an explicit `TCC_HEALTH_TOKEN` override, generate separate secrets with `openssl rand -hex 32`.
-Use different values for each owner and setting. Store overrides only in the owner's `.env` and apply the force-recreate command above.
+Use different values for each owner and setting. Store overrides only in the owner's `.env` and recreate only that owner's service.
 
 For phone access, use a host reverse proxy with TLS. Give each traveller a separate address that forwards only `/owntracks` to their own loopback port. Keep `/health` private. The default loopback endpoints cannot receive phone updates over mobile data.
 

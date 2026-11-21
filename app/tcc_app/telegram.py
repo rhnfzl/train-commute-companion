@@ -157,6 +157,9 @@ class TelegramNotifier:
         self._sending = asyncio.Lock()
         self.phase = SendPhase.IDLE
 
+    def bind_chat(self, chat_id: int) -> None:
+        self._chat = chat_id
+
     @property
     def destination_id(self) -> str | None:
         if self._chat is None:
