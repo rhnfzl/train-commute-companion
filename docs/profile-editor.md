@@ -34,6 +34,8 @@ Valid edits become active through the existing profile reload. Invalid edits do 
 
 ## Settings the form preserves
 
+The details form includes a default-on weather switch. Configure > Weather accepts your own optional KNMI warning key. See [Commute weather](weather.md).
+
 The editor preserves settings it does not display: location, advice thresholds, quiet hours, extra dates, explicit monitoring windows, active leads (`active_lead_min`), overnight return offsets and unused transfer minimums. Other profiles stay unchanged.
 
 ## Window mode and settings by day

@@ -467,10 +467,11 @@ class ProfileEditorFlow:
         fields: dict[Any, Any] = {}
         for key in ("edit_weekday_times", "edit_day_overrides"):
             fields[vol.Optional(key, default=values.get(key, False))] = BooleanSelector()
-        for key in ("compensation_reminder", "quiet_repeat_misses"):
+        for key in ("compensation_reminder", "quiet_repeat_misses", "weather"):
             fields[
                 vol.Optional(
-                    key, default=values.get(key, existing.get("alerts", {}).get(key, False))
+                    key,
+                    default=values.get(key, existing.get("alerts", {}).get(key, key == "weather")),
                 )
             ] = BooleanSelector()
         location = existing.get("location")

@@ -133,6 +133,7 @@ from train_commute_companion.providers.base import (
     ProviderAnswer,
     Query,
 )
+from train_commute_companion.providers.weather import WeatherProvider, WeatherView, weather_text
 from train_commute_companion.recovery_runtime import RecoveryController
 from train_commute_companion.recovery_state import ORIGINAL_ROUTINE, RecoveryOffer, SelectedRecovery
 from train_commute_companion.revisions import (
@@ -175,7 +176,7 @@ from train_commute_companion.tasks import RefreshTask
 from train_commute_companion.travelling import resume
 from train_commute_companion.vehicle import VehicleProvider, VehicleWatch
 from train_commute_companion.vehicle_monitor import VehicleMonitor
-from train_commute_companion.view import RuntimeView, runtime_view
+from train_commute_companion.view import OccurrenceView, RuntimeView, runtime_view
 from train_commute_companion.webhook_queue import CopyQueue
 
 log = logging.getLogger(__name__)
@@ -217,10 +218,17 @@ def fresh_state(key: OccurrenceKey, revision: int, baseline: int | None) -> Occu
 
 
 class _LoggingNotifier:
-    def __init__(self, inner: Notifier, log_to: list[AlertEvent]) -> None:
+    def __init__(
+        self,
+        inner: Notifier,
+        log_to: list[AlertEvent],
+        format_event: Callable[[AlertEvent], AlertEvent],
+    ) -> None:
         self._inner, self._log = inner, log_to
+        self._format = format_event
 
     async def send(self, event: AlertEvent) -> bool:
+        event = self._format(event)
         try:
             ok = await self._inner.send(event)
         except NotificationPaused:
@@ -364,6 +372,7 @@ class Runtime:
         lookahead_at: time = LOOKAHEAD_AT,
         webhooks: WebhookPort | None = None,
         primary_destination: Callable[[], str | None] | None = None,
+        weather: WeatherProvider | None = None,
     ) -> None:
         # Omitted only for legacy clients and replay rigs. Shells supply actual recipient IDs.
         self._primary_destination = primary_destination or (lambda: LEGACY_PRIMARY)
@@ -385,7 +394,7 @@ class Runtime:
         self._store = store
         self._provider = provider
         self.events_log: list[AlertEvent] = []
-        self._notifier = _LoggingNotifier(notifier, self.events_log)
+        self._notifier = _LoggingNotifier(notifier, self.events_log, self._weather_event)
         self._clock = clock
         self.known_stations = known_stations
         self._gate = RequestGate(provider, clock.now)
@@ -398,6 +407,8 @@ class Runtime:
             else None
         )
         self._vehicle_refresh = RefreshTask(self._refresh_vehicles, coalesce=True)
+        self._weather = weather
+        self._weather_refresh = RefreshTask(self._refresh_weather, coalesce=True)
         self._digest_refresh = RefreshTask(self.works_digest_once, coalesce=False)
         self._digest_attempts: dict[str, datetime] = {}
         self._sending = asyncio.Lock()
@@ -512,6 +523,7 @@ class Runtime:
                     o,
                     recovery_offer=self._recovery.offer_for(o.key),
                     replacement_plans=self._recovery.plans_for(o.key) or o.replacement_plans,
+                    weather=self._weather_views(o, snapshot.profiles, now),
                 )
                 for o in snapshot.occurrences
             ),
@@ -531,6 +543,82 @@ class Runtime:
                 for occurrence in snapshot.occurrences
             ),
         )
+
+    @staticmethod
+    def _weather_points(o: OccurrenceView) -> tuple[tuple[str, datetime], ...]:
+        if (
+            o.resolved
+            or o.not_travelling
+            or not o.legs
+            or o.selected_recovery is not None
+            and o.selected_recovery.status == "active"
+        ):
+            return ()
+        first, last = o.legs[0], o.legs[-1]
+        arrival = last.arrival or last.planned_arrival
+        return (
+            (first.board, first.departure or first.planned_departure),
+            *(((last.alight, arrival),) if arrival is not None else ()),
+        )
+
+    def _weather_views(
+        self,
+        o: OccurrenceView,
+        profiles: Sequence[Profile],
+        now: datetime,
+    ) -> tuple[WeatherView, ...]:
+        profile = next((p for p in profiles if p.id == o.key.profile_id), None)
+        if self._weather is None or profile is None or not profile.alerts.weather:
+            return ()
+        return tuple(
+            self._weather.snapshot(station, self._provider.positions[station], when, now)
+            for station, when in self._weather_points(o)
+            if station in self._provider.positions
+        )
+
+    def _weather_event(self, event: AlertEvent) -> AlertEvent:
+        if self._weather is None or event.kind not in (EventKind.ALL_GOOD, EventKind.AT_STATION):
+            return event
+        for o in self.view().occurrences:
+            if (
+                o.key.profile_id == event.profile_id
+                and o.key.direction is event.direction
+                and o.legs
+                and event.train is not None
+                and o.legs[0].train_number == event.train.train_number
+                and o.legs[0].planned_departure == event.train.planned_departure
+            ):
+                lines = [weather_text(w) for w in o.weather if w.forecast or w.warnings]
+                return replace(event, text="\n".join((event.text, *lines)))
+        return event
+
+    def _refresh_weather_soon(self) -> None:
+        if self._weather is not None and self._lifecycle.phase not in (
+            RuntimePhase.STOPPING,
+            RuntimePhase.STOPPED,
+            RuntimePhase.FAILED,
+        ):
+            self._weather_refresh.request()
+
+    async def _refresh_weather(self) -> None:
+        if self._weather is None:
+            return
+        # Snapshot current switches and stations. Results are filtered again when read or sent.
+        stations = {
+            w.station: self._provider.positions[w.station]
+            for o in self.view().occurrences
+            for w in o.weather
+        }
+        try:
+            await self._weather.refresh(stations)
+        except Exception:
+            log.exception("optional weather refresh failed")
+
+    async def weather_idle(self) -> None:
+        await self._weather_refresh.idle()
+
+    async def stop_weather(self) -> None:
+        await self._weather_refresh.stop()
 
     def _vehicle_watch(self, state: OccurrenceState, now: datetime) -> VehicleWatch | None:
         if state.not_travelling or is_resolved(state) or state.lock is None:
@@ -1108,6 +1196,7 @@ class Runtime:
         await self._poll_occurrences()
         await self._deliver()
         self._refresh_vehicles_soon()
+        self._refresh_weather_soon()
         self._refresh_digest_soon()
         self._recovery.refresh_soon()
 
@@ -2286,6 +2375,7 @@ class Runtime:
             self._lifecycle.reconcile_started_at = None
             raise
         self._refresh_vehicles_soon()
+        self._refresh_weather_soon()
         self._refresh_digest_soon()
         self._recovery.refresh_soon()
 
@@ -2361,6 +2451,7 @@ class Runtime:
                     await self._queue.stop()
                 finally:
                     await self.stop_vehicle_context()
+                    await self.stop_weather()
                     await self.stop_works_digest()
                     await self._recovery.stop()
                     self._lifecycle.phase = RuntimePhase.STOPPED

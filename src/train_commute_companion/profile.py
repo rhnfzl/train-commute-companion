@@ -432,10 +432,14 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "channels",
             "compensation_reminder",
             "quiet_repeat_misses",
+            "weather",
         ),
         "alerts",
     )
     d = AlertSettings()
+    weather = raw.get("weather", True)
+    if not isinstance(weather, bool):
+        c.err("alerts.weather", "must be true or false")
     compensation = raw.get("compensation_reminder", False)
     if not isinstance(compensation, bool):
         c.err("alerts.compensation_reminder", "must be true or false")
@@ -504,6 +508,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         channels,
         compensation,
         repeat,
+        weather,
     )
 
 

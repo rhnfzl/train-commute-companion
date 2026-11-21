@@ -256,6 +256,7 @@ async def open_webhooks(hass, entry):
         "validate",
         "settings",
         "webhooks",
+        "weather",
         "recovery",
         "arrival",
     ]

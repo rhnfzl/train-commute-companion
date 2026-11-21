@@ -4,6 +4,8 @@ The Docker app follows your usual NS train journey and sends alerts to a private
 
 Data: NS.
 
+[Commute weather](weather.md) uses keyless station forecasts. Set the optional `KNMI_API_KEY` in `.env` for official warnings.
+
 For multiple travellers, use the [separate household companions](household.md) recipe. Each companion has its own bot, location endpoint and stored data.
 
 ## What you need

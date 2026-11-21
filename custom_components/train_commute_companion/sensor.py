@@ -21,6 +21,8 @@ from train_commute_companion.model import (
     TimeObs,
     direction_key,
 )
+from train_commute_companion.providers.weather import weather_text
+from train_commute_companion.serde import encode
 from train_commute_companion.vehicle import snapshot_payload
 from train_commute_companion.view import (
     LegView,
@@ -104,6 +106,7 @@ def _status_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
         "disruptions_coverage": occ.disruptions_coverage,
         "replacement_plans": [plan.fields() for plan in occ.replacement_plans],
         "train_context": None if occ.train_context is None else snapshot_payload(occ.train_context),
+        "weather": [{**encode(w), "text": weather_text(w)} for w in occ.weather],
         "route_changed": occ.route_changed,
         "others": [
             {

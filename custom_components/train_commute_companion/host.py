@@ -56,6 +56,10 @@ def make_webhook_client() -> httpx.AsyncClient:
     return httpx.AsyncClient()
 
 
+def make_weather_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient()
+
+
 def _log_crash(task: asyncio.Task[None]) -> None:
     if not task.cancelled() and (e := task.exception()) is not None:
         _LOGGER.error("runtime stopped unexpectedly", exc_info=e)

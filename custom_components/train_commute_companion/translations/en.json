@@ -129,7 +129,8 @@
           "return_other_stations": "Other return boarding stations",
           "other_station_radius_m": "Other station distance in metres",
           "other_station_dwell_min": "Minutes at another station before it counts",
-          "ask_to_remember_station": "Offer to remember a new boarding station"
+          "ask_to_remember_station": "Offer to remember a new boarding station",
+          "weather": "Weather forecasts, practical tips and KNMI warnings"
         },
         "data_description": {
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
@@ -138,7 +139,8 @@
           "return_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",
           "other_station_radius_m": "How near your phone must be to a station. Default 500.",
           "other_station_dwell_min": "0 means one location fix is enough. Default 0.",
-          "ask_to_remember_station": "After you say Yes at a new station, TCC asks once whether to remember it."
+          "ask_to_remember_station": "After you say Yes at a new station, TCC asks once whether to remember it.",
+          "weather": "On by default. Uses station coordinates, never phone location. Forecasts need no key. Official warnings need your own KNMI key under Configure > Weather."
         }
       },
       "profile_error": {
@@ -223,7 +225,8 @@
           "webhooks": "Webhooks",
           "profiles": "Add or edit profiles",
           "recovery": "Recovery journeys and confirmations",
-          "arrival": "Confirm or correct arrival"
+          "arrival": "Confirm or correct arrival",
+          "weather": "Weather"
         }
       },
       "validate": {
@@ -343,7 +346,8 @@
           "return_other_stations": "Other return boarding stations",
           "other_station_radius_m": "Other station distance in metres",
           "other_station_dwell_min": "Minutes at another station before it counts",
-          "ask_to_remember_station": "Offer to remember a new boarding station"
+          "ask_to_remember_station": "Offer to remember a new boarding station",
+          "weather": "Weather forecasts, practical tips and KNMI warnings"
         },
         "data_description": {
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
@@ -352,7 +356,8 @@
           "return_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",
           "other_station_radius_m": "How near your phone must be to a station. Default 500.",
           "other_station_dwell_min": "0 means one location fix is enough. Default 0.",
-          "ask_to_remember_station": "After you say Yes at a new station, TCC asks once whether to remember it."
+          "ask_to_remember_station": "After you say Yes at a new station, TCC asks once whether to remember it.",
+          "weather": "On by default. Uses station coordinates, never phone location. Forecasts need no key. Official warnings need your own KNMI key under Configure > Weather."
         }
       },
       "profile_error": {
@@ -459,6 +464,16 @@
         "data_description": {
           "mode": "A fixed day uses the first train you set for that weekday, or the normal first train.",
           "min_stay": "Window days only. Blank uses the normal setting; 0 turns the stay off that day."
+        }
+      },
+      "weather": {
+        "title": "Weather warnings",
+        "description": "Forecasts work without a key. For official yellow, orange and red warnings, enter your own registered KNMI Open Data API key. Clear the field to remove it. Without a working key, warning coverage stays unavailable.",
+        "data": {
+          "knmi_api_key": "Your KNMI Open Data API key (optional)"
+        },
+        "data_description": {
+          "knmi_api_key": "Request a registered key at https://developer.dataplatform.knmi.nl/. Sent only to the KNMI API, never to Open-Meteo or download hosts."
         }
       }
     },
