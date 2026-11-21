@@ -3,8 +3,8 @@
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories/)
 [![Validate](https://github.com/rhnfzl/train-commute-companion/actions/workflows/validate.yml/badge.svg)](https://github.com/rhnfzl/train-commute-companion/actions/workflows/validate.yml)
 [![GitHub release](https://img.shields.io/github/v/release/rhnfzl/train-commute-companion)](https://github.com/rhnfzl/train-commute-companion/releases)
-[![PyPI](https://img.shields.io/pypi/v/train-commute-companion)](https://pypi.org/project/train-commute-companion/)
-[![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/)
+[![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?logo=docker&logoColor=white)](https://github.com/rhnfzl/train-commute-companion/pkgs/container/train-commute-companion)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://pypi.org/project/train-commute-companion/)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.10%2B-18BCF2.svg)](https://www.home-assistant.io/)
 [![License](https://img.shields.io/github/license/rhnfzl/train-commute-companion)](LICENSE)
 
@@ -21,7 +21,7 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
   <img src="https://raw.githubusercontent.com/rhnfzl/train-commute-companion/main/docs/images/how-it-works-light.svg" alt="You plan a fixed train, a time window or a minimum stay. It watches live train data, your phone and planned works. It rings for what matters, stays quiet for small changes and asks with one tap at another station.">
 </picture>
 
-- **Follows your trains.** You describe your usual trips once, in a small YAML file. On a travel day it picks your train and watches it.
+- **Follows your trains.** You describe your usual trips once, in a small YAML file, with station names such as `Utrecht Centraal` or NS codes such as `UT`. On a travel day it picks your train and watches it.
 - **Tells you what changed.** Delays, cancellations, platform changes, a train cut short, a new route, a transfer at risk or broken, and a train you missed.
 - **Suggests what to do.** When your train no longer works, it names the best train you can still catch.
 - **Looks ahead.** Before the day, it warns you about planned works on your route.
@@ -42,7 +42,7 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
 | Way | What you get | Guide |
 | --- | --- | --- |
 | Home Assistant (HACS) | Alerts on your phone through the companion app, sensors and buttons | [docs/home-assistant.md](docs/home-assistant.md) |
-| Docker | Alerts and buttons in a private Telegram chat | [docs/docker.md](docs/docker.md) |
+| Docker | Alerts and buttons in a private Telegram chat, from a ready-made image (amd64 and arm64, so a Raspberry Pi works) | [docs/docker.md](docs/docker.md) |
 | Household | A separate Docker companion and private bot for each traveller | [docs/household.md](docs/household.md) |
 | Webhooks | Each alert as signed JSON to your own URL, from Docker or Home Assistant | [docs/webhooks.md](docs/webhooks.md) |
 | Email | Optional encrypted SMTP copies alongside Telegram in Docker | [docs/email.md](docs/email.md) |
@@ -119,10 +119,6 @@ uv run --python 3.14 --group ha mypy --explicit-package-bases --namespace-packag
 The [Validate workflow](.github/workflows/validate.yml) runs these same commands, and a release runs them before it publishes. Each night it also runs `tests_ha` against the newest Home Assistant test package, because the integration calls private `mobile_app` code.
 
 [Live NS checks](docs/live-testing.md) run separately with your own key and capture alerts locally.
-
-## Diagrams
-
-The pictures are [Excalidraw](https://excalidraw.com) drawings. To change one, open its `.excalidraw` file from [docs/images](docs/images) in Excalidraw, edit it, and export the light and dark SVG again.
 
 ## License
 
