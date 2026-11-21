@@ -45,6 +45,7 @@ from train_commute_companion.lookahead_probe import (
     latest_mark,
     split_day_key,
 )
+from train_commute_companion.messages import leave_by
 from train_commute_companion.model import (
     AdviceRecord,
     ClassifiedLeg,
@@ -205,6 +206,7 @@ class OccurrenceView:
     window: tuple[datetime, datetime] | None = None
     # an other boarding station the user confirmed, or a known one TCC followed; None: the origin
     boarding_station: str | None = None
+    leave_by: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,6 +530,7 @@ def occurrence_view(
             next_good = next_good_instead_of(s, ctx, pool, s.lock, s.lock.legs.index(x))[1]
 
     coverage = "complete" if disruptions_fresh(s, ctx.now) else "unknown"
+    shown_legs = legs(lock)
     return OccurrenceView(
         key=s.key,
         selected_recovery=s.selected_recovery,
@@ -546,7 +549,14 @@ def occurrence_view(
         route_changed=holds_live(s.alert_keys, (EventKind.ROUTE_CHANGED,)),
         lock_source=s.lock.source if s.lock else None,
         commitment=s.lock.commitment if s.lock else None,
-        legs=legs(lock),
+        legs=shown_legs,
+        leave_by=leave_by(
+            shown_legs[0].planned_departure,
+            shown_legs[0].departure,
+            ctx.profile.journey(ctx.direction).buffer_min,
+        )
+        if shown_legs and ctx.profile.alerts.leave_by
+        else None,
         transfers=tuple(transfers),
         retained=tuple(legs(j.legs) for j in s.retained),
         next_good=None

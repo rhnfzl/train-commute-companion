@@ -84,11 +84,13 @@ def _status_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
             "recovery_offer": None,
             "selected_recovery": None,
             "original_train_state": None,
+            "leave_by": None,
         }
     info = next(i for i in view.directions if i.profile_id == pid and i.direction is d)
     return {
         "remembered_stations": remembered,
         "boarding_station": occ.boarding_station,
+        "leave_by": _to_primitive(occ.leave_by),
         "service_date": occ.key.service_date.isoformat(),
         "not_travelling": occ.not_travelling,
         "original_train_state": occ.direction_state.value,

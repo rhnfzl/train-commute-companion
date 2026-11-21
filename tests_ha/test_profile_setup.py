@@ -122,6 +122,24 @@ async def test_a_new_profile_starts_with_empty_stations(hass):
     assert not profiles_path(hass).exists()
 
 
+async def test_check_in_fields_are_optional_without_a_forced_default(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    flow = await guided(hass)
+    for direction in ("outbound", "return"):
+        key = next(k for k in flow["data_schema"].schema if str(k) == f"{direction}_active_lead")
+        assert isinstance(key, vol.Optional) and key.default is vol.UNDEFINED
+        assert not (key.description or {}).get("suggested_value")
+    flow = await configure(
+        hass, flow, {**VALUES, "outbound_active_lead": 40, "return_active_lead": 25}
+    )
+    assert flow["step_id"] == "profile_details"
+    switch = next(k for k in flow["data_schema"].schema if str(k) == "leave_by")
+    assert switch.default() is True
+    flow = await details(hass, flow, leave_by=False)
+    assert flow["step_id"] == "notify"
+    assert not profiles_path(hass).exists()
+
+
 @pytest.mark.parametrize("work", ["Home station", "home station", "AAA"])
 async def test_home_and_work_must_differ(hass, work):
     flow = await configure(hass, await guided(hass), {**VALUES, "work_station": work})

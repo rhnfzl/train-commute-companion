@@ -120,13 +120,13 @@ def edit_profile(
             alerts = copy.deepcopy(profile.get("alerts", {}))
             if value != 3 or key in alerts:
                 profile["alerts"] = {**alerts, key: value}
-    for key in ("compensation_reminder", "quiet_repeat_misses"):
+    for key in ("compensation_reminder", "quiet_repeat_misses", "leave_by"):
         if key not in values:
             continue
         if type(values[key]) is not bool:
             raise EditorError("invalid_profile")
         alerts = copy.deepcopy(profile.get("alerts", {}))
-        if values[key] or key in alerts:
+        if values[key] != (key == "leave_by") or key in alerts:
             alerts[key] = values[key]
             profile["alerts"] = alerts
     if any(f"channel_{category}" in values for category in CATEGORIES):
@@ -161,6 +161,15 @@ def edit_profile(
         if isinstance(buffer, float) and buffer.is_integer():
             buffer = int(buffer)
         journey["buffer_min"] = buffer
+        lead_key = f"{direction}_active_lead"
+        if lead_key in values:
+            lead = values[lead_key]
+            if lead is None:
+                journey.pop("active_lead_min", None)
+            else:
+                if isinstance(lead, float) and lead.is_integer():
+                    lead = int(lead)
+                journey["active_lead_min"] = lead
         weekday_key = f"{direction}_weekday_times"
         if weekday_key in values:
             overrides = values[weekday_key]

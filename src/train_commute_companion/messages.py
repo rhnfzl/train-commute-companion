@@ -3,10 +3,11 @@
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import Enum, auto
 
-from train_commute_companion.calendar import hhmm
-from train_commute_companion.model import Leg
+from train_commute_companion.calendar import hhmm, to_utc
+from train_commute_companion.model import Leg, Provenance
 
 ATTRIBUTION = "Data: NS"
 CHECK_APP = "check the NS app"
@@ -56,13 +57,28 @@ def crowd_text(legs: Sequence[Leg]) -> str:
     return f", crowd forecasts per NS: {', '.join(forecasts)}"
 
 
-def all_good_text(legs: Sequence[Leg]) -> str:
+def leave_by(planned: datetime, expected: datetime | None, buffer_min: int) -> datetime:
+    """Leave in time for the earlier departure, including the configured travel time."""
+    departure = min(to_utc(planned), to_utc(expected)) if expected is not None else to_utc(planned)
+    return departure - timedelta(minutes=buffer_min)
+
+
+def leave_by_text(leg: Leg, buffer_min: int | None) -> str:
+    if buffer_min is None:
+        return ""
+    obs = leg.board.departure
+    expected = obs.value if obs is not None and obs.provenance is Provenance.REPORTED else None
+    return f" Leave by {hhmm(leave_by(leg.train.planned_departure, expected, buffer_min))}"
+
+
+def all_good_text(legs: Sequence[Leg], buffer_min: int | None = None) -> str:
     first, last = legs[0], legs[-1]
     when = _when(first)
     text = f"your {when} to {last.alight.name} is on time per NS"
     text += _changes(legs)
     text += _track(first)
-    return text + crowd_text(legs) + "."
+    leave = leave_by_text(first, buffer_min)
+    return text + crowd_text(legs) + "." + (leave + "." if leave else "")
 
 
 def _track(leg: Leg) -> str:

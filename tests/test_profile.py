@@ -170,6 +170,22 @@ def test_active_lead_min_is_optional_and_at_least_buffer():
         assert [e.path for e in errs] == ["profiles[0].outbound.active_lead_min"]
 
 
+@pytest.mark.parametrize("value", ["true", "false"])
+def test_leave_by_switch_defaults_true_and_accepts_booleans(value):
+    profiles, errors = parse_profiles(one(), None)
+    assert not errors and profiles[0].alerts.leave_by is True
+    text = one().replace("    outbound:", f"    alerts: {{leave_by: {value}}}\n    outbound:")
+    profiles, errors = parse_profiles(text, None)
+    assert not errors and profiles[0].alerts.leave_by is (value == "true")
+
+
+@pytest.mark.parametrize("value", ["1", "null", '"false"'])
+def test_leave_by_switch_rejects_non_booleans(value):
+    text = one().replace("    outbound:", f"    alerts: {{leave_by: {value}}}\n    outbound:")
+    _, errors = parse_profiles(text, None)
+    assert [e.path for e in errors] == ["profiles[0].alerts.leave_by"]
+
+
 def test_window_may_cross_midnight():
     text = one(
         ("return: {first_train", 'return: {window: ["23:00", "03:00"], first_train')

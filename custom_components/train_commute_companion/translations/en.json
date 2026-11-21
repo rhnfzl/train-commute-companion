@@ -81,6 +81,8 @@
           "return_transfers": "Return transfer stations, in travel order",
           "outbound_buffer": "Minutes from your door to the outbound platform",
           "return_buffer": "Minutes from your door to the return platform",
+          "outbound_active_lead": "Check-in, minutes before your train (outbound)",
+          "return_active_lead": "Check-in, minutes before your train (return)",
           "outbound_mode": "Outbound mode",
           "outbound_window_start": "Outbound window: earliest departure (HH:MM)",
           "outbound_window_end": "Outbound window: latest departure (HH:MM)",
@@ -93,6 +95,8 @@
           "return_min_stay": "Return minimum stay in minutes, 0 for none"
         },
         "data_description": {
+          "outbound_active_lead": "Leave blank for travel buffer plus 15 minutes. Ends quiet early watch; must be at least your travel buffer.",
+          "return_active_lead": "Leave blank for travel buffer plus 15 minutes. Ends quiet early watch; must be at least your travel buffer.",
           "outbound_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
           "outbound_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
           "outbound_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
@@ -123,6 +127,7 @@
           "channel_routine": "Routine and compensation reminder destinations",
           "edit_weekday_times": "Set different departure times by weekday",
           "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
+          "leave_by": "Show leave-by time",
           "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
           "delay_min": "First delay alert in minutes",
           "delay_step_min": "Delay change for another update in minutes",
@@ -136,6 +141,7 @@
         "data_description": {
           "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
           "delay_step_min": "Default 3. Whole minutes from 1 to 1440, measured from the last stated delay in either direction. Recovery to 1 minute or less still counts.",
+          "leave_by": "Show when to leave in check-in and pre-trip advice, and in the status sensor. Uses your travel buffer. Enabled by default.",
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
           "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently.",
           "outbound_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",
@@ -299,6 +305,8 @@
           "return_transfers": "Return transfer stations, in travel order",
           "outbound_buffer": "Minutes from your door to the outbound platform",
           "return_buffer": "Minutes from your door to the return platform",
+          "outbound_active_lead": "Check-in, minutes before your train (outbound)",
+          "return_active_lead": "Check-in, minutes before your train (return)",
           "outbound_mode": "Outbound mode",
           "outbound_window_start": "Outbound window: earliest departure (HH:MM)",
           "outbound_window_end": "Outbound window: latest departure (HH:MM)",
@@ -311,6 +319,8 @@
           "return_min_stay": "Return minimum stay in minutes, 0 for none"
         },
         "data_description": {
+          "outbound_active_lead": "Leave blank for travel buffer plus 15 minutes. Ends quiet early watch; must be at least your travel buffer.",
+          "return_active_lead": "Leave blank for travel buffer plus 15 minutes. Ends quiet early watch; must be at least your travel buffer.",
           "outbound_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
           "outbound_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
           "outbound_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
@@ -341,6 +351,7 @@
           "channel_routine": "Routine and compensation reminder destinations",
           "edit_weekday_times": "Set different departure times by weekday",
           "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
+          "leave_by": "Show leave-by time",
           "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
           "delay_min": "First delay alert in minutes",
           "delay_step_min": "Delay change for another update in minutes",
@@ -354,6 +365,7 @@
         "data_description": {
           "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
           "delay_step_min": "Default 3. Whole minutes from 1 to 1440, measured from the last stated delay in either direction. Recovery to 1 minute or less still counts.",
+          "leave_by": "Show when to leave in check-in and pre-trip advice, and in the status sensor. Uses your travel buffer. Enabled by default.",
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
           "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently.",
           "outbound_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",

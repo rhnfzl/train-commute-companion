@@ -168,6 +168,8 @@ def _occurrence(o: OccurrenceView) -> list[str]:
     if o.route_changed:
         head += " (route changed)"
     out = [head]
+    if o.leave_by is not None and not recovering:
+        out.append(f"  Leave by {hhmm(o.leave_by)}.")
     if recovering:
         out.append(f"  Original train monitoring state: {o.direction_state.value}.")
         out.append("  Original train legs (separate from selected recovery):")

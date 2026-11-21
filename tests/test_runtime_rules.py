@@ -1572,6 +1572,28 @@ async def test_held_all_good_names_the_current_platform(tmp_path):
     assert last > moved and "platform 1" not in got[last][1] and "platform 5" in got[last][1]
 
 
+async def test_held_check_in_updates_leave_by_from_current_ns_time(tmp_path):
+    rig = Rig(tmp_path, "07:50")
+    rig.provider.world = [USUAL]
+    rig.notifier.fails = lambda e: e.kind is EventKind.ALL_GOOD
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    early = replace(
+        L1,
+        stops=(
+            replace(L1.board, departure=replace(L1.board.departure, value=at("08:10"))),
+            *L1.stops[1:],
+        ),
+    )
+    rig.provider.world = [make_connection([early, L2])]
+    rig.clock.set("07:52")
+    await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    good = [e for e in rig.rt.events_log if e.kind is EventKind.ALL_GOOD]
+    assert len(good) == 1 and "Leave by 08:00" in good[0].text
+
+
 async def test_window_edit_keeps_an_undelivered_works_warning_told_later(tmp_path):
     rig = Rig(tmp_path, "05:40")
     tomorrow = DAY + timedelta(days=1)

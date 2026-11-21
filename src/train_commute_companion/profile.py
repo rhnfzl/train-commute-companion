@@ -434,6 +434,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "quiet_repeat_misses",
             "delay_min",
             "delay_step_min",
+            "leave_by",
         ),
         "alerts",
     )
@@ -445,6 +446,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             c.err(f"alerts.{key}", "must be a whole number of minutes from 1 to 1440")
         else:
             delays[key] = value
+    leave = c.boolean(raw.get("leave_by", d.leave_by), "alerts.leave_by")
     compensation = raw.get("compensation_reminder", False)
     if not isinstance(compensation, bool):
         c.err("alerts.compensation_reminder", "must be true or false")
@@ -502,7 +504,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
                 channels[cast(NotificationCategory, category)] = frozenset(
                     cast(list[NotificationChannel], selected)
                 )
-    if len(c.errors) > n or thr is None or sav is None:
+    if len(c.errors) > n or thr is None or sav is None or leave is None:
         return None
     return AlertSettings(
         thr,
@@ -515,6 +517,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         repeat,
         delay_min=delays["delay_min"],
         delay_step_min=delays["delay_step_min"],
+        leave_by=leave,
     )
 
 

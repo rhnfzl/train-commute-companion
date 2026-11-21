@@ -497,6 +497,7 @@ class AlertSettings:
     quiet_repeat_misses: bool = False
     delay_min: int = 3
     delay_step_min: int = 3
+    leave_by: bool = True
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]

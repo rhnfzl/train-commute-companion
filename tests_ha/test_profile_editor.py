@@ -51,6 +51,49 @@ def test_new_profile_is_valid_and_written_only_when_saved(tmp_path):
     assert doc.path.read_text() == text
 
 
+def test_check_in_times_roundtrip_and_can_return_to_default(tmp_path):
+    doc = document(tmp_path)
+    values = {**VALUES, "outbound_active_lead": 40.0, "return_active_lead": 25, "leave_by": False}
+    text = edit_profile(doc, "p1", values, KNOWN, TODAY)
+    profiles, errors = parse_profiles(text, KNOWN)
+    assert not errors
+    assert profiles[0].outbound.active_lead_min == 40
+    assert profiles[0].return_.active_lead_min == 25
+    assert profiles[0].alerts.leave_by is False
+    saved = document(tmp_path, text)
+    text = edit_profile(
+        saved,
+        "p1",
+        {**values, "outbound_active_lead": None, "return_active_lead": None, "leave_by": True},
+        KNOWN,
+        TODAY,
+    )
+    profiles, errors = parse_profiles(text, KNOWN)
+    assert not errors
+    assert profiles[0].outbound.active_lead_min is None
+    assert profiles[0].return_.active_lead_min is None
+    assert profiles[0].alerts.leave_by is True
+    raw = yaml.safe_load(text)["profiles"][0]
+    assert "active_lead_min" not in raw["outbound"]
+    assert "active_lead_min" not in raw["return"]
+
+
+@pytest.mark.parametrize("value", [-1, 9, 10.5, True, "40"])
+def test_invalid_check_in_time_does_not_write(tmp_path, value):
+    doc = document(tmp_path)
+    with pytest.raises(EditorError, match="invalid_profile"):
+        edit_profile(doc, "p1", {**VALUES, "outbound_active_lead": value}, KNOWN, TODAY)
+    assert doc.path.read_text() == PROFILE
+
+
+def test_check_in_default_remains_omitted_and_leave_by_defaults_on(tmp_path):
+    text = edit_profile(document(tmp_path, None), None, VALUES, KNOWN, TODAY)
+    profiles, errors = parse_profiles(text, KNOWN)
+    assert not errors and profiles[0].outbound.active_lead_min is None
+    assert profiles[0].alerts.leave_by is True
+    assert "active_lead_min" not in yaml.safe_load(text)["profiles"][0]["outbound"]
+
+
 def test_edit_preserves_id_and_all_advanced_fields(tmp_path):
     raw = yaml.safe_load(PROFILE)
     p = raw["profiles"][0]

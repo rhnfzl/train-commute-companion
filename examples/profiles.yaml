@@ -17,7 +17,7 @@ profiles:
       transfers: ["UT"]       # transfer stations in travel order; [] for a direct train
       window: ["07:12", "10:12"]  # when to follow; default is first train -60 / +120 min
       buffer_min: 10          # minutes from the door to the platform
-      # active_lead_min: 25   # optional; before this many minutes ahead only unusual alerts (default buffer_min + 15)
+      # active_lead_min: 25   # check-in minutes before your train; default buffer_min + 15
       earlier_train_advice: false  # suggest an earlier train when yours is late
     return:                   # work to home
       day_offset: 0           # 1 when you travel back the morning after (night shift)
@@ -35,6 +35,7 @@ profiles:
       # other_stations: [GV]        # board here too, see docs/other-boarding-station.md
     transfer_min: { UT: 4 }   # minutes you need to change trains, for every transfer station
     alerts:
+      leave_by: true          # show leave-by time in check-in, pre-trip advice and HA status
       earlier_train_threshold_min: 10   # advise an earlier train from this much delay
       earlier_train_min_saving_min: 5   # only if it saves at least this much
       latest_acceptable_arrival: null   # optional "HH:MM"; later arrival makes delays loud

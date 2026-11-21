@@ -53,6 +53,21 @@ The Home Assistant profile form provides the same category list. Choosing a cate
 
 A platform change is loud from 15 minutes before the expected departure and silent before that.
 
+## Leave-by time
+
+Check-in and pre-trip advice show **Leave by HH:MM** by default.
+This is the earlier of planned and NS-expected departure, minus the direction's `buffer_min` travel time.
+A delay never gives you a later leave-by time. Midnight and clock changes use elapsed minutes.
+
+```yaml
+alerts:
+  leave_by: true
+```
+
+Set `leave_by: false` to hide this text and the Home Assistant status sensor's `leave_by` timestamp.
+The HA profile details form has the same **Show leave-by time** switch. It does not change notification timing.
+Use per-direction `active_lead_min` for check-in timing. Its default is `buffer_min + 15` when omitted.
+
 System health, missing train data, stopped monitoring, invalid configuration, rejected credentials and command feedback remain enabled. These messages explain when the companion cannot follow a journey reliably.
 
 A train missing from NS data is reported after two polls in a row miss it while you follow the same train, so switching to another train never warns on its own. A stale or failing NS board is reported at once. "Visible again" follows only a "cannot see" message you actually received.

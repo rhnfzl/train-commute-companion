@@ -380,7 +380,7 @@ def test_all_good_judges_every_copy_at_the_newest_fetch():  # rule 20, 7.12: in 
     for x, y in ((on("5"), on("7")), (on("7"), on("5"))):
         a = answer_at("08:01", make_connection([x, L2]), make_connection([y, L2]))
         e = all_good(s, replace(poll_answers(s), answers=(a,)), c)
-        assert e is not None and e.text.endswith("platform 7.")
+        assert e is not None and e.text.endswith("platform 7. Leave by 08:02.")
 
 
 def test_data_unclear_is_loud_by_default() -> None:
