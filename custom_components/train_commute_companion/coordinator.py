@@ -12,11 +12,13 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from train_commute_companion.runtime import Runtime
 from train_commute_companion.view import RuntimeView
 
 from .const import CONF_NOTIFY, DOMAIN, REFRESH_S
 from .host import RuntimeHost
 from .reconciliation import ViewPhase, view_phase
+from .remote import RemoteRuntime, RemoteUnavailable, invoke
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,7 +45,7 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
         self,
         hass: HomeAssistant,
         entry: ConfigEntry,
-        host: RuntimeHost,
+        host: RuntimeHost | RemoteRuntime,
         notification_available: Callable[[], bool] = lambda: True,
         *,
         notification_paused: Callable[[], bool] = lambda: False,
@@ -64,6 +66,10 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
         self._auth_phase = AuthPhase.CLEAR
 
     @property
+    def remote(self) -> bool:
+        return isinstance(self.host, RemoteRuntime)
+
+    @property
     def watchdog_phase(self) -> WatchdogPhase:
         if not self.host.alive or self._timeouts >= RELOAD_AFTER_TIMEOUTS:
             return WatchdogPhase.RELOAD_DUE
@@ -79,11 +85,13 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
         try:
             # a runtime loop stuck in a synchronous call stays alive but never answers (rule 12)
             async with asyncio.timeout(RUN_TIMEOUT_S):
-                view = await self.host.run(lambda rt: rt.view())
+                view = await invoke(self.host, Runtime.view)
+        except RemoteUnavailable as err:
+            raise UpdateFailed(str(err)) from None
         except TimeoutError:
             self._timeouts += 1
             # >=: keeps asking while a reload has not replaced this coordinator yet
-            if self.watchdog_phase is WatchdogPhase.RELOAD_DUE:
+            if not self.remote and self.watchdog_phase is WatchdogPhase.RELOAD_DUE:
                 self._reload()
             raise UpdateFailed("runtime not answering") from None
         self._timeouts = 0
@@ -93,7 +101,7 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
 
     def _sync_devices(self, view: RuntimeView) -> None:
         """Removes the device (and so the entities) of a profile the view no longer has."""
-        if view_phase(view) is not ViewPhase.READY:
+        if self.remote or view_phase(view) is not ViewPhase.READY:
             return
         present = {d.profile_id for d in view.directions}
         registry = dr.async_get(self.hass)
@@ -110,7 +118,7 @@ class TccCoordinator(DataUpdateCoordinator[RuntimeView]):
         hass = self.hass
         if not view.key_rejected:
             self._auth_phase = AuthPhase.CLEAR
-        elif self._auth_phase is AuthPhase.CLEAR:
+        elif self._auth_phase is AuthPhase.CLEAR and not self.remote:
             # once per outage; HA also folds it into a reauth flow that is already open
             self.config_entry.async_start_reauth(hass)
             self._auth_phase = AuthPhase.REAUTH_OPEN

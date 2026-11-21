@@ -12,10 +12,12 @@ from homeassistant.helpers import config_validation as cv
 from train_commute_companion.messages import Refused
 from train_commute_companion.model import Direction, OccurrenceKey
 from train_commute_companion.recovery_state import RecoveryOffer, SelectedRecovery
+from train_commute_companion.runtime import Runtime
 
 from .const import DOMAIN
 from .data import TccData
-from .services import _call_runtime, _refresh_or_refuse, resolve_profile
+from .remote import invoke
+from .services import _await_action, _refresh_or_refuse, resolve_profile
 
 
 def _whole(value: object) -> int:
@@ -70,8 +72,14 @@ async def prepare(
 ) -> RecoveryOffer:
     result = await _accepted(
         data,
-        await _call_runtime(
-            data, lambda rt: rt.prepare_recovery(key, proposal_id, origin_place_id)
+        await _await_action(
+            invoke(
+                data.host,
+                Runtime.prepare_recovery,
+                key=key,
+                proposal_id=proposal_id,
+                origin_place_id=origin_place_id,
+            )
         ),
     )
     if not isinstance(result, RecoveryOffer):
@@ -84,14 +92,15 @@ async def follow(
 ) -> SelectedRecovery:
     result = await _accepted(
         data,
-        await _call_runtime(
-            data,
-            lambda rt: rt.select_recovery(
-                key,
-                offer_id,
+        await _await_action(
+            invoke(
+                data.host,
+                Runtime.select_recovery,
+                key=key,
+                offer_id=offer_id,
                 acknowledge_planned_times=planned,
                 acknowledge_accessibility_unknown=accessibility_unknown,
-            ),
+            )
         ),
     )
     if not isinstance(result, SelectedRecovery):
@@ -111,17 +120,18 @@ async def confirm(
 ) -> SelectedRecovery:
     result = await _accepted(
         data,
-        await _call_runtime(
-            data,
-            lambda rt: rt.confirm_recovery_step(
-                key,
-                selection_id,
-                revision,
-                step_index,
-                kind,
-                place_id,
-                action_id,
-            ),
+        await _await_action(
+            invoke(
+                data.host,
+                Runtime.confirm_recovery_step,
+                key=key,
+                selection_id=selection_id,
+                revision=revision,
+                step_index=step_index,
+                kind=kind,
+                place_id=place_id,
+                action_id=action_id,
+            )
         ),
     )
     if not isinstance(result, SelectedRecovery):
@@ -133,7 +143,16 @@ async def stop(
     data: TccData, key: OccurrenceKey, selection_id: str, revision: int
 ) -> SelectedRecovery:
     result = await _accepted(
-        data, await _call_runtime(data, lambda rt: rt.stop_recovery(key, selection_id, revision))
+        data,
+        await _await_action(
+            invoke(
+                data.host,
+                Runtime.stop_recovery,
+                key=key,
+                selection_id=selection_id,
+                revision=revision,
+            )
+        ),
     )
     if not isinstance(result, SelectedRecovery):
         raise HomeAssistantError("Recovery was not stopped")

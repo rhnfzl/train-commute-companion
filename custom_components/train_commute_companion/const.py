@@ -16,6 +16,10 @@ CONF_WEBHOOK_URLS = "webhook_urls"
 CONF_WEBHOOK_SECRET = "webhook_secret"
 CONF_WEBHOOK_TOKEN = "webhook_token"
 CONF_KNMI_API_KEY = "knmi_api_key"
+CONF_REMOTE_URL = "remote_url"
+CONF_REMOTE_TOKEN = "remote_token"
+CONF_REMOTE_CA = "remote_ca"
+CONF_REMOTE_PROFILE_SYNC = "remote_profile_sync"
 REFRESH_S = 15
 NOTIFY_TIMEOUT_S = 20
 # HA's 10 s local-push confirm window, then its 10 s remote fallback, plus margin

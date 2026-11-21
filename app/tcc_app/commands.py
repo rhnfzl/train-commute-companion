@@ -6,7 +6,7 @@ import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from train_commute_companion.calendar import TZ, hhmm
 from train_commute_companion.catalogue import (
@@ -16,8 +16,9 @@ from train_commute_companion.catalogue import (
     message_date,
 )
 from train_commute_companion.health import BoardHealth
-from train_commute_companion.messages import crowd_text
+from train_commute_companion.messages import Refused, crowd_text
 from train_commute_companion.model import (
+    Config,
     Connection,
     Direction,
     LegKind,
@@ -38,6 +39,9 @@ from train_commute_companion.view import LegView, OccurrenceView, RecoveryPlanVi
 from train_commute_companion.webhook import WebhookTestResult
 
 from .telegram import callback_data, map_buttons
+
+if TYPE_CHECKING:
+    from train_commute_companion.runtime import Runtime
 
 LOOKAHEAD_STALE = timedelta(hours=25)  # a daily run missed or failed
 TOOLS = ("get_status", "get_next_connections", "get_works_ahead")
@@ -549,6 +553,75 @@ def connections_tool(
     }
 
 
+def regular_schedules(config: Config | None) -> list[dict[str, Any]]:
+    return [
+        {
+            "profile_id": p.id,
+            "name": display_name(p.name),
+            "origin": p.home_station,
+            "destination": p.work_station,
+            "weekdays": sorted(p.days),
+            "repeat": encode(p.repeat),
+            "extra_dates": encode(p.extra_dates),
+            "pauses": encode(p.pauses),
+            "skip_public_holidays": p.skip_public_holidays,
+            "outbound": encode(p.outbound),
+            "return": encode(p.return_),
+        }
+        for p in (config.profiles if config else ())
+        if p.home_station != p.work_station
+    ]
+
+
+async def travel_connections_tool(rt: "Runtime", request: dict[str, Any]) -> dict[str, Any]:
+    profile, plan = request.get("profile"), request.get("plan_id")
+    if profile is not None and plan is not None:
+        return {"error": "Supply one travel plan ID in profile or plan_id."}
+    plan_id = plan if plan is not None else profile
+    if not isinstance(plan_id, str) or not plan_id:
+        return {"error": "A saved travel plan ID is required."}
+    direction = next((d for d in Direction if d.value == request.get("direction")), None)
+    if direction is None:
+        return {"error": "Direction must be outbound or return."}
+    date_text = request.get("date")
+    day = None
+    if date_text is not None:
+        try:
+            if not isinstance(date_text, str) or not _DATE.fullmatch(date_text):
+                raise ValueError
+            day = date.fromisoformat(date_text)
+        except ValueError:
+            return {"error": "Use a date in YYYY-MM-DD form."}
+    preview = await rt.preview_travel_connection(plan_id, direction, day)
+    if isinstance(preview, Refused):
+        return {"error": preview.text}
+    day, schedule, source, board, connection = preview
+    status = "available"
+    if board is None:
+        status, text = "unavailable", "NS timetable data is unavailable. Try again."
+    elif connection is None:
+        status, text = "no_match", "NS returned no connection that fits this travel plan."
+    else:
+        text = f"Next planned connection: {_next_time(connection).astimezone(TZ):%H:%M}."
+    return {
+        "profile": plan_id,
+        "plan_id": plan_id,
+        "direction": direction.value,
+        "date": day.isoformat(),
+        "source": source,
+        "status": status,
+        "fetched_at": board.fetched_at.isoformat() if board else None,
+        "journeys": [
+            {
+                "service_date": schedule.key.service_date.isoformat(),
+                "state": "preview",
+                "next_good": _connection(connection) if connection else None,
+            }
+        ],
+        "text": text + "\nData: NS",
+    }
+
+
 def works_tool(view: RuntimeView, confirmed: bool, profile_id: str) -> dict[str, Any]:
     v = view_for_profile(view, profile_id)
     language = shared_language(v)
@@ -579,6 +652,12 @@ def works_tool(view: RuntimeView, confirmed: bool, profile_id: str) -> dict[str,
 def answer(view: RuntimeView, confirmed: bool, request: object) -> dict[str, Any]:
     """One MCP request, validated at the trust boundary; every error is a fixed text or
     `parse_target`'s own, which may repeat only the caller's own profile text."""
+    if (
+        isinstance(request, dict)
+        and request.get("tool") == "get_next_connections"
+        and (request.get("date") is not None or request.get("plan_id") is not None)
+    ):
+        return {"error": "Connect a registered agent to preview saved travel connections."}
     if not isinstance(request, dict) or not isinstance(profile := request.get("profile"), str):
         return {"error": "Bad request."}
     tool = request.get("tool")

@@ -23,7 +23,6 @@ from train_commute_companion.model import (
     LegKind,
     Observation,
     TransferState,
-    present,
 )
 from train_commute_companion.providers.base import ProviderAnswer
 from train_commute_companion.transfer import check_transfer, is_reported
@@ -71,18 +70,26 @@ class GoodKwargs(TypedDict):
     profile_min: Mapping[str, int]
 
 
-def _leg_problem(x: ClassifiedLeg) -> Phrase | None:
+def _leg_problem(x: ClassifiedLeg, *, allow_planned: bool) -> Phrase | None:
     if x.kind in (LegKind.CANCELLED, LegKind.CUT_SHORT):
         return phrase(f"choice.{x.kind.value}")
     if x.observation is not Observation.SEEN:
         return phrase(f"choice.{x.observation.value}")
-    # rule 20: a planned or missing time at either end of a leg is at risk, never good
-    if not (is_reported(x.leg.board.departure) and is_reported(x.leg.alight.arrival)):
+    # Only a timetable preview may use planned times in place of reported times.
+    times = (x.leg.board.departure, x.leg.alight.arrival)
+    if not all(is_reported(t) or allow_planned and t is not None and t.planned for t in times):
         return phrase("choice.missing_time")
     return None
 
 
-def check_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) -> GoodCheck:
+def check_good(
+    c: Connection,
+    answer: ProviderAnswer,
+    *,
+    allow_planned: bool = False,
+    known_first: bool = False,
+    **kw: Unpack[GoodKwargs],
+) -> GoodCheck:
     """`done_transfers` counts transfers made before `kept_incoming` boarded; the transfer from
     `kept_incoming` into the first new leg is counted here. Every leg is identified in `answer`
     (6.1): a leg that shares its boarding minute with another train is uncertain."""
@@ -106,20 +113,22 @@ def check_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) 
     cls = [
         replace(
             classify_leg(cur.legs[i], leg.alight.code),
-            observation=find_leg(answer, leg.train, leg.board.code)[1],
+            observation=Observation.SEEN
+            if known_first and i == 0
+            else find_leg(answer, leg.train, leg.board.code)[1],
         )
         for i, leg in enumerate(c.legs)
     ]
     for x in cls:
-        if (problem := _leg_problem(x)) is not None:
+        if (problem := _leg_problem(x, allow_planned=allow_planned)) is not None:
             return GoodCheck(False, problem)
-    first = present(present(cls[0].leg.board.departure).value)  # is_reported() above
+    first = expected_departure(cur)
     if first.astimezone(UTC) < kw["catch"].not_before.astimezone(UTC):
         return GoodCheck(False, phrase("choice.too_late"))
     pairs = [(*pair_transfer(seen_in, kept, cls[0]), board)] if kept is not None else []
     pairs += [(a, b, leg.alight.code) for (a, b), leg in zip(itertools.pairwise(cls), c.legs)]
     for inc, out, station in pairs:
-        tc = check_transfer(inc, out, station, pm)
+        tc = check_transfer(inc, out, station, pm, allow_planned=allow_planned)
         if tc.state is not TransferState.OK:
             return GoodCheck(
                 False,
@@ -140,6 +149,8 @@ def choose_replacement(
     candidates: Sequence[Connection] | None = None,
     arrival: ArrivalChoice | None = None,
     earliest: bool = False,
+    allow_planned: bool = False,
+    known_first: bool = False,
     **kw: Unpack[GoodKwargs],
 ) -> tuple[Connection | None, Literal["usual_pattern", "new_route", "none"]]:
     """Ranks `candidates` (default: every connection in `answer`); identity is always judged
@@ -151,7 +162,11 @@ def choose_replacement(
     seen_in = evidence(answer)
     cur = {id(c): current_connection(seen_in, c) for c in pool}
     ranked = sorted(pool, key=lambda c: expected_departure(cur[id(c)]))
-    good = [c for c in ranked if check_good(c, answer, **kw).ok]
+    good = [
+        c
+        for c in ranked
+        if check_good(c, answer, allow_planned=allow_planned, known_first=known_first, **kw).ok
+    ]
     if arrival is not None:
         eligible = [cur[id(c)] for c in good if arrival.accepts(cur[id(c)])]
         choice = next(iter(eligible), None) if earliest else arrival.pick(eligible)

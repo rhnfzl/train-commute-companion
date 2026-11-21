@@ -340,6 +340,8 @@ class TccSensor(TccEntity, SensorEntity):
                 notifications_paused=self.coordinator.notification_paused(),
                 notifications_quiet=self.coordinator.notification_quiet(),
             )
+            if self.coordinator.remote:
+                attrs["runtime_source"] = "docker"
         return attrs
 
 
