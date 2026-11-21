@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import yaml
 
-from train_commute_companion.model import NotificationChannel
+from train_commute_companion.model import AlertSettings, NotificationChannel
 from train_commute_companion.notification_policy import CATEGORIES
 from train_commute_companion.profile import load_config, station_code
 from train_commute_companion.transfer import FALLBACK_MIN
@@ -139,6 +139,16 @@ def edit_profile(
         ):
             alerts[key] = values[key]
             profile["alerts"] = alerts
+    defaults = AlertSettings()
+    for key in ("custom_timetable_horizon", "timetable_horizon_unit", "timetable_horizon_count"):
+        if key in values:
+            value = values[key]
+            if key == "timetable_horizon_count" and isinstance(value, float) and value.is_integer():
+                value = int(value)
+            alerts = copy.deepcopy(profile.get("alerts", {}))
+            default = getattr(defaults, key)
+            if type(value) is not type(default) or value != default or key in alerts:
+                profile["alerts"] = {**alerts, key: value}
     if any(f"channel_{category}" in values for category in CATEGORIES):
         alerts = copy.deepcopy(profile.get("alerts", {}))
         channels = copy.deepcopy(alerts.get("channels", {}))

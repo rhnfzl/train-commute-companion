@@ -24,7 +24,12 @@ from homeassistant.helpers.selector import (
 )
 
 from train_commute_companion.calendar import TZ, WEEKDAYS
-from train_commute_companion.model import NotificationChannel, Stations
+from train_commute_companion.model import (
+    MAX_TIMETABLE_HORIZON,
+    AlertSettings,
+    NotificationChannel,
+    Stations,
+)
 from train_commute_companion.notification_policy import CATEGORIES
 from train_commute_companion.profile import slug
 from train_commute_companion.providers.base import AuthError, ProviderError
@@ -57,6 +62,14 @@ DAY_NAMES = dict(
 )
 _OPTIONAL_TEXT = ("time", "window_start", "window_end")
 _SINGLE_STATIONS = ("home_station", "work_station")
+
+
+class TimetableHorizonCountSelector(NumberSelector):
+    def __call__(self, data: Any) -> float:
+        if type(data) not in (int, float) or (isinstance(data, float) and not data.is_integer()):
+            raise vol.Invalid("expected a whole number")
+        return super().__call__(data)
+
 
 CATEGORY_LABELS = {
     "journey": "Journey changes",
@@ -485,24 +498,41 @@ class ProfileEditorFlow:
             ] = NumberSelector(
                 NumberSelectorConfig(min=1, max=1440, step=1, mode=NumberSelectorMode.BOX)
             )
+        alerts = existing.get("alerts", {})
+        defaults = AlertSettings()
         for key in (
             "compensation_reminder",
             "quiet_repeat_misses",
             "weather",
             "leave_by",
             "weather_allowance",
+            "custom_timetable_horizon",
         ):
             fields[
-                vol.Optional(
-                    key,
-                    default=values.get(
-                        key,
-                        existing.get("alerts", {}).get(
-                            key, key in ("weather", "leave_by", "weather_allowance")
-                        ),
-                    ),
-                )
+                vol.Optional(key, default=values.get(key, alerts.get(key, getattr(defaults, key))))
             ] = BooleanSelector()
+        key = "timetable_horizon_unit"
+        fields[
+            vol.Optional(
+                key, default=values.get(key, alerts.get(key, defaults.timetable_horizon_unit))
+            )
+        ] = SelectSelector(
+            SelectSelectorConfig(
+                options=["calendar_days", "commute_dates"],
+                mode=SelectSelectorMode.DROPDOWN,
+                translation_key="timetable_horizon_unit",
+            )
+        )
+        key = "timetable_horizon_count"
+        fields[
+            vol.Optional(
+                key, default=values.get(key, alerts.get(key, defaults.timetable_horizon_count))
+            )
+        ] = TimetableHorizonCountSelector(
+            NumberSelectorConfig(
+                min=1, max=MAX_TIMETABLE_HORIZON, step=1, mode=NumberSelectorMode.BOX
+            )
+        )
         location = existing.get("location")
         if isinstance(location, dict):  # other boarding stations need a location source
             fields.update(self._other_station_fields(existing, location, values))

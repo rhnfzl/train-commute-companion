@@ -135,7 +135,7 @@ A receiver that fails or is down never holds back a phone alert. It shows only a
 
 ## Limits
 
-- NS trip data reaches about 10 days ahead, so the look-ahead for planned works does too. A day further out is not checked yet, rather than looking falsely clean.
+- The [timetable lookahead](profile-editor.md#timetable-lookahead) checks seven calendar days by default. NS may not have timetable data for every date you request.
 - A machine that is off cannot warn you about itself. If Home Assistant is down, no alert arrives. Add an external uptime check for the machine that runs it.
 - Delivery means Home Assistant handed the push on and saw no failure. What the phone vendor's relay does after that is not visible to the integration.
 

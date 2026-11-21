@@ -496,8 +496,8 @@ def test_scoped_probe_dates_keep_three_date_ten_day_budget_per_actual_baseline()
         ),
     )
     history = BaselineHistory((base,))
-    dates = probe_dates(p, MON, direction=OUT, histories={OUT: history})
-    assert dates == [TUE, WED, NEXT_TUE + timedelta(days=1)]
+    dates = probe_dates(p, MON, direction=OUT, histories={OUT: history}).dates
+    assert dates == (TUE, WED, NEXT_TUE + timedelta(days=1))
     for commute_day in dates:
         selected = baseline_on(history, p, OUT, commute_day)
         assert all(

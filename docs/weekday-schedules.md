@@ -106,7 +106,7 @@ A direction with overrides learns a separate timetable for each commute weekday.
 
 A learned timetable contains every leg's actual planned departure, transfer pattern, and duration. The companion never shifts an old timetable to invent missing onward train times. A changed weekday starts with its configured first departure and no learned full timetable.
 
-Look-ahead retains the existing budget: at most the next three eligible commute dates within ten days. Each weekday is judged against all requested probes for that weekday. Learning an infrequent weekday can therefore take longer.
+Look-ahead checks eligible commute dates within the next seven calendar days by default. Use the [timetable horizon settings](profile-editor.md#timetable-lookahead) to change the count or count upcoming commute dates instead. Legacy mode checks up to three eligible commute dates within ten calendar days. Each weekday is judged against all requested probes for that weekday, so learning an infrequent weekday can take longer.
 
 When overrides are enabled, unchanged weekdays retain confirmed global timetable signatures, including existing adoptions. They receive fresh version IDs. Changed weekdays and unconfirmed legacy seeds start without a learned timetable. Editing one weekday preserves unaffected weekday histories and their confirmation evidence.
 

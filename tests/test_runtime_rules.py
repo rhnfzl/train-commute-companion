@@ -1463,6 +1463,12 @@ async def test_lookahead_catches_up_after_start_past_six(tmp_path):
 @pytest.mark.usefixtures("inline_file_reads")
 async def test_lookahead_retried_each_poll_interval_until_a_run_completes(tmp_path):
     rig = Rig(tmp_path, "06:00")
+    rig.write(
+        text=PROFILE.replace("NAME", "office_a").replace(
+            '    return: {first_train: "17:52"',
+            '    alerts: {custom_timetable_horizon: false}\n    return: {first_train: "17:52"',
+        )
+    )
     plain = rig.provider.planned_works
 
     async def first_fails() -> object:

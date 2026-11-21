@@ -36,7 +36,7 @@ profiles:
 def profile(**out: object):
     ps, errs = parse_profiles(YAML, None)
     assert errs == []
-    p = ps[0]
+    p = replace(ps[0], alerts=replace(ps[0].alerts, custom_timetable_horizon=False))
     return replace(p, outbound=replace(p.outbound, **out)) if out else p
 
 

@@ -4,7 +4,7 @@ to the state as stored by then, with the owed webhook copies following its messa
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 
 from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.lookahead import carried_ids, render_message, run_lookahead
@@ -34,12 +34,21 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ProbedRun:
-    """A complete probe of a direction, with the start stamps its write is judged on (rule 21)."""
+    """A direction's observations, with the start stamps its write is judged on (rule 21)."""
 
     start: datetime
     revision: int
     baseline: int | None
     results: tuple[ProbeResult, ...]
+    probe_finished: bool = True
+
+
+def _skipped_dates(st: PersistedState, p: Profile, d: Direction) -> set[date]:
+    return {
+        s.key.service_date
+        for s in st.occurrences.values()
+        if s.key.profile_id == p.id and s.key.direction is d and s.not_travelling
+    }
 
 
 async def probe_direction(
@@ -50,21 +59,24 @@ async def probe_direction(
     start: datetime,
     fetch: Callable[[Sequence[Query]], Awaitable[tuple[ProviderAnswer, ...] | PollFailure]],
 ) -> ProbedRun | None:
-    """`st`: the state as the run starts. None: an incomplete run, which writes nothing."""
+    """Keep dated observations before a failed custom probe. The writer checks agreement."""
     config = present(st.config)
     today = start.astimezone(TZ).date()
     hist = st.baselines.get(direction_key(p.id, d), BaselineHistory())
     histories = {x: st.baselines.get(direction_key(p.id, x), BaselineHistory()) for x in Direction}
     results: list[ProbeResult] = []
-    for day in probe_dates(p, today, direction=d, histories=histories):
+    plan = probe_dates(p, today, direction=d, histories=histories, skipped=_skipped_dates(st, p, d))
+    for day in plan.dates:
         if p.journey_on(d, day).mode == "window":
             continue  # no usual train to probe, seed or adopt on a window day
         base = baseline_on(hist, p, d, service_date(p, d, day))
         got = await fetch(probe_queries(p, d, day, base))
         if isinstance(got, str):
-            return None
+            if not p.alerts.custom_timetable_horizon or not results:
+                return None
+            return ProbedRun(start, config.revision, hist.latest, tuple(results), False)
         results += evaluate(p, d, day, got, works, base)
-    return ProbedRun(start, config.revision, hist.latest, tuple(results))
+    return ProbedRun(start, config.revision, hist.latest, tuple(results), plan.complete)
 
 
 def apply_run(
@@ -99,6 +111,8 @@ def apply_run(
         now=run.start,
         others=[x for x in cfg.profiles if x.id != p.id],
         bases=all_bases,
+        skipped=_skipped_dates(st, p, d),
+        probe_finished=run.probe_finished,
     )
     if out is None:
         log.info("look-ahead for %s discarded: configuration or baseline changed", dk)
@@ -114,18 +128,22 @@ def apply_run(
     )
 
 
+def directions_due(st: PersistedState, since: datetime | None) -> list[tuple[str, Direction]]:
+    """Directions that need a daily attempt. An explicit run passes no start time."""
+    due = []
+    for p in st.config.profiles if st.config else ():
+        if p.home_station == p.work_station:
+            continue
+        for d in Direction:
+            ledger = st.lookahead.get(direction_key(p.id, d))
+            stamp = ledger.last_applied if ledger is not None else None
+            if since is None or stamp is None or to_utc(stamp) < to_utc(since):
+                due.append((p.id, d))
+    return due
+
+
 def lookahead_done(st: PersistedState, since: datetime) -> bool:
-    """Every direction with different home and work stations has a run written since `since`."""
-    leds = [
-        st.lookahead.get(direction_key(p.id, d))
-        for p in (st.config.profiles if st.config else ())
-        if p.home_station != p.work_station
-        for d in Direction
-    ]
-    return all(
-        x is not None and x.last_applied is not None and to_utc(x.last_applied) >= to_utc(since)
-        for x in leds
-    )
+    return not directions_due(st, since)
 
 
 def _carry_copies(
