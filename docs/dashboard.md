@@ -30,5 +30,7 @@ The works count only covers checked commute dates, not every future journey. Its
 The direction's status sensor exposes `leave_by` as an ISO timestamp with a UTC offset for the followed first train.
 It uses the earlier of planned and NS-expected departure, minus the journey's travel buffer.
 The attribute is null when no train is followed or `alerts.leave_by` is false.
+`weather_allowance` holds suggested extra minutes separately from this timestamp. `leave_by_text` displays the applicable advice.
+See the [weather allowance table](weather.md#suggested-extra-time-before-departure). Suggestions never change timers or the followed train.
 
 This dashboard contains your travel routine. Keep it on a private dashboard and remove station and journey details before sharing screenshots.

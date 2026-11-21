@@ -37,6 +37,7 @@ profiles:
     alerts:
       leave_by: true          # show leave-by time in check-in, pre-trip advice and HA status
       weather: true                    # station forecasts and tips; warnings need your own KNMI key
+      weather_allowance: true          # suggest extra minutes in leave-by text for forecast hazards
       earlier_train_threshold_min: 10   # advise an earlier train from this much delay
       earlier_train_min_saving_min: 5   # only if it saves at least this much
       latest_acceptable_arrival: null   # optional "HH:MM"; later arrival makes delays loud

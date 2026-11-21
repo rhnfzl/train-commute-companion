@@ -485,12 +485,21 @@ class ProfileEditorFlow:
             ] = NumberSelector(
                 NumberSelectorConfig(min=1, max=1440, step=1, mode=NumberSelectorMode.BOX)
             )
-        for key in ("compensation_reminder", "quiet_repeat_misses", "weather", "leave_by"):
+        for key in (
+            "compensation_reminder",
+            "quiet_repeat_misses",
+            "weather",
+            "leave_by",
+            "weather_allowance",
+        ):
             fields[
                 vol.Optional(
                     key,
                     default=values.get(
-                        key, existing.get("alerts", {}).get(key, key in ("weather", "leave_by"))
+                        key,
+                        existing.get("alerts", {}).get(
+                            key, key in ("weather", "leave_by", "weather_allowance")
+                        ),
                     ),
                 )
             ] = BooleanSelector()

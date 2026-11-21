@@ -91,7 +91,32 @@ def test_check_in_default_remains_omitted_and_leave_by_defaults_on(tmp_path):
     profiles, errors = parse_profiles(text, KNOWN)
     assert not errors and profiles[0].outbound.active_lead_min is None
     assert profiles[0].alerts.leave_by is True
+    assert profiles[0].alerts.weather_allowance is True
     assert "active_lead_min" not in yaml.safe_load(text)["profiles"][0]["outbound"]
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_weather_allowance_roundtrip_preserves_independent_switches(tmp_path, enabled):
+    text = edit_profile(
+        document(tmp_path),
+        "p1",
+        {**VALUES, "weather_allowance": enabled, "weather": False, "leave_by": True},
+        KNOWN,
+        TODAY,
+    )
+    profiles, errors = parse_profiles(text, KNOWN)
+    assert not errors
+    alerts = profiles[0].alerts
+    assert (
+        alerts.weather_allowance is enabled and alerts.weather is False and alerts.leave_by is True
+    )
+    text = edit_profile(document(tmp_path, text), "p1", VALUES, KNOWN, TODAY)
+    profiles, errors = parse_profiles(text, KNOWN)
+    assert not errors and profiles[0].alerts.weather_allowance is enabled
+    with pytest.raises(EditorError, match="invalid_profile"):
+        edit_profile(
+            document(tmp_path), "p1", {**VALUES, "weather_allowance": "false"}, KNOWN, TODAY
+        )
 
 
 @pytest.mark.parametrize("enabled", [True, False])
