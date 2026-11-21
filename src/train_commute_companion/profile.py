@@ -532,6 +532,10 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "disabled_categories",
             "channels",
             "compensation_reminder",
+            "compensation_details",
+            "timetable_update",
+            "arrival_prompt",
+            "navigate",
             "quiet_repeat_misses",
             "weather",
             "delay_min",
@@ -604,6 +608,14 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
     compensation = raw.get("compensation_reminder", False)
     if not isinstance(compensation, bool):
         c.err("alerts.compensation_reminder", "must be true or false")
+    compensation_details = c.boolean(
+        raw.get("compensation_details", d.compensation_details), "alerts.compensation_details"
+    )
+    timetable_update = c.boolean(
+        raw.get("timetable_update", d.timetable_update), "alerts.timetable_update"
+    )
+    arrival_prompt = c.boolean(raw.get("arrival_prompt", d.arrival_prompt), "alerts.arrival_prompt")
+    navigate = c.boolean(raw.get("navigate", d.navigate), "alerts.navigate")
     repeat = raw.get("quiet_repeat_misses", False)
     if not isinstance(repeat, bool):
         c.err("alerts.quiet_repeat_misses", "must be true or false")
@@ -674,6 +686,10 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         or quick_trip is None
         or daily_brief is None
         or location_leave is None
+        or arrival_prompt is None
+        or compensation_details is None
+        or timetable_update is None
+        or navigate is None
     ):
         return None
     return AlertSettings(
@@ -705,6 +721,10 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         quick_trip=quick_trip,
         daily_brief=daily_brief,
         location_leave_now=location_leave,
+        arrival_prompt=arrival_prompt,
+        compensation_details=compensation_details,
+        timetable_update=timetable_update,
+        navigate=navigate,
     )
 
 

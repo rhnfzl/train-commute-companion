@@ -122,6 +122,9 @@ async def test_subscription_includes_replacement_plan_and_omits_replaced_commute
         "quick_trip",
         "daily_brief",
         "location_leave_now",
+        "arrival_prompt",
+        "navigate",
+        "compensation_details",
     ],
 )
 async def test_non_routing_settings_do_not_change_flexible_trip_defaults(tmp_path, field):
@@ -153,6 +156,9 @@ async def test_non_routing_settings_do_not_change_flexible_trip_defaults(tmp_pat
         "after_trip_note",
         "alert_history",
         "location_leave_now",
+        "arrival_prompt",
+        "navigate",
+        "compensation_details",
     }:
         assert not getattr(plan.profile.alerts, field)
     if field != "calendar_feed":

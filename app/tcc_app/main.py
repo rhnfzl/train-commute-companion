@@ -296,6 +296,9 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
             if s.ntfy is None and telegram is not None and bot is not None and bot.confirmed
             else None
         ),
+        arrival_recipient=lambda: (
+            bot.arrival_recipient if bot is not None and s.ntfy is None else None
+        ),
         weather=WeatherProvider(client, clock.now, s.knmi_key),
         primary_destination_scope=lambda destination: destination.startswith(
             NTFY_DESTINATION_PREFIX

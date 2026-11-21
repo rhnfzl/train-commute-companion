@@ -1,17 +1,22 @@
+from dataclasses import replace
 from datetime import UTC, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import voluptuous as vol
-from ha_rig import PROFILE, jump, profiles_path, setup_tcc, state_path
+from ha_rig import NOTIFY, PROFILE, jump, profiles_path, setup_tcc, state_path
+from homeassistant.core import Context, EventOrigin
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.selector import DateTimeSelector
 from runtime_seam import save_state, seed_state
 
 from custom_components.train_commute_companion.arrival_flow import local_timestamp
-from custom_components.train_commute_companion.const import DOMAIN
-from train_commute_companion.model import Direction
+from custom_components.train_commute_companion.const import DOMAIN, EVENT_ALERT
+from custom_components.train_commute_companion.notifier import ARRIVAL_PREFIX, MOBILE_APP
+from custom_components.train_commute_companion.services import MOBILE_ACTION
+from train_commute_companion.model import Direction, okey
 from train_commute_companion.store import JsonFileStore, StorageError
 
 pytestmark = pytest.mark.usefixtures("tcc_freezer")
@@ -100,6 +105,67 @@ async def test_picker_review_requires_explicit_confirmation_without_profile_relo
         assert (await saved(h)).revision == 1
         assert profiles_path(hass).read_bytes() == original and dict(h.entry.options) == options
         assert not reload.called
+
+
+async def test_arrival_push_only_accepts_bound_mobile_action(hass):
+    import yaml
+    from pytest_homeassistant_custom_component.common import async_capture_events
+
+    raw = yaml.safe_load(PROFILE)
+    raw["profiles"][0]["alerts"] = {"compensation_reminder": True}
+    h = await setup_tcc(hass, yaml.safe_dump(raw))
+    await jump(h, "2026-10-27 12:00")
+    original = await saved(h)
+    hass.data[MOBILE_APP] = {
+        "config_entries": {
+            f"hook-{NOTIFY}": SimpleNamespace(data={"user_id": "owner", "device_id": "phone"})
+        }
+    }
+    bus = async_capture_events(hass, EVENT_ALERT)
+
+    async def queue(rt):
+        profile = next(p for p in rt.config.profiles if p.id == original.key.profile_id)
+        record, obligation = rt._arrival_question(
+            original, profile, rt.now() - timedelta(minutes=10), rt.now()
+        )
+        assert rt._writer.commit_strict(
+            replace(
+                rt.state,
+                obligations=(*rt.state.obligations, obligation),
+                journey_records={**rt.state.journey_records, okey(record.key): record},
+            )
+        )
+        await rt._deliver()
+        return record.prompt
+
+    prompt = await h.host.run(queue)
+    push_data = h.pushes[-1].data["data"]
+    yes, other = push_data["actions"]
+    assert yes == {"action": ARRIVAL_PREFIX + prompt.id, "title": "Yes"}
+    assert other == {
+        "action": "URI",
+        "title": "Other time",
+        "uri": f"/config/integrations/integration/{DOMAIN}",
+    }
+    assert push_data["push"]["interruption-level"] == "passive"
+    assert not bus  # the private action key is sent only to the bound phone
+
+    for origin, user, device in (
+        (EventOrigin.local, "owner", None),
+        (EventOrigin.remote, "other", None),
+        (EventOrigin.remote, "owner", "another-device"),
+        (EventOrigin.remote, "owner", None),  # iOS does not supply a device ID
+    ):
+        hass.bus.async_fire(
+            MOBILE_ACTION,
+            {"action": yes["action"], "device_id": device},
+            origin,
+            Context(user_id=user),
+        )
+        await hass.async_block_till_done()
+        accepted = origin is EventOrigin.remote and user == "owner" and device is None
+        assert (await saved(h)).arrived_at == (prompt.at if accepted else None)
+    assert (await saved(h)).revision == 1
 
 
 def picker_value(flow, field="arrived_at"):
@@ -351,3 +417,22 @@ def test_compensation_preference_roundtrips_without_losing_other_alerts(tmp_path
     doc = document(tmp_path, text)
     text = edit_profile(doc, "p1", {**VALUES, "compensation_reminder": False}, KNOWN, TODAY)
     assert yaml.safe_load(text)["profiles"][0]["alerts"]["compensation_reminder"] is False
+
+
+def test_arrival_and_navigation_preferences_save_independently(tmp_path):
+    import yaml
+    from test_profile_editor import KNOWN, TODAY, VALUES, document
+
+    from custom_components.train_commute_companion.profile_editor import edit_profile
+
+    doc = document(tmp_path)
+    values = {**VALUES, "arrival_prompt": False, "navigate": True}
+    text = edit_profile(doc, "p1", values, KNOWN, TODAY)
+    alerts = yaml.safe_load(text)["profiles"][0]["alerts"]
+    assert alerts["arrival_prompt"] is False and alerts.get("navigate", True) is True
+    doc.path.write_text(text)
+    doc = document(tmp_path, text)
+    values.update(arrival_prompt=True, navigate=False)
+    text = edit_profile(doc, "p1", values, KNOWN, TODAY)
+    alerts = yaml.safe_load(text)["profiles"][0]["alerts"]
+    assert alerts["arrival_prompt"] is True and alerts["navigate"] is False

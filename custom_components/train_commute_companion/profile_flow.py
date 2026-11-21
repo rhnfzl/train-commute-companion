@@ -642,6 +642,10 @@ class ProfileEditorFlow:
         defaults = AlertSettings()
         for key in (
             "compensation_reminder",
+            "compensation_details",
+            "timetable_update",
+            "arrival_prompt",
+            "navigate",
             "quiet_repeat_misses",
             "weather",
             "leave_by",

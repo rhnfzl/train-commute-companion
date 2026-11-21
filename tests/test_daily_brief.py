@@ -563,8 +563,18 @@ async def test_brief_retry_rechecks_advice_and_windows_for_all_destinations(tmp_
     assert "Return: 17:52 train 600. Leave by 17:47." in brief.text
 
 
-@pytest.mark.parametrize("setting", ["live_today", "telegram_status_pin"])
-async def test_display_toggle_preserves_a_brief_waiting_to_send(tmp_path, setting):
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "live_today",
+        "telegram_status_pin",
+        "navigate",
+        "timetable_update",
+        "arrival_prompt",
+        "compensation_details",
+    ],
+)
+async def test_unrelated_toggle_preserves_a_brief_waiting_to_send(tmp_path, setting):
     rig = await setup(tmp_path)
     rig.notifier.fails = lambda event: event.kind is MORNING
     await run_at(rig, "06:00")

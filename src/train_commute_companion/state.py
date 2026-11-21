@@ -394,6 +394,7 @@ class BaselineVersion:
     effective_from: date
     confirmed: bool
     commute_weekday: int | None = None
+    update_nonce: str | None = None
 
     def phase_on(self, day: date) -> BaselinePhase:
         if self.confirmed:
@@ -424,6 +425,13 @@ class BaselineHistory:
             if v.phase_on(day).current and v.commute_weekday == commute_weekday
         ]
         return max(live, key=lambda v: (v.effective_from, v.version), default=None)
+
+    def latest_confirmed(self, scope: int | None) -> BaselineVersion | None:
+        return max(
+            (v for v in self.versions if v.confirmed and v.commute_weekday == scope),
+            key=lambda v: (v.effective_from, v.version),
+            default=None,
+        )
 
     @property
     def latest(self) -> int | None:

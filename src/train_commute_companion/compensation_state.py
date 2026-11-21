@@ -32,6 +32,8 @@ class PlannedJourney:
     planned_arrival: datetime
     source: Literal["ns", "user"]
     checked_at: datetime | None = None
+    origin: str | None = None
+    train_numbers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +42,16 @@ class ArrivalConfirmation:
     destination: str
     at: datetime
     original_planned_arrival: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArrivalPrompt:
+    id: str
+    at: datetime
+    expires_at: datetime
+    recipient: str
+    delivered: bool = False
+    closed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +67,8 @@ class JourneyRecord:
     # once, so a minimum stay can count from them after the occurrence is archived
     seen_at: datetime | None = None
     train_arrival: datetime | None = None
+    prompt: ArrivalPrompt | None = None
+    reported_train_arrival: datetime | None = None
 
     @property
     def plan_phase(self) -> PlanPhase:

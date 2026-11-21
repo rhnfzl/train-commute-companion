@@ -304,6 +304,10 @@ def parse_plan(
                 quick_trip=True,
                 daily_brief=True,
                 location_leave_now=True,
+                arrival_prompt=True,
+                navigate=True,
+                compensation_details=True,
+                timetable_update=True,
             ),
             p.accessibility,
             p.transfer_min,
@@ -330,6 +334,9 @@ def parse_plan(
             after_trip_note=all(p.alerts.after_trip_note for p in matching),
             alert_history=all(p.alerts.alert_history for p in matching),
             location_leave_now=all(p.alerts.location_leave_now for p in matching),
+            arrival_prompt=all(p.alerts.arrival_prompt for p in matching),
+            navigate=all(p.alerts.navigate for p in matching),
+            compensation_details=all(p.alerts.compensation_details for p in matching),
         )
     outbound = _journey(d.get("outbound"), "Outbound", base.outbound if base else None)
     has_return = d.get("return") is not None

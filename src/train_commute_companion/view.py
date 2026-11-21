@@ -220,6 +220,7 @@ class OccurrenceView:
     arrive_by: datetime | None = None
     station_arrival_deadline: datetime | None = None
     arrival_target_status: ArrivalStatus | Literal["no_train"] | None = None
+    navigation: tuple[str, str] | None = None
 
     @property
     def leave_by_text(self) -> str | None:

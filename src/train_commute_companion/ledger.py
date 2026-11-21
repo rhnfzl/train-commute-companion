@@ -18,6 +18,7 @@ from train_commute_companion.advice import (
 from train_commute_companion.arrival import arrival_status
 from train_commute_companion.calendar import TZ, hhmm, to_utc
 from train_commute_companion.classify import current_connection, current_run, find_leg
+from train_commute_companion.compensation import reminder_text
 from train_commute_companion.delivery import JOURNEY_WARNINGS, covers
 from train_commute_companion.disruptions import LEGACY_PRIMARY
 from train_commute_companion.health import FRESH_FOR, BoardPhase, WatchedLeg, board_health
@@ -40,6 +41,7 @@ from train_commute_companion.lookahead_probe import (
     RESTORED_FACT,
     UNCLEAR_MARK,
     WORKS_MARKS,
+    adopt_key,
     bundle_key,
     is_restored,
     latest_mark,
@@ -70,6 +72,7 @@ from train_commute_companion.model import (
 from train_commute_companion.news import all_good
 from train_commute_companion.notification_policy import (
     CHANNELS,
+    arrival_prompt_enabled,
     channels_for,
     enabled,
     routing_ready,
@@ -97,6 +100,7 @@ from train_commute_companion.state import (
 )
 from train_commute_companion.store import PersistedState
 from train_commute_companion.timetable_receipts import correction_keys
+from train_commute_companion.timetable_update import offered_edit
 from train_commute_companion.unclear import train_key
 from train_commute_companion.weather_allowance import weather_allowance
 
@@ -588,6 +592,22 @@ class LiveLedger:
             )
         if o.event.kind is EventKind.DAILY_BRIEF:
             return self._brief_text(o) is not None
+        if o.event.kind is EventKind.ARRIVAL_PROMPT:
+            facts = alert_facts(o.event)
+            record = self._state.journey_records.get(facts.arrival_record)
+            profile = routing_profile(self._state, o.event.profile_id, o.route_revision)
+            return (
+                record is not None
+                and record.revision == facts.arrival_revision
+                and record.prompt is not None
+                and record.prompt.id == facts.prompt_id
+                and not record.prompt.closed
+                and not record.prompt.delivered
+                and profile is not None
+                and arrival_prompt_enabled(profile.alerts)
+            )
+        if o.event.kind is EventKind.STATION_NAVIGATION:
+            return alert_facts(self._format_event(o.event)).navigation is not None
         if o.event.kind is EventKind.COMPENSATION_REMINDER:
             facts = alert_facts(o.event)
             record = self._state.journey_records.get(facts.arrival_record)
@@ -865,6 +885,21 @@ class LiveLedger:
         event = self._current(o, destination, for_copy=for_copy)
         if event is None:
             return None
+        if (
+            not for_copy
+            and destination is not None
+            and destination.startswith("ha-mobile:")
+            and o.look_ahead is not None
+            and o.baseline_version is not None
+            and (
+                event.kind is EventKind.TIMETABLE_ADOPTED
+                or any(f.key == adopt_key(o.baseline_version) for f in self._live_facts(o) or ())
+            )
+        ):
+            pid, direction, _ = o.look_ahead
+            offer = offered_edit(self._state, pid, direction, o.baseline_version, destination)
+            if offer is not None and offer[1] is not None:
+                event = replace(event, facts=replace(alert_facts(event), prompt_id=offer[1]))
         state = None if o.occurrence is None else self._occurrence(o.occurrence)
         if (
             state is not None
@@ -877,6 +912,7 @@ class LiveLedger:
                 EventKind.KEY_REJECTED,
                 EventKind.PROFILE_REFUSED,
                 EventKind.STORAGE_FAILED,
+                EventKind.STATION_NAVIGATION,
             )
             and not event.kind.value.startswith("recovery_")
         ):
@@ -889,6 +925,12 @@ class LiveLedger:
         if o.event.kind is EventKind.DAILY_BRIEF:
             text = self._brief_text(o)
             return None if text is None else replace(o.event, text=text)
+        if o.event.kind is EventKind.COMPENSATION_REMINDER:
+            facts = alert_facts(o.event)
+            record = self._state.journey_records.get(facts.arrival_record)
+            if record is not None and record.revision == facts.arrival_revision:
+                text = reminder_text(record, include_details=self._alerts(o).compensation_details)
+                return replace(o.event, text=text)
         if o.look_ahead is not None:
             pid, direction, day = o.look_ahead
             # A correction belongs only to destinations that received its adoption.

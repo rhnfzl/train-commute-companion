@@ -12,7 +12,9 @@ from typing import Any
 
 import httpx
 
-from train_commute_companion.model import AlertEvent, Severity, alert_facts
+from train_commute_companion.model import AlertEvent, EventKind, Severity, alert_facts
+from train_commute_companion.navigation import MAP_LABELS
+from train_commute_companion.notify import NotificationPaused
 
 log = logging.getLogger(__name__)
 
@@ -107,6 +109,14 @@ def callback_data(*parts: str) -> str | None:
     return data
 
 
+def map_buttons(maps: tuple[str, str]) -> list[dict[str, str]]:
+    return [{"text": label, "url": url} for label, url in zip(MAP_LABELS, maps, strict=True)]
+
+
+def telegram_recipient(bot_id: str, chat_id: int) -> str:
+    return "telegram:" + hashlib.sha256(f"{bot_id}:{chat_id}".encode()).hexdigest()
+
+
 def alert_buttons(event: AlertEvent) -> dict[str, Any] | None:
     """`I'm leaving` and `Not travelling` for a journey alert, or a question's own answers. None
     for an application warning, and for a look-ahead message: it names a future day with no
@@ -116,18 +126,24 @@ def alert_buttons(event: AlertEvent) -> dict[str, Any] | None:
         return None
     facts = alert_facts(event)
     if facts.choices:  # a question: only its own answers
+        tag = "ap" if event.kind is EventKind.ARRIVAL_PROMPT else "q"
         answers = [
             {"text": label, "callback_data": data}
             for answer, label in facts.choices
-            if (data := callback_data("q", facts.prompt_id, answer)) is not None
+            if (data := callback_data(tag, facts.prompt_id, answer)) is not None
         ]
         return {"inline_keyboard": [answers]} if answers else None
+    if event.kind is EventKind.STATION_NAVIGATION:
+        return {"inline_keyboard": [map_buttons(facts.navigation)]} if facts.navigation else None
     row = [
         {"text": label, "callback_data": data}
         for label, tag in (("I'm leaving", "l"), ("Not travelling", "s"))
         if (data := callback_data(tag, event.profile_id, d.value, day.isoformat())) is not None
     ]
-    return {"inline_keyboard": [row]} if row else None
+    rows = [row] if row else []
+    if facts.navigation:
+        rows.append(map_buttons(facts.navigation))
+    return {"inline_keyboard": rows} if rows else None
 
 
 def split_text(text: str, limit: int = TEXT_LIMIT) -> list[str]:
@@ -164,7 +180,7 @@ class TelegramNotifier:
     def destination_id(self) -> str | None:
         if self._chat is None:
             return None
-        return "telegram:" + hashlib.sha256(f"{self._api.bot_id}:{self._chat}".encode()).hexdigest()
+        return telegram_recipient(self._api.bot_id, self._chat)
 
     async def send(self, event: AlertEvent) -> bool:
         async with self._sending:
@@ -190,6 +206,8 @@ class TelegramNotifier:
     async def _send_event(self, event: AlertEvent) -> bool:
         now = self._now().astimezone(UTC)
         if self.destination_phase(now) is not DestinationPhase.READY:
+            if event.kind is EventKind.ARRIVAL_PROMPT:
+                raise NotificationPaused
             return False
         key = (event.profile_id, event.direction.value if event.direction else "", event.key)
         key_until = self._key_until.get(key)
@@ -212,7 +230,11 @@ class TelegramNotifier:
             if markup is not None and i == len(parts) - 1:
                 params["reply_markup"] = markup
             try:
-                await self._send_part(params)
+                await self._send_part(
+                    params,
+                    text_fallback=event.kind
+                    not in (EventKind.ARRIVAL_PROMPT, EventKind.STATION_NAVIGATION),
+                )
             except TelegramError as e:
                 self._failed(key, e, now)
                 return False
@@ -222,11 +244,16 @@ class TelegramNotifier:
         self._key_until.pop(key, None)
         return True
 
-    async def _send_part(self, params: dict[str, Any]) -> None:
+    async def _send_part(self, params: dict[str, Any], *, text_fallback: bool) -> None:
         try:
             await self._api.call("sendMessage", params)
         except TelegramError as e:
-            if e.code != 400 or _chat_not_found(e) or "reply_markup" not in params:
+            if (
+                not text_fallback
+                or e.code != 400
+                or _chat_not_found(e)
+                or "reply_markup" not in params
+            ):
                 raise
             # a 400 about this message, for example BUTTON_DATA_INVALID: the text still matters
             log.warning("Telegram refused the buttons (%s); sending without them", e)

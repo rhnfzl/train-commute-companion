@@ -17,7 +17,15 @@ from tcc_app.telegram import (
     split_text,
 )
 
-from train_commute_companion.model import AlertEvent, Direction, EventKind, Obligation, Severity
+from train_commute_companion.model import (
+    AlertEvent,
+    AlertFacts,
+    Direction,
+    EventKind,
+    Obligation,
+    Severity,
+)
+from train_commute_companion.navigation import station_links
 
 TEXT = "Office A: your UT to RTD train is cancelled. Next good connection: 08:44, platform 5."
 
@@ -48,6 +56,23 @@ async def test_loud_and_silent_map_to_disable_notification(tg, clock):
     assert [m["disable_notification"] for m in tg.sent] == [False, True]
     assert tg.sent[0]["text"] == event(Severity.LOUD).text and tg.sent[0]["chat_id"] == CHAT
     assert all("parse_mode" not in m for m in tg.sent)
+
+
+async def test_station_navigation_sends_url_buttons(tg, clock):
+    links = station_links({"UT": (52.09, 5.11)}, "UT")
+    navigation = replace(
+        event(Severity.SILENT),
+        kind=EventKind.STATION_NAVIGATION,
+        facts=AlertFacts(navigation=links),
+    )
+    assert await sent_markup(tg, clock, navigation) == {
+        "inline_keyboard": [
+            [
+                {"text": "Apple Maps", "url": links[0]},
+                {"text": "Google Maps", "url": links[1]},
+            ]
+        ]
+    }
 
 
 async def test_notifier_has_only_one_in_flight_send_owner(clock):

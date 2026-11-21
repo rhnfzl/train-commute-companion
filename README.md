@@ -67,6 +67,8 @@ Save an [explicit arrival](docs/compensation-reminders.md) to compare it with th
 
 Docker can keep one silent [journey status pin](docs/docker.md#pinned-telegram-status) up to date in your confirmed private Telegram chat.
 
+With reminders enabled, confirm an NS-reported arrival with one tap. Before travel, open your [boarding station in Maps](docs/notification-preferences.md#open-the-boarding-station-in-maps).
+
 ## Quick start (Home Assistant)
 
 1. In HACS, add `https://github.com/rhnfzl/train-commute-companion` as a custom repository of type Integration, or use the button above.

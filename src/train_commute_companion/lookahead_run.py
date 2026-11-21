@@ -5,6 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
+from secrets import token_urlsafe
 
 from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.lookahead import carried_ids, render_message, run_lookahead
@@ -203,6 +204,17 @@ def apply_run(
         log.info("look-ahead for %s discarded: configuration or baseline changed", dk)
         return None
     new_hist, new_ledger, _ = out
+    new_adoptions = {f.key for facts in new_ledger.facts.values() for f in facts if f.adopts}
+    new_hist = replace(
+        new_hist,
+        versions=tuple(
+            replace(v, update_nonce=token_urlsafe(16))
+            if v.version > max(current.floor, current.latest or 0)
+            and adopt_key(v.version) in new_adoptions
+            else v
+            for v in new_hist.versions
+        ),
+    )
     new_ledger = _copies_through(queue, p, d, stored, current, new_hist, new_ledger)
     mine = {o.id for o in stored.pending}
     return replace(

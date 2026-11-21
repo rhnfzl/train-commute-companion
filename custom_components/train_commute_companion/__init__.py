@@ -163,6 +163,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         entry.async_on_unload(coordinator.async_add_listener(lambda: None))
         tracker = LocationTracker(hass, entry, coordinator, host)
         entry.runtime_data = TccData(host, coordinator, stop, tracker)
+        from .arrival_controls import listen_for_arrival
+        from .timetable_controls import listen_for_timetable
+
+        listen_for_arrival(entry.runtime_data, notifier)
+        listen_for_timetable(entry.runtime_data, notifier, Path(profiles_path))
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         tracker.start()
 
