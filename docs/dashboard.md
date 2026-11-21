@@ -5,14 +5,15 @@ See your followed trains, transfers and next connection beside the buttons you u
 ## Add the card
 
 1. Set up the integration and confirm both test notifications arrive.
-2. Open Settings, Devices and services, Train Commute Companion, and inspect your profile's entities.
-3. Open your dashboard, choose Edit dashboard, Add card, then Manual.
-4. Paste [examples/dashboard.yaml](../examples/dashboard.yaml) into the card editor.
-5. Replace every `office_a` with your actual entity prefix, then save.
+2. Open **Developer Tools > Actions** and select **Build a commute dashboard card**.
+3. Enter your profile name or ID. Choose **Outbound** or **Return** and run the action.
+4. Copy the response. Open your dashboard and select **Edit dashboard > Add card > Manual**.
+5. Paste the response and save. Repeat for another direction or profile.
 
-The example targets the `outbound` direction. For a return card, copy it and replace `outbound` with `return`, including `direction`. Change the title to match. Keep the profile's health entity and whole-day skip button unchanged.
-
-Use the entity IDs shown in Home Assistant. Renaming a profile does not necessarily rename entities already registered in Home Assistant. If you renamed individual entities, update their references too. The leg and transfer lists find entities by their shared prefix.
+You can also run the [example action in YAML mode](../examples/dashboard.yaml). The action uses
+the entity IDs already registered in Home Assistant. No changes to the response are needed.
+If you rename the health, status, next connection, advice, works or button entities later,
+generate the card again. The train and transfer lists follow the profile's device automatically.
 
 ## What it shows
 

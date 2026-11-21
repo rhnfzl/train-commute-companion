@@ -330,6 +330,11 @@ class TccSensor(TccEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> Attrs:
         attrs = self._attrs_fn(self.coordinator.data)
+        if self.direction is not None and self.n is not None:
+            attrs.update(
+                commute_card_group=f"{self.direction.value}_{self._attr_translation_key}",
+                commute_card_index=self.n,
+            )
         if self._attr_translation_key == "health":
             attrs.update(
                 notifications_paused=self.coordinator.notification_paused(),
