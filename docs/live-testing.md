@@ -2,7 +2,7 @@
 
 Run the current companion against real NS journeys without sending phone notifications. These tests use a temporary profile and store, so they do not change your installed commute.
 
-Supply `NS_API_KEY` securely through the environment, then run:
+Supply `NS_API_KEY` ([get one](ns-api-key.md)) securely through the environment, then run:
 
 ```bash
 .venv/bin/python -m pytest tests_live -q

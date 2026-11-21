@@ -23,6 +23,8 @@ The Home Assistant profile form provides the same category list. Choosing a cate
 | `disruptions` | Route disruption and its clearance |
 | `routine` | All-good confirmation, at-station status |
 
+A platform change is loud from 15 minutes before the expected departure and silent before that.
+
 System health, missing train data, stopped monitoring, invalid configuration, rejected credentials and command feedback remain enabled. These messages explain when the companion cannot follow a journey reliably.
 
 A train missing from NS data is reported after two polls in a row miss it while you follow the same train, so switching to another train never warns on its own. A stale or failing NS board is reported at once. "Visible again" follows only a "cannot see" message you actually received.

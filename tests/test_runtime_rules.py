@@ -508,10 +508,27 @@ def test_station_list_saved_and_reused(tmp_path):
     cache = tmp_path / "s.stations.json"
     assert station_list(cache, None) is None  # nothing fetched, nothing saved: refuse
     assert station_list(cache, frozenset({"AAA", "UT"})) == {"AAA", "UT"}
-    assert json.loads(cache.read_text()) == ["AAA", "UT"]
+    assert json.loads(cache.read_text()) == {"stations": {"AAA": [], "UT": []}}
     assert station_list(cache, None) == {"AAA", "UT"}
     cache.write_text("[]")
     assert station_list(cache, None) is None
+
+
+def test_station_list_keeps_names_and_ignores_the_older_list(tmp_path):
+    from train_commute_companion.cli import station_list
+    from train_commute_companion.model import Stations
+
+    cache = tmp_path / "s.stations.json"
+    station_list(cache, Stations({"UT": ["Utrecht Centraal", "Utrecht"], "GVC": ["Den Haag C."]}))
+    saved = station_list(cache, None)
+    assert isinstance(saved, Stations) and saved.lookup("utrecht") == ("UT",)
+    assert saved.name("GVC") == "Den Haag C."
+    # saved before names were kept: no copy, so the run keeps fetching the list
+    cache.write_text(json.dumps(["AAA", "UT"]))
+    assert station_list(cache, None) is None
+    for bad in ('{"stations": {"UT": "Utrecht"}}', '{"stations": {}}', "[1]", "5", '{"x": 1}'):
+        cache.write_text(bad)
+        assert station_list(cache, None) is None, bad
 
 
 def test_a_station_list_save_that_fails_keeps_the_saved_copy(tmp_path, monkeypatch):
@@ -525,7 +542,7 @@ def test_a_station_list_save_that_fails_keeps_the_saved_copy(tmp_path, monkeypat
 
     monkeypatch.setattr("train_commute_companion.cli.os.replace", refused)
     assert station_list(cache, frozenset({"UT"})) == {"UT"}
-    assert json.loads(cache.read_text()) == ["AAA"]
+    assert json.loads(cache.read_text()) == {"stations": {"AAA": []}}
     assert [x.name for x in tmp_path.iterdir()] == [cache.name]
 
 

@@ -29,11 +29,12 @@ def test_mcp_relay_gets_the_state_directory_and_no_secret():
 
 
 def test_documented_setup_builds_from_examples_and_recreates_on_env_changes():
-    compose = (ROOT / "examples/docker-compose.yml").read_text()
-    build = re.search(r"^\s+build:\s*(\S+)", compose, re.MULTILINE)
-    assert build is not None
-    assert (ROOT / "examples" / build[1] / "Dockerfile").is_file()  # compose resolves from its dir
+    compose = yaml.safe_load((ROOT / "examples/docker-compose.yml").read_text())["services"]
+    assert "build" not in compose["tcc"]  # a failed pull must not fall back to a missing Dockerfile
     docker = (ROOT / "docs/docker.md").read_text()
+    build = re.search(r"docker build -t (\S+) (\S+)\n", docker)
+    assert build is not None and build[1] == compose["tcc"]["image"] == compose["mcp"]["image"]
+    assert (ROOT / "examples" / build[2] / "Dockerfile").is_file()  # run from examples/
     setup = docker[docker.index("## First run") : docker.index("## Commands")]
     assert "`examples/` directory" in setup and "cd examples" in setup
     assert "cp profiles.yaml config/" in setup  # ./config next to the compose file

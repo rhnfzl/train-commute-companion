@@ -22,7 +22,7 @@ from homeassistant.helpers.selector import (
 )
 
 from train_commute_companion.calendar import TZ, WEEKDAYS
-from train_commute_companion.model import NotificationChannel
+from train_commute_companion.model import NotificationChannel, Stations
 from train_commute_companion.notification_policy import CATEGORIES
 from train_commute_companion.providers.base import AuthError, ProviderError
 from train_commute_companion.providers.ns import NsProvider
@@ -33,6 +33,7 @@ from .profile_editor import (
     OTHER_STATION_DEFAULTS,
     EditorError,
     ProfileDocument,
+    coded,
     edit_profile,
     read_document,
     save_document,
@@ -66,8 +67,8 @@ CATEGORY_LABELS = {
 }
 
 
-async def station_catalogue(hass: HomeAssistant, key: str) -> dict[str, str]:
-    return await NsProvider(key, get_async_client(hass), lambda: datetime.now(TZ)).station_names()
+async def station_catalogue(hass: HomeAssistant, key: str) -> Stations:
+    return await NsProvider(key, get_async_client(hass), lambda: datetime.now(TZ)).stations()
 
 
 class ProfileEditorFlow:
@@ -78,7 +79,7 @@ class ProfileEditorFlow:
     _editor_path: str = ""
     _editor_create: bool = False
     _document: ProfileDocument | None = None
-    _catalogue: dict[str, str] | None = None
+    _catalogue: Stations | None = None
     _profile_id: str | None = None
     _pending_profile: str | None = None
     _editor_values: dict[str, Any] | None = None
@@ -87,6 +88,16 @@ class ProfileEditorFlow:
 
     def _profile_channels(self) -> frozenset[NotificationChannel]:
         return frozenset({"primary"})
+
+    def _labels(self) -> dict[str, str]:
+        known = self._catalogue or Stations({})
+        return {code: known.name(code) for code in known}
+
+    def _existing(self) -> dict[str, Any]:
+        """The profile being edited, its stations as codes for the form."""
+        assert self._document is not None and self._catalogue is not None
+        found = (p for p in self._document.data["profiles"] if p["id"] == self._profile_id)
+        return coded(next(found, {}), self._catalogue)
 
     def _roots(self) -> tuple[Path, ...]:
         roots: tuple[Path, ...] = (Path(self.hass.config.config_dir),)
@@ -109,12 +120,12 @@ class ProfileEditorFlow:
         self._document = None
         self._pending_profile = None
         try:
-            self._catalogue = await station_catalogue(self.hass, key)
+            known = self._catalogue = await station_catalogue(self.hass, key)
             self._document = await self.hass.async_add_executor_job(
                 lambda: read_document(
                     Path(path),
                     self._roots(),
-                    frozenset(self._catalogue or {}),
+                    known,
                     datetime.now(TZ).date(),
                     create=create,
                 )
@@ -178,10 +189,7 @@ class ProfileEditorFlow:
         )
 
     def _profile_defaults(self) -> dict[str, Any]:
-        assert self._document is not None
-        profile: dict[str, Any] = next(
-            (p for p in self._document.data["profiles"] if p["id"] == self._profile_id), {}
-        )
+        profile = self._existing()
         schedule: dict[str, Any] = {}
         for direction in ("outbound", "return"):
             journey = profile.get(direction, {})
@@ -221,7 +229,7 @@ class ProfileEditorFlow:
     def _profile_schema(self, defaults: Mapping[str, Any]) -> vol.Schema:
         options: list[SelectOptionDict] = [
             {"value": code, "label": label}
-            for code, label in sorted((self._catalogue or {}).items(), key=lambda item: item[1])
+            for code, label in sorted(self._labels().items(), key=lambda item: item[1])
         ]
         station = SelectSelector(
             SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
@@ -307,7 +315,7 @@ class ProfileEditorFlow:
                     self._document,
                     self._profile_id,
                     values,
-                    frozenset(self._catalogue),
+                    self._catalogue,
                     datetime.now(TZ).date(),
                 )
             except EditorError as err:
@@ -332,9 +340,7 @@ class ProfileEditorFlow:
             or self._catalogue is None
         ):
             return self._editor_error("invalid_profile")
-        existing: dict[str, Any] = next(
-            (p for p in self._document.data["profiles"] if p["id"] == self._profile_id), {}
-        )
+        existing = self._existing()
         stations = tuple(
             dict.fromkeys(
                 self._editor_values["outbound_transfers"] + self._editor_values["return_transfers"]
@@ -356,7 +362,7 @@ class ProfileEditorFlow:
                     self._document,
                     self._profile_id,
                     details,
-                    frozenset(self._catalogue),
+                    self._catalogue,
                     datetime.now(TZ).date(),
                     available_channels=self._profile_channels(),
                 )
@@ -432,7 +438,7 @@ class ProfileEditorFlow:
                 SelectSelectorConfig(options=choices, mode=SelectSelectorMode.DROPDOWN)
             )
         labels = (
-            ", ".join(f"minimum_{code}: {self._catalogue[code]}" for code in stations)
+            ", ".join(f"minimum_{code}: {self._catalogue.name(code)}" for code in stations)
             or "No transfers"
         )
         pauses = (
@@ -450,7 +456,7 @@ class ProfileEditorFlow:
     ) -> dict[Any, Any]:
         options: list[SelectOptionDict] = [
             {"value": code, "label": label}
-            for code, label in sorted((self._catalogue or {}).items(), key=lambda item: item[1])
+            for code, label in sorted(self._labels().items(), key=lambda item: item[1])
         ]
         fields: dict[Any, Any] = {}
         for direction in ("outbound", "return"):
@@ -501,7 +507,7 @@ class ProfileEditorFlow:
                     self._document,
                     self._profile_id,
                     details,
-                    frozenset(self._catalogue),
+                    self._catalogue,
                     datetime.now(TZ).date(),
                     available_channels=self._profile_channels(),
                 )
@@ -628,7 +634,7 @@ class ProfileEditorFlow:
                     self._document,
                     self._profile_id,
                     details,
-                    frozenset(self._catalogue),
+                    self._catalogue,
                     datetime.now(TZ).date(),
                     available_channels=self._profile_channels(),
                 )
@@ -679,7 +685,7 @@ class ProfileEditorFlow:
         ):
             raise EditorError("invalid_profile")
         document, text = self._document, self._pending_profile
-        known, roots = frozenset(self._catalogue), self._roots()
+        known, roots = self._catalogue, self._roots()
         self._profile_phase = ReviewPhase.COMMITTING
         try:
             await self.hass.async_add_executor_job(

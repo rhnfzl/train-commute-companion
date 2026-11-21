@@ -21,7 +21,7 @@ The app listens on a private socket, `mcp.sock`, in its data volume (`/data`), r
 ## Claude Code
 
 ```
-claude mcp add --transport stdio commute -- docker compose -f /path/to/train-commute-companion/examples/docker-compose.yml run --rm --no-deps -T mcp
+claude mcp add --transport stdio commute -- docker compose -f /path/to/docker-compose.yml run --rm --no-deps -T mcp
 ```
 
 ## Claude Desktop
@@ -34,7 +34,7 @@ Add an entry to `claude_desktop_config.json`:
     "commute": {
       "command": "docker",
       "args": [
-        "compose", "-f", "/path/to/train-commute-companion/examples/docker-compose.yml",
+        "compose", "-f", "/path/to/docker-compose.yml",
         "run", "--rm", "--no-deps", "-T", "mcp"
       ]
     }

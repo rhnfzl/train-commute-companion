@@ -3,6 +3,11 @@ name: Tests
 
 on:
   workflow_call:
+    inputs:
+      ref:
+        description: what to check out; empty means the triggering commit
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -14,6 +19,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.14"
@@ -26,6 +33,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.14"  # the Docker image's Python

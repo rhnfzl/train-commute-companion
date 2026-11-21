@@ -14,10 +14,10 @@ import httpx
 
 from train_commute_companion.calendar import TZ, SystemClock
 from train_commute_companion.messages import ATTRIBUTION
-from train_commute_companion.model import AlertEvent, Profile
+from train_commute_companion.model import AlertEvent, Profile, Stations
 from train_commute_companion.profile import check_lines
 from train_commute_companion.providers.base import ProviderError
-from train_commute_companion.providers.ns import NsProvider, map_stations
+from train_commute_companion.providers.ns import NsProvider, map_station_index
 from train_commute_companion.replay import ReplayError, format_event, replay_lines
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.store import JsonFileStore, read_state
@@ -44,7 +44,9 @@ def check_profile(args: argparse.Namespace) -> int:
     known: frozenset[str] | None
     if args.stations_file:
         try:
-            known = map_stations(json.loads(Path(args.stations_file).read_text(encoding="utf-8")))
+            known = map_station_index(
+                json.loads(Path(args.stations_file).read_text(encoding="utf-8"))
+            )
         except (OSError, ValueError, ProviderError) as err:  # never pass silently
             print(f"{args.stations_file}: cannot read station list ({err})")
             return 1
@@ -78,11 +80,14 @@ async def _ns_stations() -> frozenset[str] | str:
 
 
 def station_list(cache: Path, fresh: frozenset[str] | None) -> frozenset[str] | None:
-    """The fresh NS list, saved as the validated copy; else the last saved copy (5.3)."""
+    """The fresh NS list, saved as the validated copy; else the last saved copy (5.3). The copy
+    keeps each station's names, so a profile that names its stations still checks offline."""
     if fresh is not None:
         tmp = cache.with_name(cache.name + ".tmp")
+        labels = fresh.labels if isinstance(fresh, Stations) else {}
+        saved = {"stations": {code: list(labels.get(code, ())) for code in sorted(fresh)}}
         try:  # a crash mid-write must not cost the saved copy NS being down would fall back on
-            tmp.write_text(json.dumps(sorted(fresh)), encoding="utf-8")
+            tmp.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, cache)
         except OSError as e:
             with contextlib.suppress(OSError):
@@ -90,12 +95,20 @@ def station_list(cache: Path, fresh: frozenset[str] | None) -> frozenset[str] | 
             print(f"warning: cannot save the station list to {cache} ({e})", flush=True)
         return fresh
     try:
-        codes = json.loads(cache.read_text(encoding="utf-8"))
+        saved = json.loads(cache.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(codes, list) or not codes or not all(isinstance(c, str) for c in codes):
+    # the older list of codes counts as no copy: without names it would refuse a named station
+    # and stop the run fetching the list again (5.3)
+    stations = saved.get("stations") if isinstance(saved, dict) else None
+    if not isinstance(stations, dict) or not stations:
         return None
-    return frozenset(codes)
+    if not all(
+        isinstance(c, str) and isinstance(n, list) and all(isinstance(x, str) for x in n)
+        for c, n in stations.items()
+    ):
+        return None
+    return Stations(stations)
 
 
 def replay(args: argparse.Namespace) -> int:

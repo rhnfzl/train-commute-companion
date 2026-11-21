@@ -22,6 +22,7 @@ from train_commute_companion.model import (
     Pick,
     Profile,
     ProfileProblem,
+    Stations,
     UsualJourney,
     WorksDigestSettings,
     resolve_day,
@@ -101,19 +102,32 @@ def _shift(t: time, minutes: int) -> time:
     return time(total // 60, total % 60)
 
 
+def station_code(known: frozenset[str] | None, v: str) -> str:
+    """The code of a station given by code or by an unambiguous name; else `v` unchanged."""
+    found = known.lookup(v) if isinstance(known, Stations) else ()
+    return found[0] if len(found) == 1 else v
+
+
 def _station(c: _ProfileErrors, v: object, path: str, known: frozenset[str] | None) -> str | None:
     if not isinstance(v, str) or not v.strip():
         c.err(path, f"missing or not a station code: {v!r}")
         return None
-    if known is not None and v not in known:
-        close = v.strip().upper()
-        c.err(
-            path,
-            f"unknown station code {v!r}",
-            f"did you mean {close!r}?" if close in known else "use a code from the NS station list",
-        )
+    if known is None or v in known:
+        return v
+    if not isinstance(known, Stations):  # codes only: no name is known
+        known = Stations(dict.fromkeys(known, ()))
+    found = known.lookup(v)
+    if len(found) == 1:
+        return found[0]
+    if found:
+        listed = ", ".join(f"{code} ({known.name(code)})" for code in sorted(found))
+        c.err(path, f"{v!r} names more than one station: {listed}", "use the station code")
         return None
-    return v
+    close = v.strip().upper()
+    close = close if close in known else known.closest(v) or ""
+    hint = f"did you mean {close!r}?" if close else "use a code from the NS station list"
+    c.err(path, f"unknown station code {v!r}", hint)
+    return None
 
 
 def _transfers(
@@ -620,29 +634,44 @@ def _days(c: _ProfileErrors, rd: object) -> set[int]:
     return days
 
 
-def _transfer_min(c: _ProfileErrors, raw: Mapping[str, object]) -> dict[str, int]:
+def _transfer_min(
+    c: _ProfileErrors, raw: Mapping[str, object], known: frozenset[str] | None
+) -> dict[str, int]:
     """Reads the raw journeys, so a transfer station of a journey that failed to parse is still
-    checked and every error comes out in one pass."""
+    checked and every error comes out in one pass. Keys and transfers given by name are compared
+    as codes; a bad name is already reported where it is used."""
     tm_raw = raw.get("transfer_min", {})
     tm: dict[str, int] = {}
     if not isinstance(tm_raw, dict):
         c.err("transfer_min", "must be a mapping such as { UT: 4 }")
         return tm
+    seen: dict[str, object] = {}
     for k, v in tm_raw.items():
+        code = station_code(known, str(k))
+        if code in seen:
+            c.err(
+                f"transfer_min.{k}",
+                f"{k} and {seen[code]} are the same station {code}",
+                "keep one of them",
+            )
+        seen[code] = k
         iv = c.integer(v, f"transfer_min.{k}", 1)
         if iv is not None:
-            tm[str(k)] = iv
+            tm[code] = iv
+    transfers: list[str] = []
     for key in ("outbound", "return"):
         j = raw.get(key)
         tl = j.get("transfers") if isinstance(j, dict) else None
-        for s in tl if isinstance(tl, list) else ():
-            if isinstance(s, str) and s not in tm_raw:
-                c.err(
-                    f"transfer_min.{s}",
-                    f"no transfer_min for transfer station {s}",
-                    f"add transfer_min: {{ {s}: {FALLBACK_MIN} }} "
-                    f"({FALLBACK_MIN} min is the fallback)",
-                )
+        transfers += [s for s in (tl if isinstance(tl, list) else ()) if isinstance(s, str)]
+    if known is None and any(k not in transfers for k in tm_raw):
+        return tm  # unchecked: a spare key may be a transfer's other spelling, name or code (5.3)
+    for s in transfers:
+        if station_code(known, s) not in seen:
+            c.err(
+                f"transfer_min.{s}",
+                f"no transfer_min for transfer station {s}",
+                f"add transfer_min: {{ {s}: {FALLBACK_MIN} }} ({FALLBACK_MIN} min is the fallback)",
+            )
     return tm
 
 
@@ -727,7 +756,7 @@ def _profile(
     work = _station(c, raw.get("work_station"), "work_station", known)
     out = _journey(c, raw.get("outbound"), "outbound", known, allow_offset=False)
     ret = _journey(c, raw.get("return"), "return", known, allow_offset=True)
-    tm = _transfer_min(c, raw)
+    tm = _transfer_min(c, raw, known)
     alerts = _alerts(c, raw.get("alerts"))
     loc_ok, loc = _location(c, raw.get("location"))
     accessibility = _accessibility(c, raw.get("accessibility", {}))

@@ -1,7 +1,7 @@
 services:
   tcc:
-    build: ..  # run from examples/: the checkout root holds the Dockerfile
-    image: train-commute-companion:local
+    # the ready-made image for amd64 and arm64; put a version in place of latest to pin it (docs/docker.md)
+    image: &image ghcr.io/rhnfzl/train-commute-companion:latest
     restart: unless-stopped
     read_only: true
     # .env sits next to this file and holds the secrets (never commit it):
@@ -17,7 +17,7 @@ services:
       - "8080:8080"
   # the MCP relay (docs/mcp.md): started per session by the MCP client, never by `up`
   mcp:
-    image: train-commute-companion:local
+    image: *image  # always the app's image
     profiles: [mcp]
     read_only: true
     # not env_file: .env holds the secrets, and the relay reads only this, to find the socket

@@ -16,7 +16,7 @@ import yaml
 
 from train_commute_companion.model import NotificationChannel
 from train_commute_companion.notification_policy import CATEGORIES
-from train_commute_companion.profile import load_config
+from train_commute_companion.profile import load_config, station_code
 from train_commute_companion.transfer import FALLBACK_MIN
 
 from .store import file_lock
@@ -98,7 +98,7 @@ def edit_profile(
         if index is None:
             raise EditorError("file_changed")
         # YAML aliases must not let this edit change another profile or section.
-        profile = copy.deepcopy(data["profiles"][index])
+        profile = coded(data["profiles"][index], known)
         data["profiles"][index] = profile
     for key in ("name", "days", "home_station", "work_station", "skip_public_holidays"):
         profile[key] = values[key]
@@ -186,6 +186,27 @@ def edit_profile(
     text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
     validate_text(text, known, today, available_channels)
     return text
+
+
+def coded(profile: Mapping[str, Any], known: frozenset[str]) -> dict[str, Any]:
+    """A copy of one profile with every station as its code, so a profile that names its
+    stations fills the station fields and is saved with codes. Other profiles stay as written."""
+    out = copy.deepcopy(dict(profile))
+
+    def code(value: object) -> object:
+        return station_code(known, value) if isinstance(value, str) else value
+
+    for key in ("home_station", "work_station"):
+        if key in out:
+            out[key] = code(out[key])
+    for direction in ("outbound", "return"):
+        journey = out.get(direction)
+        for key in ("transfers", "other_stations"):
+            if isinstance(journey, dict) and isinstance(journey.get(key), list):
+                journey[key] = [code(s) for s in journey[key]]
+    if isinstance(out.get("transfer_min"), dict):  # the file was checked: no two keys collide
+        out["transfer_min"] = {code(k): v for k, v in out["transfer_min"].items()}
+    return out
 
 
 def _text(value: object) -> str:

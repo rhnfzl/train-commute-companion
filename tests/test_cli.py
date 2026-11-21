@@ -143,3 +143,14 @@ def test_check_profile_cannot_read_an_unknown_version_or_a_too_deep_store(tmp_pa
     store = tmp_path / "state.json"
     store.write_text(text)
     assert "cannot read" in moved_lines(store, ())[0]
+
+
+def test_check_profile_accepts_station_names_from_the_stations_file(tmp_path, capsys):
+    names = ROOT / "tests" / "data" / "ns" / "stations_names.json"
+    text = Path(STARTER).read_text()
+    for code, name in (('"AAA"', '"Den Haag HS"'), ('"RTD"', '"Rotterdam Centraal"')):
+        text = text.replace(code, name)
+    profile = tmp_path / "profiles.yaml"
+    profile.write_text(text.replace('transfers: ["UT"]', 'transfers: ["Utrecht"]'))
+    assert main(["check-profile", str(profile), "--stations-file", str(names)]) == 0
+    assert capsys.readouterr().out == ""
