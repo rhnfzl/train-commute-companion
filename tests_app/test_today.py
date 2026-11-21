@@ -59,6 +59,20 @@ def test_today_is_manual_with_mixed_settings_or_without_profiles():
         assert 'href="/today">Refresh status' in body and "Office A" in body
 
 
+def test_today_localizes_the_page_and_marks_its_language():
+    profiles, errors = parse_profiles(
+        ONE_PROFILE.replace('name: "office_a"', 'name: "office_a"\n    alerts: {language: nl}'),
+        None,
+    )
+    assert not errors
+    body = render(view(occ(), profiles=tuple(profiles)), True, paused=True)
+    assert '<html lang="nl">' in body
+    assert "Office A heenreis" in body
+    assert '<a href="/today/paused">Status vernieuwen</a>' in body
+    assert '<a href="/today">Automatisch vernieuwen hervatten</a>' in body
+    assert 'http-equiv="refresh"' not in body
+
+
 async def request(port, path="/today", authorization=None, method="GET"):
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     header = f"Authorization: {authorization}\r\n" if authorization is not None else ""

@@ -6,6 +6,7 @@ from datetime import date, time
 from itertools import pairwise
 
 from train_commute_companion.calendar import MINUTES_PER_DAY, WEEKDAYS, minute_of_day
+from train_commute_companion.catalogue import MessageLanguage, message
 from train_commute_companion.model import Direction, Profile, direction_key
 from train_commute_companion.revisions import baseline_scope, commute_day_for, find_profile
 from train_commute_companion.state import BaselineHistory
@@ -28,18 +29,39 @@ class TimetableEdit:
 
     @property
     def yaml_hint(self) -> str:
+        return self.hint("en")
+
+    def hint(self, language: MessageLanguage) -> str:
         lines = [
-            (
-                f"From {self.effective_from.isoformat()}, set {self.field} to "
-                f'"{self.departure:%H:%M}" in the profiles.yaml entry with id "{self.profile_id}".'
+            message(
+                "lookahead.yaml",
+                language,
+                day=self.effective_from.isoformat(),
+                field=self.field,
+                time=f"{self.departure:%H:%M}",
+                profile=self.profile_id,
             )
         ]
         for weekday, (start, end) in self.windows:
             hours = f'["{start:%H:%M}", "{end:%H:%M}"]'
             if weekday is None:
-                lines.append(f"If {self.direction.value}.window is set, change it to {hours}.")
+                lines.append(
+                    message(
+                        "lookahead.yaml_optional",
+                        language,
+                        field=f"{self.direction.value}.window",
+                        hours=hours,
+                    )
+                )
             else:
-                lines.append(f"Set {self.direction.value}.by_weekday.{weekday}.window to {hours}.")
+                lines.append(
+                    message(
+                        "lookahead.yaml_required",
+                        language,
+                        field=f"{self.direction.value}.by_weekday.{weekday}.window",
+                        hours=hours,
+                    )
+                )
         return "\n".join(lines)
 
 

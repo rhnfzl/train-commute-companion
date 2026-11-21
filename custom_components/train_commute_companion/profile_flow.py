@@ -685,6 +685,15 @@ class ProfileEditorFlow[Result: (ConfigFlowResult, SubentryFlowResult)]:
                 mode=SelectSelectorMode.DROPDOWN,
             )
         )
+        fields[
+            vol.Optional("language", default=values.get("language", alerts.get("language", "en")))
+        ] = SelectSelector(
+            SelectSelectorConfig(
+                options=["en", "nl"],
+                mode=SelectSelectorMode.DROPDOWN,
+                translation_key="message_language",
+            )
+        )
         brief = existing.get("brief", {})
         fields[
             vol.Optional("wake_at", default=values.get("wake_at", alerts.get("wake_at") or ""))

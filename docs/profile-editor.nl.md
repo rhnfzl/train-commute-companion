@@ -26,6 +26,12 @@ Vul voor stille uren twee verschillende tijden in, bijvoorbeeld `22:00` en `07:0
 
 Kies een dag en tijd voor het weekoverzicht van geplande werkzaamheden. Kies **Uit** voor de dag om dit overzicht uit te schakelen.
 
+## Taal van berichten
+
+Kies in de profielinstellingen **Taal van berichten**. Stel in YAML `alerts.language` in op `nl` voor Nederlands. De standaardwaarde is `en` voor Engels.
+
+De keuze geldt voor meldingen en reisstatus van het profiel. Gedeelde teksten in Vandaag en Telegram verschijnen in het Nederlands als alle getoonde profielen Nederlands gebruiken. Stationsnamen en tekst van NS en KNMI blijven in de oorspronkelijke vorm.
+
 ## Stations en de volgende treinreis
 
 Home Assistant toont maximaal drie stations in de buurt van `zone.home` bovenaan. Je kunt nog steeds in de hele stationslijst zoeken. Je woonlocatie en telefoonlocatie worden niet naar NS gestuurd.

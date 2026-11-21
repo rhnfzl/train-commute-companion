@@ -10,6 +10,7 @@ from enum import StrEnum
 from typing import Literal, Self
 
 from train_commute_companion.calendar import is_commute_day
+from train_commute_companion.catalogue import MessageLanguage
 from train_commute_companion.recurrence import RepeatSchedule
 
 FOLLOW_LIMIT = timedelta(minutes=150)
@@ -338,6 +339,8 @@ class AlertFacts:
     arrival_deadline: datetime | None = None
     navigation: tuple[str, str] | None = None  # Apple Maps and Google Maps
     alternative: Alternative | None = None
+    language: MessageLanguage = "en"  # language of the saved text, including delivery retries
+    leave_note: str = ""  # saved departure advice within a replacement clause
 
 
 @dataclass(frozen=True, slots=True)
@@ -580,6 +583,7 @@ class AlertSettings:
     checked_alternatives: bool = True
     partner_eta: bool = False
     partner_phone: str | None = None
+    language: MessageLanguage = "en"
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]

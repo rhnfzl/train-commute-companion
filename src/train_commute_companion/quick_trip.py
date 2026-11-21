@@ -5,6 +5,7 @@ from itertools import pairwise
 from typing import Any
 
 from train_commute_companion.calendar import TZ, hhmm, to_utc
+from train_commute_companion.catalogue import MessageLanguage, message, message_date
 from train_commute_companion.classify import classify_leg, current_connection
 from train_commute_companion.health import FRESH_FOR
 from train_commute_companion.messages import RefusalKind, Refused
@@ -21,18 +22,20 @@ from train_commute_companion.providers.base import ProviderAnswer
 from train_commute_companion.transfer import check_transfer, is_reported
 
 
-def resolve_station(catalogue: Stations, value: str) -> str | Refused:
+def resolve_station(
+    catalogue: Stations, value: str, language: MessageLanguage = "en"
+) -> str | Refused:
     value = value.strip()
     if not value or len(value) > 80 or not value.isprintable():
-        return Refused("Enter an NS station code or name of up to 80 characters.")
+        return Refused(message("trip.station_value", language))
     code = value.upper()
     matches = (code,) if code in catalogue else catalogue.lookup(value)
     if len(matches) == 1:
         return matches[0]
     if matches:
         choices = ", ".join(f"{c} ({catalogue.name(c)})" for c in sorted(matches))
-        return Refused(f"{value} matches several stations: {choices}. Use a station code.")
-    return Refused(f"Unknown NS station: {value}. Use its full name or station code.")
+        return Refused(message("trip.station_ambiguous", language, value=value, choices=choices))
+    return Refused(message("trip.station_unknown", language, value=value))
 
 
 def _usable(connection: Connection) -> bool:
@@ -76,39 +79,59 @@ def _station(catalogue: Stations, stop: Stop) -> dict[str, str]:
 
 
 def _time(
-    scheduled: datetime | None, observation: TimeObs | None, checked_at: datetime
+    scheduled: datetime | None,
+    observation: TimeObs | None,
+    checked_at: datetime,
+    language: MessageLanguage,
 ) -> tuple[dict[str, str | None], str]:
     reported = observation.value if observation and is_reported(observation) else None
 
     def display(instant: datetime) -> str:
         local = instant.astimezone(TZ)
-        return hhmm(local) if local.date() == checked_at.date() else f"{local:%d %b %H:%M}"
+        if local.date() == checked_at.date():
+            return hhmm(local)
+        day = f"{local:%d %b}" if language == "en" else message_date(local.date(), language)
+        return f"{day} {hhmm(local)}"
 
     times = {"scheduled": scheduled, "reported": reported}
-    text = ", ".join(f"{display(t)} {label}" for label, t in times.items() if t is not None)
+    text = ", ".join(
+        f"{display(t)} {message(f'trip.{label}', language)}"
+        for label, t in times.items()
+        if t is not None
+    )
     return {label: t.isoformat() if t is not None else None for label, t in times.items()}, (
-        text or "unavailable"
+        text or message("trip.unknown", language)
     )
 
 
-def _leg(leg: Leg, catalogue: Stations, checked_at: datetime) -> tuple[dict[str, Any], str]:
+def _leg(
+    leg: Leg, catalogue: Stations, checked_at: datetime, language: MessageLanguage
+) -> tuple[dict[str, Any], str]:
     board, alight = leg.board, leg.alight
     origin, destination = _station(catalogue, board), _station(catalogue, alight)
     departure, dep_text = _time(
-        board.planned_departure or leg.train.planned_departure, board.departure, checked_at
+        board.planned_departure or leg.train.planned_departure,
+        board.departure,
+        checked_at,
+        language,
     )
-    arrival, arr_text = _time(alight.planned_arrival, alight.arrival, checked_at)
+    arrival, arr_text = _time(alight.planned_arrival, alight.arrival, checked_at, language)
     train = " ".join(filter(None, (leg.category, leg.train.train_number)))
-    text = (
-        f"{train} {origin['name']} to {destination['name']}. "
-        f"Departs {dep_text}. Arrives {arr_text}."
+    text = message(
+        "trip.leg",
+        language,
+        train=train,
+        origin=origin["name"],
+        destination=destination["name"],
+        departure=dep_text,
+        arrival=arr_text,
     )
     if board.actual_track:
-        text += f" Platform {board.actual_track} reported."
+        text += message("trip.platform_reported", language, platform=board.actual_track)
     elif board.planned_track:
-        text += f" Platform {board.planned_track} scheduled."
+        text += message("trip.platform_scheduled", language, platform=board.planned_track)
     if leg.crowd_forecast:
-        text += f" Crowd forecast: {leg.crowd_forecast}."
+        text += message("trip.crowd", language, level=leg.crowd_forecast)
     return {
         "train_number": leg.train.train_number,
         "category": leg.category,
@@ -122,12 +145,10 @@ def _leg(leg: Leg, catalogue: Stations, checked_at: datetime) -> tuple[dict[str,
 
 
 def trip_result(
-    answer: ProviderAnswer, catalogue: Stations, now: datetime
+    answer: ProviderAnswer, catalogue: Stations, now: datetime, language: MessageLanguage = "en"
 ) -> dict[str, Any] | Refused:
     if not timedelta() <= to_utc(now) - to_utc(answer.fetched_at) < FRESH_FOR:
-        return Refused(
-            "The NS trip data is stale or has an invalid check time. Try again.", RefusalKind.RETRY
-        )
+        return Refused(message("trip.stale", language), RefusalKind.RETRY)
     routes = []
     for route in answer.connections:
         if not route.legs or not _usable(route):
@@ -159,8 +180,15 @@ def trip_result(
         catalogue.name(code) for code in (answer.query.origin, answer.query.destination)
     )
     lines = [
-        f"{origin} to {destination}",
-        f"NS check {checked_at:%d %b at %H:%M} (Amsterdam time).",
+        message("trip.route", language, origin=origin, destination=destination),
+        message(
+            "trip.checked",
+            language,
+            time=hhmm(checked_at),
+            date=f"{checked_at:%d %b}"
+            if language == "en"
+            else message_date(checked_at.date(), language),
+        ),
     ]
     options: list[dict[str, Any]] = []
     seen = set()
@@ -169,13 +197,15 @@ def trip_result(
         if identity in seen:
             continue
         seen.add(identity)
-        legs, texts = zip(*(_leg(leg, catalogue, checked_at) for leg in route.legs), strict=True)
+        legs, texts = zip(
+            *(_leg(leg, catalogue, checked_at, language) for leg in route.legs), strict=True
+        )
         options.append({"legs": list(legs)})
         lines.append(f"{len(options)}. " + "\n   ".join(texts))
         if len(options) == 3:
             break
     if not options:
-        lines.append("NS returned no usable upcoming train options for this route.")
+        lines.append(message("trip.no_options", language))
     return {
         "status": "ok" if options else "no_options",
         "checked_at": checked_at.isoformat(),

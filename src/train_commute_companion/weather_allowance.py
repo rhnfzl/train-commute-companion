@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from train_commute_companion.calendar import hhmm, to_utc
+from train_commute_companion.catalogue import MessageLanguage, message
 from train_commute_companion.providers.weather import FORECAST_TTL, WeatherView
 
 
@@ -16,10 +17,15 @@ class WeatherAllowance:
 
     @property
     def text(self) -> str:
-        hazard = "possible ice" if self.hazard == "ice" else self.hazard
-        return (
-            f"Leave by {hhmm(self.suggested_leave_by)} "
-            f"(+{self.extra_min} min suggested for forecast {hazard})"
+        return self.format("en")
+
+    def format(self, language: MessageLanguage) -> str:
+        return message(
+            "leave_by.weather",
+            language,
+            leave=message("leave_by", language, time=hhmm(self.suggested_leave_by)),
+            minutes=self.extra_min,
+            hazard=message(f"weather.{self.hazard}", language),
         )
 
 

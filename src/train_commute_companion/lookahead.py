@@ -6,12 +6,19 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 
 from train_commute_companion.calendar import TZ, resolve_local, to_utc
+from train_commute_companion.catalogue import (
+    MessageLanguage,
+    Phrase,
+    message,
+    message_date,
+    message_weekday,
+    phrase,
+)
 from train_commute_companion.lookahead_probe import (
     DEP_TOL_MIN,
     DUR_TOL_MIN,
     LOUD_FACT,
     MISSING_REASON,
-    REPLACEMENT_HINT,
     RESTORED_FACT,
     UNCLEAR_MARK,
     WORKS_MARKS,
@@ -50,12 +57,14 @@ from train_commute_companion.match import planned_departure
 from train_commute_companion.messages import data_unclear_text
 from train_commute_companion.model import (
     AlertEvent,
+    AlertFacts,
     Direction,
     EventKind,
     Obligation,
     Profile,
     Severity,
     Signature,
+    alert_facts,
     display_name,
 )
 from train_commute_companion.notification_policy import enabled
@@ -84,13 +93,14 @@ def _clock_text(t: time) -> str:
 
 
 def _leg_name(r: ProbeResult, p: Profile) -> str:
+    language = p.alerts.language
     if r.leg_index is None:
-        return "journey"
+        return message("lookahead.journey", language)
     st = journey_stations(p, r.direction)
     a, b = st[r.leg_index], st[r.leg_index + 1]
     if r.connection is not None:
         a, b = r.connection.legs[0].board.name, r.connection.legs[0].alight.name
-    return f"{a} to {b} leg"
+    return message("lookahead.leg", language, origin=a, destination=b)
 
 
 def _station_name(r: ProbeResult, code: str) -> str:
@@ -102,36 +112,56 @@ def _station_name(r: ProbeResult, code: str) -> str:
     return code
 
 
-def _reason_text(r: ProbeResult, x: ProbeReason, what: str) -> str | None:
+def _reason_text(
+    r: ProbeResult, x: ProbeReason, what: str, language: MessageLanguage
+) -> str | None:
     tag = x.tag
     if tag == MISSING_REASON:
-        return f"your {what} has no usual train (works)"
+        return message("lookahead.missing", language, journey=what)
     if tag == "cancelled":
-        return f"your {what} has no trains (works)"
+        return message("lookahead.cancelled", language, journey=what)
     if tag == "cut_short":
-        stop = _station_name(r, x.stop) if x.stop else "an earlier stop"
-        return f"your {what} runs only to {stop} (works)"
+        stop = _station_name(r, x.stop) if x.stop else message("lookahead.earlier_stop", language)
+        return message("lookahead.cut_short", language, journey=what, stop=stop)
     if tag == "pattern" and r.connection is not None:
-        via = " then ".join(_station_name(r, s) for s in r.connection.transfer_stations)
-        return f"your journey goes {'via ' + via if via else 'direct'} (works)"
+        via = message("shared.then", language).join(
+            _station_name(r, s) for s in r.connection.transfer_stations
+        )
+        route = (
+            message("lookahead.via", language, stations=via)
+            if via
+            else message("lookahead.direct", language)
+        )
+        return message("lookahead.pattern", language, route=route)
     if tag == "short":
-        return (
-            f"your change at {_station_name(r, x.stop or '')} is too short"
-            f" ({x.margin} min, you need {x.minimum})"
+        return message(
+            "lookahead.short",
+            language,
+            station=_station_name(r, x.stop or ""),
+            margin=str(x.margin),
+            minimum=str(x.minimum),
         )
     if tag in ("messages", "maintenance"):
-        return f"your {what} is affected by planned works"
+        return message("lookahead.works", language, journey=what)
     return None
 
 
 def _warn_text(r: ProbeResult, p: Profile, base: Signature | None) -> str:
     what = _leg_name(r, p)
-    parts = [t for x in r.reasons if (t := _reason_text(r, x, what))]
+    language = p.alerts.language
+    parts = [t for x in r.reasons if (t := _reason_text(r, x, what, language))]
     if not parts and r.connection is not None and base is not None:
         now = signature_of(r.connection, r.service_date)
         parts.append(
-            f"your {what} changes to {_clock_text(now.legs[0].departure)}, {signature_minutes(now)} min"
-            f" (was {_clock_text(base.legs[0].departure)}, {signature_minutes(base)} min)"
+            message(
+                "lookahead.changed",
+                language,
+                journey=what,
+                new=_clock_text(now.legs[0].departure),
+                old=_clock_text(base.legs[0].departure),
+                duration=signature_minutes(now),
+                previous=signature_minutes(base),
+            )
         )
     return "; ".join(dict.fromkeys(parts))
 
@@ -187,8 +217,12 @@ def _seed_day(per_date: Mapping[str, tuple[str, ...]], version: int) -> date | N
     return next((split_day_key(k)[0] for k, v in per_date.items() if tag in v), None)
 
 
-def render_message(p: Profile, sd: date, fs: Sequence[LookAheadFact]) -> tuple[EventKind, str]:
+def render_message(
+    p: Profile, sd: date, fs: Sequence[LookAheadFact], language: MessageLanguage | None = None
+) -> tuple[EventKind, str]:
     """One look-ahead message for direction and date `sd` from its facts (`_fact_messages`): its kind and text."""
+    if language is None:
+        language = p.alerts.language
     kind = (
         EventKind.WORKS_AHEAD
         if any(fact_warns(f) for f in fs)
@@ -197,12 +231,12 @@ def render_message(p: Profile, sd: date, fs: Sequence[LookAheadFact]) -> tuple[E
         else EventKind.RESTORED
     )
     text = (
-        f"{display_name(p.name)}, {sd:%A} {sd.day} {sd:%b}: "
+        f"{display_name(p.name)}, {message_date(sd, language, full_weekday=True)}: "
         + ". ".join(dict.fromkeys(f.text for f in fs))
         + "."
     )
     if any(f.warning for f in fs):
-        text += " " + REPLACEMENT_HINT
+        text += " " + message("lookahead.replacement_hint", language)
     return kind, text
 
 
@@ -225,6 +259,7 @@ class _Bundle:
     facts: Sequence[LookAheadFact]
     was: str | None = None  # what a retire left: the withdrawn obligation that owned its marks
     expires: datetime | None = None  # and its expiry
+    language: MessageLanguage | None = None
 
 
 @dataclass(slots=True)
@@ -269,7 +304,11 @@ class _Draft:
             self.pending.remove(o)
             rest = [f for f in self.bundled.pop(o.id, ()) if f.key != tag]
             if rest and o.look_ahead is not None:
-                self.carried.append(_Bundle(o.look_ahead[2], rest, o.id, o.expires_at))
+                self.carried.append(
+                    _Bundle(
+                        o.look_ahead[2], rest, o.id, o.expires_at, alert_facts(o.event).language
+                    )
+                )
         correction = cancel_key(w.version)
         awaiting = correction in self.awaiting_adoption and (
             self.track_adoptions or correction in self.adoption_receipts
@@ -336,13 +375,13 @@ def _agreed_signature(
     expected: Sequence[date],
     *,
     complete: bool,
-) -> tuple[Signature | None, str | None]:
+) -> tuple[Signature | None, Phrase | None]:
     """A new signature needs full coverage. A changed pattern is visible in whole journeys."""
     if not complete or not expected or any(sd not in wholes for sd in expected):
         return None, None
     first = wholes[expected[0]]
     if first.other_pattern and all(wholes[sd].head == first.head for sd in expected):
-        return None, "NS now offers your usual journey only with other changes; update your profile"
+        return None, phrase("lookahead.other_changes")
     rs = [r for r in results if r.service_date in expected]
     sigs = {
         signature_of(c, wholes[sd].service_date)
@@ -370,6 +409,7 @@ def _cancel_waiting(
     agreed: Signature | None,
     in_force_today: BaselineVersion | None,
     today: date,
+    language: MessageLanguage,
     scope: int | None = None,
 ) -> None:
     """A waiting version is cancelled when the run agrees with the version in force."""
@@ -378,7 +418,7 @@ def _cancel_waiting(
     for w in [
         v for v in draft.versions if not v.phase_on(today).current and v.commute_weekday == scope
     ]:
-        draft.retire(w, "your usual timetable stays as it was; ignore the earlier change")
+        draft.retire(w, message("lookahead.withdraw", language))
 
 
 def _adopt(
@@ -391,7 +431,7 @@ def _adopt(
     others: Sequence[Profile],
     bases: Mapping[tuple[str, Direction], BaselineHistory],
     scope: int | None = None,
-) -> tuple[BaselineVersion | None, str | None]:
+) -> tuple[BaselineVersion | None, Phrase | None]:
     """Unanimous adoption of the whole signature, after confirmation only: the version
     adopted, or the refusal that blocked it."""
     if agreed is None or not any(
@@ -411,32 +451,29 @@ def _adopt(
         else p.journey_on(d, commute_day_for(p, d, expected[0])).first_train
     )
     new_first = agreed.legs[0].departure
+    times = {"old": _clock_text(old_first), "new": _clock_text(new_first)}
     if agreed.legs[0].day_offset != 0:
-        return None, (
-            f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} on another day;"
-            " update your profile"
-        )
+        return None, phrase("lookahead.another_day", **times)
     if overlaps_next(p, d, agreed, expected[0], current, others, bases, scope=scope):
-        return None, (
-            f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)}, which overlaps"
-            " another window; update your profile"
-        )
+        return None, phrase("lookahead.overlap", **times)
+    language = p.alerts.language
     adopted = BaselineVersion(current._next(), agreed, expected[0], True, scope)
     for w in [
         v for v in draft.versions if not v.phase_on(today).current and v.commute_weekday == scope
     ]:
         if w.effective_from >= adopted.effective_from:  # it would override this one
-            draft.retire(w, "ignore the earlier change; I follow the newer NS time")
+            draft.retire(w, message("lookahead.withdraw_older", language))
     draft.versions.append(adopted)
     tag = adopt_key(adopted.version)
     draft.add_entry(day_key(expected[0], None), tag)
-    when = f"{expected[0]:%A} {expected[0].day} {expected[0]:%b}"
+    when = message_date(expected[0], language, full_weekday=True)
     edit = timetable_edit(p, d, draft.history(), adopted.version)
-    text = (
-        f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} from {when};"
-        " I follow the new time."
+    text = message("lookahead.adopted", language, day=when, **times)
+    text += (
+        "\n" + edit.hint(language).removesuffix(".")
+        if edit is not None
+        else message("lookahead.update_profile", language)
     )
-    text += "\n" + edit.yaml_hint.removesuffix(".") if edit is not None else " Update your profile?"
     draft.add_fact(
         expected[0],
         LookAheadFact(
@@ -468,9 +505,11 @@ def _configured_shift(p: Profile, d: Direction, day: date, r: ProbeResult) -> st
     departure = planned_departure(r.connection.legs[0])
     if abs(departure - to_utc(expected)) < timedelta(minutes=DEP_TOL_MIN):
         return None
-    return (
-        f"your usual {_clock_text(configured)} departure is listed at "
-        f"{departure.astimezone(TZ):%H:%M}. Check NS for your journey"
+    return message(
+        "lookahead.shift",
+        p.alerts.language,
+        old=_clock_text(configured),
+        new=f"{departure.astimezone(TZ):%H:%M}",
     )
 
 
@@ -532,7 +571,7 @@ def _probe_facts(
                 sd,
                 LookAheadFact(
                     f"{key}|{RESTORED_FACT}",
-                    f"your {what} is back to normal",
+                    message("lookahead.restored", p.alerts.language, journey=what),
                     loud=False,
                     warning=False,
                 ),
@@ -555,7 +594,13 @@ class _MessageBuilder:
     unsure: set[date]
 
     def event(
-        self, sd: date | None, kind: EventKind, severity: Severity, text: str, tail: str
+        self,
+        sd: date | None,
+        kind: EventKind,
+        severity: Severity,
+        text: str,
+        tail: str,
+        language: MessageLanguage,
     ) -> AlertEvent:
         return AlertEvent(
             profile_id=self.p.id,
@@ -569,12 +614,19 @@ class _MessageBuilder:
             text=text,
             key=f"lookahead|{self.p.id}|{self.d.value}|{tail}",
             created_at=self.now,
+            facts=AlertFacts(language=language),
         )
 
     def dated_event(
-        self, sd: date, kind: EventKind, severity: Severity, text: str, fact_key: str
+        self,
+        sd: date,
+        kind: EventKind,
+        severity: Severity,
+        text: str,
+        fact_key: str,
+        language: MessageLanguage,
     ) -> AlertEvent:
-        return self.event(sd, kind, severity, text, f"{sd.isoformat()}|{fact_key}")
+        return self.event(sd, kind, severity, text, f"{sd.isoformat()}|{fact_key}", language)
 
     def obligation(
         self,
@@ -617,10 +669,11 @@ def _fact_messages(
     for b in [*(_Bundle(sd, fs) for sd, fs in sorted(draft.facts.items())), *draft.carried]:
         sd = b.service_date
         is_adopt = any(f.adopts for f in b.facts)
-        kind, text = render_message(w.p, sd, b.facts)
+        language = b.language or w.p.alerts.language
+        kind, text = render_message(w.p, sd, b.facts, language)
         fact_key = bundle_key(b.facts)
         severity = Severity.LOUD if any(f.loud for f in b.facts) else Severity.SILENT
-        event = w.dated_event(sd, kind, severity, text, fact_key)
+        event = w.dated_event(sd, kind, severity, text, fact_key, language)
         scoped_adoption = adopted.get(baseline_scope(w.p, w.d, sd))
         version = (
             scoped_adoption.version
@@ -655,6 +708,7 @@ def _unclear_messages(draft: _Draft, w: _MessageBuilder) -> list[AlertEvent]:
     values; its own loud message, gated only by its ledger mark."""
     events: list[AlertEvent] = []
     told: set[tuple[date, str]] = set()
+    language = w.p.alerts.language
     for r in w.results:
         sd = r.service_date
         for tk, u in r.unclear:
@@ -666,10 +720,11 @@ def _unclear_messages(draft: _Draft, w: _MessageBuilder) -> list[AlertEvent]:
             if latest_mark(draft.per_date.get(key, ()), (UNCLEAR_MARK,))[0] == mark:
                 continue
             fact = f"{key}|{mark}"
-            text = f"{display_name(w.p.name)}, {sd:%A} {sd.day} {sd:%b}: " + data_unclear_text(
-                u.label, u.station, u.copies
+            text = (
+                f"{display_name(w.p.name)}, {message_date(sd, language, full_weekday=True)}: "
+                + data_unclear_text(u.label, u.station, u.copies, language)
             )
-            event = w.dated_event(sd, EventKind.DATA_UNCLEAR, Severity.LOUD, text, fact)
+            event = w.dated_event(sd, EventKind.DATA_UNCLEAR, Severity.LOUD, text, fact, language)
             expires = w.journey_end(sd) if probed_end(r) is not None else None
             ob = w.obligation(event, sd, w.in_force_version(sd), fact, expires)
             draft.pending.append(ob)
@@ -680,13 +735,16 @@ def _unclear_messages(draft: _Draft, w: _MessageBuilder) -> list[AlertEvent]:
 
 
 def _refusal_messages(
-    draft: _Draft, w: _MessageBuilder, refusals: Sequence[str], today: date
+    draft: _Draft, w: _MessageBuilder, refusals: Sequence[tuple[str, str]], today: date
 ) -> list[AlertEvent]:
     """A blocked adoption is told while it lasts."""
     events: list[AlertEvent] = []
-    for reason in refusals:
-        text = f"{display_name(w.p.name)}: profile change refused: {reason}."
-        event = w.event(None, EventKind.PROFILE_REFUSED, Severity.LOUD, text, f"refused|{reason}")
+    language = w.p.alerts.language
+    for canonical, reason in refusals:
+        text = message("lookahead.refused", language, name=display_name(w.p.name), reason=reason)
+        event = w.event(
+            None, EventKind.PROFILE_REFUSED, Severity.LOUD, text, f"refused|{canonical}", language
+        )
         events.append(event)
         draft.pending.append(w.obligation(event, today, w.final.latest, event.key, None))
     return events
@@ -808,18 +866,16 @@ def run_lookahead(
         agreed, pattern_refusal = _agreed_signature(
             scoped_results, scoped_wholes, expected, complete=complete
         )
-        _cancel_waiting(draft, agreed, in_force_today, today, scope)
+        language = p.alerts.language
+        _cancel_waiting(draft, agreed, in_force_today, today, language, scope)
         version, adopt_refusal = _adopt(draft, p, d, agreed, expected, today, others, bases, scope)
         if version is not None:
             adopted[scope] = version
         for reason in (pattern_refusal, adopt_refusal):
             if reason:
-                prefix = (
-                    ""
-                    if scope is None
-                    else f"{date(2026, 10, 26) + timedelta(days=scope - 1):%A}: "
-                )
-                refusals.append(prefix + reason)
+                canonical = "" if scope is None else message_weekday(scope - 1, "en") + ": "
+                prefix = "" if scope is None else message_weekday(scope - 1, language) + ": "
+                refusals.append((canonical + reason.render("en"), prefix + reason.render(language)))
     final = draft.history()
     tomorrow = today + timedelta(days=1)
     loud_days = {tomorrow} if evening_day is None else set()

@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 from train_commute_companion.advice import leave_now_text, still_advised, usual_arrival
 from train_commute_companion.budget import POLL_EVERY_S, RequestGate
 from train_commute_companion.calendar import TZ, hhmm, to_utc
+from train_commute_companion.catalogue import MessageLanguage, message
 from train_commute_companion.classify import classify_leg, current_connection, expected_departure
 from train_commute_companion.health import FRESH_FOR
 from train_commute_companion.lifecycle import (
@@ -141,7 +142,9 @@ class Check:
         ]
         return replace(current, legs=tuple(legs))
 
-    def cancellations(self, answers: Sequence[ProviderAnswer]) -> str | None:
+    def cancellations(
+        self, answers: Sequence[ProviderAnswer], language: MessageLanguage
+    ) -> str | None:
         station, destination = self.option.station, self.rules["destination"]
         direct = [
             a for a in answers if (a.query.origin, a.query.destination) == (station, destination)
@@ -163,9 +166,12 @@ class Check:
         ]
         if not candidates or not all(_cancelled(c) for c in candidates):
             return None
-        return (
-            f"NS shows cancellations on every train option checked from {station} "
-            f"to {destination} for {self.day.isoformat()}. Check the NS app for other options."
+        return message(
+            "checked.cancellations",
+            language,
+            origin=station,
+            destination=destination,
+            day=self.day.isoformat(),
         )
 
 
@@ -377,98 +383,130 @@ def _times(c: Connection) -> tuple[datetime | None, ...]:
     )
 
 
-def _track(leg: Leg) -> str:
+def _track(leg: Leg, language: MessageLanguage) -> str:
     if leg.board.actual_track:
-        return f"platform {leg.board.actual_track}"
+        return message("checked.platform", language, track=leg.board.actual_track)
     if leg.board.planned_track:
-        return f"scheduled platform {leg.board.planned_track}"
+        return message("checked.planned_platform", language, track=leg.board.planned_track)
     return ""
 
 
-def _check_note(now: datetime, fetched_at: datetime, track: str) -> str:
+def _check_note(now: datetime, fetched_at: datetime, track: str, language: MessageLanguage) -> str:
     minutes = (to_utc(now) - to_utc(fetched_at)) // timedelta(minutes=1)
-    ago = "just now" if not minutes else f"{minutes} min ago"
-    return f"NS checked {ago}: runs" + (f", {track}." if track else ".")
+    ago = (
+        message("checked.minutes_ago", language, minutes=minutes)
+        if minutes
+        else message("checked.just_now", language)
+    )
+    return message("checked.runs", language, ago=ago) + (f", {track}." if track else ".")
 
 
 def checked_text(event: AlertEvent, check: Check, c: Connection, fetched_at: datetime) -> str:
     facts = alert_facts(event)
+    language = facts.language
     state, ctx, option = check.state, check.ctx, check.option
     first = c.legs[0]
     buffer = ctx.profile.journey(ctx.direction).buffer_min if ctx.profile.alerts.leave_by else None
-    note = _check_note(ctx.now, fetched_at, "" if option.style == "onward" else _track(first))
+    track = "" if option.style == "onward" else _track(first, language)
+    note = _check_note(ctx.now, fetched_at, track, language)
     if event.kind in (EventKind.ALL_GOOD, EventKind.AT_STATION):
         board = replace(first.board, actual_track=None, planned_track=None)
         late = classify_leg(first, first.alight.code).dep_delay_min
         legs = (replace(first, stops=(board, *first.stops[1:])), *c.legs[1:])
-        prefix = "your "
+        body = message("checked.your", language) + status_text(legs, late, language) + "."
         if event.kind is EventKind.AT_STATION:
-            previous, sep, _ = event.body.partition(f"{hhmm(first.train.planned_departure)} to ")
-            prefix = previous if sep else "at the station: your "
-        leave = leave_by_text(first, buffer) if event.kind is EventKind.ALL_GOOD else ""
+            identifying_text = message(
+                "train.destination", language, time=hhmm(first.train.planned_departure), station=""
+            )
+            previous, sep, _ = event.body.partition(identifying_text)
+            train = status_text(legs, late, language)
+            body = (
+                previous + train + "."
+                if sep
+                else message("train.at_station", language, train=train)
+            )
+        leave = leave_by_text(first, buffer, language) if event.kind is EventKind.ALL_GOOD else ""
         return (
-            f"{display_name(event.profile_name)}: {prefix}{status_text(legs, late)}."
+            f"{display_name(event.profile_name)}: {body}"
             + (leave + "." if leave else "")
             + f" {note}{facts.twin_note}"
         )
     if event.kind is EventKind.LEAVE_NOW:
-        body = leave_now_text(c, ctx.now.tzinfo, buffer)
+        body = leave_now_text(c, ctx.now.tzinfo, buffer, language)
         return f"{display_name(event.profile_name)}: {body}. {note}{facts.twin_note}"
     head = event.text.removesuffix(facts.twin_note).removesuffix(facts.next_clause).rstrip()
-    if event.kind is EventKind.ROUTE_CHANGED and facts.next_clause.startswith(" via "):
+    if event.kind is EventKind.ROUTE_CHANGED and facts.next_clause.startswith(
+        message("train.via_prefix", language)
+    ):
         via = ", ".join(leg.alight.name or leg.alight.code for leg in c.legs[:-1])
-        via = via or "a direct train"
-        return f"{head} via {via}, following it. {note}{facts.twin_note}"
+        route = message("train.follow_via", language, via=via or message("train.direct", language))
+        return f"{head}{route} {note}{facts.twin_note}"
     if event.kind is EventKind.ROUTE_CHANGED and not head.endswith("."):
         head += "."
     dep = hhmm(expected_departure(c))
-    if facts.next_clause.startswith(" Take the "):
-        which = "onward train" if option.prior else "earlier train"
+    if facts.next_clause.startswith(message("relock.take_prefix", language)):
+        which = message("relock.onward" if option.prior else "relock.earlier", language)
         leave = (
-            leave_by_text(first, buffer)
+            leave_by_text(first, buffer, language)
             if not option.prior and not state.travelling and not state.at_station
             else ""
         )
-        clause = f"Take the {which} at {dep} from {first.board.code}"
-        clause += ("." + leave if leave else "") + crowd_text(c.legs) + "."
+        clause = message("relock.take", language, which=which, time=dep, station=first.board.code)
+        clause = (
+            clause.lstrip() + ("." + leave if leave else "") + crowd_text(c.legs, language) + "."
+        )
     elif option.style == "station":
         board = replace(first.board, actual_track=None, planned_track=None)
         first = replace(first, stops=(board, *first.stops[1:]))
         late = classify_leg(first, first.alight.code).dep_delay_min
-        clause = f"Next: {status_text((first, *c.legs[1:]), late)}."
+        clause = message(
+            "relock.next", language, train=status_text((first, *c.legs[1:]), late, language)
+        ).lstrip()
     elif option.style == "onward":
         current = hhmm(option.prior[-1][0].planned_departure)
-        clause = f"Now following your {current} train"
+        onward = ""
         for leg in c.legs:
             departure = leg.board.departure
             when = hhmm(
                 departure.value if departure and departure.value else leg.train.planned_departure
             )
-            track = _track(leg)
-            clause += f", then the {when} from {leg.board.code}" + (f" ({track})" if track else "")
-        clause += crowd_text(c.legs) + "."
+            track = _track(leg, language)
+            onward += message(
+                "relock.then",
+                language,
+                time=when,
+                station=leg.board.code,
+                platform=f" ({track})" if track else "",
+            )
+        clause = message(
+            "relock.following", language, time=current, onward=onward + crowd_text(c.legs, language)
+        )
     elif option.style == "option":
         arr = c.legs[-1].alight.arrival
         arrival = None if arr is None else arr.value
         ending = (
-            f", arrives {hhmm(arrival)}. Choose it to follow it"
+            message("train.arrives", language, time=hhmm(arrival))
+            + message("checked.choose", language)
             if event.train is not None and arrival is not None
             else ""
         )
-        clause = f"Next option: {dep}{ending}."
+        clause = message("relock.option_label", language, time=dep, ending=ending)
     elif option.style == "conditional":
-        clause = f"next good connection: {dep}."
+        clause = message("checked.conditional", language, time=dep)
     else:
-        label = "Next you can catch" if option.style == "catch" else "Next good connection"
-        via = ", ".join(c.transfer_stations) or "a direct train"
-        route = f", new route via {via}" if option.moved_route else ""
+        key = "relock.can_catch" if option.style == "catch" else "relock.next_good"
+        via = ", ".join(c.transfer_stations) or message("train.direct", language)
+        route = message("relock.new_route", language, via=via) if option.moved_route else ""
         leave = (
-            leave_by_text(first, buffer)
+            leave_by_text(first, buffer, language)
             if not option.prior and not state.travelling and not state.at_station
             else ""
         )
         clause = (
-            f"{label}: {dep}{route}" + ("." + leave if leave else "") + crowd_text(c.legs) + "."
+            message(key, language, time=dep, route=route).lstrip()
+            + ("." + leave if leave else "")
+            + crowd_text(c.legs, language)
+            + "."
         )
     return f"{head} {clause} {note}{facts.twin_note}"
 
@@ -482,13 +520,17 @@ def option_clause(event: AlertEvent) -> str:
 
 def without_option(event: AlertEvent, cancellation: str | None) -> str:
     facts = alert_facts(event)
+    language = facts.language
     clause = option_clause(event)
     head = event.text.removesuffix(facts.twin_note).removesuffix(clause).rstrip()
-    detail = cancellation or "Check the NS app for a current train option."
+    detail = cancellation or message("checked.current_option", language)
     if event.kind in (EventKind.ALL_GOOD, EventKind.AT_STATION):
         return f"{display_name(event.profile_name)}: {detail}{facts.twin_note}"
-    if event.kind is EventKind.ROUTE_CHANGED and clause.startswith(" via "):
-        return f"{display_name(event.profile_name)}: NS reported a route change. {detail}{facts.twin_note}"
+    if event.kind is EventKind.ROUTE_CHANGED and clause.startswith(
+        message("train.via_prefix", language)
+    ):
+        route_change = message("checked.route_change", language)
+        return f"{display_name(event.profile_name)}: {route_change} {detail}{facts.twin_note}"
     if not clause and cancellation is None:
         return event.text
     if event.kind is EventKind.NO_CONNECTION:

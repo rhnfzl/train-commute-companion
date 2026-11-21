@@ -19,6 +19,7 @@ from typing import Any, TypeVar
 
 import segno
 
+from train_commute_companion.catalogue import message as localized
 from train_commute_companion.compensation import ArrivalError, arrival_text
 from train_commute_companion.compensation import confirm as check_arrival
 from train_commute_companion.history import STATS_PERIODS, stats_text
@@ -44,6 +45,7 @@ from .commands import (
     command_word,
     parse_arrival,
     parse_target,
+    profile_language,
     recovery_offer_buttons,
     recovery_origin_prompt,
     recovery_origins,
@@ -52,6 +54,7 @@ from .commands import (
     render_selected_recovery,
     render_status,
     render_webhook_tests,
+    shared_language,
     stations_text,
     status_buttons,
     view_for_profiles,
@@ -75,32 +78,10 @@ POLL_S = 30  # long poll; the HTTP timeout is 10 s longer
 MAX_AGE = timedelta(minutes=10)  # an older command is a backlog that outlived its cursor
 ALLOWED = ["message", "edited_message", "callback_query"]
 
-LOUD_TEST = "Train Commute Companion: test alert, loud. You should hear this one."
-SILENT_TEST = "Train Commute Companion: test alert, silent. This one should arrive without sound."
-USAGE_CHOOSE = "Usage: /choose [profile] [outbound|return] HH:MM [train number] [YYYY-MM-DD]"
-USAGE_TRIP = "Use /trip UT RTD, /trip Utrecht Centraal -> Rotterdam Centraal, or /trip saved NAME."
-HELP = (
-    "/status: the journeys being followed now\n"
-    "/stats [week|month|year]: your recorded commute statistics\n"
-    "/clearstats: review clearing your local commute statistics\n"
-    "/trip UT RTD: check the next trains between two stations\n"
-    "/plan: set up a one-off or repeating trip\n"
-    "/plans: view, edit or cancel saved trips\n"
-    "/agents: choose which agents can change plans\n"
-    "/preferences: view saved travel preferences\n"
-    "/remember: save a travel preference\n"
-    "/forgetpref NAME: delete a travel preference\n"
-    "/choose [profile] [outbound|return] HH:MM [train number] [YYYY-MM-DD]: lock that train\n"
-    "/leaving [profile] [outbound|return]: I'm leaving now\n"
-    "/arrived: enter and review an actual destination arrival with a full date and timezone\n"
-    "/skip [profile] [outbound|return|day] [YYYY-MM-DD]: not travelling, alerts for it stop\n"
-    "/stations: the boarding stations TCC remembers\n"
-    "/forget STATION: stop remembering that boarding station\n"
-    "/setup: create your first commute when using the Docker installer\n"
-    "/test: send the loud and the silent test alert (and test each webhook)\n"
-    "/help: this list\n"
-    "Data: NS"
-)
+LOUD_TEST = localized("command.test_loud", "en")
+SILENT_TEST = localized("command.test_silent", "en")
+USAGE_CHOOSE = localized("command.choose_usage", "en")
+HELP = localized("command.help", "en")
 TIMED_OUT = "NS did not answer in time; try again."
 FAILED = "That failed; see the app log."
 INVALID = "That button is no longer valid."
@@ -584,7 +565,7 @@ class Bot:
         text: str = msg["text"]
         word, args = command_word(text), text.split()[1:]
         if word in ("/start", "/help"):
-            await self._reply(HELP)
+            await self._reply(localized("command.help", shared_language(self._rt.view())))
             if not self.confirmed:
                 await self._test_pair()
         elif word in ("/setup", "/cancel_setup"):
@@ -649,19 +630,20 @@ class Bot:
                     await self._offer_travel_memory()
 
     async def _check_trip(self, args: list[str]) -> None:
+        language = shared_language(self._rt.view())
         raw = args[0] if args else ""
         words = raw.split(maxsplit=1)
         if len(words) == 2 and words[0].casefold() == "saved":
             preferences = self.travel_actions.preferences
             saved = preferences.saved_route(words[1]) if preferences is not None else None
             if saved is None:
-                await self._reply("No saved travel preference by that name. See /preferences.")
+                await self._reply(localized("trip.saved_missing", language))
                 return
             pair = list(saved)
         else:
             pair = raw.split("->") if "->" in raw else raw.split()
         if len(pair) != 2 or not all(station.strip() for station in pair):
-            await self._reply(USAGE_TRIP)
+            await self._reply(localized("command.trip_usage", language))
             return
         result = await self._call_runtime(self._rt.check_trip(*pair))
         await self._reply(result.text if isinstance(result, Refused) else result["text"])
@@ -688,7 +670,12 @@ class Bot:
         if days is None or len(args) > 1:
             await self._reply("Use /stats week, /stats month, or /stats year.")
             return
-        await self._reply(f"Last {days} days\n{stats_text(self._rt.commute_stats(days))}")
+        language = shared_language(self._rt.view())
+        await self._reply(
+            localized("stats.period", language, days=days)
+            + "\n"
+            + stats_text(self._rt.commute_stats(days), language)
+        )
 
     def _statistics_delete(self, token: str) -> Outcome:
         draft = self._stats_clear
@@ -740,7 +727,9 @@ class Bot:
         name = display_name(t.profile_name)
         if word == "/choose":
             if t.departure is None:
-                await self._reply(USAGE_CHOOSE)
+                await self._reply(
+                    localized("command.choose_usage", profile_language(view, t.profile_id))
+                )
                 return
             out = await self._choose(
                 t.profile_id, name, t.departure, t.train, t.service_date, t.direction
@@ -981,7 +970,10 @@ class Bot:
         )
         if isinstance(result, Refused):
             return Outcome(result.text)
-        return Outcome("Arrival saved. " + arrival_text(result), done=True)
+        language = profile_language(self._rt.view(), result.key.profile_id)
+        return Outcome(
+            localized("arrival.saved", language) + arrival_text(result, language), done=True
+        )
 
     async def _arrival_answer(self, nonce: str, answer: str) -> Outcome:
         recipient = self.arrival_recipient
@@ -1001,7 +993,10 @@ class Bot:
                 f"{command}<arrival-time>\nThen review and confirm it.",
                 done=True,
             )
-        return Outcome("Arrival saved. " + arrival_text(result), done=True)
+        language = profile_language(self._rt.view(), result.key.profile_id)
+        return Outcome(
+            localized("arrival.saved", language) + arrival_text(result, language), done=True
+        )
 
     async def _confirm(self, nonce: str) -> Outcome:
         proof = self._proof
@@ -1044,8 +1039,9 @@ class Bot:
             ]
             if len(plans) == 1:
                 occurrence, plan = plans[0]
+                language = profile_language(view, occurrence.key.profile_id)
                 if tag == "rp":
-                    return Outcome(*recovery_origin_prompt(plan))  # nothing happened yet
+                    return Outcome(*recovery_origin_prompt(plan, language))
                 if re.fullmatch(r"[0-9]{1,4}", parts[2]) and int(parts[2]) in recovery_origins(
                     plan
                 ):
@@ -1058,7 +1054,9 @@ class Bot:
                     if isinstance(offer, Refused):
                         return Outcome(offer.text)
                     return Outcome(
-                        render_recovery_offer(offer), recovery_offer_buttons(offer), done=True
+                        render_recovery_offer(offer, language),
+                        recovery_offer_buttons(offer, language),
+                        done=True,
                     )
         elif tag == "rf" and len(parts) == 2 and re.fullmatch(r"[0-9a-f]{24}", parts[1]):
             offers = [
@@ -1068,6 +1066,7 @@ class Bot:
             ]
             if len(offers) == 1:
                 occurrence, offer = offers[0]
+                language = profile_language(view, occurrence.key.profile_id)
                 selected = await self._call_runtime(
                     self._rt.select_recovery(
                         occurrence.key,
@@ -1079,8 +1078,8 @@ class Bot:
                 if isinstance(selected, Refused):
                     return Outcome(selected.text)
                 return Outcome(
-                    render_selected_recovery(selected),
-                    recovery_progress_buttons(selected),
+                    render_selected_recovery(selected, language),
+                    recovery_progress_buttons(selected, language),
                     done=True,
                 )
         elif (
@@ -1103,6 +1102,7 @@ class Bot:
             kind = kinds.get(parts[4])
             if len(selections) == 1 and kind is not None:
                 occurrence, selected = selections[0]
+                language = profile_language(view, occurrence.key.profile_id)
                 revision, index = int(parts[2]), int(parts[3])
                 duplicate = any(
                     a.id == action_id
@@ -1139,8 +1139,8 @@ class Bot:
                     if isinstance(result, Refused):
                         return Outcome(result.text)
                     return Outcome(
-                        render_selected_recovery(result),
-                        recovery_progress_buttons(result),
+                        render_selected_recovery(result, language),
+                        recovery_progress_buttons(result, language),
                         done=True,
                     )
         return stale
@@ -1152,16 +1152,24 @@ class Bot:
         refused = await self._call_runtime(self._rt.choose_at(pid, at, train, day, direction))
         if refused is not None:
             return Outcome(refused.text)
-        return Outcome(f"Locked the {at:%H:%M} for {name}.", done=True)
+        language = profile_language(self._rt.view(), pid)
+        return Outcome(
+            localized("command.locked", language, time=f"{at:%H:%M}", name=name), done=True
+        )
 
     async def _answer(self, prompt_id: str, answer: str) -> Outcome:
         """A button on a question; TCC's own next message follows, a refusal says why not."""
         refused = await self._call_runtime(self._rt.answer_prompt(prompt_id, answer))
-        return Outcome("Answer saved.", done=True) if refused is None else Outcome(refused.text)
+        if refused is not None:
+            return Outcome(refused.text)
+        return Outcome(
+            localized("command.answer_saved", shared_language(self._rt.view())), done=True
+        )
 
     async def _forget(self, args: Sequence[str]) -> None:
+        language = shared_language(self._rt.view())
         if len(args) != 1:
-            await self._reply("Usage: /forget STATION, for example /forget VL")
+            await self._reply(localized("command.forget_usage", language))
             return
         code, done, failed = args[0].upper(), 0, None
         for info in self._rt.view().directions:
@@ -1172,18 +1180,23 @@ class Bot:
                 failed = refused  # still remembered there: say so, never "not remembered"
         if failed is not None:
             await self._reply(
-                f"Forgot {code} for some trips, but: {failed.text}" if done else failed.text
+                localized("command.forgot_some", language, station=code, error=failed.text)
+                if done
+                else failed.text
             )
             return
         await self._reply(
-            f"Forgot {code}." if done else f"{code} is not a remembered boarding station."
+            localized(
+                "command.forgot" if done else "command.station_unsaved", language, station=code
+            )
         )
 
     async def _leaving(self, pid: str, day: date | None, direction: Direction | None) -> Outcome:
         refused = await self._call_runtime(self._rt.leaving(pid, day, direction))
         if refused is not None:
             return Outcome(_nothing(refused))
-        return Outcome("Marked as leaving now.", done=True)
+        language = profile_language(self._rt.view(), pid)
+        return Outcome(localized("command.leaving", language), done=True)
 
     async def _skip(
         self, pid: str, day: date | None, direction: Direction | None, whole: bool
@@ -1193,9 +1206,10 @@ class Bot:
         )
         if refused is not None:
             return Outcome(_nothing(refused))
-        if whole:
-            return Outcome("Not travelling today: alerts for both directions stop.", done=True)
-        return Outcome("Not travelling: alerts for that journey stop.", done=True)
+        language = profile_language(self._rt.view(), pid)
+        return Outcome(
+            localized("command.skip_day" if whole else "command.skip_trip", language), done=True
+        )
 
     async def _call_runtime(self, aw: Awaitable[T]) -> T:
         """The runtime call is its own task: a timeout or a cancelled handler leaves it to finish
@@ -1218,10 +1232,24 @@ class Bot:
             return
         nonce = secrets.token_hex(4)
         proof = self._proof = DeliveryProof(nonce)
-        button = {"inline_keyboard": [[{"text": "I got both", "callback_data": f"ok|{nonce}"}]]}
+        language = shared_language(self._rt.view())
+        button = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": localized("command.test_both", language),
+                        "callback_data": f"ok|{nonce}",
+                    }
+                ]
+            ]
+        }
         try:
-            await self._send(LOUD_TEST, disable_notification=False)
-            await self._send(SILENT_TEST, disable_notification=True, reply_markup=button)
+            await self._send(localized("command.test_loud", language), disable_notification=False)
+            await self._send(
+                localized("command.test_silent", language),
+                disable_notification=True,
+                reply_markup=button,
+            )
         except TelegramError as e:
             proof.phase = ProofPhase.FAILED
             log.warning("Telegram test alert failed (%s: %s); send /test again", e.code, e)

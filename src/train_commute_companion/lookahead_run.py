@@ -20,7 +20,14 @@ from train_commute_companion.lookahead_probe import (
     service_date,
     travels_on,
 )
-from train_commute_companion.model import Direction, Obligation, Profile, direction_key, present
+from train_commute_companion.model import (
+    Direction,
+    Obligation,
+    Profile,
+    alert_facts,
+    direction_key,
+    present,
+)
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
 from train_commute_companion.revisions import baseline_on, commute_day_for, travel_replaces
 from train_commute_companion.state import (
@@ -296,7 +303,7 @@ def _rewrite_withdrawn(
         if not rest or len(rest) == len(fs):
             continue  # only the adoption (dropped at its next try), or none bundled
         day = o.look_ahead[2]
-        kind, text = render_message(p, day, rest)
+        kind, text = render_message(p, day, rest, alert_facts(o.event).language)
         b = baseline_on(new_hist, p, d, day)
         fact_key = bundle_key(rest)
         o = replace(

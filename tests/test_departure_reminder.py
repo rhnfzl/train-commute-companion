@@ -6,7 +6,7 @@ from test_travel_plans import save
 from test_weather_runtime import forecast_for
 
 from train_commute_companion.location import LocationEvent
-from train_commute_companion.model import EventKind
+from train_commute_companion.model import EventKind, alert_facts
 from train_commute_companion.providers.weather import WeatherProvider
 
 KIND = EventKind.DEPARTURE_REMINDER
@@ -105,6 +105,27 @@ async def test_retry_drops_departure_reminder_after_leaving_home(tmp_path):
     await presence(rig, "08:02:30", "leave")
     await rig.rt.watchdog_once()
     assert len(reminders(rig)) == 1
+
+
+async def test_departure_reminder_retry_preserves_the_original_language(tmp_path):
+    rig = await configured(tmp_path)
+    await presence(rig, "08:00")
+    await rig.rt.poll_once()
+    rig.notifier.fails = lambda e: e.kind is KIND
+    rig.clock.set("08:02:10")
+    await rig.rt.watchdog_once()
+    rig.write(
+        text=rig.path.read_text().replace(
+            "    location:", "    alerts: {language: nl}\n    location:", 1
+        )
+    )
+    rig.notifier.fails = lambda e: False
+    assert await rig.rt.reload() is None
+    await rig.rt.watchdog_once()
+    first, retry = [e for e in rig.notifier.attempts if e.kind is KIND]
+    assert retry.key == first.key
+    assert first.text == retry.text == "Name: Leave now for the 08:12 train."
+    assert alert_facts(retry).language == "en"
 
 
 @pytest.mark.parametrize("restart", [False, True])

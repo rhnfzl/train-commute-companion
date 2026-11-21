@@ -3,6 +3,7 @@
 from datetime import timedelta
 
 from train_commute_companion.calendar import hhmm, to_utc
+from train_commute_companion.catalogue import message
 from train_commute_companion.health import BoardPhase
 from train_commute_companion.model import Ctx, Direction, LegKind, LegState, TransferState
 from train_commute_companion.state import OccurrenceState
@@ -39,6 +40,9 @@ def partner_text(ctx: Ctx, state: OccurrenceState, view: OccurrenceView) -> str 
     if delay < MIN_DELAY:
         return None
     eta = to_utc(last.arrival) + timedelta(minutes=ctx.schedule.walk_after_min)
-    return (
-        f"Train {int(delay / timedelta(minutes=1))} min late. Expected arrival around {hhmm(eta)}."
+    return message(
+        "partner.eta",
+        ctx.profile.alerts.language,
+        minutes=int(delay / timedelta(minutes=1)),
+        time=hhmm(eta),
     )

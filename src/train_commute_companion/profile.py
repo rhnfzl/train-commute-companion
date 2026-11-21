@@ -14,6 +14,7 @@ from train_commute_companion.calendar import (
     minute_of_day,
     nl_public_holidays,
 )
+from train_commute_companion.catalogue import MessageLanguage
 from train_commute_companion.model import (
     DEFAULT_PREFER_DIRECT_MIN,
     MAX_TIMETABLE_HORIZON,
@@ -561,10 +562,14 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "checked_alternatives",
             "partner_eta",
             "partner_phone",
+            "language",
         ),
         "alerts",
     )
     d = AlertSettings()
+    language = raw.get("language", d.language)
+    if language not in get_args(MessageLanguage):
+        c.err("alerts.language", "must be en or nl")
     history_switches = {
         key: c.boolean(raw.get(key, getattr(d, key)), f"alerts.{key}")
         for key in ("commute_stats", "weekly_recap", "after_trip_note")
@@ -739,6 +744,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         quick_trip=quick_trip,
         daily_brief=daily_brief,
         location_leave_now=location_leave,
+        language=cast(MessageLanguage, language),
         arrival_prompt=arrival_prompt,
         compensation_details=compensation_details,
         timetable_update=timetable_update,

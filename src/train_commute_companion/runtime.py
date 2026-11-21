@@ -24,6 +24,7 @@ from train_commute_companion.advice import (
 from train_commute_companion.arrival import planning_query
 from train_commute_companion.budget import POLL_DEADLINE, POLL_EVERY_S, RequestGate
 from train_commute_companion.calendar import TZ, Clock, hhmm, resolve_local, to_utc
+from train_commute_companion.catalogue import MessageLanguage, common_language, message, phrase
 from train_commute_companion.checked_alternatives import (
     Check,
     CheckedAlternatives,
@@ -125,7 +126,6 @@ from train_commute_companion.lookahead_run import (
 )
 from train_commute_companion.match import usual_connection
 from train_commute_companion.messages import (
-    CHECK_APP,
     RefusalKind,
     Refused,
     leave_by,
@@ -949,7 +949,7 @@ class Runtime:
             ctx,
             EventKind.STATION_NAVIGATION,
             Severity.SILENT,
-            f"Open your boarding station ({station}) in Maps.",
+            phrase("navigation.open", station=station),
             train,
             key_facts=f"{facts.recovery_selection}:{facts.recovery_revision}:{train}",
             stated=facts,
@@ -1041,7 +1041,7 @@ class Runtime:
                     newer = tuple(
                         a for a in check.boards if to_utc(a.fetched_at) > to_utc(answer.fetched_at)
                     )
-                    cancellations = check.cancellations((answer, *newer))
+                    cancellations = check.cancellations((answer, *newer), facts.language)
                 elif (
                     check is not None
                     and not check.option.route
@@ -1049,7 +1049,7 @@ class Runtime:
                     and check.state.poll_records
                     and check.state.poll_records[-1].ok
                 ):
-                    cancellations = check.cancellations(check.boards)
+                    cancellations = check.cancellations(check.boards, facts.language)
                 text = without_option(event, cancellations)
             labels: Mapping[str, str] = getattr(self._provider, "station_labels", {})
             event = replace(event, text=name_stations(text, labels))
@@ -1059,7 +1059,11 @@ class Runtime:
 
     def _weather_event(self, event: AlertEvent, connection: Connection | None = None) -> AlertEvent:
         routine = event.kind in (EventKind.ALL_GOOD, EventKind.AT_STATION)
-        if self._weather is None or not (routine or "Leave by " in event.text):
+        language = alert_facts(event).language
+        leave_prefix = message("leave_by", language, time="")
+        if self._weather is None or not (
+            routine or leave_prefix in event.text or "Leave by " in event.text
+        ):
             return event
         for o in self.view().occurrences:
             if (
@@ -1082,9 +1086,12 @@ class Runtime:
                     base, allowance, weather = self._alternative_weather(event, o, connection)
                 text = event.text
                 if allowance is not None and base is not None:
-                    text = text.replace(f"Leave by {hhmm(base)}", allowance.text, 1)
+                    target = leave_prefix + hhmm(base)
+                    if target not in text:  # queued alerts may predate the language setting
+                        target = message("leave_by", "en", time=hhmm(base))
+                    text = text.replace(target, allowance.format(language), 1)
                 lines = (
-                    [weather_text(w) for w in weather if w.forecast or w.warnings]
+                    [weather_text(w, language) for w in weather if w.forecast or w.warnings]
                     if (routine or text != event.text)
                     else []
                 )
@@ -1651,6 +1658,7 @@ class Runtime:
             return record, None
         prompt = ArrivalPrompt(uuid4().hex, at, expires, target)
         key = record.key
+        language = profile.alerts.language
         local = at.astimezone(TZ).isoformat(timespec="minutes")
         event = AlertEvent(
             profile.id,
@@ -1661,15 +1669,24 @@ class Runtime:
             EventKind.ARRIVAL_PROMPT,
             Severity.SILENT,
             None,
-            f"{display_name(profile.name)}: NS reported your train at {record.destination} "
-            f"at {local}. Did you arrive about then?",
+            message(
+                "arrival.question",
+                language,
+                name=display_name(profile.name),
+                station=record.destination,
+                time=local,
+            ),
             f"arrival-prompt:{okey(key)}",
             now,
             AlertFacts(
                 arrival_record=okey(key),
                 arrival_revision=record.revision,
                 prompt_id=prompt.id,
-                choices=(("yes", "Yes"), ("other", "Other time")),
+                choices=(
+                    ("yes", message("arrival.yes", language)),
+                    ("other", message("arrival.other", language)),
+                ),
+                language=language,
             ),
         )
         obligation = replace(
@@ -1720,12 +1737,13 @@ class Runtime:
                         and arrival.astimezone(TZ).date() == today
                         and enabled(profile.alerts, EventKind.AFTER_TRIP_NOTE)
                     ):
-                        body = f"NS recorded arrival at {hhmm(arrival.astimezone(TZ))}."
+                        language = profile.alerts.language
+                        body = message("stats.recorded_arrival", language, time=hhmm(arrival))
                         delay = row.delay_seconds
                         if delay == 0:
-                            body += " No delay against the saved plan."
+                            body += message("stats.on_time", language)
                         elif delay is not None:
-                            body += f" {delay / 60:g} minutes after the saved arrival time."
+                            body += message("stats.delay", language, minutes=f"{delay / 60:g}")
                         notes.append(
                             self._history_alert(
                                 profile,
@@ -1781,6 +1799,7 @@ class Runtime:
             f"{display_name(profile.name)}: {text}",
             key,
             now,
+            AlertFacts(language=profile.alerts.language),
         )
         closing = resolve_local(
             now.astimezone(TZ).date() + timedelta(days=1), time.min, edge="start"
@@ -1814,7 +1833,8 @@ class Runtime:
                         EventKind.WEEKLY_RECAP,
                         today,
                         f"commute-recap:{today}",
-                        "This week. " + stats_text(stats),
+                        message("stats.this_week", p.alerts.language)
+                        + stats_text(stats, p.alerts.language),
                         now,
                     )
                 )
@@ -2695,7 +2715,8 @@ class Runtime:
     ) -> list[AlertEvent]:
         legs = self._watched(k, s, ctx, now)
         health = board_health(s.poll_records, now)
-        blind, reason = blindness(legs, health, now)
+        language = ctx.profile.alerts.language
+        blind, reason = blindness(legs, health, now, language)
         name = display_name(ctx.profile.name)
         out = []
 
@@ -2727,11 +2748,11 @@ class Runtime:
             k, blind, now, lock=_lock_trains(s), immediate=immediate
         )
         if change.transition is EpisodeTransition.ENTERED:
-            text = f"cannot see your train in NS data ({reason}), {CHECK_APP}."
+            text = message("health.blind", language, reason=reason)
             out.append(event(EventKind.CANNOT_SEE_TRAIN, text, now.isoformat()))
         elif change.transition is EpisodeTransition.EXITED:
             since = present(change.since)
-            text = "your train is visible in NS data again."
+            text = message("health.recovered", language)
             out.append(event(EventKind.CAN_SEE_TRAIN_AGAIN, text, since.isoformat()))
         zone = timedelta(minutes=30)
         near = any(
@@ -2742,7 +2763,7 @@ class Runtime:
         wanted = unavailable if s.poll_records else unavailable and k in self._memory.offline
         if self._memory.observe_offline(k, wanted) is EpisodeTransition.ENTERED:
             out.append(
-                event(EventKind.OFFLINE, f"NS data is unavailable, {CHECK_APP}.", now.isoformat())
+                event(EventKind.OFFLINE, message("health.offline", language), now.isoformat())
             )
         return out
 
@@ -2893,12 +2914,9 @@ class Runtime:
         ):
             return
         ctx = replace(slot.context, now=self._clock.now())
-        reason = (
-            "Your usual departure moved earlier."
-            if candidate.reason == "timetable"
-            else f"Your usual train is {candidate.reason}."
+        body = phrase(
+            "wake.now", time=hhmm(candidate.departure), reason=phrase(f"wake.{candidate.reason}")
         )
-        body = f"Wake now for the {hhmm(candidate.departure)} train. {reason}"
         event = make_event(ctx, EventKind.WAKE_ALARM, Severity.LOUD, body, candidate.trains[0])
         try:
             await self._notifier.send(event)
@@ -3072,6 +3090,7 @@ class Runtime:
         profile = routing_profile(stored, key.profile_id, record.route_revision)
         if profile is not None and updated.reminder_due(profile.alerts.compensation_reminder):
             now = self._clock.now()
+            language = profile.alerts.language
             event = AlertEvent(
                 profile.id,
                 profile.name,
@@ -3081,10 +3100,14 @@ class Runtime:
                 EventKind.COMPENSATION_REMINDER,
                 Severity.SILENT,
                 None,
-                arrival_text(updated),
+                arrival_text(updated, language),
                 f"arrival:{okey(key)}:{updated.revision}",
                 now,
-                AlertFacts(arrival_record=okey(key), arrival_revision=updated.revision),
+                AlertFacts(
+                    arrival_record=okey(key),
+                    arrival_revision=updated.revision,
+                    language=language,
+                ),
             )
             obligation = replace(
                 self._obligation(event, None, now), expires_at=now + timedelta(days=7)
@@ -3858,6 +3881,20 @@ class Runtime:
                 occs[k] = s
                 continue
             p = find_profile(new, s.key.profile_id)
+            previous_profile = self._profile_for(s)
+            previous_configured = find_profile(old, s.key.profile_id)
+            if (
+                p is not None
+                and previous_configured is not None
+                and p.alerts.language != previous_configured.alerts.language
+                and replace(
+                    p, alerts=replace(p.alerts, language=previous_configured.alerts.language)
+                )
+                == previous_configured
+            ):
+                # Wording changes leave fresh train evidence and in-flight checks valid.
+                occs[k] = s
+                continue
             decision = route_decision(
                 s, route is not None and p is not None and same_route(route, p)
             )
@@ -3873,9 +3910,8 @@ class Runtime:
                 continue
             moved = replace(s, route_revision=rev, settings_revision=new.revision)
             if route is not None and p is not None and was.get(p.id) != p.location:
-                prior = self._profile_for(s) or route
-                moved = self._clear_origin_presence(moved, prior, p)
-            if effective_profile(snaps, new, moved) != self._profile_for(s):
+                moved = self._clear_origin_presence(moved, previous_profile or route, p)
+            if effective_profile(snaps, new, moved) != previous_profile:
                 moved = replace(moved, generation=s.generation + 1)  # in-flight results are stale
             occs[k] = moved
         baselines, ledgers = _rebased(self._writer.st, old, new, today)
@@ -3974,44 +4010,44 @@ class Runtime:
         self._track_key_rejection(got if isinstance(got, str) else None, "setup", now)
         return () if isinstance(got, str) else got
 
-    def _quick_trip_refusal(self) -> Refused | None:
+    def _quick_trip_refusal(self, language: MessageLanguage) -> Refused | None:
         config = self.config
         if config is not None and any(not p.alerts.quick_trip for p in config.profiles):
-            return Refused("Quick trip checks are disabled for this companion by a profile.")
+            return Refused(message("trip.disabled", language))
         if not self.started or self._reload.pending is PendingEditPhase.STATIONS:
-            return Refused(
-                "The companion is still checking its settings. Try again.", RefusalKind.RETRY
-            )
+            return Refused(message("trip.settings_pending", language), RefusalKind.RETRY)
         return None
 
     async def check_trip(self, origin: str, destination: str) -> dict[str, Any] | Refused:
         """Check upcoming options without changing or notifying about a followed journey."""
-        if refusal := self._quick_trip_refusal():
+        profiles = self.config.profiles if self.config else ()
+        language = common_language(p.alerts.language for p in profiles)
+        if refusal := self._quick_trip_refusal(language):
             return refusal
         tick = monotonic()
         if tick < self._next_quick_trip:
-            return Refused("Wait 30 seconds between trip checks.", RefusalKind.RETRY)
+            return Refused(message("trip.cooldown", language), RefusalKind.RETRY)
         self._next_quick_trip = tick + 30
         known = self.known_stations
         if not known:
             got = await self._listing(self._provider.stations, "quick trip station list")
             if got == "auth":
-                return Refused("NS rejected your API key. Check the NS-App key.", RefusalKind.RETRY)
+                return Refused(message("trip.auth", language), RefusalKind.RETRY)
             if not got or isinstance(got, str):
-                return Refused("The NS station list is unavailable. Try again.", RefusalKind.RETRY)
+                return Refused(message("trip.catalogue", language), RefusalKind.RETRY)
             if not self.known_stations:
                 self._remember_stations(got)
             known = self.known_stations or got
         catalogue = known if isinstance(known, Stations) else Stations(dict.fromkeys(known, ()))
-        start = resolve_station(catalogue, origin)
+        start = resolve_station(catalogue, origin, language)
         if isinstance(start, Refused):
             return start
-        end = resolve_station(catalogue, destination)
+        end = resolve_station(catalogue, destination, language)
         if isinstance(end, Refused):
             return end
         if start == end:
-            return Refused("Choose different origin and destination stations.")
-        if refusal := self._quick_trip_refusal():
+            return Refused(message("trip.station_same", language))
+        if refusal := self._quick_trip_refusal(language):
             return refusal
         query = Query(start, end, self.now().astimezone(TZ))
         answer = await self._gate.trips(query, live=False, window_end=None)
@@ -4019,12 +4055,12 @@ class Runtime:
             answer if isinstance(answer, str) else None, "quick trip", self.now()
         )
         if answer == "auth":
-            return Refused("NS rejected your API key. Check the NS-App key.", RefusalKind.RETRY)
-        if refusal := self._quick_trip_refusal():
+            return Refused(message("trip.auth", language), RefusalKind.RETRY)
+        if refusal := self._quick_trip_refusal(language):
             return refusal
         if isinstance(answer, str) or answer.query != query:
-            return Refused("NS trip data is unavailable. Try again.", RefusalKind.RETRY)
-        return trip_result(answer, catalogue, self.now())
+            return Refused(message("trip.unavailable", language), RefusalKind.RETRY)
+        return trip_result(answer, catalogue, self.now(), language)
 
     async def _lookahead_direction(
         self,

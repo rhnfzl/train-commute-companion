@@ -89,6 +89,23 @@ def test_legacy_next_option_is_removed_without_confirmation():
     )
 
 
+async def test_dutch_confirmation_renders_the_checked_platform_and_leave_by(tmp_path):
+    rig = Rig(tmp_path)
+    rig.write(
+        text=PROFILE.replace('    name: "NAME"', "    name: office_a\n    alerts: {language: nl}")
+    )
+    first, onward = REPLACEMENT.legs
+    first = replace(first, stops=(replace(first.board, actual_track="7"), *first.stops[1:]))
+    await rig.rt.start()
+    rig.clock.set("07:52")
+    rig.provider.world = [CANCELLED, make_connection([first, onward])]
+    await rig.rt.poll_once()
+    text = warnings(rig)[-1]
+    assert "08:25" in text
+    assert "Vertrek uiterlijk om 08:15" in text
+    assert "NS-controle zojuist: rijdt, spoor 7." in text
+
+
 async def test_a_new_board_with_a_running_train_invalidates_cached_cancellations(tmp_path):
     rig = Rig(tmp_path)
     await rig.rt.start()
@@ -418,6 +435,45 @@ async def test_advice_withdrawal_reaches_only_the_destination_that_got_the_advic
     await rig.rt.poll_once()
     assert len(rig.end.of(EventKind.EARLIER_TRAIN_WITHDRAWN)) == 1
     assert not any(e.kind is EventKind.EARLIER_TRAIN_WITHDRAWN for e in rig.notifier.attempts)
+
+
+@pytest.mark.parametrize("retained_route", [False, True])
+async def test_earlier_train_retry_keeps_confirmation_across_language_edit(
+    tmp_path, retained_route
+):
+    rig = Rig(tmp_path, "16:52" if retained_route else "16:54")
+    rig.provider.window = timedelta(hours=1)
+    rig.provider.world = late_usual_world()
+    rig.notifier.fails = lambda e: e.kind is EventKind.LEAVE_NOW
+    if retained_route:
+        rig.provider.world = [
+            *escape_world(),
+            make_connection([make_leg("RTD", "AAA", "17:52", "18:30", number="7952")]),
+        ]
+    await rig.rt.start()
+    if retained_route:
+        rig.write(
+            text=rig.path.read_text().replace('home_station: "AAA"', 'home_station: "BBB"', 1)
+        )
+        assert await rig.rt.reload() is None
+        rig.clock.set("16:54")
+        rig.provider.world = late_usual_world()
+        await rig.rt.poll_once()
+    assert len([e for e in rig.notifier.attempts if e.kind is EventKind.LEAVE_NOW]) == 1
+    rig.write(
+        text=rig.path.read_text().replace(
+            '    name: "office_a"',
+            '    name: "office_a"\n    alerts: {language: nl}',
+            1,
+        )
+    )
+    rig.notifier.fails = lambda e: False
+    assert await rig.rt.reload() is None
+    await rig.rt.watchdog_once()
+    first, retry = [e for e in rig.notifier.attempts if e.kind is EventKind.LEAVE_NOW]
+    assert first.key == retry.key
+    assert first.text == retry.text and "NS checked just now" in retry.text
+    assert len([q for q in rig.provider.calls if q.at == at("17:22")]) == 1
 
 
 async def test_disabled_warning_keeps_a_checked_routine_replacement_message(tmp_path):
