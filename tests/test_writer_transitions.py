@@ -114,6 +114,8 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
 
     def obligation_defaults(value):
         if isinstance(value, dict):
+            if "next_clause" in value:
+                value["alternative"] = None
             if {"fact_key", "event", "target_ids"} <= value.keys():
                 value["primary_suppressed"] = False
                 value["alert_history_origin"] = None
@@ -125,6 +127,8 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
 
     obligation_defaults(raw["state"])
     for occurrence in raw["state"]["occurrences"].values():
+        if occurrence["advice"] is not None:
+            occurrence["advice"]["accepted_targets"] = []
         occurrence["skipped_direction_state"] = None
         occurrence["moved_at"] = None  # Q12 defaults for an older store
         occurrence["wifi_reports"] = {}
@@ -151,6 +155,8 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
     raw["state"]["alert_history"] = []
     raw["state"] |= {"travel_plans": {}, "travel_receipts": {}, "travel_revision": 0}
     raw["state"]["brief_days"] = {}
+    raw["state"]["wake_alarm_dates"] = {}
+    raw["state"]["partner_eta_days"] = {}
     obligations = [*raw["state"]["obligations"]]
     obligations.extend(copy["obligation"] for copy in raw["state"]["webhook_copies"])
     for ledger in raw["state"]["lookahead"].values():
@@ -202,10 +208,14 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
             profile["alerts"] |= {"live_today": True, "telegram_status_pin": True}
             profile["alerts"]["ntfy_enabled"] = True
             profile["alerts"]["arrive_by"] = True
+            profile["alerts"]["wake_at"] = None
             profile["alerts"]["alert_history"] = False
             profile["alerts"]["calendar_feed"] = True
             profile["brief"] = {"at": None, "evening_at": "20:00:00", "only_if_something": False}
             profile["alerts"]["location_leave_now"] = True
+            profile["alerts"]["checked_alternatives"] = True
+            profile["alerts"]["partner_eta"] = False
+            profile["alerts"]["partner_phone"] = None
             if profile["location"] is not None:  # Q12 defaults
                 profile["location"] |= {"wifi": {}, "activity_entity": None}
                 profile["location"] |= {  # 0.3.0 other boarding station defaults

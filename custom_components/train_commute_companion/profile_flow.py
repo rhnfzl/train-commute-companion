@@ -43,6 +43,7 @@ from train_commute_companion.state import PollFailure
 from train_commute_companion.transfer import FALLBACK_MIN
 
 from .flow_state import ReviewPhase
+from .notifier import registered_phones
 from .profile_editor import (
     OTHER_STATION_DEFAULTS,
     REPEAT_FIELDS,
@@ -569,6 +570,7 @@ class ProfileEditorFlow:
             )
         )
         values = dict(user_input or {})
+        phones = registered_phones(self.hass)
         errors: dict[str, str] = {}
         report = ""
         if user_input is not None:
@@ -582,8 +584,12 @@ class ProfileEditorFlow:
                 **self._editor_values,
                 **user_input,
                 "transfer_min": minimums,
+                "partner_phone": user_input.get("partner_phone"),
                 **{key: user_input.get(key, "") for key in _ALERT_TIMES},
             }
+            partner = details["partner_phone"]
+            if partner is not None and (not isinstance(partner, str) or partner not in phones):
+                errors["partner_phone"] = "invalid_partner_phone"
             person = user_input.get("ha_person")
             if person and (
                 user_input.get("disable_ha_location")
@@ -649,6 +655,7 @@ class ProfileEditorFlow:
             "quiet_repeat_misses",
             "weather",
             "leave_by",
+            "checked_alternatives",
             "weather_allowance",
             "commute_stats",
             "weekly_recap",
@@ -663,11 +670,30 @@ class ProfileEditorFlow:
             "calendar_feed",
             "quick_trip",
             "daily_brief",
+            "partner_eta",
         ):
             fields[
                 vol.Optional(key, default=values.get(key, alerts.get(key, getattr(defaults, key))))
             ] = BooleanSelector()
+        fields[
+            vol.Optional(
+                "partner_phone",
+                description={
+                    "suggested_value": values.get("partner_phone", alerts.get("partner_phone"))
+                },
+            )
+        ] = SelectSelector(
+            SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=pid, label=label) for pid, (_, label) in phones.items()
+                ],
+                mode=SelectSelectorMode.DROPDOWN,
+            )
+        )
         brief = existing.get("brief", {})
+        fields[
+            vol.Optional("wake_at", default=values.get("wake_at", alerts.get("wake_at") or ""))
+        ] = str
         for key in ("at", "evening_at"):
             field = f"brief_{key}"
             fields[vol.Optional(field, default=values.get(field, brief.get(key, "")))] = str

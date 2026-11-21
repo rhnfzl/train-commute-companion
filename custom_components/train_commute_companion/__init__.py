@@ -128,6 +128,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
             require_stations=True,
             webhooks=webhooks,
             primary_destination=lambda: notifier.destination_id,
+            wake_destination=lambda: notifier.wake_destination,
+            wake_ready=notifier.wake_ready,
+            send_partner_eta=notifier.send_partner_eta,
             weather=WeatherProvider(weather_client, clock.now, knmi_key),
         )
         return host_mod.Parts(rt, clock, close)

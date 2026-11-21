@@ -50,6 +50,9 @@ def profile_token(profile: Profile) -> str:
         "alert_history",
         "calendar_feed",
         "location_leave_now",
+        "checked_alternatives",
+        "partner_eta",
+        "partner_phone",
     ):
         data["alerts"].pop(key)
     if profile.repeat is None:
@@ -60,6 +63,7 @@ def profile_token(profile: Profile) -> str:
     data["alerts"].pop("quick_trip")
     for key in ("arrival_prompt", "navigate", "compensation_details", "timetable_update"):
         data["alerts"].pop(key)
+    data["alerts"].pop("wake_at")
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 

@@ -557,6 +557,10 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "quick_trip",
             "daily_brief",
             "location_leave_now",
+            "wake_at",
+            "checked_alternatives",
+            "partner_eta",
+            "partner_phone",
         ),
         "alerts",
     )
@@ -567,6 +571,15 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
     }
     quick_trip = c.boolean(raw.get("quick_trip", d.quick_trip), "alerts.quick_trip")
     daily_brief = c.boolean(raw.get("daily_brief", d.daily_brief), "alerts.daily_brief")
+    wake_at = c.time(raw["wake_at"], "alerts.wake_at") if raw.get("wake_at") is not None else None
+    partner_eta = c.boolean(raw.get("partner_eta", d.partner_eta), "alerts.partner_eta")
+    partner_phone = raw.get("partner_phone")
+    if partner_phone is not None and (
+        not isinstance(partner_phone, str)
+        or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", partner_phone)
+    ):
+        c.err("alerts.partner_phone", "must be a Home Assistant mobile app registration ID or null")
+        partner_phone = None
     custom_horizon = c.boolean(
         raw.get("custom_timetable_horizon", d.custom_timetable_horizon),
         "alerts.custom_timetable_horizon",
@@ -604,6 +617,9 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
     calendar_feed = c.boolean(raw.get("calendar_feed", d.calendar_feed), "alerts.calendar_feed")
     location_leave = c.boolean(
         raw.get("location_leave_now", d.location_leave_now), "alerts.location_leave_now"
+    )
+    checked = c.boolean(
+        raw.get("checked_alternatives", d.checked_alternatives), "alerts.checked_alternatives"
     )
     compensation = raw.get("compensation_reminder", False)
     if not isinstance(compensation, bool):
@@ -690,6 +706,8 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         or compensation_details is None
         or timetable_update is None
         or navigate is None
+        or checked is None
+        or partner_eta is None
     ):
         return None
     return AlertSettings(
@@ -725,6 +743,10 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         compensation_details=compensation_details,
         timetable_update=timetable_update,
         navigate=navigate,
+        wake_at=wake_at,
+        checked_alternatives=checked,
+        partner_eta=partner_eta,
+        partner_phone=partner_phone,
     )
 
 

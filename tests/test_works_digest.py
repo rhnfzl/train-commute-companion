@@ -32,10 +32,14 @@ def test_arrival_reminder_options_preserve_the_old_digest_token():
     old.pop("repeat")
     old.pop("brief")
     for key in (
+        "partner_eta",
+        "partner_phone",
+        "checked_alternatives",
         "arrival_prompt",
         "navigate",
         "compensation_details",
         "timetable_update",
+        "wake_at",
         "location_leave_now",
         "daily_brief",
         "quick_trip",
@@ -66,6 +70,7 @@ def test_daily_brief_settings_keep_the_identity_of_saved_weekly_digests():
     for key in (
         "daily_brief",
         "quick_trip",
+        "wake_at",
         "commute_stats",
         "weekly_recap",
         "after_trip_note",
@@ -76,12 +81,15 @@ def test_daily_brief_settings_keep_the_identity_of_saved_weekly_digests():
         "navigate",
         "compensation_details",
         "timetable_update",
+        "checked_alternatives",
+        "partner_eta",
+        "partner_phone",
     ):
         data["alerts"].pop(key)
     legacy = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
     updated = replace(
         p,
-        alerts=replace(p.alerts, daily_brief=False, quick_trip=False),
+        alerts=replace(p.alerts, daily_brief=False, quick_trip=False, checked_alternatives=False),
         brief=replace(p.brief, at=time(7)),
     )
     assert profile_token(updated) == profile_token(p) == legacy
@@ -203,6 +211,10 @@ async def test_old_pending_digest_survives_upgrade_to_recurring_profiles(tmp_pat
     legacy["alerts"].pop("location_leave_now")
     for key in ("arrival_prompt", "navigate", "compensation_details", "timetable_update"):
         legacy["alerts"].pop(key)
+    legacy["alerts"].pop("wake_at")
+    legacy["alerts"].pop("checked_alternatives")
+    legacy["alerts"].pop("partner_eta")
+    legacy["alerts"].pop("partner_phone")
     token = hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
     obligations = tuple(
         replace(o, digest_token=token) if o.id == queued.id else o for o in rig.rt.state.obligations

@@ -1,7 +1,7 @@
 """Durable delivery obligations: revalidated right before sending (7.12 rule 5)."""
 
 import asyncio
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import replace
 from datetime import datetime
 from enum import StrEnum
@@ -256,6 +256,19 @@ def copy_destinations(c: WebhookCopy, port: WebhookPort) -> tuple[str, ...]:
     )
 
 
+def _copy_todo(c: WebhookCopy, ledger: Ledger, port: WebhookPort) -> list[str]:
+    return [
+        u
+        for u in copy_destinations(c, port)
+        if destination_id(port, u) not in c.done
+        and ledger.channel_enabled(c.obligation, port.channels[u])
+        and (
+            c.obligation.event.kind not in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED)
+            or ledger.destination_allowed(c.obligation, destination_id(port, u))
+        )
+    ]
+
+
 async def post_copy(
     c: WebhookCopy,
     ledger: Ledger,
@@ -264,6 +277,7 @@ async def post_copy(
     progress: Callable[[WebhookCopy, AlertEvent | None], None] = lambda c, event: None,
     *,
     audience_written: Callable[[WebhookCopy], bool] = lambda c: True,
+    prepare: Callable[[Callable[[datetime], bool]], Awaitable[datetime | None]] | None = None,
 ) -> WebhookCopy | None:
     """Record each destination receipt before waiting for another destination.
 
@@ -275,17 +289,7 @@ async def post_copy(
         return None
     if verdict is DeliveryVerdict.HOLD:
         return c
-    destinations = copy_destinations(c, port)
-    todo = [
-        u
-        for u in destinations
-        if destination_id(port, u) not in c.done
-        and ledger.channel_enabled(c.obligation, port.channels[u])
-        and (
-            c.obligation.event.kind not in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED)
-            or ledger.destination_allowed(c.obligation, destination_id(port, u))
-        )
-    ]
+    todo = _copy_todo(c, ledger, port)
     if not todo:
         return None
     due = port.due(todo)
@@ -293,6 +297,21 @@ async def post_copy(
         return c
     if not audience_written(c):
         return c
+    if prepare is not None:
+
+        def still_due(stamp: datetime) -> bool:
+            return (
+                revalidate(c.obligation, ledger, stamp) is DeliveryVerdict.SEND
+                and audience_written(c)
+                and bool(port.due(_copy_todo(c, ledger, port)))
+            )
+
+        ready_at = await prepare(still_due)
+        if ready_at is None:
+            return c
+        return await post_copy(
+            c, ledger, port, ready_at, progress, audience_written=audience_written
+        )
     events = {
         u: event
         for u in todo

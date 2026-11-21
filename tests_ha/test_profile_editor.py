@@ -240,6 +240,15 @@ def test_invalid_check_in_time_does_not_write(tmp_path, value):
     assert doc.path.read_text() == PROFILE
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_checked_alternatives_roundtrips_with_legacy_default(tmp_path, enabled):
+    doc = document(tmp_path)
+    edited = edit_profile(doc, "p1", {**VALUES, "checked_alternatives": enabled}, KNOWN, TODAY)
+    profiles, errors = parse_profiles(edited, KNOWN)
+    assert not errors
+    assert profiles[0].alerts.checked_alternatives is enabled
+
+
 def test_check_in_default_remains_omitted_and_leave_by_defaults_on(tmp_path):
     text = edit_profile(document(tmp_path, None), None, VALUES, KNOWN, TODAY)
     profiles, errors = parse_profiles(text, KNOWN)

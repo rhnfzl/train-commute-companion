@@ -302,6 +302,8 @@ def test_route_changed_before_boarding_follows_within_cap():
     assert numbers(t.state) == ["1234", "3100", "3200"]  # 2 changes: within usual + 1
     notes = [e for e in t.events if e.kind is EventKind.ROUTE_CHANGED]
     assert len(notes) == 1 and "via UT, BBB, following it" in notes[0].text
+    option = notes[0].facts.alternative
+    assert [train.train_number for train, _, _ in option.route] == ["1234", "3100", "3200"]
     assert (EventKind.MISSING, Severity.LOUD) in kinds(t)  # the 08:50 is gone from the answer
 
 

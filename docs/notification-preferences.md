@@ -104,6 +104,24 @@ An older message keeps the station shown when it was sent. Check the latest jour
 Both `alerts.navigate` and `alerts.arrival_prompt` default to `true` and require Boolean values.
 The [arrival question](compensation-reminders.md#confirm-a-suggested-arrival-time) also requires opt-in compensation reminders and primary delivery for the routine category.
 
+## Checked alternatives
+
+When an alert suggests a different train, the companion asks NS again before sending it.
+The alert says how recently NS showed that connection running.
+It gives the reported platform, or labels the scheduled platform when that is all NS provides.
+
+```yaml
+alerts:
+  checked_alternatives: true
+```
+
+The setting defaults to on. The Home Assistant profile details form calls it **Check suggested trains**.
+Set it to `false` to use the regular monitoring data without a dedicated check.
+
+The check uses the shared NS request budget. Delivery channels share the result for up to two minutes while the journey evidence stays current.
+If the check cannot confirm the train, alerts omit the suggestion.
+When NS shows only cancellations among the train options checked for that part of the journey, the warning says so and refers you to the NS app.
+
 ## Repeated missed trains
 
 When you stay at home (at work on the way back) past your train, the companion says "you missed" with the next train you can catch, and follows that one. Stay longer and each next train gets its own "you missed" message. By default every one of them makes a sound.

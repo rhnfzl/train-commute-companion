@@ -150,10 +150,49 @@ async def test_switches_only_to_an_earlier_train_when_the_lock_fails(tmp_path, f
         e.kind is event_kind and "earlier train at 08:05" in e.body for e in rig.notifier.attempts
     )
     assert not told(rig, EventKind.LEAVE_NOW)
-    assert [q.search_for_arrival for q in rig.provider.calls] == [True, False, True]
+    assert [q.search_for_arrival for q in rig.provider.calls] == [True, False, True, False]
+    assert rig.provider.calls[-1].at == at("08:05")
     rig.provider.world = [earlier, selected, later]
     await rig.run_until("06:41")
     assert first_train(rig) == "08:05"
+
+
+@pytest.mark.parametrize("delay", [{"delay_arr": 6}, {"delay_dep": 21}])
+async def test_arrive_by_recheck_withholds_replacement_that_breaks_its_limits(tmp_path, delay):
+    earlier = direct("08:05", "08:46", "1")
+    selected = direct("08:25", "08:49", "2")
+    rig = await rig_for(tmp_path, out=SETTINGS, world=[earlier, selected])
+    await rig.run_until("06:37")
+    assert first_train(rig) == "08:25"
+    cancelled = direct("08:25", "08:49", "2", cancelled=True)
+    rig.provider.world = [earlier, cancelled]
+
+    def reply(q):
+        if q.origin == "AAA" and q.at == at("08:05"):
+            rig.provider.world = [direct("08:05", "08:46", "1", **delay), cancelled]
+
+    rig.provider.hook = reply
+    await rig.run_until("06:39")
+    ((message, _),) = told(rig, EventKind.CANCELLED)
+    assert "08:05" not in message
+    assert "08:26" not in message
+    assert "Check the NS app" in message
+
+
+async def test_arrive_by_rechecks_an_earlier_train_after_midnight(tmp_path):
+    earlier = direct("00:05", "00:40", "1")
+    selected = direct("00:25", "00:44", "2")
+    settings = SETTINGS.replace('"07:00", "09:00"', '"23:30", "00:45"').replace(
+        'arrive_by: "09:00"', 'arrive_by: "01:00"'
+    )
+    rig = await rig_for(tmp_path, out=settings, world=[earlier, selected], now="23:34")
+    await rig.run_until("23:37")
+    assert first_train(rig) == "00:25"
+    rig.provider.world = [earlier, direct("00:25", "00:44", "2", cancelled=True)]
+    await rig.run_until("23:39")
+    ((message, _),) = told(rig, EventKind.CANCELLED)
+    assert "earlier train at 00:05" in message
+    assert "NS checked" in message
 
 
 async def test_late_lock_does_not_move_to_a_later_train_or_hide_loud_limit(tmp_path):

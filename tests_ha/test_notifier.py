@@ -268,6 +268,46 @@ async def phone(hass: HomeAssistant, hass_admin_user: MockUser) -> MockConfigEnt
     return entry
 
 
+async def test_partner_eta_reaches_only_the_selected_registration(
+    hass, aioclient_mock, phone, hass_admin_user
+):
+    registration = MockConfigEntry(
+        domain="mobile_app",
+        title="Partner phone",
+        data={
+            **PHONE,
+            "webhook_id": "partner-hook",
+            "device_id": "partner-device",
+            "device_name": "Partner",
+            "user_id": hass_admin_user.id,
+            "app_data": {"push_url": RELAY + "/partner", "push_token": "partner-token"},
+        },
+    )
+    registration.add_to_hass(hass)
+    await hass.config_entries.async_setup(registration.entry_id)
+    await hass.async_block_till_done()
+    aioclient_mock.post(RELAY + "/partner", json={})
+    n = build(hass)
+    events = async_capture_events(hass, "train_commute_companion_alert")
+    message = "Train 12 min late. Expected arrival around 18:42."
+
+    for target, permitted in (
+        (phone.entry_id, True),
+        ("missing-registration", True),
+        (registration.entry_id, False),
+        (registration.entry_id, True),
+    ):
+        await hass.async_add_executor_job(
+            asyncio.run, n.send_partner_eta(target, message, lambda allowed=permitted: allowed)
+        )
+
+    (sent,) = aioclient_mock.mock_calls
+    assert str(sent[1]) == RELAY + "/partner"
+    assert sent[2]["message"] == message
+    assert not sent[2]["data"].get("actions")
+    assert not events
+
+
 @pytest.mark.parametrize("relay", [500, 429, "client_error", "timeout"])
 async def test_relay_failure_logged_by_mobile_app_is_false(hass, aioclient_mock, phone, relay):
     if relay == "client_error":
