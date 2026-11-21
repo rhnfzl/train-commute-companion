@@ -909,6 +909,20 @@
     }
   },
   "services": {
+    "dashboard_card": {
+      "name": "Build a commute dashboard card",
+      "description": "Build a dashboard card for one profile and journey direction.",
+      "fields": {
+        "profile": {
+          "name": "Profile",
+          "description": "The name or ID of your commute profile."
+        },
+        "direction": {
+          "name": "Direction",
+          "description": "Choose outbound or return."
+        }
+      }
+    },
     "clear_commute_history": {
       "name": "Clear commute statistics",
       "description": "Delete all local commute statistics and queued recap or trip notes.",

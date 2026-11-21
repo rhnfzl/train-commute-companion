@@ -1,0 +1,49 @@
+{% set health = ids.health %}
+{% set sensors = expand(device_entities(profile_device)) | selectattr('attributes.commute_card_group', 'defined') | list %}
+{% set status = states(ids.status) %}
+{% macro clock(value) -%}
+  {%- set parsed = as_datetime(value, none) -%}
+  {{- as_local(parsed).strftime('%a %H:%M') if parsed else 'Unknown' -}}
+{%- endmacro %}
+**Journey:** {{ status if status not in ['unknown', 'unavailable'] else 'Unknown' }}
+
+**Data health:** {{ states(health) }}
+{% if states(health) != 'ok' %}
+**Data is not verified for an active journey. Check NS before acting on stored times.**
+{% endif %}
+Last successful NS answer: {{ clock(state_attr(health, direction ~ '_last_ok_at')) }}
+
+{% if status == 'none' %}
+No journey is being followed.
+{% elif status not in ['unknown', 'unavailable'] %}
+**Followed trains**
+{% for leg in sensors | selectattr('attributes.commute_card_group', 'eq', direction ~ '_leg') | sort(attribute='attributes.commute_card_index') %}
+{% if leg.state != 'none' %}
+{% set a = leg.attributes %}
+- **{{ a.get('train_number', 'Unknown') }}: {{ a.get('board', 'Unknown') }} to {{ a.get('alight', 'Unknown') }}** ({{ leg.state }})
+  - Departure: {{ clock(a.get('departure') or a.get('planned_departure')) }}{{ ' (planned)' if not a.get('departure') else '' }}; platform: {{ a.get('departure_platform') or 'Unknown' }}; delay: {{ a.get('departure_delay_min') if a.get('departure_delay_min') is not none else 'Unknown' }}{{ ' min' if a.get('departure_delay_min') is not none else '' }}
+  - Arrival: {{ clock(a.get('arrival') or a.get('planned_arrival')) }}{{ ' (planned)' if not a.get('arrival') else '' }}; platform: {{ a.get('arrival_platform') or 'Unknown' }}
+  - Crowd forecast per NS: {{ a.get('crowd_forecast') or 'Unknown' }}
+{% endif %}
+{% endfor %}
+{% for transfer in sensors | selectattr('attributes.commute_card_group', 'eq', direction ~ '_transfer') | sort(attribute='attributes.commute_card_index') %}
+{% if transfer.state != 'none' %}
+{% set a = transfer.attributes %}
+- **Transfer {{ a.get('station', 'Unknown') }}:** {{ transfer.state }}; margin: {{ a.get('margin_min') if a.get('margin_min') is not none else 'Unknown' }}{{ ' min' if a.get('margin_min') is not none else '' }}; minimum: {{ a.get('minimum') if a.get('minimum') is not none else 'Unknown' }}{{ ' min' if a.get('minimum') is not none else '' }}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+**Next catchable connection:** {{ clock(states(ids.next_connection)) }}
+Arrival: {{ clock(state_attr(ids.next_connection, 'arrival')) }}; platform: {{ state_attr(ids.next_connection, 'platform') or 'Unknown' }}
+First train crowd forecast per NS: {{ state_attr(ids.next_connection, 'crowd_forecast') or 'Unknown' }}
+
+**Earlier train advice:** {{ clock(states(ids.advice)) }}
+
+**Planned works:** {{ states(ids.works_ahead) }} flagged dates in the checked horizon.
+{% for item in state_attr(ids.works_ahead, 'dates') or [] %}
+- {{ item.date }} (leg {{ item.leg }})
+{% endfor %}
+Last works check: {{ clock((state_attr(health, 'lookahead_last_ok') or {}).get(direction)) }}
+
+Data: NS
