@@ -754,8 +754,6 @@ def _profile(
     skip = c.boolean(raw.get("skip_public_holidays", True), "skip_public_holidays")
     home = _station(c, raw.get("home_station"), "home_station", known)
     work = _station(c, raw.get("work_station"), "work_station", known)
-    if home and home == work:  # every trip would start and end at the same station
-        c.err("work_station", f"{work} is also the home station", "pick two different stations")
     out = _journey(c, raw.get("outbound"), "outbound", known, allow_offset=False)
     ret = _journey(c, raw.get("return"), "return", known, allow_offset=True)
     tm = _transfer_min(c, raw, known)
@@ -951,12 +949,20 @@ def _times(p: Profile) -> list[tuple[str, time]]:
 def check_lines(
     text: str, known: frozenset[str] | None, today: date
 ) -> tuple[Config | None, list[str]]:
-    """`load_config` as readable lines: every error, then the clock-change hour warnings (5.3)."""
+    """`load_config` as readable lines: every error, then the warnings: home and work the same
+    station, and times in the clock-change hour (5.3)."""
     cfg, errors = load_config(text, known, None, today)
     lines = [
         f"{e.path}: {e.message}" + (f" ({e.suggestion})" if e.suggestion else "") for e in errors
     ]
     for p in cfg.profiles if cfg else ():
+        # a warning, not an error: older versions saved such profiles, and the file must
+        # still load so the profile editor can fix it (the editor form refuses it)
+        if p.home_station == p.work_station:
+            lines.append(
+                f"warning: {p.name}.work_station: {p.work_station} is also the home station "
+                "(pick two different stations)"
+            )
         for where, t in _times(p):
             if t.hour == _DST_HOUR:
                 lines.append(

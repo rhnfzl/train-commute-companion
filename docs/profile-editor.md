@@ -52,7 +52,7 @@ When the profile has a location block, the details form shows the [other boardin
 
 In the YAML file a station can be a code (`UT`) or a name (`Utrecht Centraal`). For a name, case, accents and punctuation do not matter, and NS short names and synonyms such as `Utrecht` also work. TCC turns each name into its code when it reads the file, so names and codes run the same. A code must be written exactly, such as `UT`.
 
-A name that fits more than one station is refused. The error lists the matching codes, so use one of them. An unknown name gets a close suggestion. Home and work must be different stations. A code and a name for the same station count as the same station.
+A name that fits more than one station is refused. The error lists the matching codes, so use one of them. An unknown name gets a close suggestion. Home and work should be different stations. A code and a name for the same station count as the same station. In the file, the same station for both is only a warning, so a file from an older version still loads. The form refuses it: open that profile in the editor and pick two different stations.
 
 Names need the NS station list. When it cannot be fetched, a file with names waits like any edit, and the last valid configuration keeps running. When the form saves a profile that uses names, that profile is written with codes. Other profiles keep their names.
 

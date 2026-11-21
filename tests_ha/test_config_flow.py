@@ -445,6 +445,25 @@ async def test_options_settings_refuse_a_broken_profiles_file(hass, monkeypatch)
     assert dict(entry.options) == before
 
 
+async def test_options_settings_change_the_phone_while_the_saved_file_is_broken(hass, monkeypatch):
+    """Only a new path is checked: a broken file at the saved path never blocks a phone change."""
+    fake_phone(hass, monkeypatch)
+    tablet = fake_phone(hass, monkeypatch, "mobile_app_tablet")
+    entry = add_entry(hass)
+    profiles_path(hass).write_text("profiles: [")
+    r = await settings(hass, entry, **current(entry, notify_service="mobile_app_tablet"))
+    assert r["type"] is FlowResultType.MENU and r["step_id"] == "test"
+    assert [level(c) for c in tablet] == ["time-sensitive", "passive"]
+    with patch(SETUP, return_value=True):
+        r = await hass.config_entries.options.async_configure(
+            r["flow_id"], {"next_step_id": "test_ok"}
+        )
+        await hass.async_block_till_done()
+    assert r["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options["notify_service"] == "mobile_app_tablet"
+    assert entry.options["profiles_path"] == str(profiles_path(hass))
+
+
 async def test_options_settings_path_only_saves_without_test_push(hass, monkeypatch):
     calls = fake_phone(hass, monkeypatch)
     entry = add_entry(hass)

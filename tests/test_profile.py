@@ -55,14 +55,17 @@ def test_starter_file_valid_with_station_list():
 
 
 @pytest.mark.parametrize("work", ['"AAA"', '"Home side"'])
-def test_home_and_work_must_be_different_stations(work):
-    """A code and a name that mean the same station count as the same station."""
+def test_same_home_and_work_station_loads_with_a_warning(work):
+    """Older versions saved such profiles: the file still loads, so it can be fixed. A code
+    and a name that mean the same station count as the same station."""
     text = one(('work_station: "UT"', f"work_station: {work}"))
     known = Stations({"AAA": ["Home side"], "UT": ["Utrecht Centraal"]})
     profiles, errors = parse_profiles(text, known)
-    assert profiles == []
-    assert [(e.path, e.message) for e in errors] == [
-        ("profiles[0].work_station", "AAA is also the home station")
+    assert errors == [] and [p.work_station for p in profiles] == ["AAA"]
+    cfg, lines = check_lines(text, known, TODAY)
+    assert cfg is not None
+    assert lines == [
+        "warning: office_a.work_station: AAA is also the home station (pick two different stations)"
     ]
 
 

@@ -546,7 +546,13 @@ class TccOptionsFlow(
         self._path, self._service, self._style = candidate.path, candidate.service, candidate.style
         version = self._settings_check.begin(candidate)
         bad = await check_path(self.hass, candidate.path)
-        report = "" if bad else await self.hass.async_add_executor_job(file_problem, candidate.path)
+        # only a new path is checked for problems: a broken file at the saved path must not
+        # block a phone change, and the runtime already reports it
+        report = (
+            ""
+            if bad or candidate.path == candidate.base_options.get(CONF_PROFILES_PATH)
+            else await self.hass.async_add_executor_job(file_problem, candidate.path)
+        )
         if not self._settings_current(candidate):
             return self._stale_settings()
         if bad is not None:

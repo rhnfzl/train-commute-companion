@@ -201,7 +201,8 @@
       "unknown_station": "Pick a station from the list.",
       "file_broken": "The file at this path has a problem: {report}. Fix the file, or enter the path of another profiles file.",
       "same_station": "Home and work must be different stations.",
-      "days_clash": "Your profile {other} already runs on one of these days. Pick other days, or change {other} first."
+      "days_clash": "Your profile {other} already runs on one of these days. Pick other days, or change {other} first.",
+      "name_taken": "Another profile already has this name. Pick another name."
     },
     "create_entry": {
       "guided": "Add more commutes later under Configure > Add or edit profiles."
@@ -484,6 +485,7 @@
       "unknown_station": "Pick a station from the list.",
       "same_station": "Home and work must be different stations.",
       "days_clash": "Your profile {other} already runs on one of these days. Pick other days, or change {other} first.",
+      "name_taken": "Another profile already has this name. Pick another name.",
       "file_broken": "The file at this path has a problem: {report}. Fix the file, or enter the path of another profiles file."
     },
     "abort": {

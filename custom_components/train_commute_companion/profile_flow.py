@@ -242,6 +242,15 @@ class ProfileEditorFlow:
                 return str(p.get("name", ""))
         return None
 
+    def _name_taken(self, name: object) -> bool:
+        """Another profile has this name, by the same slug rule the file check applies."""
+        assert self._document is not None
+        key = slug(name) if isinstance(name, str) else ""
+        return bool(key) and any(
+            p["id"] != self._profile_id and slug(str(p.get("name", ""))) == key
+            for p in self._document.data["profiles"]
+        )
+
     def _profile_defaults(self) -> dict[str, Any]:
         profile = self._existing()
         names = {code: name for name, code in self._station_codes().items()}
@@ -382,6 +391,8 @@ class ProfileEditorFlow:
                 errors["work_station"] = "same_station"
             if (clash := self._day_clash(values.get("days"))) is not None:
                 errors["days"], other = "days_clash", clash
+            if self._name_taken(values.get("name")):
+                errors["name"] = "name_taken"
             if not errors:
                 try:
                     self._pending_profile = edit_profile(

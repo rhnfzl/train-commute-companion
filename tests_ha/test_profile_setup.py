@@ -9,6 +9,7 @@ from homeassistant.config_entries import SOURCE_USER
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.train_commute_companion import validate
 from custom_components.train_commute_companion.const import DOMAIN
 from custom_components.train_commute_companion.profile_flow import ProfileEditorFlow
 from train_commute_companion.model import Stations
@@ -127,6 +128,61 @@ async def test_home_and_work_must_differ(hass, work):
     assert flow["step_id"] == "profile"
     assert flow["errors"] == {"work_station": "same_station"}
     assert not profiles_path(hass).exists()
+
+
+async def test_an_older_same_station_profile_opens_and_can_be_fixed(hass):
+    """Older versions saved home == work. The file still loads (a warning only), so the editor
+    opens it: a healthy profile saves, and the old one is refused until its stations differ."""
+    raw = yaml.safe_load(PROFILE)
+    raw["profiles"][1]["work_station"] = "AAA"  # office_b, on sat: no day clash with office_a
+    write_profiles(hass, yaml.safe_dump(raw, sort_keys=False))
+    assert validate.file_problem(str(profiles_path(hass))) == ""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "k"},
+        options={"profiles_path": str(profiles_path(hass)), "notify_service": NOTIFY},
+    )
+    entry.add_to_hass(hass)
+
+    async def edit(profile_id):
+        flow = await hass.config_entries.options.async_init(entry.entry_id)
+        with patch(CATALOGUE_CALL, return_value=CATALOGUE):
+            flow = await hass.config_entries.options.async_configure(
+                flow["flow_id"], {"next_step_id": "profiles"}
+            )
+        assert flow["step_id"] == "profiles", flow.get("errors")
+        return await hass.config_entries.options.async_configure(
+            flow["flow_id"], {"profile": f"edit:{profile_id}"}
+        )
+
+    async def save(flow, values):
+        flow = await hass.config_entries.options.async_configure(flow["flow_id"], values)
+        assert flow["step_id"] == "profile_details", flow.get("errors")
+        flow = await hass.config_entries.options.async_configure(flow["flow_id"], shown(flow))
+        assert flow["reason"] == "profile_saved"
+
+    flow = await edit("p1")
+    await save(flow, {**shown(flow), "name": "office a renamed"})
+    flow = await edit("p2")
+    unchanged = shown(flow)
+    flow = await hass.config_entries.options.async_configure(flow["flow_id"], unchanged)
+    assert flow["errors"] == {"work_station": "same_station"}
+    await save(flow, {**unchanged, "work_station": "Rotterdam Centraal"})
+    saved = yaml.safe_load(profiles_path(hass).read_text())["profiles"]
+    assert [p["name"] for p in saved] == ["office a renamed", "office_b"]
+    assert saved[1]["work_station"] == "RTD"
+
+
+async def test_a_name_another_profile_has_is_refused_in_plain_words(hass):
+    write_profiles(hass, PROFILE)
+    flow = await options_add(hass)
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {**VALUES, "name": "Office A", "days": ["sun"]}
+    )
+    assert flow["step_id"] == "profile"
+    assert flow["errors"] == {"name": "name_taken"}
+    assert flow["description_placeholders"]["report"] == ""
+    assert profiles_path(hass).read_text() == PROFILE
 
 
 async def options_add(hass):
