@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, time
 
 from train_commute_companion.calendar import TZ, resolve_local, to_utc
+from train_commute_companion.catalogue import MessageLanguage, message
 from train_commute_companion.compensation_state import (
     ArrivalConfirmation,
     JourneyRecord,
@@ -126,37 +127,46 @@ def confirm(
     )
 
 
-def arrival_text(record: JourneyRecord) -> str:
+def arrival_text(record: JourneyRecord, language: MessageLanguage = "en") -> str:
     minutes = record.delay_minutes
-    comparison = (
-        f"{minutes} minutes after"
-        if minutes is not None and minutes >= 0
-        else f"{abs(minutes or 0)} minutes before"
+    comparison = message(
+        "arrival.after" if minutes is not None and minutes >= 0 else "arrival.before",
+        language,
+        minutes=abs(minutes or 0),
     )
-    return (
-        f"Your confirmed arrival at {record.destination} is {comparison} your saved plan. "
-        "Check current NS compensation rules. Adjusted timetables and other conditions may affect your claim. "
-        "This comparison does not decide eligibility. " + NS_COMPENSATION
+    return message(
+        "arrival.compensation",
+        language,
+        station=record.destination,
+        comparison=comparison,
+        url=NS_COMPENSATION,
     )
 
 
-def reminder_text(record: JourneyRecord, *, include_details: bool) -> str:
-    text = arrival_text(record)
+def reminder_text(
+    record: JourneyRecord, *, include_details: bool, language: MessageLanguage = "en"
+) -> str:
+    text = arrival_text(record, language)
     if not include_details or record.plan is None or record.arrived_at is None:
         return text
     plan = record.plan
-    lines = ["Journey details", f"Travel date: {record.key.service_date}"]
+    lines = [
+        message("arrival.details", language),
+        f"{message('arrival.date', language)}: {record.key.service_date}",
+    ]
     if plan.origin is not None:
-        lines.append(f"Planned origin: {plan.origin}")
-    lines.append(f"Destination: {plan.destination}")
+        lines.append(f"{message('arrival.origin', language)}: {plan.origin}")
+    lines.append(f"{message('arrival.destination', language)}: {plan.destination}")
     if plan.train_numbers:
-        lines.append(f"Planned trains: {', '.join(plan.train_numbers)}")
+        lines.append(f"{message('arrival.trains', language)}: {', '.join(plan.train_numbers)}")
     for label, value in (
-        ("Planned departure", plan.planned_departure),
-        ("Planned arrival", plan.planned_arrival),
-        ("NS-reported train arrival", record.reported_train_arrival),
-        ("Your confirmed arrival", record.arrived_at),
+        ("arrival.planned_departure", plan.planned_departure),
+        ("arrival.planned_arrival", plan.planned_arrival),
+        ("arrival.reported", record.reported_train_arrival),
+        ("arrival.confirmed", record.arrived_at),
     ):
         if value is not None:
-            lines.append(f"{label}: {value.astimezone(TZ).isoformat(timespec='minutes')}")
+            lines.append(
+                f"{message(label, language)}: {value.astimezone(TZ).isoformat(timespec='minutes')}"
+            )
     return text + "\n\n" + "\n".join(lines)

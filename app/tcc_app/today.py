@@ -1,15 +1,18 @@
 """A private, read-only page showing the same journey information as Telegram status."""
 
+from datetime import datetime
+from functools import partial
 from html import escape
 from pathlib import Path
 
 from train_commute_companion.calendar import TZ
 from train_commute_companion.calendar_export import CalendarExportError, export_id, planned_bounds
+from train_commute_companion.catalogue import message, message_date
 from train_commute_companion.history import stats_text
 from train_commute_companion.model import SentAlert, display_name
 from train_commute_companion.view import RuntimeView
 
-from .commands import render_status
+from .commands import profile_language, render_status, shared_language
 
 TODAY_PATH = "/today"
 PAUSED_PATH = "/today/paused"
@@ -57,21 +60,30 @@ def render(
     view: RuntimeView, confirmed: bool, *, paused: bool = False, alerts: tuple[SentAlert, ...] = ()
 ) -> str:
     """Escape every value from the read model. Download links use opaque occurrence hashes and contain no credentials."""
+    language = shared_language(view)
+    page = partial(message, language=language)
+
+    def stamp(at: datetime) -> str:
+        local = at.astimezone(TZ)
+        if language == "en":
+            return f"{local:%a %d %b %Y, %H:%M %Z}"
+        return f"{message_date(local.date(), language)} {local:%Y, %H:%M %Z}"
+
     freshness = []
     downloads = []
     for occurrence in view.occurrences:
         if occurrence.resolved:
             continue
         health = occurrence.health
-        checked = (
-            health.last_ok_at.astimezone(TZ).strftime("%a %d %b %Y, %H:%M %Z")
-            if health.last_ok_at
-            else "unknown"
-        )
-        text = (
-            f"{display_name(occurrence.profile_name)}, {occurrence.key.direction.value}: "
-            f"NS data {'fresh' if health.fresh else 'not fresh'}; "
-            f"last successful NS check: {checked}."
+        checked = stamp(health.last_ok_at) if health.last_ok_at else page("today.unknown")
+        locale = profile_language(view, occurrence.key.profile_id)
+        text = message(
+            "today.checked",
+            locale,
+            name=display_name(occurrence.profile_name),
+            direction=message(f"direction.{occurrence.key.direction.value}", locale),
+            freshness=message("today.fresh" if health.fresh else "today.stale", locale),
+            checked=checked,
         )
         freshness.append("<li>" + escape(text) + "</li>")
     for occurrence in view.occurrences:
@@ -80,25 +92,26 @@ def render(
         except CalendarExportError:
             continue
         target = f"/calendar/{export_id(occurrence.key)}.ics"
-        label = escape(
-            f"{display_name(occurrence.profile_name)}, {occurrence.key.direction.value}, {occurrence.key.service_date:%a %d %b %Y}"
+        locale = profile_language(view, occurrence.key.profile_id)
+        direction = message(f"direction.{occurrence.key.direction.value}", locale)
+        day = occurrence.key.service_date
+        date_text = (
+            f"{day:%a %d %b %Y}" if locale == "en" else f"{message_date(day, locale)} {day.year}"
         )
+        label = escape(f"{display_name(occurrence.profile_name)}, {direction}, {date_text}")
         downloads.append(
-            f'<li>{label}: <a href="{target}">Download this journey to calendar</a>. '
-            f'<a href="/preview/{export_id(occurrence.key)}.html">Download a route preview to share</a></li>'
+            f'<li>{label}: <a href="{target}">{page("today.calendar_download")}</a>. '
+            f'<a href="/preview/{export_id(occurrence.key)}.html">{page("today.preview_download")}</a></li>'
         )
     calendar = (
-        '<section aria-labelledby="calendar-heading"><h2 id="calendar-heading">Save one journey</h2>'
-        "<p>Download one tentative saved plan. It is not live and does not update.</p>"
-        "<p>The route preview includes stations, trains and planned dates. Share the downloaded file deliberately; it opens without a login.</p>"
-        "<ul>" + "".join(downloads) + "</ul></section>"
+        f'<section aria-labelledby="calendar-heading"><h2 id="calendar-heading">{page("today.save_journey")}</h2>'
+        f"<p>{page('today.tentative')}</p><p>{page('today.preview_privacy')}</p>"
+        f"<ul>{''.join(downloads)}</ul></section>"
         if downloads
         else ""
     )
     data = (
-        "<ul>" + "".join(freshness) + "</ul>"
-        if freshness
-        else "<p>No current journey has a provider freshness report.</p>"
+        "<ul>" + "".join(freshness) + "</ul>" if freshness else f"<p>{page('today.no_checks')}</p>"
     )
     history = ""
     if any(p.alerts.alert_history for p in view.profiles):
@@ -107,19 +120,19 @@ def render(
             sent = alert.accepted_at.astimezone(TZ)
             items.append(
                 f'<li><time datetime="{sent.isoformat(timespec="seconds")}">'
-                f"{sent:%a %d %b %Y, %H:%M %Z}</time><pre>{escape(alert.text)}</pre></li>"
+                f"{stamp(sent)}</time><pre>{escape(alert.text)}</pre></li>"
             )
         history = (
-            '<section aria-labelledby="history-heading"><h2 id="history-heading">Recent alerts</h2>'
-            + ("<ul>" + "".join(items) + "</ul>" if items else "<p>No recent alerts saved.</p>")
+            f'<section aria-labelledby="history-heading"><h2 id="history-heading">{page("today.alerts")}</h2>'
+            + ("<ul>" + "".join(items) + "</ul>" if items else f"<p>{page('today.no_alerts')}</p>")
             + "</section>"
         )
-    snapshot = escape(view.at.astimezone(TZ).strftime("%a %d %b %Y, %H:%M %Z"))
+    snapshot = escape(stamp(view.at))
     snapshot_iso = escape(view.at.isoformat(timespec="seconds"))
     statistics = (
-        "<section><h2>Commute statistics</h2>"
+        f"<section><h2>{page('stats.heading')}</h2>"
         + "".join(
-            f"<h3>Last {days} days</h3><p>{escape(stats_text(stats))}</p>"
+            f"<h3>{page('stats.period', days=days)}</h3><p>{escape(stats_text(stats, language))}</p>"
             for days, stats in view.commute_totals.items()
         )
         + "</section>"
@@ -127,8 +140,8 @@ def render(
         else ""
     )
     status = escape(render_status(view, confirmed))
-    service = "Ready" if view.started else "Starting"
-    delivery = "Confirmed" if confirmed else "Not confirmed"
+    service = page("today.ready" if view.started else "today.starting")
+    delivery = page("today.confirmed" if confirmed else "today.unconfirmed")
     live = bool(view.profiles) and all(p.alerts.live_today for p in view.profiles)
     metadata = controls = ""
     refresh_path = PAUSED_PATH if paused else TODAY_PATH
@@ -138,41 +151,47 @@ def render(
             '<link rel="apple-touch-icon" href="/today/icon-192.png">\n'
         )
         if paused:
-            controls = f' <a href="{TODAY_PATH}">Resume auto-refresh</a>.'
+            controls = f' <a href="{TODAY_PATH}">{page("today.resume")}</a>.'
         else:
             metadata += f'<meta http-equiv="refresh" content="60; url={TODAY_PATH}">\n'
-            controls = f' Updates every minute. <a href="{PAUSED_PATH}">Pause auto-refresh</a>.'
+            controls = (
+                f' {page("today.interval")} <a href="{PAUSED_PATH}">{page("today.pause")}</a>.'
+            )
+    link = (
+        '<a href="https://www.ns.nl/en/travel/at-the-station/facilities" rel="noreferrer">'
+        f"{page('today.facilities_label')}</a>"
+    )
     return f"""<!doctype html>
-<html lang="en">
+<html lang="{language}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-{metadata}<title>Today | Train Commute Companion</title>
+{metadata}<title>{page("today.title")} | Train Commute Companion</title>
 <style>{_STYLE}</style>
 </head>
 <body>
 <main>
 <header>
-<h1>Today</h1>
-<p>Your current journeys and service health. This page is read-only.</p>
-<p>Snapshot: <time datetime="{snapshot_iso}">{snapshot}</time>. <a href="{refresh_path}">Refresh status</a>.{controls}</p>
+<h1>{page("today.title")}</h1>
+<p>{page("today.intro")}</p>
+<p>{page("today.snapshot")}: <time datetime="{snapshot_iso}">{snapshot}</time>. <a href="{refresh_path}">{page("today.refresh")}</a>.{controls}</p>
 </header>
 <section aria-labelledby="journeys-heading">
-<h2 id="journeys-heading">Journeys and service health</h2>
-<p>Companion: {service}. Phone delivery: {delivery}.</p>
+<h2 id="journeys-heading">{page("today.journeys")}</h2>
+<p>{page("today.state", service=service, delivery=delivery)}</p>
 <pre>{status}</pre>
 </section>
 <section aria-labelledby="freshness-heading">
-<h2 id="freshness-heading">Data freshness</h2>
+<h2 id="freshness-heading">{page("today.freshness")}</h2>
 {data}
 </section>
 {history}
 {calendar}
 {statistics}
 <footer>
-<p>Unselected replacement plans are proposals, not followed journeys. Followed recovery progress uses your explicit confirmations. A timetable does not confirm boarding or arrival.</p>
-<p>Use your private Telegram chat for journey actions. Data: NS.</p>
-<p>Use <a href="https://www.ns.nl/en/travel/at-the-station/facilities" rel="noreferrer">NS station facilities</a> for toilets, shops and opening hours. Listed equipment does not establish accessibility or working lifts.</p>
+<p>{page("today.recovery")}</p>
+<p>{page("today.telegram")}</p>
+<p>{page("today.facilities", link=link)}</p>
 </footer>
 </main>
 </body>

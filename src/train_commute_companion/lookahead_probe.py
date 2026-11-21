@@ -42,7 +42,6 @@ SEARCH_WINDOW = timedelta(minutes=15)
 # change tolerances of look-ahead 23; a unanimous run adopts any difference (7.12 rule 18)
 DEP_TOL_MIN = 5
 DUR_TOL_MIN = 10
-REPLACEMENT_HINT = "Check replacement transport nearer the day."
 MISSING_REASON: Final = "missing"
 _PATTERN = "pattern:"
 

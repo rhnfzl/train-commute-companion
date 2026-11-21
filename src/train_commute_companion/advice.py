@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta, tzinfo
 
 from train_commute_companion.calendar import resolve_local, to_utc
+from train_commute_companion.catalogue import MessageLanguage, message
 from train_commute_companion.classify import (
     classify_leg,
     current_connection,
@@ -19,6 +20,7 @@ from train_commute_companion.model import (
     AdvicePhase,
     AdviceRecord,
     AlertEvent,
+    AlertFacts,
     Connection,
     Ctx,
     DirectionState,
@@ -295,15 +297,25 @@ def _savings(
     return found
 
 
-def leave_now_text(c: Connection, tz: tzinfo | None, buffer_min: int | None = None) -> str:
+def leave_now_text(
+    c: Connection,
+    tz: tzinfo | None,
+    buffer_min: int | None = None,
+    language: MessageLanguage = "en",
+) -> str:
     first = c.legs[0]
     dep_t = first.board.departure.value if first.board.departure else None
     shown = (dep_t or first.train.planned_departure).astimezone(tz)
     return (
-        f"leave now, an earlier train {first.board.code} to {c.legs[-1].alight.code}"
-        f" leaves at {shown:%H:%M} and gets you there sooner than your usual journey"
-        + ("." + leave_by_text(first, buffer_min) if buffer_min is not None else "")
-        + crowd_text(c.legs)
+        message(
+            "advice.leave_now",
+            language,
+            origin=first.board.code,
+            destination=c.legs[-1].alight.code,
+            time=f"{shown:%H:%M}",
+        )
+        + ("." + leave_by_text(first, buffer_min, language) if buffer_min is not None else "")
+        + crowd_text(c.legs, language)
     )
 
 
@@ -330,9 +342,16 @@ def advise(
         buffer = (
             ctx.profile.journey(ctx.direction).buffer_min if ctx.profile.alerts.leave_by else None
         )
-        text = leave_now_text(best[1], ctx.now.tzinfo, buffer)
+        language = ctx.profile.alerts.language
+        text = leave_now_text(best[1], ctx.now.tzinfo, buffer, language)
         event = make_event(
-            ctx, EventKind.LEAVE_NOW, Severity.LOUD, text, train, ctx.now.isoformat()
+            ctx,
+            EventKind.LEAVE_NOW,
+            Severity.LOUD,
+            text,
+            train,
+            ctx.now.isoformat(),
+            AlertFacts(language=language),
         )
         return AdviceRecord(train, ctx.now, False, delivered=False), [event]
     if not record.active or advised is None or bad:
@@ -362,7 +381,7 @@ def _withdraw(
         ctx,
         EventKind.EARLIER_TRAIN_WITHDRAWN,
         Severity.SILENT,
-        "earlier train no longer needed",
+        message("advice.withdrawn", prof.alerts.language),
         advised,
         "" if record.sent_at is None else record.sent_at.isoformat(),  # the episode it ends
     )

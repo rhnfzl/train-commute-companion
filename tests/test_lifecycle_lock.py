@@ -23,6 +23,7 @@ from train_commute_companion.model import (
     NotTravelling,
     OccurrenceKey,
     Severity,
+    alert_facts,
 )
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import ProviderAnswer, Query
@@ -117,6 +118,22 @@ def test_usual_missing_before_lock_is_loud_and_next_good_locked():
     none = auto_lock(fresh(), ctx(at("07:50")), answer())
     assert [e.kind for e in none.events] == [EventKind.MISSING, EventKind.NO_CONNECTION]
     assert none.state.lock is None
+
+
+def test_missing_usual_train_and_connection_use_profile_language():
+    english = ctx(at("07:50"))
+    profile = english.profile
+    dutch = replace(
+        english, profile=replace(profile, alerts=replace(profile.alerts, language="nl"))
+    )
+    first = auto_lock(fresh(), english, answer())
+    localized = auto_lock(fresh(), dutch, answer())
+    assert [e.key for e in first.events] == [e.key for e in localized.events]
+    assert all(alert_facts(e).language == "nl" for e in localized.events)
+    assert [e.text for e in localized.events] == [
+        "Office A: je gebruikelijke trein van 08:12 staat niet in de NS-gegevens.",
+        "Office A: geen verbinding gevonden. Kijk in de NS-app.",
+    ]
 
 
 def test_start_after_auto_lock_time_locks_at_once():

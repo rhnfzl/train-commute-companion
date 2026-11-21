@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 
 from train_commute_companion.calendar import TZ, hhmm, resolve_local, to_utc
+from train_commute_companion.catalogue import MessageLanguage, message, message_date
 from train_commute_companion.disruptions import for_connection
 from train_commute_companion.lookahead_probe import (
     WORKS_MARKS,
@@ -151,18 +152,21 @@ def has_works_warning(st: PersistedState, p: Profile, d: Direction, sd: date) ->
     )
 
 
-def _live_warning(observed: OccurrenceView | None) -> str | None:
+def _live_warning(observed: OccurrenceView | None, language: MessageLanguage) -> str | None:
     if observed is None or not observed.health.fresh:
         return None
     for leg in observed.legs:
         if leg.state in (LegKind.CANCELLED, LegKind.CUT_SHORT):
-            status = leg.state.value.replace("_", " ")
-            return f"{hhmm(leg.planned_departure)} train {leg.train_number}: {status}"
+            train = message(
+                "brief.train", language, time=hhmm(leg.planned_departure), number=leg.train_number
+            )
+            status = message(f"brief.{leg.state.value}", language)
+            return f"{train}: {status}"
     for transfer in observed.transfers:
         if transfer.state is TransferState.BROKEN:
-            return f"Your connection at {transfer.station} is broken. Check NS for your journey"
+            return message("brief.connection", language, station=transfer.station)
     if observed.arrive_by is not None and observed.arrival_target_status in ("late", "no_train"):
-        return f"No confirmed train meets your {hhmm(observed.arrive_by)} arrival target"
+        return message("brief.arrive_by", language, time=hhmm(observed.arrive_by))
     return None
 
 
@@ -177,6 +181,7 @@ def _train_row(
     now: datetime,
 ) -> BriefRow:
     j = p.journey_on(d, day)
+    language = p.alerts.language
     sd = service_date(p, d, day)
     buffer = j.buffer_min if p.alerts.leave_by else None
     crowd_enabled = enabled(p.alerts, EventKind.CROWD_CHANGE)
@@ -184,19 +189,19 @@ def _train_row(
         first = observed.legs[0]
         planned = first.planned_departure
         departure = first.departure or planned
-        if warning := _live_warning(observed):
+        if warning := _live_warning(observed, language):
             return BriefRow(d, sd, warning, True)
         if (
             first.state in (LegKind.OK, LegKind.DELAYED)
             and not observed.route_changed
             and not (probe and (probe.reasons or probe.unclear))
         ):
-            text = f"{hhmm(departure)} train {first.train_number}"
+            text = message("brief.train", language, time=hhmm(departure), number=first.train_number)
             crowd = first.crowd_forecast if crowd_enabled else None
             if crowd:
-                text += f", crowd forecast: {crowd} per NS"
+                text += message("leg.crowd", language, level=crowd)
             actionable = crowd == "high" or (first.departure_delay_min or 0) >= p.alerts.delay_min
-            advice = observed.leave_by_text if buffer is not None else None
+            advice = observed.format_leave_by(language) if buffer is not None else None
             return BriefRow(
                 d,
                 sd,
@@ -213,28 +218,31 @@ def _train_row(
         obs = first_leg.board.departure
         expected = obs.value if obs is not None and obs.provenance is Provenance.REPORTED else None
         departure = expected or scheduled
-        text = f"{hhmm(departure)} train {first_leg.train.train_number}"
+        text = message(
+            "brief.train", language, time=hhmm(departure), number=first_leg.train.train_number
+        )
         if probe.reasons:
             for reason in probe.reasons:
                 if reason.tag in ("cancelled", "cut_short") and reason.leg is not None:
                     train = legs[reason.leg].train
-                    status = reason.tag.replace("_", " ")
-                    return BriefRow(
-                        d,
-                        sd,
-                        f"{hhmm(train.planned_departure)} train {train.train_number}: {status}",
-                        True,
+                    label = message(
+                        "brief.train",
+                        language,
+                        time=hhmm(train.planned_departure),
+                        number=train.train_number,
                     )
+                    status = message(f"brief.{reason.tag}", language)
+                    return BriefRow(d, sd, f"{label}: {status}", True)
                 if reason.tag == "short":
                     return BriefRow(
                         d,
                         sd,
-                        f"Your connection at {reason.stop} is broken. Check NS for your journey",
+                        message("brief.connection", language, station=reason.stop or "?"),
                         True,
                     )
-            return BriefRow(d, sd, f"{text} listed. Check NS for your journey", True)
+            return BriefRow(d, sd, message("brief.listed", language, train=text), True)
         if crowd_enabled:
-            text += crowd_text(legs)
+            text += crowd_text(legs, language)
         base = None if buffer is None else leave_by(scheduled, expected, buffer)
         allowance = (
             weather_allowance(base, buffer, weather, now)
@@ -252,16 +260,20 @@ def _train_row(
             text,
             moved or crowded,
             allowance.suggested_leave_by if allowance else base,
-            allowance.text if allowance else f"Leave by {hhmm(base)}" if base else None,
+            allowance.format(language)
+            if allowance
+            else message("leave_by", language, time=hhmm(base))
+            if base
+            else None,
             advice_actionable=allowance is not None,
         )
     if probe is not None and (probe.reasons or probe.unclear):
-        return BriefRow(d, sd, f"{hhmm(planned)} scheduled. Check NS for your journey", True)
+        return BriefRow(d, sd, message("brief.scheduled", language, time=hhmm(planned)), True)
     if j.mode == "window":
         window = observed.window if observed is not None else None
         end = hhmm(window[1]) if window is not None else f"{j.window[1]:%H:%M}"
-        return BriefRow(d, sd, f"Travel window {hhmm(planned)} to {end}. Train not yet confirmed")
-    return BriefRow(d, sd, f"{hhmm(planned)} scheduled. NS train details unavailable")
+        return BriefRow(d, sd, message("brief.window", language, start=hhmm(planned), end=end))
+    return BriefRow(d, sd, message("brief.details_unavailable", language, time=hhmm(planned)))
 
 
 def build_row(
@@ -279,31 +291,34 @@ def build_row(
 ) -> BriefRow:
     whole = next((r for r in results if r.leg_index is None), None)
     row = _train_row(p, d, day, planned, observed, whole, weather, now)
+    language = p.alerts.language
     notes = []
     actionable = row.actionable
     if enabled(p.alerts, EventKind.WORKS_AHEAD):
         if titles := works_titles(results, works):
-            notes.append("NS planned works on this route: " + ", ".join(titles))
+            notes.append(message("brief.works", language, titles=", ".join(titles)))
             actionable = True
         if prior_warning and not (whole and whole.reasons):
             if not titles:
-                notes.append(
-                    "NS reported a timetable change on this route. Check NS for your journey"
-                )
+                notes.append(message("brief.works_changed", language))
             actionable = True
             row = replace(row, leave_by=None, advice=None)
         elif not titles and works.coverage != "complete":
-            notes.append("Planned works data unavailable")
+            notes.append(message("brief.works_unknown", language))
     if enabled(p.alerts, EventKind.DISRUPTION):
         incidents = _incidents(observed, whole, disruptions, planned, now)
-        notes.extend(f"NS disruption: {title}" for title in incidents)
+        notes.extend(message("brief.disruption", language, title=title) for title in incidents)
         actionable |= bool(incidents)
     if weather is not None:
         if hour := weather.forecast:
             notes.append(
-                f"{weather.station} forecast {hour.temperature_c:g}°C, "
-                f"{hour.precipitation_mm:g} mm precipitation "
-                "(Open-Meteo https://open-meteo.com/, CC BY 4.0)"
+                message(
+                    "brief.forecast",
+                    language,
+                    station=weather.station,
+                    temp=f"{hour.temperature_c:g}",
+                    rain=f"{hour.precipitation_mm:g}",
+                )
             )
         for warning in weather.warnings:
             notes.append(f"KNMI code {warning.color}: {warning.headline} (CC BY 4.0)")
@@ -331,15 +346,21 @@ def _incidents(
     return ()
 
 
-def _render(p: Profile, day: date, now: datetime, rows: Sequence[BriefRow]) -> str | None:
+def _render(
+    p: Profile, day: date, now: datetime, rows: Sequence[BriefRow], language: MessageLanguage
+) -> str | None:
     if not rows:
         return None
-    lines = [f"{display_name(p.name)}: commute brief for {day:%a %d %b}."]
+
+    def label_date(d: date) -> str:
+        return f"{d:%a %d %b}" if language == "en" else message_date(d, language)
+
+    lines = [message("brief.heading", language, name=display_name(p.name), date=label_date(day))]
     actionable = False
     for row in rows:
-        label = row.direction.value.title()
+        label = message(f"direction.{row.direction.value}", language).title()
         if row.service_date != day:
-            label += f" ({row.service_date:%a %d %b})"
+            label += f" ({label_date(row.service_date)})"
         advice = (
             (row.advice,)
             if (
@@ -358,7 +379,7 @@ def _render(p: Profile, day: date, now: datetime, rows: Sequence[BriefRow]) -> s
 def obligation(
     p: Profile, revision: int, day: date, now: datetime, rows: Sequence[BriefRow]
 ) -> Obligation | None:
-    text = _render(p, day, now, rows)
+    text = _render(p, day, now, rows, p.alerts.language)
     if text is None:
         return None
     key = f"daily_brief|{p.id}|{day.isoformat()}"
@@ -418,6 +439,7 @@ def current_text(
                 checked_alternatives=then.alerts.checked_alternatives,
                 partner_eta=then.alerts.partner_eta,
                 partner_phone=then.alerts.partner_phone,
+                language=then.alerts.language,
             ),
         )
         != then
@@ -426,12 +448,13 @@ def current_text(
         return None
     eligible = open_directions(st, p, day, now)
     if o.brief_rows:
+        language = then.alerts.language
         rows = []
         for row in o.brief_rows:
             if row.direction not in eligible:
                 continue
             observation = observations.get(row.direction) if observations is not None else None
-            if warning := _live_warning(observation):
+            if warning := _live_warning(observation, language):
                 row = replace(
                     row,
                     details=warning,
@@ -441,7 +464,7 @@ def current_text(
                     advice_actionable=False,
                 )
             rows.append(row)
-        return _render(p, day, now, rows)
+        return _render(p, day, now, rows, language)
     if p.brief.only_if_something:
         return None
     # Older saved briefs lack advice timestamps. Keep the remaining rows and omit advice.

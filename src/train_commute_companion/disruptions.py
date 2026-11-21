@@ -9,6 +9,7 @@ from itertools import pairwise
 from uuid import uuid4
 
 from train_commute_companion.calendar import TZ, to_utc
+from train_commute_companion.catalogue import message, message_date
 from train_commute_companion.classify import expected_departure
 from train_commute_companion.health import FRESH_FOR
 from train_commute_companion.lifecycle import Transition, is_resolved, make_event
@@ -219,18 +220,28 @@ def notice_key(notice: DisruptionNotice, service_date: str) -> str:
 
 
 def _active_text(item: ActiveDisruption, ctx: Ctx) -> str:
+    language = ctx.profile.alerts.language
     until = ""
     if item.end is not None:
         end = item.end.astimezone(TZ)
-        day = "" if end.date() == ctx.now.astimezone(TZ).date() else f" on {end.day} {end:%b}"
-        until = f"until about {end:%H:%M}{day}"
+        dated = end.date() != ctx.now.astimezone(TZ).date()
+        day = f"{end.day} {end:%b}" if language == "en" else message_date(end.date(), language)
+        until = message(
+            "disruption.until",
+            language,
+            time=f"{end:%H:%M}",
+            date=message("disruption.date", language, date=day) if dated else "",
+        )
     if not item.summary:
         joined = f", {until}" if until else ""
-        return (
-            f"NS reports {item.title} involving your route's stations{joined}; check your journey."
-        )
+        return message("disruption.active", language, title=item.title, until=joined)
     summary = item.summary if item.summary.endswith((".", "!", "?")) else item.summary + "."
-    return f"NS: {summary}{f' {until[0].upper()}{until[1:]}.' if until else ''} Check your journey."
+    return message(
+        "disruption.summary",
+        language,
+        summary=summary,
+        until=f" {until[0].upper()}{until[1:]}." if until else "",
+    )
 
 
 def notice_events(state: OccurrenceState, ctx: Ctx) -> tuple[AlertEvent, ...]:
@@ -262,7 +273,7 @@ def notice_events(state: OccurrenceState, ctx: Ctx) -> tuple[AlertEvent, ...]:
             text = _active_text(item, ctx)
             kind, severity = EventKind.DISRUPTION, Severity.SILENT
         else:
-            text = f"NS no longer lists {item.title} as active. Check your journey; this does not confirm that your trains run."
+            text = message("disruption.cleared", ctx.profile.alerts.language, title=item.title)
             kind, severity = EventKind.DISRUPTION_CLEARED, Severity.SILENT
         if item.url:
             text += f" {item.url}"

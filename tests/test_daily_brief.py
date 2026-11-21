@@ -51,6 +51,25 @@ async def run_at(rig, clock, day=DAY):
     await rig.rt.scheduled_lookahead_once()
 
 
+async def test_dutch_brief_retries_with_its_original_language_and_key(tmp_path):
+    text = YAML + "    alerts: {language: nl}\n"
+    rig = await setup(tmp_path, text=text)
+    rig.notifier.fails = lambda event: event.kind is MORNING
+    await run_at(rig, "06:00")
+    (queued,) = tells(rig, MORNING)
+    assert queued.text.startswith("Office A: reisoverzicht voor di 27 okt.")
+    assert "Heenreis: 08:12 trein" in queued.text
+    assert "Vertrek uiterlijk om 08:02" in queued.text
+
+    rig.notifier.fails = lambda _: False
+    rig.write(text=text.replace("language: nl", "language: en"))
+    rig.clock.set("06:02")
+    assert await rig.rt.reload() is None
+    sent = tells(rig, MORNING)[-1]
+    assert len(tells(rig, MORNING)) == 2
+    assert (sent.key, sent.text) == (queued.key, queued.text)
+
+
 async def test_daily_checks_follow_the_recurring_schedule(tmp_path):
     rig = await setup(
         tmp_path, text=YAML + '    repeat: {start_date: "2026-10-19", every_weeks: 2}\n'

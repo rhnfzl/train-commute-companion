@@ -48,6 +48,7 @@ def test_arrival_reminder_options_preserve_the_old_digest_token():
         "after_trip_note",
         "alert_history",
         "calendar_feed",
+        "language",
     ):
         old["alerts"].pop(key)
     token = hashlib.sha256(json.dumps(old, sort_keys=True).encode()).hexdigest()
@@ -84,12 +85,15 @@ def test_daily_brief_settings_keep_the_identity_of_saved_weekly_digests():
         "checked_alternatives",
         "partner_eta",
         "partner_phone",
+        "language",
     ):
         data["alerts"].pop(key)
     legacy = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
     updated = replace(
         p,
-        alerts=replace(p.alerts, daily_brief=False, quick_trip=False, checked_alternatives=False),
+        alerts=replace(
+            p.alerts, daily_brief=False, quick_trip=False, checked_alternatives=False, language="nl"
+        ),
         brief=replace(p.brief, at=time(7)),
     )
     assert profile_token(updated) == profile_token(p) == legacy
@@ -102,6 +106,19 @@ async def rig_at(tmp_path, when=None):
     await rig.rt.start()
     await rig.rt.works_digest_idle()
     return rig
+
+
+async def test_dutch_digest_describes_coverage_and_direction_in_dutch(tmp_path):
+    rig = Rig(tmp_path, "07:55")
+    rig.write(text=TEXT + "    alerts: {language: nl}\n")
+    await rig.rt.start()
+    await rig.rt.works_digest_idle()
+    (brief,) = digests(rig)
+    assert "weekoverzicht werkzaamheden van wo 28 okt tot di 3 nov" in brief.text
+    assert "heenreis:" in brief.text
+    assert "terugreis:" in brief.text
+    assert "geen reis gepland" in brief.text
+    assert "Controleer NS opnieuw voor vertrek." in brief.text
 
 
 async def test_stopped_digest_owner_does_not_restart_queued_work(tmp_path):
@@ -209,7 +226,13 @@ async def test_old_pending_digest_survives_upgrade_to_recurring_profiles(tmp_pat
     legacy["alerts"].pop("daily_brief")
     legacy["alerts"].pop("quick_trip")
     legacy["alerts"].pop("location_leave_now")
-    for key in ("arrival_prompt", "navigate", "compensation_details", "timetable_update"):
+    for key in (
+        "arrival_prompt",
+        "navigate",
+        "compensation_details",
+        "timetable_update",
+        "language",
+    ):
         legacy["alerts"].pop(key)
     legacy["alerts"].pop("wake_at")
     legacy["alerts"].pop("checked_alternatives")

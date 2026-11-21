@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 
 from train_commute_companion.calendar import to_utc
+from train_commute_companion.catalogue import MessageLanguage, message
 from train_commute_companion.model import Observation, Provenance, TrainId
 from train_commute_companion.state import PollRecord
 
@@ -66,37 +67,41 @@ def board_health(records: Sequence[PollRecord], now: datetime) -> BoardHealth:
     return BoardHealth(fresh, last_ok, failures, auth)
 
 
-def _leg_blind(leg: WatchedLeg, departure: datetime, now: datetime) -> str | None:
+def _leg_blind(
+    leg: WatchedLeg, departure: datetime, now: datetime, language: MessageLanguage
+) -> str | None:
     if leg.observation is not Observation.SEEN:
-        return f"the train is {leg.observation.value} in the answer"
+        return message(f"health.{leg.observation.value}", language)
     if now < departure and leg.dep_provenance is not Provenance.REPORTED:
-        return "no reported departure time"
+        return message("health.no_departure", language)
     if leg.riding_or_watched and leg.arr_provenance is not Provenance.REPORTED:
-        return "no reported arrival time"
+        return message("health.no_arrival", language)
     if leg.last_seen_at is None or not timedelta() <= now - to_utc(leg.last_seen_at) < FRESH_FOR:
-        return "the train is not in a fresh answer"
+        return message("health.no_fresh_train", language)
     return None
 
 
-def board_blind(health: BoardHealth) -> str | None:
+def board_blind(health: BoardHealth, language: MessageLanguage = "en") -> str | None:
     """Rule 12: the board itself is old or failing. Already two polls deep (FRESH_FOR spans two
     polls, FAILED_POLLS = 2), so it is told at once (Q5)."""
     if not health.fresh:
-        return "the board is older than 5 minutes"
+        return message("health.old_board", language)
     if health.consecutive_failures >= FAILED_POLLS:
-        return "the last polls failed"
+        return message("health.failed_polls", language)
     return None
 
 
-def blindness(legs: Sequence[WatchedLeg], health: BoardHealth, now: datetime) -> tuple[bool, str]:
+def blindness(
+    legs: Sequence[WatchedLeg], health: BoardHealth, now: datetime, language: MessageLanguage = "en"
+) -> tuple[bool, str]:
     now = to_utc(now)
-    board_reason = board_blind(health)
+    board_reason = board_blind(health, language)
     for leg in legs:
         # departed and neither ridden nor watched means finished (rule 13: unfinished legs only)
         departure = to_utc(leg.departure)
         if not (leg.riding_or_watched or timedelta(0) <= departure - now <= ZONE):
             continue
-        reason = board_reason or _leg_blind(leg, departure, now)
+        reason = board_reason or _leg_blind(leg, departure, now, language)
         if reason:
             return True, reason
     return False, ""

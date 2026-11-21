@@ -6,7 +6,8 @@ from datetime import date, datetime, timedelta
 from statistics import mean
 from typing import Literal
 
-from train_commute_companion.calendar import WEEKDAYS, to_utc
+from train_commute_companion.calendar import to_utc
+from train_commute_companion.catalogue import MessageLanguage, message, message_weekday
 from train_commute_companion.compensation_state import JourneyRecord
 from train_commute_companion.model import EventKind, OccurrenceKey
 
@@ -88,23 +89,35 @@ def commute_stats(rows: Iterable[JourneyHistory], start: date, end: date) -> Com
     )
 
 
-def stats_text(stats: CommuteStats) -> str:
+def stats_text(stats: CommuteStats, language: MessageLanguage = "en") -> str:
     if stats.journeys == 0:
-        return "There are no recorded journeys in this period."
+        return message("stats.empty", language)
     arrival = (
-        f"{stats.on_time} of {stats.arrivals} recorded NS arrivals were on time "
-        f"({stats.on_time_percent:g}%). Average delay {stats.average_delay_min:g} minutes."
+        message(
+            "stats.arrivals",
+            language,
+            on_time=stats.on_time,
+            arrivals=stats.arrivals,
+            percent=f"{stats.on_time_percent:g}",
+            delay=f"{stats.average_delay_min:g}",
+        )
         if stats.on_time_percent is not None and stats.average_delay_min is not None
-        else "There is no comparable NS arrival time in this period."
+        else message("stats.unavailable", language)
     )
     worst = (
-        f" Highest average delay on {WEEKDAYS[stats.worst_weekday - 1].title()}."
+        message("stats.worst", language, day=message_weekday(stats.worst_weekday - 1, language))
         if stats.worst_weekday is not None
         else ""
     )
-    return (
-        f"{stats.journeys} recorded journeys. {arrival}{worst} "
-        f"Cancelled or cut short {stats.cancelled}, moved {stats.moved}, missed {stats.missed}."
+    return message(
+        "stats.journeys",
+        language,
+        count=stats.journeys,
+        arrivals=arrival,
+        worst=worst,
+        cancelled=stats.cancelled,
+        moved=stats.moved,
+        missed=stats.missed,
     )
 
 

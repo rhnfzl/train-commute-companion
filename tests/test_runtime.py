@@ -1212,10 +1212,17 @@ async def test_held_cancellation_names_the_current_lock_when_sent(tmp_path):
 
 @pytest.mark.parametrize("disabled", [False, True])
 @pytest.mark.parametrize("detour", [False, True])
+@pytest.mark.parametrize("language", ["en", "nl"])
 async def test_held_cancellation_refreshes_leave_by_without_a_different_replacement(
-    tmp_path, disabled, detour
+    tmp_path, disabled, detour, language
 ):
-    rig = await started(tmp_path)
+    rig = Rig(tmp_path)
+    rig.write(
+        text=PROFILE.replace("    name:", f"    alerts: {{language: {language}}}\n    name:", 1)
+    )
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    leave = "Vertrek uiterlijk om" if language == "nl" else "Leave by"
     rig.notifier.fails = lambda e: e.kind is EventKind.CANCELLED
     rig.clock.set("07:52")
     replacement = (
@@ -1228,7 +1235,7 @@ async def test_held_cancellation_refreshes_leave_by_without_a_different_replacem
     )
     rig.provider.world = [make_connection([L1X, L2]), replacement]
     await rig.rt.poll_once()
-    assert "Leave by 08:15" in rig.notifier.attempts[-1].text
+    assert f"{leave} 08:15" in rig.notifier.attempts[-1].text
     first = replacement.legs[0]
     early = replace(
         first,
@@ -1242,7 +1249,7 @@ async def test_held_cancellation_refreshes_leave_by_without_a_different_replacem
     if disabled:
         rig.write(
             text=rig.path.read_text().replace(
-                "    name:", "    alerts: {leave_by: false}\n    name:", 1
+                f"language: {language}", f"language: {language}, leave_by: false", 1
             )
         )
         await rig.rt.reload_if_changed()
@@ -1253,12 +1260,13 @@ async def test_held_cancellation_refreshes_leave_by_without_a_different_replacem
     told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
     assert len(told) == 1
     if detour:
-        assert "new route via BBB" in told[0]
+        route = "nieuwe route via BBB" if language == "nl" else "new route via BBB"
+        assert route in told[0]
     if disabled:
-        assert "Leave by" not in told[0]
+        assert leave not in told[0]
     else:
-        assert "Leave by 08:10" in told[0]
-        assert "Leave by 08:15" not in told[0]
+        assert told[0].count(f"{leave} 08:10") == 1
+        assert f"{leave} 08:15" not in told[0]
 
 
 async def test_held_warning_names_the_journey_followed_once_the_locks_first_leg_is_past(tmp_path):

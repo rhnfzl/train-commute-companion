@@ -818,6 +818,7 @@ async def test_options_profile_edit_preserves_advanced_settings(
         "custom_timetable_horizon": False,
         "timetable_horizon_unit": "commute_dates",
         "timetable_horizon_count": 14,
+        "language": "nl",
         **({"alert_history": saved_history} if saved_history is not None else {}),
         "daily_brief": False,
     }
@@ -850,6 +851,7 @@ async def test_options_profile_edit_preserves_advanced_settings(
     assert shown(flow)["custom_timetable_horizon"] is False
     assert shown(flow)["timetable_horizon_unit"] == "commute_dates"
     assert shown(flow)["timetable_horizon_count"] == 14
+    assert shown(flow)["language"] == "nl"
     assert shown(flow)["daily_brief"] is False
     assert shown(flow)["brief_at"] == "06:45"
     assert shown(flow)["brief_evening_at"] == "19:30"
@@ -879,6 +881,7 @@ async def test_options_profile_edit_preserves_advanced_settings(
             "custom_timetable_horizon": True,
             "timetable_horizon_unit": "calendar_days",
             "timetable_horizon_count": 10.0,
+            "language": "en",
             "live_today": live_today,
             "telegram_status_pin": telegram_status_pin,
             "ntfy_enabled": False,
@@ -905,6 +908,7 @@ async def test_options_profile_edit_preserves_advanced_settings(
         "custom_timetable_horizon": True,
         "timetable_horizon_unit": "calendar_days",
         "timetable_horizon_count": 10,
+        "language": "en",
         "ntfy_enabled": False,
         "alert_history": not saved_history,
         "calendar_feed": False,

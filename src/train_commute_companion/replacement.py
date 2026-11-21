@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal, TypedDict, Unpack
 
 from train_commute_companion.arrival import ArrivalChoice
+from train_commute_companion.catalogue import Phrase, phrase
 from train_commute_companion.classify import (
     classify_leg,
     current_connection,
@@ -49,7 +50,11 @@ def catch_from(
 @dataclass(frozen=True, slots=True)
 class GoodCheck:
     ok: bool
-    reason: str
+    detail: Phrase | None = None
+
+    @property
+    def reason(self) -> str:
+        return "ok" if self.detail is None else self.detail.render("en")
 
 
 def max_transfers(usual: tuple[str, ...]) -> int:
@@ -66,14 +71,14 @@ class GoodKwargs(TypedDict):
     profile_min: Mapping[str, int]
 
 
-def _leg_problem(x: ClassifiedLeg) -> str | None:
+def _leg_problem(x: ClassifiedLeg) -> Phrase | None:
     if x.kind in (LegKind.CANCELLED, LegKind.CUT_SHORT):
-        return f"leg {x.kind.value}"
+        return phrase(f"choice.{x.kind.value}")
     if x.observation is not Observation.SEEN:
-        return f"leg {x.observation.value}"
+        return phrase(f"choice.{x.observation.value}")
     # rule 20: a planned or missing time at either end of a leg is at risk, never good
     if not (is_reported(x.leg.board.departure) and is_reported(x.leg.alight.arrival)):
-        return "leg has a planned or missing time"
+        return phrase("choice.missing_time")
     return None
 
 
@@ -83,24 +88,21 @@ def check_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) 
     (6.1): a leg that shares its boarding minute with another train is uncertain."""
     board, kept, pm = kw["board_station"], kw["kept_incoming"], kw["profile_min"]
 
-    def bad(reason: str) -> GoodCheck:
-        return GoodCheck(False, reason)
-
     if not c.is_train_only:
-        return bad("not train only")
+        return GoodCheck(False, phrase("choice.not_train"))
     if c.origin != board:
-        return bad("does not board at the boarding station")
+        return GoodCheck(False, phrase("choice.boarding"))
     if c.destination != kw["destination"]:
-        return bad("does not arrive at the destination")
+        return GoodCheck(False, phrase("choice.destination"))
     total = kw["done_transfers"] + (kept is not None) + len(c.legs) - 1
     cap = kw["max_transfers"]
     if cap is not None and total > cap:
-        return bad("over the transfer cap")
+        return GoodCheck(False, phrase("choice.transfer_cap"))
     # judge the current copy of every train (6.2) against `c`'s own alight stops
     seen_in = evidence(answer)
     cur = current_connection(seen_in, c)
     if not cur.is_train_only:  # the copy returned is the one that must be a train (6.3)
-        return bad("not train only")
+        return GoodCheck(False, phrase("choice.not_train"))
     cls = [
         replace(
             classify_leg(cur.legs[i], leg.alight.code),
@@ -110,17 +112,25 @@ def check_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) 
     ]
     for x in cls:
         if (problem := _leg_problem(x)) is not None:
-            return bad(problem)
+            return GoodCheck(False, problem)
     first = present(present(cls[0].leg.board.departure).value)  # is_reported() above
     if first.astimezone(UTC) < kw["catch"].not_before.astimezone(UTC):
-        return bad("first leg cannot be caught")
+        return GoodCheck(False, phrase("choice.too_late"))
     pairs = [(*pair_transfer(seen_in, kept, cls[0]), board)] if kept is not None else []
     pairs += [(a, b, leg.alight.code) for (a, b), leg in zip(itertools.pairwise(cls), c.legs)]
     for inc, out, station in pairs:
         tc = check_transfer(inc, out, station, pm)
         if tc.state is not TransferState.OK:
-            return bad(f"transfer at {station} {tc.state.value}: {tc.reason}")
-    return GoodCheck(True, "ok")
+            return GoodCheck(
+                False,
+                phrase(
+                    "choice.transfer",
+                    station=station,
+                    state=phrase(f"transfer.{tc.state.value}"),
+                    reason=phrase(f"transfer.reason.{tc.reason}"),
+                ),
+            )
+    return GoodCheck(True)
 
 
 def choose_replacement(

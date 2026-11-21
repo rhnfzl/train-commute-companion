@@ -15,6 +15,7 @@ from train_commute_companion.arrival import (
     planning_query,
 )
 from train_commute_companion.calendar import TZ, hhmm, resolve_local, to_utc
+from train_commute_companion.catalogue import MessageLanguage, Phrase, message, phrase
 from train_commute_companion.classify import (
     classify_leg,
     current_connection,
@@ -243,12 +244,13 @@ def _recovery(
             return e if max(said) >= delay_min else None
         if max(before) == max(said):
             return e
-        kind, tail = EventKind.BACK_TO_NORMAL, "is back to normal, on time per NS."
+        kind = EventKind.BACK_TO_NORMAL
     elif max(said) < delay_min and max(before) > max(said):
-        kind, tail = EventKind.NEARLY_ON_TIME, "is nearly on time."
+        kind = EventKind.NEARLY_ON_TIME
     else:
         return e
-    text = f"{display_name(e.profile_name)}: {facts.on}{facts.subject} train {tail}"
+    body = message(f"train.{kind.value}", facts.language, subject=facts.subject)
+    text = f"{display_name(e.profile_name)}: {facts.on}{body}"
     key = kind.value + e.key[len(e.kind.value) :]
     return replace(e, kind=kind, severity=Severity.SILENT, text=text, key=key)
 
@@ -381,9 +383,11 @@ def quiet_events(
     return tuple(e for e in events if unusual(e))
 
 
-def on_prefix(j: Journey) -> str:
+def on_prefix(j: Journey, language: MessageLanguage = "en") -> str:
     """A retained journey's warnings open with this, so it says which train it is about."""
-    return f"if you are on the {hhmm(j.legs[0].train.planned_departure)}: "
+    return message(
+        "journey.retained_prefix", language, time=hhmm(j.legs[0].train.planned_departure)
+    )
 
 
 def _event_key(ctx: Ctx, kind: EventKind, train: TrainId | None, key_facts: str) -> str:
@@ -395,7 +399,7 @@ def make_event(
     ctx: Ctx,
     kind: EventKind,
     severity: Severity,
-    text: str,
+    text: str | Phrase,
     train: TrainId | None = None,
     key_facts: str | None = None,
     stated: AlertFacts | None = None,
@@ -405,6 +409,13 @@ def make_event(
     Pass `key_facts` when the text holds a live time that drifts without being news. `stated` holds
     what later steps read of this alert; its live delays join the key in `keep_stated`."""
     name = display_name(ctx.profile.name)
+    facts = stated or AlertFacts()
+    if isinstance(text, Phrase):
+        language = ctx.profile.alerts.language
+        if key_facts is None:
+            key_facts = text.render("en")
+        facts = replace(facts, language=language)
+        text = text.render(language)
     return AlertEvent(
         profile_id=ctx.profile.id,
         profile_name=ctx.profile.name,
@@ -417,7 +428,7 @@ def make_event(
         text=f"{name}: {text}",
         key=_event_key(ctx, kind, train, text if key_facts is None else key_facts),
         created_at=ctx.now,
-        facts=stated or AlertFacts(),
+        facts=facts,
     )
 
 
@@ -597,15 +608,25 @@ def _lock_exact(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transit
         return _lock_usual(s, ctx, answer, chosen, source=LockSource.CHOOSE)
     if s.missing_sent:
         return Transition(s, ())
-    why = "More than one train matches" if trains else "NS did not show"
-    name = f"your selected {hhmm(departure)}"
-    if journey.exact_train:
-        name += f" (train {journey.exact_train})"
+    number = phrase("train.number", number=journey.exact_train) if journey.exact_train else ""
+    why = phrase(
+        "train.selected_ambiguous" if trains else "train.selected_missing",
+        time=hhmm(departure),
+        number=number,
+    )
     alt = find_next_good(s, ctx, answer, earliest=True)
-    ending = f" Next option: {hhmm(_departure(alt))}." if alt else " Check the NS app."
-    facts = option_facts(alt, ending, style="option")
+    ending = (
+        phrase("relock.option_short", time=hhmm(_departure(alt)))
+        if alt
+        else phrase("train.check_app")
+    )
+    facts = option_facts(alt, ending.render(ctx.profile.alerts.language), style="option")
     event = make_event(
-        ctx, EventKind.MISSING, Severity.LOUD, f"{why} {name}." + ending, stated=facts
+        ctx,
+        EventKind.MISSING,
+        Severity.LOUD,
+        phrase("alert.append", cause=why, clause=ending),
+        stated=facts,
     )
     return Transition(replace(s, missing_sent=True), (event,))
 
@@ -638,20 +659,22 @@ def _lock_usual(
     ):
         # the user may be on it; show where to go if not (7.12 rule 7)
         nxt = find_next_good(s, ctx, answer, after=first.train)
-        head = f"your usual {hhmm(ctx.schedule.first_departure)} has left. If you are not on it,"
+        head = phrase("connection.usual_left", time=hhmm(ctx.schedule.first_departure))
         clause = (
-            f" next good connection: {hhmm(_departure(nxt))}."
+            phrase("checked.conditional", time=hhmm(_departure(nxt)))
             if nxt is not None
-            else " no good connection found, check the NS app."
+            else phrase("connection.no_option")
         )
         events.append(
             make_event(
                 ctx,
                 EventKind.NEXT_CONNECTION,
                 Severity.SILENT,
-                head + clause,
+                phrase("alert.join", cause=head, clause=clause),
                 first.train,
-                stated=option_facts(nxt, clause, style="conditional"),
+                stated=option_facts(
+                    nxt, " " + clause.render(ctx.profile.alerts.language), style="conditional"
+                ),
             )
         )
     # The first train has its note above.
@@ -693,11 +716,10 @@ def _lock_earliest(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Tran
         target = sch.arrive_by
         if s.missing_sent and target is None:
             return Transition(s, ())
-        start = hhmm(sch.first_departure)
         text = (
-            f"no train you can catch was found for arrival by {hhmm(target)}, check the NS app."
+            phrase("train.no_arrival", time=hhmm(target))
             if target is not None
-            else f"no train found from {start} to {hhmm(last)}, check the NS app."
+            else phrase("train.window_empty", start=hhmm(sch.first_departure), end=hhmm(last))
         )
         event = make_event(
             ctx,
@@ -734,13 +756,13 @@ def _lock_without_usual(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) ->
                 ctx,
                 EventKind.MISSING,
                 Severity.LOUD,
-                f"your usual {hhmm(ctx.schedule.first_departure)} is not in NS data.",
+                phrase("train.usual_missing", time=hhmm(ctx.schedule.first_departure)),
             )
         )
         s = replace(s, missing_sent=True)
     nxt = find_next_good(s, ctx, answer)
     if nxt is None:
-        text = "no connection found, check the NS app."
+        text = phrase("relock.no_connection")
         facts = AlertFacts(alternative=Alternative(boarding_origin(s, ctx), ()))
         events.append(make_event(ctx, EventKind.NO_CONNECTION, Severity.LOUD, text, stated=facts))
         return Transition(s, tuple(events))
@@ -807,8 +829,8 @@ def target_occurrence(
     )
 
 
-def _refuse(s: OccurrenceState, ctx: Ctx, reason: str) -> Transition:
-    text = f"choice refused: {reason}."
+def _refuse(s: OccurrenceState, ctx: Ctx, reason: Phrase) -> Transition:
+    text = phrase("choice.refused", reason=reason)
     return Transition(s, (make_event(ctx, EventKind.CHOOSE_REFUSED, Severity.LOUD, text),))
 
 
@@ -833,10 +855,10 @@ def _choice_check(
     p, d = ctx.profile, ctx.direction
     if source is not None and len(c.legs) == 1:
         if c.destination != p.destination(d):
-            return GoodCheck(False, "does not arrive at the destination")
+            return GoodCheck(False, phrase("choice.destination"))
         if not p.travel_plan and len(head) + len(done) > max_transfers(p.journey(d).transfers):
-            return GoodCheck(False, "over the transfer cap")
-        return GoodCheck(True, "ok")
+            return GoodCheck(False, phrase("choice.transfer_cap"))
+        return GoodCheck(True)
     # a train the user may be on is kept: catchability applies only to the legs after it,
     # and the change from it (or from the last done leg) is checked like any other (rule 1)
     rest = c if source is None else Connection(c.legs[1:], c.status, c.ctx_recon)
@@ -849,7 +871,7 @@ def _choice_check(
         n_before = len(done)
         station = done[-1].alight_stop if done else boarding_origin(s, ctx)
     if n_before and kept is None:
-        return GoodCheck(False, "the change from your current train is not in NS data")
+        return GoodCheck(False, phrase("choice.change_unknown"))
     return check_good(rest, pool, **_good_kw(s, ctx, station, kept, n_before))
 
 
@@ -871,7 +893,7 @@ def _keep_progress(c: Connection, source: Journey) -> tuple[LegProgress, ...]:
 def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
     c = action.connection
     if not action.answers:
-        return _refuse(s, ctx, "no fresh NS answer to check it against")
+        return _refuse(s, ctx, phrase("choice.no_answer"))
     before = s
     if action.station is not None:
         s = _confirm_station(s, action.station)
@@ -881,7 +903,7 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
         and ctx.schedule.arrival_deadline is not None
         and find_next_good(s, ctx, pool, only=tuple(x.train for x in c.legs)) is None
     ):
-        return _refuse(before, ctx, "this train no longer meets your arrival plan")
+        return _refuse(before, ctx, phrase("choice.arrival"))
     source = _ridden_source(s, c.legs[0].train, ctx.now)
     # the kept prefix comes from the journey the choice continues, never from another one
     base = s.lock if source is None else source
@@ -889,7 +911,7 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
     head = _missed_head(s, source)
     check = _choice_check(s, ctx, pool, c, source, head, done)
     if not check.ok:
-        return _refuse(before, ctx, check.reason)
+        return _refuse(before, ctx, present(check.detail))
     riding = source is not None or s.travelling
     new = journey_of(
         c,
@@ -1163,8 +1185,21 @@ def observe(
     return replace(best, observation=ob), ob, seen
 
 
-def _name(x: LegProgress) -> str:
-    return f"{hhmm(x.train.planned_departure)} {x.board_station} to {x.intended_alight}"
+def _name(x: LegProgress, language: MessageLanguage = "en") -> str:
+    return _train_route(x).render(language)
+
+
+def _train_route(x: LegProgress) -> Phrase:
+    return phrase(
+        "train.route",
+        time=hhmm(x.train.planned_departure),
+        board=x.board_station,
+        destination=x.intended_alight,
+    )
+
+
+def _train_subject(x: LegProgress) -> Phrase:
+    return phrase("train.subject", train=_train_route(x))
 
 
 def _good_kw(
@@ -1266,7 +1301,7 @@ def _restore_at(
         prefix[-1] = _move_stop(prefix[-1], station, station)
     written = _write(s, _journey(lock, prefix, c.legs, LockSource.RESTORE))
     history = tuple(y for y in written.cancellation_history if y.train != h.train)
-    text = f"back to normal: your {_name(h)} train runs again."
+    text = phrase("train.restored", subject=_train_subject(h))
     return Transition(
         replace(written, cancellation_history=history),
         (make_event(ctx, EventKind.RESTORED, Severity.SILENT, text, h.train),),
@@ -1278,7 +1313,7 @@ class Cause(NamedTuple):
 
     kind: EventKind
     severity: Severity
-    text: str
+    text: Phrase
     train: TrainId
 
 
@@ -1316,13 +1351,16 @@ def _follow_over_cap(s: OccurrenceState, ctx: Ctx, cut: Relock, over_cap: Connec
     new = _journey(present(s.lock), (*legs[: j - 1], ride), over_cap.legs[1:], LockSource.RELOCK)
     over = j - 1 + len(over_cap.legs) - 1 > max_transfers(p.journey(d).transfers)
     via = ", ".join(over_cap.transfer_stations) or end
-    note = f"no good connection within your usual changes; following NS via {via}" + (
-        ", the extra legs are beyond the sensors." if over else "."
+    note = phrase(
+        "relock.cap", cause=text, via=via, extra=phrase("relock.extra_legs") if over else "."
     )
-    reroute = make_event(ctx, EventKind.ROUTE_CHANGED, Severity.LOUD, f"{text}: {note}", train)
+    reroute = make_event(ctx, EventKind.ROUTE_CHANGED, Severity.LOUD, note, train)
     if kind is EventKind.ROUTE_CHANGED:
         return Transition(_write(s, new), (reroute,))
-    return Transition(_write(s, new), (make_event(ctx, kind, sev, f"{text}.", train), reroute))
+    return Transition(
+        _write(s, new),
+        (make_event(ctx, kind, sev, phrase("alert.end", cause=text), train), reroute),
+    )
 
 
 def option_facts(
@@ -1386,13 +1424,17 @@ def _relock(
     lock = present(s.lock)
     p, d = ctx.profile, ctx.direction
     kind, sev, text, train = cut.cause
+    language = p.alerts.language
     target = ctx.schedule.arrive_by
     if (
         target is not None
         and s.selected_recovery is not None
         and s.selected_recovery.status == "active"
     ):
-        return Transition(_progress(s, legs), (make_event(ctx, kind, sev, f"{text}.", train),))
+        return Transition(
+            _progress(s, legs),
+            (make_event(ctx, kind, sev, phrase("alert.end", cause=text), train),),
+        )
     # an older answer's running copy of the train being replaced is no replacement for it
     cands = [
         c
@@ -1407,9 +1449,7 @@ def _relock(
     )
     if p.travel_plan:
         if j and kept is None:
-            note = (
-                f"{text}; the change from your current train is not in NS data, check the NS app."
-            )
+            note = phrase("relock.unknown_change", cause=text)
             return Transition(_progress(s, legs), (make_event(ctx, kind, sev, note, train),))
         eligible = [c for c in cands if within_travel_limits(c, ctx, pool, first=j == 0)]
         usual = _usual_route(s, ctx, station)
@@ -1427,17 +1467,27 @@ def _relock(
                 )
             if alternative is not None:
                 arrival = alternative.legs[-1].alight.arrival
-                arrives = f", arrives {hhmm(arrival.value)}" if arrival and arrival.value else ""
-                clause = f" Next option: {hhmm(_departure(alternative))}{arrives}. Choose it to follow it."
+                arrives = (
+                    phrase("train.arrives", time=hhmm(arrival.value))
+                    if arrival and arrival.value
+                    else ""
+                )
+                option = phrase(
+                    "relock.option", time=hhmm(_departure(alternative)), arrival=arrives
+                )
+                note = phrase("alert.append", cause=text, clause=option)
                 facts = option_facts(
-                    alternative, clause, style="option", prior=legs[:j], respect_plan=c is not None
+                    alternative,
+                    option.render(language),
+                    style="option",
+                    prior=legs[:j],
+                    respect_plan=c is not None,
                 )
             else:
-                clause = " No replacement found, check the NS app."
+                note = phrase("relock.no_replacement", cause=text)
                 facts = empty
             return Transition(
-                _progress(s, legs),
-                (make_event(ctx, kind, sev, f"{text}.{clause}", train, stated=facts),),
+                _progress(s, legs), (make_event(ctx, kind, sev, note, train, stated=facts),)
             )
     else:
         c, how = None, "none"
@@ -1460,7 +1510,7 @@ def _relock(
         usual = _usual_route(s, ctx, station)
         if not replace_whole:
             if j and kept is None:
-                note = f"{text}; the change from your current train is not in NS data, check the NS app."
+                note = phrase("relock.unknown_change", cause=text)
                 return Transition(_progress(s, legs), (make_event(ctx, kind, sev, note, train),))
             before = lock.legs[0].train if not j else None
             c, how = choose_replacement(
@@ -1472,8 +1522,8 @@ def _relock(
             )
         if c is None and target is not None:
             which = "onward" if j and not replace_whole else "earlier"
-            none = (
-                f"{text}. No {which} train you can catch was found for arrival by {hhmm(target)}."
+            none = phrase(
+                "relock.no_arrival", cause=text, which=phrase(f"relock.{which}"), time=hhmm(target)
             )
             event = make_event(
                 ctx,
@@ -1491,44 +1541,50 @@ def _relock(
     if c is None and cut.over_cap is not None:
         return _follow_over_cap(s, ctx, cut, cut.over_cap)
     if c is None and cut.leave_by:
-        none = f"{text}. No train you can still catch was found, check the NS app."
+        none = phrase("relock.no_catchable", cause=text)
         return Transition(_progress(s, legs), (make_event(ctx, kind, sev, none, train),))
     if c is None:
-        events = [make_event(ctx, kind, sev, f"{text}.", train, stated=empty)]
+        events = [make_event(ctx, kind, sev, phrase("alert.end", cause=text), train, stated=empty)]
         if any(
             not q.search_for_arrival
             and q.origin == station
             and (cut.since is None or to_utc(q.at) >= to_utc(cut.since))
             for q in asked
         ):
-            nothing = "no connection found, check the NS app."
+            nothing = phrase("relock.no_connection")
             events.append(make_event(ctx, EventKind.NO_CONNECTION, Severity.LOUD, nothing))
         return Transition(_progress(s, legs), tuple(events))
-    via = ", ".join(c.transfer_stations) or "a direct train"
+    via = ", ".join(c.transfer_stations) or message("train.direct", language)
     # the replacement by identity, not by its live time: a drifting estimate is not news (7.5)
     # and its stated time by its delay, which `keep_stated` steps by the profile preference
     late = (_departure(c) - to_utc(c.legs[0].train.planned_departure)) // timedelta(minutes=1)
     named = tuple(train_ident(x.train) for x in c.legs)
-    key_facts = f"{text}|" + ",".join(named)
+    key_facts = text.render("en") + "|" + ",".join(named)
     late_now = classify_leg(c.legs[0], c.legs[0].alight.code).dep_delay_min
     moved = how == "new_route" and usual is not None  # no usual route to move from
-    route, crowd = (f", new route via {via}" if moved else ""), crowd_text(c.legs)
+    route = message("relock.new_route", language, via=via) if moved else ""
+    crowd = crowd_text(c.legs, language)
     buffer = p.journey(d).buffer_min if p.alerts.leave_by else None
     leave = (
-        leave_by_text(c.legs[0], buffer) if j == 0 and not s.travelling and not s.at_station else ""
+        leave_by_text(c.legs[0], buffer, language)
+        if j == 0 and not s.travelling and not s.at_station
+        else ""
     )
+    leave_note = "." + leave if leave else ""
+    departure = hhmm(_departure(c))
     if target is not None:
-        which = "onward train" if j else "earlier train"
-        clause = f" Take the {which} at {hhmm(_departure(c))} from {station}"
-        clause += ("." + leave if leave else "") + crowd + "."
+        which = message("relock.onward" if j else "relock.earlier", language)
+        clause = message("relock.take", language, which=which, time=departure, station=station)
+        clause += leave_note + crowd + "."
     elif cut.at_station:
-        clause = f" Next: {status_text(c.legs, late_now)}."
+        clause = message("relock.next", language, train=status_text(c.legs, late_now, language))
+        leave_note = ""
     elif cut.leave_by:  # the crowd note stays last: the ledger strips and re-appends it there
-        clause = f" Next you can catch: {hhmm(_departure(c))}{route}"
-        clause += ("." + leave if leave else "") + crowd + "."
+        clause = message("relock.can_catch", language, time=departure, route=route)
+        clause += leave_note + crowd + "."
     else:
-        clause = f" Next good connection: {hhmm(_departure(c))}{route}"
-        clause += ("." + leave if leave else "") + crowd + "."
+        clause = message("relock.next_good", language, time=departure, route=route)
+        clause += leave_note + crowd + "."
     written = _write(s, _journey(lock, legs[:j], c.legs, cut.source))
     if (
         target is None
@@ -1540,6 +1596,8 @@ def _relock(
         delays=(LiveDelay("", late),),
         named=named,
         next_clause=clause,
+        leave_note=leave_note,
+        language=language,
         crowd_note=crowd,
         arrival_deadline=ctx.schedule.arrival_deadline
         if kind is EventKind.ARRIVAL_TARGET
@@ -1556,7 +1614,12 @@ def _relock(
         ),
     )
     return Transition(
-        written, (make_event(ctx, kind, sev, f"{text}.{clause}", train, key_facts, stated),)
+        written,
+        (
+            make_event(
+                ctx, kind, sev, f"{text.render(language)}.{clause}", train, key_facts, stated
+            ),
+        ),
     )
 
 
@@ -1579,7 +1642,9 @@ def _at_risk(ctx: Ctx, x: LegProgress, nxt: LegProgress, reason: str) -> AlertEv
     soon = to_utc(nxt.train.planned_departure) - to_utc(ctx.now) <= timedelta(
         minutes=AT_RISK_LOUD_MIN
     )
-    text = f"your change at {x.alight_stop} is at risk: {reason}."
+    text = phrase(
+        "transfer.risk", station=x.alight_stop, reason=phrase(f"transfer.reason.{reason}")
+    )
     sev = Severity.LOUD if soon else Severity.SILENT
     return make_event(ctx, EventKind.TRANSFER_AT_RISK, sev, text, nxt.train)
 
@@ -1612,25 +1677,34 @@ def delayed_event(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg, *, last: bool) ->
     arr = None if stop is None or stop.arrival is None else stop.arrival.value
     planned = None if stop is None or stop.arrival is None else stop.arrival.planned
     past = last and _past_limit(ctx, arr, planned)
+    language = ctx.profile.alerts.language
+    subject = message("train.subject", language, train=_name(x, language))
     if dep is not None and arr_late is not None and dep != arr_late:
-        on = "on time" if arr_late <= ON_TIME_MAX_MIN else f"{arr_late} min late"
-        text = f"your {_name(x)} train leaves {dep} min late and arrives {on}"
+        on = (
+            message("train.on_time", language)
+            if arr_late <= ON_TIME_MAX_MIN
+            else message("train.minutes_late", language, minutes=arr_late)
+        )
+        text = message("train.delay_split", language, subject=subject, minutes=dep, arrival=on)
     else:
-        text = (
-            f"your {_name(x)} train is delayed {arr_late if arr_late is not None else dep or 0} min"
+        text = message(
+            "train.delay",
+            language,
+            subject=subject,
+            minutes=arr_late if arr_late is not None else dep or 0,
         )
     if arr is not None:
-        text += f", arriving {hhmm(arr)}"
+        text += message("train.arriving", language, time=hhmm(arr))
     sev = Severity.LOUD if past else Severity.SILENT
+    crowd = crowd_text([cl.leg], language)
     stated = AlertFacts(
         delays=(LiveDelay("d", dep), LiveDelay("a", arr_late)),
-        subject=f"your {_name(x)}",
-        crowd_note=crowd_text([cl.leg]),
+        subject=subject,
+        language=language,
+        crowd_note=crowd,
         past_latest_arrival=past,
     )
-    return make_event(
-        ctx, EventKind.DELAYED, sev, text + crowd_text([cl.leg]) + ".", x.train, _name(x), stated
-    )
+    return make_event(ctx, EventKind.DELAYED, sev, text + crowd + ".", x.train, _name(x), stated)
 
 
 def _platform(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
@@ -1643,13 +1717,17 @@ def _platform(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
     soon = _departs(x, cl) - to_utc(ctx.now) <= timedelta(minutes=PLATFORM_LOUD_MIN)
     sev = Severity.LOUD if soon else Severity.SILENT
     planned = track == b.planned_track
-    if planned:  # `keep_stated` keeps it only after an announced change
-        text = f"your {_name(x)} train leaves from platform {b.planned_track} again, as planned."
-    else:
-        text = f"your {_name(x)} train now leaves from platform {track} (was {b.planned_track})."
+    language = ctx.profile.alerts.language
+    text = message(
+        "train.platform_restored" if planned else "train.platform_changed",
+        language,
+        subject=message("train.subject", language, train=_name(x, language)),
+        track=track,
+        old=b.planned_track,
+    )
     key_facts = f"track {track}" + ("|planned" if planned else "")
     slot = "moved#" + _event_key(ctx, EventKind.PLATFORM_CHANGE, x.train, "track")
-    stated = AlertFacts(moved_slot=slot, back_on_plan=planned)
+    stated = AlertFacts(moved_slot=slot, back_on_plan=planned, language=language)
     return make_event(ctx, EventKind.PLATFORM_CHANGE, sev, text, x.train, key_facts, stated)
 
 
@@ -1658,14 +1736,20 @@ def _crowd(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg) -> AlertEvent | None:
     if level is None or cl.leg.alternative_transport or _departs(x, cl) <= to_utc(ctx.now):
         return None
     slot = "crowd#" + _event_key(ctx, EventKind.CROWD_CHANGE, x.train, "forecast")
+    language = ctx.profile.alerts.language
     return make_event(
         ctx,
         EventKind.CROWD_CHANGE,
         Severity.SILENT,
-        f"your {_name(x)} train has a {level} crowd forecast per NS.",
+        message(
+            "train.crowd_alert",
+            language,
+            subject=message("train.subject", language, train=_name(x, language)),
+            level=message(f"crowd.{level}", language),
+        ),
         x.train,
         level,
-        AlertFacts(crowd_slot=slot, crowd_forecast=level),
+        AlertFacts(crowd_slot=slot, crowd_forecast=level, language=language),
     )
 
 
@@ -1713,7 +1797,7 @@ def _check_cancelled(
     x = legs[i]
     if cl.kind is not LegKind.CANCELLED or x.state is LegState.DONE:
         return None
-    text = f"your {_name(x)} train is cancelled"
+    text = phrase("train.cancelled", subject=_train_subject(x))
     t = _relock(
         w.s,
         w.ctx,
@@ -1777,10 +1861,10 @@ def _check_cut_short(
     end = x.served_endpoint
     dest = w.ctx.profile.destination(w.ctx.direction)
     if cl.kind is LegKind.CUT_SHORT:
-        text = f"your {_name(x)} train runs only to {end}, change there"
+        text = phrase("train.short_turn", subject=_train_subject(x), end=end)
         cause = Cause(EventKind.CUT_SHORT, Severity.LOUD, text, x.train)
     else:
-        text = f"back to normal: your {_name(x)} train reaches {end} again"
+        text = phrase("train.end_restored", subject=_train_subject(x), end=end)
         cause = Cause(EventKind.RESTORED, Severity.SILENT, text, x.train)
     if nxt is not None and end == dest:  # extended to the destination again
         arrival = _arrival_choice(w.ctx, legs[:i])
@@ -1793,7 +1877,9 @@ def _check_cut_short(
             legs[i] = replace(kept, onward_from=onward or kept.onward_from)
             return None
         new = _journey(w.lock, legs[: i + 1], (), LockSource.RESTORE)
-        note = make_event(w.ctx, cause.kind, cause.severity, f"{cause.text}.", cause.train)
+        note = make_event(
+            w.ctx, cause.kind, cause.severity, phrase("alert.end", cause=cause.text), cause.train
+        )
         return _Proposal(Transition(_write(w.s, new), (note,)))
     if end == dest or (nxt is not None and nxt.board_station == end):
         return None
@@ -1835,7 +1921,11 @@ def _check_transfer(
         return ([delayed_event(ctx, x, cl, last=nxt is None)] if late and ncl is None else []), None
     tc = check_transfer(cl, ncl, x.alight_stop, ctx.profile.transfer_min)
     if tc.state is TransferState.BROKEN:
-        text = f"your change at {x.alight_stop} is broken: {tc.reason}"
+        text = phrase(
+            "transfer.warning",
+            station=x.alight_stop,
+            reason=phrase(f"transfer.reason.{tc.reason}"),
+        )
         t = _relock(
             w.s,
             ctx,
@@ -1864,8 +1954,8 @@ def _check_route_change(
     w: _Watch, legs: Sequence[LegProgress], k: int, rc: Connection, *, boarded: bool
 ) -> _Proposal:
     x, ctx = legs[k], w.ctx
-    via = ", ".join(rc.transfer_stations) or "a direct train"
-    text = f"NS now routes your {_name(x)} train via {via}"
+    via = ", ".join(rc.transfer_stations) or phrase("train.direct")
+    text = phrase("train.route_changed", subject=_train_subject(x), via=via)
     cause = Cause(EventKind.ROUTE_CHANGED, Severity.LOUD, text, x.train)
     if boarded:  # `_follow` moved its stop to where NS changes: relock what follows from there
         cut = Relock(
@@ -1886,14 +1976,16 @@ def _check_route_change(
         and check_good(rc, w.pool, **_good_kw(w.s, ctx, x.board_station, kept, k)).ok
     ):
         new = _journey(w.lock, legs[:k], rc.legs, LockSource.RELOCK)
-        note = make_event(ctx, cause.kind, cause.severity, f"{text}, following it.", x.train)
+        note = make_event(
+            ctx, cause.kind, cause.severity, phrase("train.following", cause=text), x.train
+        )
         if ctx.profile.alerts.checked_alternatives:
-            clause = f" via {via}, following it."
+            language = ctx.profile.alerts.language
+            clause = phrase("train.follow_via", via=via).render(language)
+            facts = option_facts(rc, clause, style="onward" if k else "connection", prior=legs[:k])
             note = replace(
                 note,
-                facts=option_facts(
-                    rc, clause, style="onward" if k else "connection", prior=legs[:k]
-                ),
+                facts=replace(facts, language=language),
             )
         return _Proposal(Transition(_write(w.s, new), (note,)))
     cut = Relock(legs=legs, first_replaced=k, station=x.board_station, kept=kept, cause=cause)
@@ -1941,10 +2033,9 @@ def _arrival_failure(w: _Watch, legs: Sequence[LegProgress]) -> Transition | Non
     if status == "on_target":
         return None
     train = legs[0].train
-    text = (
-        f"your train no longer meets your {hhmm(target)} arrival target"
-        if status == "late"
-        else f"NS has no confirmed arrival time for your {hhmm(target)} target"
+    text = phrase(
+        "arrival.no_longer_meets" if status == "late" else "arrival.not_confirmed",
+        time=hhmm(target),
     )
     i = _arrival_resume_index(legs, ctx.now)
     if i is None:
@@ -1952,7 +2043,7 @@ def _arrival_failure(w: _Watch, legs: Sequence[LegProgress]) -> Transition | Non
             ctx,
             EventKind.ARRIVAL_TARGET,
             Severity.LOUD,
-            f"{text}.",
+            phrase("alert.end", cause=text),
             train,
             stated=AlertFacts(arrival_deadline=deadline),
         )
@@ -2094,22 +2185,27 @@ def left_note(s: OccurrenceState, ctx: Ctx, pool: Pool, j: Journey, i: int) -> A
     good connection in case the user is not on it (7.7, rule 7)."""
     x = j.legs[i]
     judged, c = next_good_instead_of(s, ctx, pool, j, i)
-    text = f"your {_name(x)} train has left. If you are not on it,"
+    text = phrase("connection.train_left", train=_train_route(x))
     if not judged:
-        clause = " check the NS app: the change from your current train is not in NS data."
+        clause = phrase("connection.unknown_change")
     else:
         clause = (
-            f" next good connection: {hhmm(_departure(c))}."
+            phrase("checked.conditional", time=hhmm(_departure(c)))
             if c is not None
-            else " no good connection found, check the NS app."
+            else phrase("connection.no_option")
         )
     return make_event(
         ctx,
         EventKind.NEXT_CONNECTION,
         Severity.SILENT,
-        text + clause,
+        phrase("alert.join", cause=text, clause=clause),
         x.train,
-        stated=option_facts(c, clause, style="conditional", prior=j.legs[:i]),
+        stated=option_facts(
+            c,
+            " " + clause.render(ctx.profile.alerts.language),
+            style="conditional",
+            prior=j.legs[:i],
+        ),
     )
 
 
@@ -2152,14 +2248,28 @@ def _missing_events(
     the prefix of its messages."""
     events: list[AlertEvent] = []
     seen: dict[str, tuple[LegProgress, set[str], str]] = {}
+    language = ctx.profile.alerts.language
     for j in ((s.lock,) if live and s.lock else ()) + s.retained:
-        on = "" if j is s.lock else on_prefix(j)
+        on = "" if j is s.lock else on_prefix(j, language)
         for x in j.legs:
             if not _observed(x, ctx.now):
                 continue
             if observe(pool, x)[1] is Observation.MISSING:
-                text = f"{on}your {_name(x)} train is not in NS data."
-                events.append(make_event(ctx, EventKind.MISSING, Severity.LOUD, text, x.train))
+                text = on + message("train.missing", language, train=_name(x))
+                canonical = ("" if j is s.lock else on_prefix(j)) + message(
+                    "train.missing", "en", train=_name(x)
+                )
+                events.append(
+                    make_event(
+                        ctx,
+                        EventKind.MISSING,
+                        Severity.LOUD,
+                        text,
+                        x.train,
+                        canonical,
+                        AlertFacts(language=language),
+                    )
+                )
             seen.setdefault(train_key(x.train), (x, set(), on))[1].add(x.alight_stop)
     return events, seen
 
@@ -2179,8 +2289,9 @@ def _unclear_events(
         if u is None or s.alert_keys.get(slot) == u.fingerprint:
             continue
         s = replace(s, alert_keys={**s.alert_keys, slot: u.fingerprint})
-        text = on + data_unclear_text(u.label, u.station, u.copies)
-        stated = AlertFacts(unclear=u.fingerprint)
+        language = ctx.profile.alerts.language
+        text = on + data_unclear_text(u.label, u.station, u.copies, language)
+        stated = AlertFacts(unclear=u.fingerprint, language=language)
         event = make_event(ctx, EventKind.DATA_UNCLEAR, Severity.LOUD, text, x.train, None, stated)
         date_ = ctx.schedule.key.service_date.isoformat()
         key = f"{EventKind.DATA_UNCLEAR.value}:{date_}:{tk}:{u.fingerprint}"
@@ -2197,17 +2308,17 @@ def _follow_retained(
     retained = []
     for r in s.retained:
         first = r.legs[0].train
-        on = on_prefix(r)
         alone = replace(s, lock=r, retained=(), cancellation_history=())
         t = _follow(alone, ctx, pool, asked, relock=False)
         retained.append(present(t.state.lock))
         for e in t.events:
             if guess(r):
                 e = held(e)
+            f = alert_facts(e)
+            on = on_prefix(r, f.language)
             text = f"{display_name(e.profile_name)}: {on}{e.body}"
             tail = f":retained:{train_ident(first)}"
             key = e.key + tail
-            f = alert_facts(e)
             facts = replace(f, on=on, moved_slot=f.moved_slot and f.moved_slot + tail)
             events.append(replace(e, text=text, key=key, facts=facts))
     return replace(s, retained=tuple(retained)), events
@@ -2275,7 +2386,9 @@ LAST_WATCH = timedelta(minutes=30)
 _MISSABLE = (LegState.PENDING, LegState.BOARDING, LegState.RIDING)
 
 
-def _accept(ctx: Ctx, x: LegProgress, pool: Pool, on: str) -> tuple[LegProgress, AlertEvent | None]:
+def _accept(
+    ctx: Ctx, x: LegProgress, pool: Pool, on: str | Phrase
+) -> tuple[LegProgress, AlertEvent | None]:
     """Rule 6: accepted after two healthy answers at least 4 min apart, both at least 5 min after
     the reported arrival, show the same arrival; an accepted leg reopens when the arrival moves
     later or the train no longer reaches its alighting stop."""
@@ -2295,16 +2408,16 @@ def _accept(ctx: Ctx, x: LegProgress, pool: Pool, on: str) -> tuple[LegProgress,
             return x, None
         reopened = replace(reset, state=LegState.RIDING, accepted_at=None, watch_until=None)
         if bad:
-            what = (
-                "is cancelled"
+            text = (
+                phrase("arrival.reopened_cancelled", on=on, train=_train_route(x))
                 if cl.kind is LegKind.CANCELLED
-                else f"no longer reaches {x.alight_stop}"
+                else phrase(
+                    "arrival.reopened_short", on=on, train=_train_route(x), stop=x.alight_stop
+                )
             )
             kind = EventKind.CANCELLED if cl.kind is LegKind.CANCELLED else EventKind.CUT_SHORT
-            text = f"{on}your {_name(x)} train {what}; following it again."
             return reopened, make_event(ctx, kind, Severity.LOUD, text, x.train)
-        arrives = hhmm(present(v))
-        text = f"{on}NS now shows your {_name(x)} train arriving at {arrives}; following it again."
+        text = phrase("arrival.reopened_later", on=on, train=_train_route(x), time=hhmm(present(v)))
         return reopened, make_event(ctx, EventKind.DELAYED, Severity.SILENT, text, x.train)
     if bad or v is None:
         return reset, None
@@ -2321,7 +2434,9 @@ def _accept(ctx: Ctx, x: LegProgress, pool: Pool, on: str) -> tuple[LegProgress,
     return x, None
 
 
-def _accept_journey(ctx: Ctx, j: Journey, pool: Pool, on: str) -> tuple[Journey, list[AlertEvent]]:
+def _accept_journey(
+    ctx: Ctx, j: Journey, pool: Pool, on: str | Phrase
+) -> tuple[Journey, list[AlertEvent]]:
     pairs = [_accept(ctx, x, pool, on) for x in j.legs]
     legs = [x for x, _ in pairs]
     last = legs[-1]
@@ -2343,7 +2458,7 @@ def _accept_all(
         events += es
     retained = []
     for r in s.retained:
-        on = on_prefix(r)
+        on = phrase("journey.retained_prefix", time=hhmm(r.legs[0].train.planned_departure))
         r, es = _accept_journey(ctx, r, pool, on)
         retained.append(r)
         events += es
@@ -2579,10 +2694,6 @@ def prompt_id(key: OccurrenceKey, station: str, stage: str, at: datetime) -> str
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
 
 
-ASK_CHOICES = (("yes", "Yes"), ("other", "Other train"), ("no", "No"))
-
-
-REMEMBER_CHOICES = (("remember", "Yes"), ("forget", "No"))
 PICK_MAX = 3
 RIDE_GAP = timedelta(minutes=30)  # at another station this recently: a stop of a train ridden
 
@@ -2592,7 +2703,7 @@ def _prompt(
     ctx: Ctx,
     kind: EventKind,
     stage: PromptStage,
-    text: str,
+    text: Phrase,
     choices: tuple[tuple[str, str], ...],
     name: str,
     station: str | None = None,
@@ -2610,8 +2721,15 @@ def _prompt(
 
 def remember_prompt(s: OccurrenceState, ctx: Ctx, name: str) -> Transition:
     """After Yes at a new station: offer to remember it. No answer remembers nothing."""
-    text = f"remember {name} as a boarding station for your {ctx.direction.value} trips?"
-    return _prompt(s, ctx, EventKind.STATION_REMEMBER, "remember", text, REMEMBER_CHOICES, name)
+    language = ctx.profile.alerts.language
+    text = phrase(
+        "station.remember", station=name, direction=phrase(f"direction.{ctx.direction.value}")
+    )
+    choices = (
+        ("remember", message("arrival.yes", language)),
+        ("forget", message("station.no", language)),
+    )
+    return _prompt(s, ctx, EventKind.STATION_REMEMBER, "remember", text, choices, name)
 
 
 def _station_train_label(train: TrainId) -> str:
@@ -2637,7 +2755,7 @@ def pick_prompt(
         found.append(c)
         floor = _departure(c) + timedelta(minutes=1)
     if not found:
-        text = "no connection found, check the NS app."
+        text = phrase("relock.no_connection")
         e = make_event(ctx, EventKind.NO_CONNECTION, Severity.SILENT, text)
         return Transition(replace(s, prompt=None), (e,))
     trains = {}
@@ -2646,7 +2764,7 @@ def pick_prompt(
         t = train.planned_departure.astimezone(TZ)
         trains[f"t{t:%H%M}" + ("b" if t.fold else "")] = train
     choices = tuple((answer, _station_train_label(train)) for answer, train in trains.items())
-    text = f"which train from {name}?"
+    text = phrase("station.pick", station=name)
     return _prompt(
         s, ctx, EventKind.STATION_ASK, "pick", text, choices, name, station, trains=trains
     )
@@ -2710,7 +2828,7 @@ def _at_other_station(
         )
         new = journey_of(c, LockSource.STATION, Commitment.COMMITTED, answer.fetched_at)
         written = present(write_lock(here, new, expect=None, now=ctx.now))
-        return _with_status(written, ctx, merged_pool((answer,)), f"at {name}: following your ")
+        return _with_status(written, ctx, merged_pool((answer,)), name)
     if known:
         # not at_station: the wide circle is no proof of boarding (`_never_boarded`)
         deadline = (at + ERRAND_TIMEOUT).astimezone(TZ)
@@ -2718,12 +2836,18 @@ def _at_other_station(
         new = journey_of(c, LockSource.LOCATION, Commitment.PROVISIONAL, answer.fetched_at)
         written = present(write_lock(here, replace(new, unproven=True), expect=None, now=ctx.now))
         pool = merged_pool((answer,))
-        return _with_status(written, ctx, pool, f"at {name}: following your ")
+        return _with_status(written, ctx, pool, name)
     pid = prompt_id(s.key, zone, "ask", ctx.now)
-    prompt = StationPrompt(pid, zone, "ask", first_leg.train, ASK_CHOICES, ctx.now, name)
+    language = ctx.profile.alerts.language
+    choices = (
+        ("yes", message("arrival.yes", language)),
+        ("other", message("station.other_train", language)),
+        ("no", message("station.no", language)),
+    )
+    prompt = StationPrompt(pid, zone, "ask", first_leg.train, choices, ctx.now, name)
     asked = replace(s, prompt=prompt, asked_stations=s.asked_stations | {zone})
-    text = f"are you taking the {when} from {name} to {dest}?"
-    facts = AlertFacts(prompt_id=pid, choices=ASK_CHOICES)
+    text = phrase("station.ask", time=when, origin=name, destination=dest)
+    facts = AlertFacts(prompt_id=pid, choices=choices)
     e = make_event(ctx, EventKind.STATION_ASK, Severity.SILENT, text, first_leg.train, pid, facts)
     return Transition(asked, (e,))
 
@@ -2805,7 +2929,7 @@ def _at_first_station(s: OccurrenceState, ctx: Ctx, pool: Pool | None) -> Transi
 
 
 def _with_status(
-    s: OccurrenceState, ctx: Ctx, pool: Pool | None, prefix: str = "at the station: your "
+    s: OccurrenceState, ctx: Ctx, pool: Pool | None, station: str | None = None
 ) -> Transition:
     """Q1 (2026-11-17): the first time the user is at the origin station, one silent status of
     the train followed now. None without a fresh answer (the next report tells it), without a
@@ -2824,8 +2948,22 @@ def _with_status(
     if cl.kind is LegKind.CANCELLED:
         return Transition(s, ())
     c = current_connection(evidence(pool), c)
-    text = f"{prefix}{status_text(c.legs, cl.dep_delay_min)}."
-    e = make_event(ctx, EventKind.AT_STATION, Severity.SILENT, text, x.train, "")
+    language = ctx.profile.alerts.language
+    text = message(
+        "train.at_named_station" if station is not None else "train.at_station",
+        language,
+        station=station or "",
+        train=status_text(c.legs, cl.dep_delay_min, language),
+    )
+    e = make_event(
+        ctx,
+        EventKind.AT_STATION,
+        Severity.SILENT,
+        text,
+        x.train,
+        "",
+        AlertFacts(language=language),
+    )
     told = replace(s, alert_keys={**s.alert_keys, slot: "1"}, all_good_evaluated=True)
     return Transition(told, (e,))
 
@@ -2862,14 +3000,14 @@ def _missed(s: OccurrenceState, ctx: Ctx, event: LocationEvent, pool: Pool) -> T
     legs[i] = replace(x, state=LegState.MISSED)
     s = replace(s, lock=replace(lock, legs=tuple(legs), commitment=Commitment.COMMITTED))
     if first:
-        text = f"you missed the {hhmm(x.train.planned_departure)}"
+        text = phrase("train.missed", time=hhmm(x.train.planned_departure))
         loud = Severity.SILENT if ctx.schedule.pick == "earliest_silent" else Severity.LOUD
         cause = Cause(EventKind.MISSED_FIRST_TRAIN, loud, text, x.train)
         kept = None
         # Q1: the miss is the station message, also when no connection follows
         s = replace(s, alert_keys={**s.alert_keys, _STATUS_SLOT: "1"}, all_good_evaluated=True)
     else:
-        text = f"you missed your change at {x.board_station} to the {_name(x)} train"
+        text = phrase("train.missed_change", station=x.board_station, train=_train_route(x))
         cause = Cause(EventKind.MISSED_TRANSFER, Severity.LOUD, text, x.train)
         kept = observe(pool, legs[i - 1])[0]
     asked = tuple(a.query for a in pool.answers)
@@ -2931,7 +3069,7 @@ def _missed_from_home(
     )
     # a missed leg is never retained (Q2)
     s = replace(s, lock=replace(lock, legs=legs), missed_from_origin=True)
-    text = f"you missed the {hhmm(x.train.planned_departure)}"
+    text = phrase("train.missed", time=hhmm(x.train.planned_departure))
     severity = Severity.SILENT if quiet else Severity.LOUD
     cut = Relock(
         legs=legs,

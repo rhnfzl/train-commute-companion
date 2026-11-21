@@ -16,6 +16,7 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from train_commute_companion.calendar import hhmm
+from train_commute_companion.catalogue import MessageLanguage, message
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 WARNINGS_URL = (
@@ -43,19 +44,22 @@ class WeatherHour:
 
     @property
     def tips(self) -> tuple[str, ...]:
+        return self.tips_in("en")
+
+    def tips_in(self, language: MessageLanguage) -> tuple[str, ...]:
         tips = []
         if self.precipitation_mm >= 0.2:
-            tips.append("Bring a raincoat.")
+            tips.append(message("weather.tip_rain", language))
         if self.snowfall_cm > 0 or self.weather_code in (71, 73, 75, 77, 85, 86):
-            tips.append("Snow expected; wear shoes with grip.")
+            tips.append(message("weather.tip_snow", language))
         if self.temperature_c >= 28:
-            tips.append("Heat expected; carry water and seek shade.")
+            tips.append(message("weather.tip_heat", language))
         if self.temperature_c <= 0:
-            tips.append("Frost possible; watch your footing.")
+            tips.append(message("weather.tip_frost", language))
         if self.weather_code in (56, 57, 66, 67) or (
             self.temperature_c <= 1 and self.precipitation_mm >= 0.2
         ):
-            tips.append("Ice possible; paths and platforms may be slippery.")
+            tips.append(message("weather.tip_ice", language))
         return tuple(tips)
 
 
@@ -489,29 +493,45 @@ class WeatherProvider:
         )
 
 
-def weather_text(view: WeatherView) -> str:
-    text = f"Weather at {view.station} around {hhmm(view.when)}: "
+def weather_text(view: WeatherView, language: MessageLanguage = "en") -> str:
+    text = message("weather.station", language, station=view.station, time=hhmm(view.when))
+    unknown = message("shared.unknown", language)
     if view.forecast is None:
-        text += "forecast unavailable."
+        text += message("weather.missing", language)
     else:
         hour = view.forecast
         text += (
-            f"{hour.temperature_c:g}°C, {hour.precipitation_mm:g} mm precipitation, "
-            f"{hour.snowfall_cm:g} cm snow (forecast hour {hhmm(hour.at)}). "
-            + " ".join(hour.tips)
-            + f" Retrieved {view.fetched_at.isoformat() if view.fetched_at else 'unknown'}. "
-            "Forecast: Open-Meteo https://open-meteo.com/ (KNMI model); tips adapted by TCC. "
-            "CC BY 4.0 https://creativecommons.org/licenses/by/4.0/."
+            message(
+                "weather.forecast",
+                language,
+                temp=f"{hour.temperature_c:g}",
+                rain=f"{hour.precipitation_mm:g}",
+                snow=f"{hour.snowfall_cm:g}",
+                time=hhmm(hour.at),
+            )
+            + " ".join(hour.tips_in(language))
+            + message(
+                "weather.retrieved",
+                language,
+                stamp=view.fetched_at.isoformat() if view.fetched_at else unknown,
+            )
+            + message("weather.credit", language)
+            + "CC BY 4.0 https://creativecommons.org/licenses/by/4.0/."
         )
+    url = "https://www.knmi.nl/nederland-nu/weer/waarschuwingen/"
     if view.warnings_checked_at is None:
-        return (
-            text
-            + " KNMI warnings unavailable; check https://www.knmi.nl/nederland-nu/weer/waarschuwingen/."
-        )
+        return text + message("weather.warning_missing", language, url=url)
     warnings = "; ".join(f"code {w.color}: {w.headline}" for w in view.warnings)
+    status = warnings or message("weather.warning_clear", language)
     return text + (
-        f" KNMI: {warnings or 'no published warning for this station and time'}. "
-        f"Checked {view.warnings_checked_at.isoformat()}; published {view.warnings_generated_at.isoformat() if view.warnings_generated_at else 'unknown'}. "
-        "https://www.knmi.nl/nederland-nu/weer/waarschuwingen/ "
-        "CC BY 4.0 https://creativecommons.org/licenses/by/4.0/."
+        f" KNMI: {status}. "
+        + message(
+            "weather.warning_times",
+            language,
+            checked=view.warnings_checked_at.isoformat(),
+            issued=view.warnings_generated_at.isoformat()
+            if view.warnings_generated_at
+            else unknown,
+        )
+        + f"{url} CC BY 4.0 https://creativecommons.org/licenses/by/4.0/."
     )

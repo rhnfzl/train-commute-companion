@@ -213,7 +213,12 @@ def edit_profile(
         alerts = profile.get("alerts", {})
         if phone is not None or "partner_phone" in alerts:
             profile["alerts"] = {**alerts, "partner_phone": phone}
-    for key in ("custom_timetable_horizon", "timetable_horizon_unit", "timetable_horizon_count"):
+    for key in (
+        "custom_timetable_horizon",
+        "timetable_horizon_unit",
+        "timetable_horizon_count",
+        "language",
+    ):
         if key in values:
             value = values[key]
             if key == "timetable_horizon_count" and isinstance(value, float) and value.is_integer():

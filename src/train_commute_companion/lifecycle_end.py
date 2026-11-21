@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from train_commute_companion.calendar import hhmm, to_utc
+from train_commute_companion.catalogue import MessageLanguage, message
 from train_commute_companion.lifecycle import (
     Transition,
     auto_lock,
@@ -94,8 +95,7 @@ def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transi
             and ctx.schedule.pick != "on_leave"
             and not (ctx.schedule.arrive_by is not None and s.missing_sent)
         ):
-            text = "I stopped following your journey, check the NS app."
-            events.append(make_event(ctx, EventKind.STOPPED_FOLLOWING, Severity.LOUD, text))
+            events.append(_stop_notice(ctx, None))
         s = replace(s, direction_state=DirectionState.DONE)
     if s.lock is not None and s.direction_state is not DirectionState.DONE:
         end = _journey_end(s, ctx, s.lock, retained=False)
@@ -210,9 +210,7 @@ def _journey_end(
     else one loud `stopped_following` naming it."""
     now = to_utc(ctx.now)
     last = j.legs[-1]
-    first = j.legs[0].train
-    on = on_prefix(j) if retained else ""
-    train = first if retained else None
+    retained_journey = j if retained else None
     limit = to_utc(j.planned_final_arrival) + FOLLOW_LIMIT
     if last.state is LegState.DONE:
         # the earlier of the last watch and the journey's 150-min limit (rules 6, 7)
@@ -222,17 +220,30 @@ def _journey_end(
         if _arrived(s, ctx, last):
             return ()
         arrival = hhmm(last.accept_value or last.accepted_at or w or limit)
-        text = (
-            f"{on}NS showed it arriving at {arrival}; I stopped following it, check the NS app."
-            if retained
-            else f"NS showed your train arriving at {arrival}; I stopped following, check the NS "
-            "app if you are not there."
-        )
-        return (make_event(ctx, EventKind.STOPPED_FOLLOWING, Severity.LOUD, text, train),)
+        return (_stop_notice(ctx, retained_journey, arrival),)
     if now < limit:
         return None
-    text = f"{on}I stopped following {'it' if retained else 'your journey'}, check the NS app."
-    return (make_event(ctx, EventKind.STOPPED_FOLLOWING, Severity.LOUD, text, train),)
+    return (_stop_notice(ctx, retained_journey),)
+
+
+def _stop_notice(ctx: Ctx, retained: Journey | None, arrival: str | None = None) -> AlertEvent:
+    if arrival is None:
+        key = "journey.retained_stopped" if retained else "journey.stopped"
+    else:
+        key = "journey.retained_arrived" if retained else "journey.arrived_unconfirmed"
+
+    def text(language: MessageLanguage) -> str:
+        prefix = on_prefix(retained, language) if retained is not None else ""
+        return prefix + message(key, language, time=arrival or "")
+
+    return make_event(
+        ctx,
+        EventKind.STOPPED_FOLLOWING,
+        Severity.LOUD,
+        text(ctx.profile.alerts.language),
+        retained.legs[0].train if retained else None,
+        key_facts=text("en"),
+    )
 
 
 def may_archive(s: OccurrenceState, now: datetime, pending_journey_warnings: int) -> bool:

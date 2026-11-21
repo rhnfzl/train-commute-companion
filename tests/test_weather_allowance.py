@@ -122,6 +122,27 @@ def shown(rig):
     return next(o for o in rig.rt.view().occurrences if o.key == rig.occ().key)
 
 
+async def test_dutch_checkin_and_status_use_the_same_weather_adjusted_time(tmp_path):
+    from tcc_app.commands import render_status
+
+    text = PROFILE.replace("    name:", "    alerts: {language: nl}\n    name:", 1)
+    transport = httpx.MockTransport(lambda _: httpx.Response(200, json=forecast_for(at("07:20"))))
+    async with httpx.AsyncClient(transport=transport) as client:
+        rig = await ready(tmp_path, client, text=text)
+        try:
+            advice = "Vertrek uiterlijk om 08:00 (advies: 2 min extra bij verwachte regen)"
+            assert advice in render_status(rig.rt.view(), True)
+            rig.clock.set("07:50")
+            await rig.rt.poll_once()
+            checkin = next(e for e in rig.notifier.attempts if e.kind is EventKind.ALL_GOOD)
+            assert "je trein van 08:12" in checkin.text
+            assert "op tijd volgens NS" in checkin.text
+            assert checkin.text.count(advice) == 1
+            assert "Neem een regenjas mee." in checkin.text
+        finally:
+            await rig.rt.stop_weather()
+
+
 @pytest.mark.parametrize("off", [None, "weather", "leave_by", "weather_allowance"])
 async def test_shared_advice_and_off_switches_do_not_change_journey_or_fetch_on_render(
     tmp_path, off
