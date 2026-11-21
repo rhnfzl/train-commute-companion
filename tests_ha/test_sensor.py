@@ -370,6 +370,24 @@ def test_lock_usual_departure_comes_from_the_effective_occurrence():
     assert _lock_attrs(rv(occ), "p1", Direction.OUTBOUND)["usual_departure"] == "08:14"
 
 
+def test_lock_sensor_shows_only_an_active_arrival_target():
+    from custom_components.train_commute_companion.sensor import _lock_attrs
+
+    occ = replace(
+        ov(27),
+        arrive_by=at("09:00"),
+        station_arrival_deadline=at("08:50"),
+        arrival_target_status="on_target",
+    )
+    attrs = _lock_attrs(rv(occ), "p1", Direction.OUTBOUND)
+    assert attrs["arrive_by"] == at("09:00").isoformat()
+    assert attrs["station_arrival_deadline"] == at("08:50").isoformat()
+    assert attrs["arrival_target_status"] == "on_target"
+    attrs = _lock_attrs(rv(ov(27)), "p1", Direction.OUTBOUND)
+    assert "arrive_by" not in attrs
+    assert "arrival_target_status" not in attrs
+
+
 async def test_health_sensor_shows_lookahead_last_ok(hass):
     h = await setup_tcc(hass, PROFILE, world=[*every_day(), *returns_every_day("17:52")])
     eid = "sensor.office_a_health"

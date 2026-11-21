@@ -13,7 +13,7 @@ from train_commute_companion.lifecycle import (
     target_occurrence,
 )
 from train_commute_companion.messages import Refused
-from train_commute_companion.model import Connection, Ctx, Leaving, LegState
+from train_commute_companion.model import Connection, Ctx, Leaving, LegState, TrainId
 from train_commute_companion.providers.base import ProviderAnswer
 from train_commute_companion.revisions import occurrence_ctx
 from train_commute_companion.state import LegProgress, OccurrenceState
@@ -52,10 +52,14 @@ def choice_target(
     now: datetime,
     st: PersistedState,
     gone: Refused,
+    *,
+    train: TrainId | None = None,
 ) -> ChoiceTarget | Refused:
     """Where and when the named train leaves; else why it cannot, `gone` with no occurrence."""
 
     def named_leg(x: LegProgress) -> bool:
+        if train is not None:
+            return x.state is not LegState.DONE and x.train == train
         t = x.train.planned_departure.astimezone(TZ)
         return (
             x.state is not LegState.DONE
@@ -89,21 +93,30 @@ def choice_target(
     if found is None or ctx is None:
         return gone
     station, lo, hi = _where_and_when(found, ctx)
-    first = lo.astimezone(TZ).date()
-    inside = sorted(
-        (
-            t for d in (first, first + timedelta(days=1)) for edge in ("start", "end")
-            if lo <= to_utc(t := resolve_local(d, departure, edge=edge)) < hi
-        ),
-        key=to_utc,
-    )  # fmt: skip
+    if train is not None:
+        at = train.planned_departure
+        inside = [at] if lo <= to_utc(at) < hi else []
+    else:
+        first = lo.astimezone(TZ).date()
+        inside = sorted(
+            (
+                t for d in (first, first + timedelta(days=1)) for edge in ("start", "end")
+                if lo <= to_utc(t := resolve_local(d, departure, edge=edge)) < hi
+            ),
+            key=to_utc,
+        )  # fmt: skip
     if not inside:
         return Refused(f"{departure:%H:%M} is outside the {ctx.direction.value} window")
     return ChoiceTarget(found, ctx, station, inside[0])
 
 
 def named_connections(
-    got: ProviderAnswer, t: ChoiceTarget, departure: time, train_number: str | None
+    got: ProviderAnswer,
+    t: ChoiceTarget,
+    departure: time,
+    train_number: str | None,
+    *,
+    train: TrainId | None = None,
 ) -> list[Connection] | Refused:
     """The answer's connections on the named train, earliest arrival first; else why none."""
     minute = floor_to_minute(t.when)
@@ -118,7 +131,11 @@ def named_connections(
         return Refused(
             f"two trains leave {t.station} at {named_at}; NS data cannot tell them apart"
         )
-    found = [c for c in same if train_number in (None, c.legs[0].train.train_number)]
+    found = [
+        c for c in same
+        if train_number in (None, c.legs[0].train.train_number)
+        and train in (None, c.legs[0].train)
+    ]  # fmt: skip
     if not found:
         return Refused(f"no train at {named_at} from {t.station} in NS data")
     far = datetime.max.replace(tzinfo=UTC)

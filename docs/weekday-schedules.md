@@ -13,7 +13,7 @@ outbound:
 
 In window mode `window` holds the earliest and the latest departure. Both are included. The latest time is always required. `first_train` is optional.
 
-TCC starts watching `active_lead_min` before the earliest departure (default `buffer_min` + 15). It follows the earliest good train in the window, also when a later train takes your usual route. If a train is missed, it follows the next one, like fixed mode does. If no train leaves in the window, it says so once.
+TCC starts watching `active_lead_min` before the earliest departure (default `buffer_min` + 15). By default it follows the earliest good train, even when a later train takes your usual route. If you miss it, it follows the next one. If it finds no train in the window, it says so once.
 
 There is no usual train on a window day. So look-ahead does not probe that day, no timetable is learned or adopted, and the earlier train advice is off. The weekly works digest still runs. Compensation reminders use the train TCC followed.
 
@@ -24,8 +24,36 @@ There is no usual train on a window day. So look-ahead does not probe that day, 
 - `earliest` (default): the earliest good train. A missed train makes a sound.
 - `earliest_silent`: the earliest good train. A missed first train is silent. A missed change still makes a sound.
 - `on_leave`: no train until you leave. Only line problems are told before that. When you leave home (or work on the way back), tap I'm leaving, or reach a station, TCC follows the next train you can catch. If nothing happens, the window closes quietly. Without a location block this works like `earliest_silent`.
+- `arrive_by`: follow the latest train you can catch that meets your arrival target. A direct train can win if it leaves a little earlier.
 
 `alerts.quiet_repeat_misses` still applies in every mode.
+
+## Arrive by a set time
+
+Set when you need to reach your destination and how long you need to walk there from the station.
+
+```yaml
+outbound:
+  mode: window
+  window: ["07:00", "08:40"]
+  pick: arrive_by
+  arrive_by: "09:00"
+  walk_after_min: 10
+  prefer_direct_min: 15
+  buffer_min: 10
+```
+
+Here the train must reach the station by 08:50. Both the planned and reported arrival must meet that time. TCC uses the trains NS returns and checks which ones you can still reach. It says when it finds none.
+
+TCC prefers a direct train up to 15 minutes earlier than the latest eligible journey with a change. Set `prefer_direct_min: 0` to choose by latest departure. `walk_after_min` defaults to 0. Both minute fields accept whole numbers from 0 to 1440. The accessibility filter still applies. If you specify transfer stations, the journey must change at those stations in order.
+
+Before boarding, TCC looks for an earlier departure if the chosen train can no longer meet the target. Once you may be on board, TCC keeps monitoring your train. It can switch to a later onward train if you can make the change and still meet the target and required transfers. If a train that was due to end early resumes its route, TCC keeps the onward plan unless the resumed route meets those same requirements. If TCC finds no suitable change, it reports the problem. A train you pick by time or a replacement plan you accept is your separate choice.
+
+Arrival-target warnings use the Journey changes alert category. Ordinary delay alerts still use your delay thresholds.
+
+A target earlier on the clock than the departure window start means the next day. The repeated autumn clock hour uses its second occurrence for the target. A target in the spring clock gap uses the first valid time after the gap. TCC subtracts walking time in elapsed minutes.
+
+`alerts.arrive_by` defaults to `true`. Set it to `false` to use ordinary earliest-train behavior for this pick. The saved target stays in the profile. TCC stops checking it and removes the target from status. This switch applies on reload. TCC keeps monitoring an already followed train and applies the new setting to later decisions. Other pick modes keep their existing behavior.
 
 ## Minimum stay
 
@@ -45,11 +73,13 @@ If NS changes the arrival of the train you came on, the stay moves with it.
 
 Polling starts `active_lead_min` minutes before the effective earliest departure, the later of the window start and the end of the stay. In the example above with `buffer_min: 5` and the default lead of `buffer_min + 15`, polling starts at 16:45 and the earliest train TCC picks leaves at 17:05 or later. If you leave early, it still follows a train: a leave of work, a station or an I'm leaving tap starts it.
 
+`arrive_by` requires the minimum stay to end before any selected departure. If the stay ends after the window, it reports that it found no eligible train.
+
 `min_stay_min` works on window days only. A day can set `min_stay_min: 0` to turn off the stay it would get from the direction.
 
 ## Settings by day
 
-`by_weekday` changes `mode`, `window`, `pick` and `min_stay_min` for single days, weekends included. A day without an entry uses the direction's own settings.
+`by_weekday` can change `mode`, `window`, `pick`, `min_stay_min`, `arrive_by`, `walk_after_min` and `prefer_direct_min`. A day inherits any omitted setting from its direction.
 
 ```yaml
 return:

@@ -38,6 +38,9 @@ def with_settings(route: Profile, settings: Profile) -> Profile:
             active_lead_min=settings.journey(d).active_lead_min,
             pick=settings.journey(d).pick,
             min_stay_min=settings.journey(d).min_stay_min,
+            arrive_by=settings.journey(d).arrive_by,
+            walk_after_min=settings.journey(d).walk_after_min,
+            prefer_direct_min=settings.journey(d).prefer_direct_min,
             other_stations=settings.journey(d).other_stations,
         )
 

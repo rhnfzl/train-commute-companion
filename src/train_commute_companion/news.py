@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from enum import StrEnum
 
+from train_commute_companion.arrival import arrival_status
 from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.classify import classify_leg, current_run, find_leg
 from train_commute_companion.health import FRESH_FOR, board_health
@@ -86,8 +87,10 @@ def segment_key(leg: Leg) -> str:
 
 
 def next_stated_delays(
-    last: Mapping[str, Delays] | None, classified: Sequence[ClassifiedLeg],
-    delay_min: int = 3, delay_step_min: int = 3,
+    last: Mapping[str, Delays] | None,
+    classified: Sequence[ClassifiedLeg],
+    delay_min: int = 3,
+    delay_step_min: int = 3,
 ) -> dict[str, Delays]:
     """Per segment, the delays to state next, from what the last message stated about that
     same train over the same stops. A segment a relock brought in has no history and starts
@@ -337,6 +340,13 @@ def all_good(s: OccurrenceState, poll: PollAnswers, ctx: Ctx) -> AlertEvent | No
     if not _changes_proven(seen, s.lock.legs, poll.answers, ctx.profile.transfer_min):
         return None
     legs = [c.leg for c in seen]
+    deadline, stop = ctx.schedule.arrival_deadline, legs[-1].alight
+    if (
+        deadline is not None
+        and arrival_status(deadline, stop.planned_arrival, present(stop.arrival).value)
+        != "on_target"
+    ):
+        return None
     buffer = ctx.profile.journey(ctx.direction).buffer_min if ctx.profile.alerts.leave_by else None
     return make_event(
         ctx, EventKind.ALL_GOOD, Severity.SILENT, all_good_text(legs, buffer), legs[0].train

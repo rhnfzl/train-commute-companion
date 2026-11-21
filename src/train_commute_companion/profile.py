@@ -9,6 +9,7 @@ import yaml
 
 from train_commute_companion.calendar import MINUTES_PER_DAY, WEEKDAYS, minute_of_day
 from train_commute_companion.model import (
+    DEFAULT_PREFER_DIRECT_MIN,
     MAX_TIMETABLE_HORIZON,
     AccessibilitySettings,
     AlertSettings,
@@ -212,7 +213,8 @@ def _check_window(
 
 _MODES: tuple[Mode, ...] = get_args(Mode)
 _PICKS: tuple[Pick, ...] = get_args(Pick)
-_DAY_KEYS = ("mode", "window", "pick", "min_stay_min")
+_ARRIVAL_KEYS = ("arrive_by", "walk_after_min", "prefer_direct_min")
+_DAY_KEYS = ("mode", "window", "pick", "min_stay_min", *_ARRIVAL_KEYS)
 _NEEDS_WINDOW = "mode window needs a window: the earliest and latest departure"
 _WINDOW_EXAMPLE = 'for example ["07:00", "10:00"]'
 _EMPTY_WINDOW = "window is empty: the latest time must differ from the earliest"
@@ -228,7 +230,7 @@ def _mode(c: _ProfileErrors, v: object, path: str) -> Mode | None:
 def _pick(c: _ProfileErrors, v: object, path: str) -> Pick | None:
     found = next((m for m in _PICKS if m == v), None)
     if found is None:
-        c.err(path, f"must be earliest, earliest_silent or on_leave, got {v!r}")
+        c.err(path, f"must be earliest, earliest_silent, on_leave or arrive_by, got {v!r}")
     return found
 
 
@@ -251,7 +253,7 @@ def _range(c: _ProfileErrors, raw: object, name: str) -> tuple[time, time] | Non
 
 def _day_override(c: _ProfileErrors, raw: object, path: str) -> DayOverride | None:
     if not isinstance(raw, dict):
-        c.err(path, "must be a mapping of mode, window, pick or min_stay_min")
+        c.err(path, "must be a mapping of weekday schedule settings")
         return None
     if "first_train" in raw:  # a likely first try: point to where a day's first train lives
         day, name = path.rsplit(".", 1)[1], path.split(".by_weekday")[0]
@@ -266,6 +268,13 @@ def _day_override(c: _ProfileErrors, raw: object, path: str) -> DayOverride | No
         _range(c, raw["window"], path) if "window" in raw else None,
         _pick(c, raw["pick"], f"{path}.pick") if "pick" in raw else None,
         _stay(c, raw["min_stay_min"], f"{path}.min_stay_min", 0) if "min_stay_min" in raw else None,
+        c.time(raw["arrive_by"], f"{path}.arrive_by") if "arrive_by" in raw else None,
+        _stay(c, raw["walk_after_min"], f"{path}.walk_after_min", 0)
+        if "walk_after_min" in raw
+        else None,
+        _stay(c, raw["prefer_direct_min"], f"{path}.prefer_direct_min", 0)
+        if "prefer_direct_min" in raw
+        else None,
     )
 
 
@@ -285,10 +294,20 @@ def _by_weekday(c: _ProfileErrors, raw: object, name: str) -> dict[str, DayOverr
 def _check_days(c: _ProfileErrors, j: UsualJourney, name: str, raw: Mapping[str, Any]) -> None:
     """Every weekday as it resolves, judged by the same `resolve_day` the runtime uses."""
     any_window = False
+    any_arrive_by = False
+    missing_targets: set[str] = set()
     for day in WEEKDAYS:
         r = resolve_day(j, day, True)
         o = j.by_weekday.get(day)
         at = f"{name}.by_weekday.{day}"
+        if r.mode == "window" and r.pick == "arrive_by":
+            any_arrive_by = True
+            if r.arrive_by is None:
+                missing_targets.add(f"{at if o and o.pick == 'arrive_by' else name}.arrive_by")
+        elif o is not None:
+            for key in _ARRIVAL_KEYS:
+                if getattr(o, key) is not None:
+                    c.err(f"{at}.{key}", f"{key} needs mode window and pick arrive_by")
         if r.mode == "window":
             any_window = True
             if o is not None and o.window is None and j.mode == "fixed":
@@ -314,6 +333,13 @@ def _check_days(c: _ProfileErrors, j: UsualJourney, name: str, raw: Mapping[str,
                 f"{key} has no effect: no day uses mode window",
                 f"set mode: window, or remove {key}",
             )
+    if not any_arrive_by:
+        for key in _ARRIVAL_KEYS:
+            if key in raw:
+                c.err(f"{name}.{key}", f"{key} needs a window day with pick arrive_by")
+    for path in sorted(missing_targets):
+        if not any(e.path == f"{c.base}.{path}" for e in c.errors):
+            c.err(path, 'pick arrive_by needs an arrival time, for example "09:00"')
 
 
 def _journey(
@@ -333,6 +359,7 @@ def _journey(
             "window",
             "pick",
             "min_stay_min",
+            *_ARRIVAL_KEYS,
             "by_weekday",
             "buffer_min",
             "earlier_train_advice",
@@ -411,6 +438,17 @@ def _journey(
         days,
         has_first,
         tuple(others),
+        arrive_by=c.time(raw["arrive_by"], f"{name}.arrive_by") if "arrive_by" in raw else None,
+        walk_after_min=_stay(c, raw.get("walk_after_min", 0), f"{name}.walk_after_min", 0) or 0,
+        prefer_direct_min=(
+            _stay(
+                c,
+                raw.get("prefer_direct_min", DEFAULT_PREFER_DIRECT_MIN),
+                f"{name}.prefer_direct_min",
+                0,
+            )
+            or 0
+        ),
     )
     _check_days(c, j, name, raw)
     return None if len(c.errors) > n else j
@@ -445,6 +483,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "live_today",
             "telegram_status_pin",
             "ntfy_enabled",
+            "arrive_by",
         ),
         "alerts",
     )
@@ -481,6 +520,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         raw.get("telegram_status_pin", d.telegram_status_pin), "alerts.telegram_status_pin"
     )
     ntfy = c.boolean(raw.get("ntfy_enabled", d.ntfy_enabled), "alerts.ntfy_enabled")
+    arrive = c.boolean(raw.get("arrive_by", d.arrive_by), "alerts.arrive_by")
     compensation = raw.get("compensation_reminder", False)
     if not isinstance(compensation, bool):
         c.err("alerts.compensation_reminder", "must be true or false")
@@ -548,6 +588,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         or live_today is None
         or pin is None
         or ntfy is None
+        or arrive is None
     ):
         return None
     return AlertSettings(
@@ -570,6 +611,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         live_today=live_today,
         telegram_status_pin=pin,
         ntfy_enabled=ntfy,
+        arrive_by=arrive,
     )
 
 
@@ -1023,7 +1065,11 @@ def _times(p: Profile) -> list[tuple[str, time]]:
         j = p.journey(d)
         out.append((f"{d.value}.first_train", j.first_train))
         out += [(f"{d.value}.window[{i}]", t) for i, t in enumerate(j.window)]
+        if j.arrive_by is not None:
+            out.append((f"{d.value}.arrive_by", j.arrive_by))
         for weekday, o in j.by_weekday.items():
+            if o.arrive_by is not None:
+                out.append((f"{d.value}.by_weekday.{weekday}.arrive_by", o.arrive_by))
             out += [
                 (f"{d.value}.by_weekday.{weekday}.window[{i}]", t)
                 for i, t in enumerate(o.window or ())

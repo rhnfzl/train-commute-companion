@@ -89,7 +89,11 @@ def _tick(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer | None) -> Transi
         and now >= to_utc(ctx.schedule.window_end)
     ):
         # a train the user never boarded is no lost journey; on_leave with no leave is no trip
-        if not s.released and ctx.schedule.pick != "on_leave":
+        if (
+            not s.released
+            and ctx.schedule.pick != "on_leave"
+            and not (ctx.schedule.arrive_by is not None and s.missing_sent)
+        ):
             text = "I stopped following your journey, check the NS app."
             events.append(make_event(ctx, EventKind.STOPPED_FOLLOWING, Severity.LOUD, text))
         s = replace(s, direction_state=DirectionState.DONE)

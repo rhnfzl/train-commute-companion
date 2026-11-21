@@ -75,7 +75,12 @@ def _window_schedule(
     start = _local(datetime.combine(service_date, j.window[0]), "start")
     end_day = service_date + timedelta(days=1 if j.window[1] < j.window[0] else 0)
     end = _local(datetime.combine(end_day, j.window[1]), "end")
-    pick, capped = j.pick, False
+    pick = "earliest" if j.pick == "arrive_by" and not p.alerts.arrive_by else j.pick
+    target = None
+    if pick == "arrive_by" and j.arrive_by is not None:
+        target_day = service_date + timedelta(days=j.arrive_by < j.window[0])
+        target = resolve_local(target_day, j.arrive_by, edge="end")
+    capped = False
     if j.min_stay_min and stay_from is not None:
         stayed = stay_from.astimezone(UTC) + timedelta(minutes=j.min_stay_min)
         capped = stayed > end.astimezone(UTC)
@@ -91,6 +96,9 @@ def _window_schedule(
         pick,
         end,
         capped,
+        arrive_by=target,
+        walk_after_min=j.walk_after_min,
+        prefer_direct_min=j.prefer_direct_min,
     )
 
 

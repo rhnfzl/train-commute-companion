@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal, Protocol, Self
 
 from train_commute_companion.model import Connection, Profile, Stop
@@ -34,19 +34,50 @@ class MalformedAnswer(ProviderError):
     pass
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class Query:
     origin: str
     destination: str
     at: datetime
     via: str | None = None
     require_accessible: bool = False
+    search_for_arrival: bool = False  # at is the destination time when true
+
+    def _key(self) -> tuple[str, str, datetime, str | None, bool, bool]:
+        return (
+            self.origin,
+            self.destination,
+            self.at.astimezone(UTC),
+            self.via,
+            self.require_accessible,
+            self.search_for_arrival,
+        )
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Query) and self._key() == other._key()
+
+    def __hash__(self) -> int:
+        return hash(self._key())
 
     @classmethod
     def for_profile(
-        cls, profile: Profile, origin: str, destination: str, at: datetime, via: str | None = None
+        cls,
+        profile: Profile,
+        origin: str,
+        destination: str,
+        at: datetime,
+        via: str | None = None,
+        *,
+        search_for_arrival: bool = False,
     ) -> Self:
-        return cls(origin, destination, at, via, profile.accessibility.require_accessible)
+        return cls(
+            origin,
+            destination,
+            at,
+            via,
+            profile.accessibility.require_accessible,
+            search_for_arrival,
+        )
 
 
 @dataclass(frozen=True, slots=True)
