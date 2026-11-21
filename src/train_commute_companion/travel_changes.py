@@ -11,7 +11,19 @@ from typing import Any
 
 from train_commute_companion.calendar import TZ, has_room, to_utc
 from train_commute_companion.lifecycle import is_resolved
-from train_commute_companion.model import DatedSchedule, Direction, Profile, okey
+from train_commute_companion.model import DatedSchedule, Direction, Profile, direction_key, okey
+from train_commute_companion.overlap import (
+    possible_offsets,
+    profile_changes,
+    profile_dates,
+    profile_spacing,
+)
+from train_commute_companion.recurrence import (
+    MAX_RECURRENCE_DATE,
+    occurrence_spacing,
+    phase_copies,
+    recurrence_phases,
+)
 from train_commute_companion.revisions import occurrence_ctx, profile_for, signature_for
 from train_commute_companion.schedule import dated_schedule
 from train_commute_companion.serde import encode
@@ -68,6 +80,7 @@ def _pair_days(
 
     if last is not None and last < first:
         return
+    upper = date(9998, 12, 29)
     # The weekly phases repeat after their least common multiple. Include a year for DST,
     # and repeat the sample after exceptions that can mask the first matching weeks.
     period = 7 * lcm(plan.interval, other.interval if other else 1)
@@ -80,7 +93,6 @@ def _pair_days(
         span_starts.update(
             max(first, day + timedelta(days=1)) for _, day in profile.pauses if day >= first
         )
-    upper = date(9998, 12, 29)
     seen: set[date] = set()
     for start in sorted(span_starts):
         count = min(horizon, (min(last or upper, upper) - start).days + 1)
@@ -112,31 +124,178 @@ class Conflict:
     more_dates: bool
 
 
+def _plan_changes(plan: TravelPlan) -> Iterator[date]:
+    yield plan.start
+    if plan.end is not None:
+        yield plan.end + timedelta(days=1)
+    for day in plan.skip:
+        yield day
+        yield day + timedelta(days=1)
+
+
+def _plan_pattern(plan: TravelPlan) -> Profile:
+    days = (
+        frozenset({plan.monthly.weekday})
+        if plan.monthly
+        else plan.weekdays or frozenset({plan.start.isoweekday()})
+    )
+    return replace(plan.profile, days=days)
+
+
+def _dated_conflicts(
+    st: PersistedState, plan: TravelPlan, profile: Profile, other: TravelPlan | None, now: datetime
+) -> tuple[set[date], bool]:
+    delta = timedelta(days=2)
+    first = max(now.astimezone(TZ).date() - delta, plan.start)
+    last = plan.end or MAX_RECURRENCE_DATE
+    if other:
+        first = max(first, other.start - delta)
+        if other.end is not None:
+            last = min(last, other.end + delta)
+    elif profile.repeat:
+        first = max(first, min((profile.repeat.start, *profile.extra_dates)) - delta)
+        if profile.repeat.end is not None:
+            last = min(last, max((profile.repeat.end, *profile.extra_dates)) + delta)
+    if first > last or (other is None and profile.home_station == profile.work_station):
+        return set(), True
+
+    other_interval = other.interval if other else profile.repeat.interval if profile.repeat else 1
+    other_spacing = (
+        occurrence_spacing(other.weekdays, other.interval, other.monthly)
+        if other
+        else profile_spacing(profile)
+    )
+    from_plan = occurrence_spacing(plan.weekdays, plan.interval, plan.monthly) >= other_spacing
+    changes = [first, last + timedelta(days=1), *_plan_changes(plan)]
+    changes.extend(_plan_changes(other) if other else profile_changes(profile))
+    baselines = {
+        (profile.id, direction): history.versions
+        for direction in Direction
+        if other is None
+        and (history := st.baselines.get(direction_key(profile.id, direction))) is not None
+    }
+    changes.extend(
+        version.effective_from for versions in baselines.values() for version in versions
+    )
+    patterns = (_plan_pattern(plan), _plan_pattern(other) if other else profile)
+    left, right = patterns if from_plan else patterns[::-1]
+    offsets = possible_offsets(
+        left,
+        right,
+        False,
+        {
+            key: {
+                version.signature.legs[0].departure
+                for version in versions
+                if version.signature.legs
+            }
+            for key, versions in baselines.items()
+        },
+        radius=2,
+    )
+    if not any(offsets.values()):
+        return set(), True
+    lo = first if from_plan else first - delta
+    hi = last if from_plan else min(last + delta, MAX_RECURRENCE_DATE)
+    # A holiday or pause on the sample day need not apply on later copies of that phase.
+    sample_profile = replace(profile, skip_public_holidays=False, pauses=())
+    dates: set[date] = set()
+    keep = True
+    floor = to_utc(now)
+    for start, sample, end, step in recurrence_phases(
+        lo, hi, (plan.interval, other_interval), changes, margin=3
+    ):
+        if from_plan:
+            candidates = plan.dates(start, sample)
+        elif other:
+            candidates = other.dates(start, sample)
+        else:
+            candidates = profile_dates(profile, start, sample)
+        for day in candidates:
+            if not keep and len(dates) == 13 and day - delta > max(dates):
+                return dates, keep
+            for offset in offsets.get(day.isoweekday(), ()):
+                neighbor = day + timedelta(days=offset)
+                outbound, target = (day, neighbor) if from_plan else (neighbor, day)
+                if not first <= outbound <= last or not plan.runs(outbound):
+                    continue
+                if other:
+                    targets = other.schedules(target)
+                elif target in profile.extra_dates or profile.repeats_on(target):
+                    targets = _regular_schedules(st, sample_profile, target)
+                else:
+                    continue
+                legs = tuple(plan.schedules(outbound))
+                for following in targets:
+                    crossing = any(overlaps(s, following) for s in legs)
+                    if offset != 0 and not crossing:
+                        continue
+                    for actual in phase_copies(day, end, step):
+                        shift = actual - day
+                        actual_target = target + shift
+                        if (
+                            len(dates) == 13
+                            and (not keep or not crossing)
+                            and actual_target > max(dates)
+                        ):
+                            break
+                        if actual == day:
+                            if to_utc(following.window_end) <= floor:
+                                continue
+                            live = tuple(s for s in legs if to_utc(s.window_end) > floor)
+                            if not live:
+                                continue
+                            crosses_now = any(overlaps(s, following) for s in live)
+                            if offset != 0 and not crosses_now:
+                                continue
+                        else:
+                            crosses_now = crossing
+                        if other is None and (
+                            not regular_date(profile, actual_target)
+                            or profile.paused_on(following.key.service_date + shift)
+                        ):
+                            continue
+                        dates.add(actual_target)
+                        if len(dates) > 13:
+                            dates.remove(max(dates))
+                        keep = keep and not crosses_now
+    return dates, keep
+
+
+def _weekly_conflicts(
+    st: PersistedState, plan: TravelPlan, profile: Profile, other: TravelPlan | None, now: datetime
+) -> tuple[set[date], bool]:
+    dates: set[date] = set()
+    keep = True
+    for day in _pair_days(plan, other, profile, now.astimezone(TZ).date()):
+        legs = tuple(s for s in plan.schedules(day) if to_utc(s.window_end) > to_utc(now))
+        if not legs:
+            continue
+        for offset in range(-2, 3):
+            target_day = day + timedelta(days=offset)
+            targets = (
+                other.schedules(target_day)
+                if other
+                else _regular_schedules(st, profile, target_day)
+            )
+            for following in targets:
+                if to_utc(following.window_end) <= to_utc(now):
+                    continue
+                crossing = any(overlaps(s, following) for s in legs)
+                if offset == 0 or crossing:
+                    dates.add(target_day)
+                    keep = keep and not crossing
+    return dates, keep
+
+
 def _conflicts(st: PersistedState, plan: TravelPlan, now: datetime) -> tuple[Conflict, ...]:
     regular = [(p, None) for p in (st.config.profiles if st.config else ())]
     proposed = [(p.profile, p) for p in st.travel_plans.values() if p.id != plan.id]
     result = []
     for profile, other in (*regular, *proposed):
-        dates: set[date] = set()
-        keep = True
-        for day in _pair_days(plan, other, profile, now.astimezone(TZ).date()):
-            legs = tuple(s for s in plan.schedules(day) if to_utc(s.window_end) > to_utc(now))
-            if not legs:
-                continue
-            for offset in range(-2, 3):
-                target_day = day + timedelta(days=offset)
-                targets = (
-                    other.schedules(target_day)
-                    if other
-                    else _regular_schedules(st, profile, target_day)
-                )
-                for following in targets:
-                    if to_utc(following.window_end) <= to_utc(now):
-                        continue
-                    crossing = any(overlaps(s, following) for s in legs)
-                    if offset == 0 or crossing:
-                        dates.add(target_day)
-                        keep = keep and not crossing
+        dated = bool(plan.monthly or (other.monthly if other else profile.repeat))
+        check = _dated_conflicts if dated else _weekly_conflicts
+        dates, keep = check(st, plan, profile, other, now)
         if dates:
             result.append(
                 Conflict(
@@ -145,7 +304,11 @@ def _conflicts(st: PersistedState, plan: TravelPlan, now: datetime) -> tuple[Con
                     tuple(d.isoformat() for d in sorted(dates)[:12]),
                     keep,
                     len(dates) > 12
-                    or (plan.end is None and (other.end is None if other else bool(profile.days))),
+                    or (
+                        not dated
+                        and plan.end is None
+                        and (other.end is None if other else bool(profile.days))
+                    ),
                 )
             )
     return tuple(result)

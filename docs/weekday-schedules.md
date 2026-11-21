@@ -2,6 +2,24 @@
 
 Each direction runs in one of two modes. Fixed mode follows your usual train. It is the default, and existing profiles stay in fixed mode. Window mode follows any train between two times.
 
+## Repeat on selected dates
+
+Use the optional repeat settings in Home Assistant or in `profiles.yaml`. For the first Monday of each month, set one day and its position in the month.
+
+~~~yaml
+days: [mon]
+repeat:
+  start_date: "2026-11-01"
+  monthly: 1
+  end_after: 6
+~~~
+
+Choose a monthly position from 1 to 5. A month without the selected fifth weekday has no commute on that rule. For every other week, use `every_weeks: 2` and omit `monthly`. Weeks start on Monday. If you omit `start_date`, monthly dates follow the calendar. An every-N-weeks rule uses Monday, 0002-01-07, as its fixed reference week, so its dates stay the same after a restart.
+
+Use `end_after` with a start date to count 1 to 366 scheduled dates. Use `end_date` for an inclusive last date. Leave both empty for an ongoing repeat. The count excludes public holidays when the profile skips them. Pauses do not extend the count. Extra dates do not use the count and can fall outside the repeat. A next-day return belongs to its outbound commute date. Its pauses apply on the next day.
+
+Clear the repeat fields to use the selected weekdays every week.
+
 ## Window mode
 
 ```yaml

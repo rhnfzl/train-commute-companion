@@ -11,7 +11,6 @@ from typing import Final, Literal
 from train_commute_companion.calendar import (
     MINUTES_PER_DAY,
     TZ,
-    is_commute_day,
     minute_of_day,
     resolve_local,
 )
@@ -377,7 +376,7 @@ def probe_dates(
     out: list[date] = []
     for i in range(1, scan + 1):
         day = today + timedelta(days=i)
-        if not is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays):
+        if not p.commutes_on(day):
             continue
         sd = service_date(p, direction, day)
         if p.paused_on(sd) or sd in skipped or (replaced is not None and replaced(sd)):
