@@ -48,6 +48,8 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
 
 ## Ways to run it
 
+[Compare setup options](https://rhnfzl.github.io/train-commute-companion/) for Home Assistant, Telegram, and ntfy.
+
 | Way | What you get | Guide |
 | --- | --- | --- |
 | Home Assistant (HACS) | Alerts on your phone through the companion app, sensors and buttons | [docs/home-assistant.md](docs/home-assistant.md) |
