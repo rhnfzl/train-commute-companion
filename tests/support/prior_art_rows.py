@@ -169,7 +169,7 @@ PORTED: dict[str, str] = {
     "lookahead:18": "tests/test_lookahead.py::test_a_three_minute_shift_on_one_day_only_is_quiet",
     "lookahead:19": "merged:lookahead:10",
     "lookahead:20": "tests/test_lookahead.py::test_a_healthy_run_records_success",
-    "lookahead:21": "tests/test_lookahead.py::test_one_failed_horizon_still_records_success",
+    "lookahead:21": "tests/test_lookahead.py::test_one_failed_date_leaves_the_horizon_incomplete",
     "lookahead:22": "tests/test_lookahead.py::test_missing_answer_is_not_an_observation_and_not_warned",
     "lookahead:23": "tests/test_lookahead.py::test_no_service_day_still_counts_as_a_successful_run",
     "lookahead:24": "overridden:7.10",

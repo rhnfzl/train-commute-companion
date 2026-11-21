@@ -147,12 +147,16 @@ class RequestGate:
         live: bool,
         window_end: datetime | None,
         deadline: datetime | None = None,
+        *,
+        before_trip: Callable[[], Awaitable[None]] | None = None,
     ) -> tuple[ProviderAnswer, ...] | PollFailure:
         """All or nothing: a poll missing one answer cannot judge the legs it was for (rule 2).
         One hard deadline for the whole poll, not one per request (7.1)."""
         answers = []
         deadline = deadline or to_utc(self._now()) + POLL_DEADLINE
         for q in queries:
+            if before_trip is not None and self.budget.allow(self._now(), live):
+                await before_trip()
             a = await self.trips(q, live, window_end, deadline)
             if isinstance(a, str):
                 return a

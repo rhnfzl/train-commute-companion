@@ -83,7 +83,12 @@ from train_commute_companion.lifecycle_lock import unfinished_leg
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import forget_pending, rebase_on_edit, reset_on_edit
 from train_commute_companion.lookahead_probe import service_date
-from train_commute_companion.lookahead_run import apply_run, lookahead_done, probe_direction
+from train_commute_companion.lookahead_run import (
+    apply_run,
+    directions_due,
+    lookahead_done,
+    probe_direction,
+)
 from train_commute_companion.match import usual_connection
 from train_commute_companion.messages import (
     CHECK_APP,
@@ -197,7 +202,12 @@ log = logging.getLogger(__name__)
 WATCHDOG_EVERY_S = 30
 FILE_EVERY_S = 10
 LOOKAHEAD_AT = time(6, 0)
+LOOKAHEAD_TRIP_INTERVAL = timedelta(seconds=2)
 _APP = "app"  # profile name on application warnings, which belong to no profile
+
+
+class _ObsoleteLookahead(Exception):
+    """A profile reload ends a background run before its next request."""
 
 
 def _reasons(errors: Sequence[ProfileProblem]) -> str:
@@ -408,6 +418,8 @@ class Runtime:
         self._clock = clock
         self.known_stations = known_stations
         self._gate = RequestGate(provider, clock.now)
+        self._lookahead_slot = asyncio.Lock()
+        self._next_lookahead_trip: datetime | None = None
         self._mtime: int | None = None
         self._auth = AuthEpisode()
         self._memory = PollMemory()
@@ -508,7 +520,9 @@ class Runtime:
 
     def list_travel_plans(self) -> dict[str, Any]:
         return {
-            "plans": [{**plan_dict(p), "text": plan_text(p)} for p in self.state.travel_plans.values()]
+            "plans": [
+                {**plan_dict(p), "text": plan_text(p)} for p in self.state.travel_plans.values()
+            ]
         }
 
     def travel_change_receipt(self, request_id: str) -> dict[str, Any] | None:
@@ -1382,8 +1396,10 @@ class Runtime:
         current = routing_profile(self._writer.st, state.key.profile_id, state.route_revision)
         if context is None or current is None or current.paused_on(state.key.service_date):
             return None
-        if current.travel_plan and context.schedule.pick == "on_leave" and not (
-            state.lock or state.retained or state.travelling
+        if (
+            current.travel_plan
+            and context.schedule.pick == "on_leave"
+            and not (state.lock or state.retained or state.travelling)
         ):
             return None
         return context if context_enabled(state, context) else None
@@ -2496,14 +2512,14 @@ class Runtime:
 
     # --- look-ahead (7.10, rule 21) ---
 
-    async def lookahead_once(self) -> None:
-        cfg = self._writer.st.config
-        if cfg is None or all(p.home_station == p.work_station for p in cfg.profiles):
+    async def lookahead_once(self, *, since: datetime | None = None) -> None:
+        due = directions_due(self._writer.st, since)
+        if not due:
             return
         works = await self._fetch_works()
         if works is None:  # refused by the shared cooldown: retried by `daily`
             return
-        for pid, d in [(p.id, d) for p in cfg.profiles for d in Direction]:
+        for pid, d in due:
             # the profile as configured now: one held across an earlier direction's requests
             # could be stamped with a newer revision than its own (rule 21)
             p = find_profile(self._writer.st.config, pid)
@@ -2536,16 +2552,42 @@ class Runtime:
 
     async def _lookahead_direction(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
         start = self._clock.now()
+        snapshot = self._writer.st
+        config = snapshot.config
+        if config is None:
+            return
+
+        async def before_trip() -> None:
+            if p.alerts.custom_timetable_horizon:
+                await self._pace_lookahead_trip()
+            current = self._writer.st
+            if (
+                current.config is None
+                or current.config.revision != config.revision
+                or current.travel_revision != snapshot.travel_revision
+            ):
+                raise _ObsoleteLookahead
 
         async def probe(queries: Sequence[Query]) -> tuple[ProviderAnswer, ...] | PollFailure:
-            got = await self._gate.all_trips(queries, False, None)
+            got = await self._gate.all_trips(queries, False, None, before_trip=before_trip)
             self._track_key_rejection(got if isinstance(got, str) else None, "lookahead", start)
             return got
 
-        run = await probe_direction(self._writer.st, p, d, works, start, probe)
+        try:
+            run = await probe_direction(snapshot, p, d, works, start, probe)
+        except _ObsoleteLookahead:
+            return
         st = None if run is None else apply_run(self._writer.st, self._queue, p, d, run)
         if st is not None:
             self._writer.commit(st, Change.LOOKAHEAD)
+
+    async def _pace_lookahead_trip(self) -> None:
+        # Background trips share one cadence across profiles. Live polls never wait on this lock.
+        async with self._lookahead_slot:
+            now = to_utc(self._clock.now())
+            if self._next_lookahead_trip is not None and self._next_lookahead_trip > now:
+                await self._clock.sleep((self._next_lookahead_trip - now).total_seconds())
+            self._next_lookahead_trip = to_utc(self._clock.now()) + LOOKAHEAD_TRIP_INTERVAL
 
     # --- start, reconcile and the loops ---
 
@@ -2612,7 +2654,7 @@ class Runtime:
                     await self._clock.sleep((to_utc(six) - to_utc(now)).total_seconds())
                     continue
                 try:
-                    await self.lookahead_once()
+                    await self.lookahead_once(since=six)
                 except Exception:
                     log.exception("look-ahead failed")
                 if not lookahead_done(self._writer.st, six):

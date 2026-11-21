@@ -1,10 +1,11 @@
 from datetime import time, timedelta
 
 from builders import make_connection, make_leg
-from runtime_rig import DAY, PROFILE, Rig, at
+from runtime_rig import DAY, PROFILE, Rig, at, usual_on
 
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.model import Direction, EventKind
+from train_commute_companion.providers.base import PlannedWorks
 
 
 def utrecht(**options):
@@ -187,10 +188,31 @@ async def test_suppressed_usual_journey_is_not_probed_ahead(tmp_path):
     change = one_day({"mode": "exact", "departure": "08:12"})
     change["plan"]["start_date"] = day.isoformat()
     save(rig.rt, change, "tomorrow")
+    rig.provider.world = [usual_on(DAY + timedelta(days=offset)) for offset in range(1, 40)]
     rig.provider.calls.clear()
     await rig.rt.lookahead_once()
     assert rig.provider.calls
     assert not any(q.at.date() == day for q in rig.provider.calls)
+    assert rig.rt.state.lookahead["p1|outbound"].last_run is not None
+
+
+async def test_saving_a_travel_plan_stops_obsolete_lookahead_queries(tmp_path):
+    rig = Rig(tmp_path)
+    await rig.rt.start()
+    profile = rig.rt.state.config.profiles[0]
+    day = DAY + timedelta(days=1)
+    change = one_day({"mode": "exact", "departure": "08:12"})
+    change["plan"]["start_date"] = day.isoformat()
+
+    def replace_on_first_trip(_query):
+        rig.provider.hook = None
+        save(rig.rt, change, "tomorrow")
+
+    rig.provider.calls.clear()
+    rig.provider.hook = replace_on_first_trip
+    await rig.rt._lookahead_direction(profile, Direction.OUTBOUND, PlannedWorks((), "complete"))
+    assert len(rig.provider.calls) == 1
+    assert "p1|outbound" not in rig.rt.state.lookahead
 
 
 async def test_changing_a_departed_plan_cannot_stop_its_monitor(tmp_path):
@@ -303,9 +325,11 @@ async def test_leaving_does_not_override_the_exact_train(tmp_path):
     rig = Rig(tmp_path)
     await rig.rt.start()
     day = DAY + timedelta(days=7)
-    saved = save(rig.rt, one_day(
-        {"mode": "exact", "departure": "08:40", "train_number": "8801"}
-    ), "exact-leave")
+    saved = save(
+        rig.rt,
+        one_day({"mode": "exact", "departure": "08:40", "train_number": "8801"}),
+        "exact-leave",
+    )
     pid = saved["plan_id"]
     key = f"{pid}|outbound|{day}"
     rig.clock.t = at("08:19", day)

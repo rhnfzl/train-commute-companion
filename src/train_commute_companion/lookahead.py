@@ -1,6 +1,7 @@
 """Planned-works look-ahead and timetable baselines (7.10, 7.12 rules 18, 19, 21). Pure."""
 
-from collections.abc import Mapping, Sequence
+from collections import Counter
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 
@@ -305,30 +306,34 @@ def _agreed_signature(
     results: Sequence[ProbeResult],
     wholes: Mapping[date, ProbeResult],
     expected: Sequence[date],
-    probes_per_day: int,
+    *,
+    complete: bool,
 ) -> tuple[Signature | None, str | None]:
-    """Unanimity over every requested date (look-ahead 19, 20): the signature they agree on, and
-    the refusal when they agree only on another transfer pattern."""
-    per_day = {sd: [r for r in results if r.service_date == sd] for sd in expected}
-    complete = bool(expected) and all(
-        sd in wholes and len(per_day[sd]) == probes_per_day for sd in expected
-    )
-    if not complete:
+    """A new signature needs full coverage. A changed pattern is visible in whole journeys."""
+    if not complete or not expected or any(sd not in wholes for sd in expected):
         return None, None
-    rs = [r for sd in expected for r in per_day[sd]]
+    first = wholes[expected[0]]
+    if first.other_pattern and all(wholes[sd].head == first.head for sd in expected):
+        return None, "NS now offers your usual journey only with other changes; update your profile"
+    rs = [r for r in results if r.service_date in expected]
     sigs = {
         signature_of(c, wholes[sd].service_date)
         for sd in expected
         if (c := wholes[sd].connection) is not None
     }
     agreed = None
-    if all(not r.works and r.transfer_ok for r in rs) and len(sigs) == 1:
-        (agreed,) = sigs
-    if len({wholes[sd].head for sd in expected}) == 1 and wholes[expected[0]].other_pattern:
-        return (
-            agreed,
-            "NS now offers your usual journey only with other changes; update your profile",
+    if (
+        all(
+            not r.works
+            and r.transfer_ok
+            and r.works_known
+            and not r.published_works
+            and not r.unclear
+            for r in rs
         )
+        and len(sigs) == 1
+    ):
+        (agreed,) = sigs
     return agreed, None
 
 
@@ -460,7 +465,7 @@ def _probe_facts(
             draft.add_fact(sd, LookAheadFact(fact, _warn_text(r, p, exp), loud, r.works))
             if probed_end(r) is None:
                 unsure.add(sd)
-        elif is_warning(last):
+        elif is_warning(last) and r.works_known and not r.published_works:
             draft.add_owned_entry(sd, key, restored_mark(r.fingerprint))
             if baseline_scope(p, d, sd) in adopted and last == warn_mark(r.fingerprint):
                 continue  # the warned change is what this run adopted: told by the adoption
@@ -637,6 +642,9 @@ def run_lookahead(
     now: datetime,
     others: Sequence[Profile],
     bases: Mapping[tuple[str, Direction], BaselineHistory],
+    skipped: Collection[date] = (),
+    probe_finished: bool = True,
+    replaced: Callable[[date], bool] | None = None,
 ) -> tuple[BaselineHistory, LookAheadLedger, list[AlertEvent]] | None:
     """The direction's serialised look-ahead writer. Every fact is written to the ledger and
     stored as a pending message before any delivery. `others` are the other profiles and
@@ -654,11 +662,6 @@ def run_lookahead(
     stamps = [t.astimezone(UTC) for t in (ledger.last_applied, ledger.last_run) if t is not None]
     if stamps and max(stamps) > now.astimezone(UTC):
         return None  # an older run overlapping a newer one, also a newer failed-health one
-    results = sorted(
-        (r for r in results if r.direction is d),
-        key=lambda r: (r.service_date, r.leg_index is None, r.leg_index or 0),
-    )
-    wholes = {r.service_date: r for r in results if r.leg_index is None}
     draft = _Draft(
         list(history.versions),
         history.floor,
@@ -671,21 +674,49 @@ def run_lookahead(
         dx: draft.history() if dx is d else bases.get((p.id, dx), BaselineHistory())
         for dx in Direction
     }
+    plan = probe_dates(
+        p, today, direction=d, histories=histories, skipped=skipped, replaced=replaced
+    )
     expected_all = [
-        service_date(p, d, day) for day in probe_dates(p, today, direction=d, histories=histories)
+        service_date(p, d, day) for day in plan.dates if p.journey_on(d, day).mode != "window"
     ]
+    custom = p.alerts.custom_timetable_horizon
+    results = sorted(
+        (
+            r
+            for r in results
+            if r.direction is d
+            and r.service_date not in skipped
+            and (replaced is None or not replaced(r.service_date))
+            and (not custom or r.service_date in expected_all)
+        ),
+        key=lambda r: (r.service_date, r.leg_index is None, r.leg_index or 0),
+    )
+    wholes = {r.service_date: r for r in results if r.leg_index is None}
+    n = len(p.journey(d).transfers) + 1
+    probes_per_day = n + 1 if n > 1 else 1
+    counts = Counter(r.service_date for r in results)
+    fully_observed = {sd for sd in wholes if counts[sd] == probes_per_day}
+    complete = (
+        probe_finished
+        and plan.complete
+        and all(sd in fully_observed for sd in expected_all)
+        and all(r.works_known for r in results)
+    )
     scopes = {baseline_scope(p, d, sd) for sd in (*expected_all, *wholes)}
     adopted: dict[int | None, BaselineVersion] = {}
     refusals = []
-    n = len(p.journey(d).transfers) + 1
     for scope in sorted(scopes, key=lambda x: -1 if x is None else x):
         scoped_results = [r for r in results if baseline_scope(p, d, r.service_date) == scope]
         scoped_wholes = {sd: r for sd, r in wholes.items() if baseline_scope(p, d, sd) == scope}
-        _seed_or_confirm(draft, scoped_results, scoped_wholes, today, scope)
+        seedable = {sd: r for sd, r in scoped_wholes.items() if not custom or sd in fully_observed}
+        _seed_or_confirm(draft, scoped_results, seedable, today, scope)
+        if not plan.complete:
+            continue
         expected = [sd for sd in expected_all if baseline_scope(p, d, sd) == scope]
         in_force_today = draft.history().in_force(today, scope)
         agreed, pattern_refusal = _agreed_signature(
-            scoped_results, scoped_wholes, expected, n + 1 if n > 1 else 1
+            scoped_results, scoped_wholes, expected, complete=complete
         )
         _cancel_waiting(draft, agreed, in_force_today, today, scope)
         version, adopt_refusal = _adopt(draft, p, d, agreed, expected, today, others, bases, scope)
@@ -708,7 +739,7 @@ def run_lookahead(
         *_unclear_messages(draft, w),
         *_refusal_messages(draft, w, refusals, today),
     ]
-    success = bool(results) and all(r.works_known for r in results)
+    success = bool(results) and complete
     new_ledger = LookAheadLedger(
         per_date=draft.per_date,
         pending=tuple(draft.pending),

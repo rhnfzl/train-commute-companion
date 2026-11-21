@@ -4,7 +4,7 @@ from datetime import date, time, timedelta
 import runtime_seam as seam
 from builders import ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from lookahead_fixtures import P as LOOKAHEAD_P
-from runtime_rig import PROFILE, FakeClock, MemoryStore, Notifier, Provider, at
+from runtime_rig import PROFILE, FakeClock, MemoryStore, Notifier, Provider, at, every_day
 
 from train_commute_companion.location import Fix, Zone, ZoneTrack
 from train_commute_companion.model import (
@@ -296,9 +296,9 @@ async def test_view_lookahead_last_ok_lists_directions_never_run(tmp_path):
 
 
 async def test_view_lookahead_last_ok_stays_old_after_a_failed_works_lookup(tmp_path):
-    w = await World(tmp_path, now="05:50").start()
-    await w.rt.lookahead_once()
+    w = await World(tmp_path, conns=every_day(), now="05:50").start()
     good = w.clock.now()
+    await w.rt.lookahead_once()
     assert w.rt.view().lookahead_last_ok["p1|outbound"] == good
 
     async def unknown() -> PlannedWorks:

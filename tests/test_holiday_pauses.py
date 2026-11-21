@@ -108,13 +108,13 @@ def test_separate_pause_ranges_leave_the_gap_available():
 
 
 def test_lookahead_skips_paused_dates_and_finds_next_three_commutes():
-    profiles, errors = paused()
+    profiles, errors = paused(base=BASE + "    alerts: {custom_timetable_horizon: false}\n")
     assert errors == []
-    assert probe_dates(profiles[0], date(2026, 10, 26)) == [
+    assert probe_dates(profiles[0], date(2026, 10, 26), direction=Direction.OUTBOUND).dates == (
         date(2026, 10, 29),
         date(2026, 10, 30),
         date(2026, 10, 31),
-    ]
+    )
 
 
 def test_lookahead_filters_each_direction_by_its_service_date():
@@ -124,16 +124,12 @@ def test_lookahead_filters_each_direction_by_its_service_date():
     profiles, errors = paused('[{start: "2026-10-28", end: "2026-10-28"}]', base)
     assert errors == []
     p = profiles[0]
-    assert probe_dates(p, date(2026, 10, 26), direction=Direction.RETURN) == [
-        date(2026, 10, 28),
-        date(2026, 10, 29),
-        date(2026, 10, 30),
-    ]
-    assert probe_dates(p, date(2026, 10, 26), direction=Direction.OUTBOUND) == [
-        date(2026, 10, 27),
-        date(2026, 10, 29),
-        date(2026, 10, 30),
-    ]
+    today = date(2026, 10, 26)
+    back = probe_dates(p, today, direction=Direction.RETURN)
+    out = probe_dates(p, today, direction=Direction.OUTBOUND)
+    assert back.complete and out.complete
+    assert back.dates == tuple(today + timedelta(days=n) for n in (2, 3, 4, 5, 6, 7))
+    assert out.dates == tuple(today + timedelta(days=n) for n in (1, 3, 4, 5, 6, 7))
 
 
 @pytest.mark.parametrize("paused_id", ["p1", "p2"])
