@@ -9,6 +9,8 @@ from tcc_app import bot as bot_module
 from tcc_app.bot import Bot
 from tcc_app.telegram import TelegramApi
 
+from train_commute_companion.messages import Refused
+
 
 @pytest.fixture
 async def app(tmp_path):
@@ -63,6 +65,40 @@ async def test_reviewed_arrival_and_duplicate_callback(app):
     assert outbound(rig).revision == 1
 
 
+async def test_arrival_button_is_named_and_removed_once_saved(app):
+    _, tg, bot = app
+    data = await review(app)
+    markup = tg.sent[-1]["reply_markup"]
+    old = {"callback_query": {"id": "c1", "data": "av|" + "0" * 24,
+                              "message": {"chat": {"id": CHAT}, "message_id": 4}}}  # fmt: skip
+    await bot.handle(old)
+    assert (
+        tg.sent[-1]["text"] == "Confirm arrival: That arrival review is old. Enter /arrived again."
+    )
+    assert tg.edits == []
+    used = {"chat": {"id": CHAT}, "message_id": 5, "reply_markup": markup}
+    await bot.handle({"callback_query": {"id": "c2", "data": data, "message": used}})
+    assert tg.sent[-1]["text"].startswith(
+        "Confirm this destination and arrival time: Arrival saved."
+    )
+    assert tg.edits == [{"chat_id": CHAT, "message_id": 5, "reply_markup": {"inline_keyboard": []}}]
+
+
+async def test_a_refused_arrival_keeps_its_keyboard(app, monkeypatch):
+    rig, tg, bot = app
+    data = await review(app)
+
+    async def refuse(*args, **kwargs):
+        return Refused("That journey changed.")
+
+    monkeypatch.setattr(rig.rt, "confirm_arrival", refuse)
+    refused = tap(data)
+    refused["callback_query"]["message"]["message_id"] = 5
+    await bot.handle(refused)
+    assert tg.sent[-1]["text"] == "Confirm arrival: That journey changed."
+    assert tg.edits == []
+
+
 async def test_arrival_timeout_leaves_the_owned_action_running(app, monkeypatch):
     rig, tg, bot = app
     data = await review(app)
@@ -77,9 +113,12 @@ async def test_arrival_timeout_leaves_the_owned_action_running(app, monkeypatch)
     monkeypatch.setattr(rig.rt, "confirm_arrival", delayed)
     monkeypatch.setattr(bot_module, "COMMAND_TIMEOUT_S", 0.01)
     try:
-        await asyncio.wait_for(bot.handle(tap(data)), 1)
+        timed = tap(data)
+        timed["callback_query"]["message"]["message_id"] = 5
+        await asyncio.wait_for(bot.handle(timed), 1)
         assert entered.is_set() and outbound(rig).arrived_at is None
-        assert "in time" in tg.sent[-1]["text"]
+        assert tg.sent[-1]["text"] == "Confirm arrival: " + bot_module.TIMED_OUT
+        assert "editMessageReplyMarkup" not in tg.calls and tg.edits == []
     finally:
         release.set()
     async with asyncio.timeout(1):

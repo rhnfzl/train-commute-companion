@@ -77,6 +77,31 @@ HELP = (
     "/help: this list\n"
     "Data: NS"
 )
+TIMED_OUT = "NS did not answer in time; try again."
+FAILED = "That failed; see the app log."
+INVALID = "That button is no longer valid."
+# the reply names the tapped button; these stand in when its message or keyboard is missing
+BUTTON_LABELS = {
+    "av": "Confirm arrival",
+    "q": "Answer",
+    "ok": "I got both",
+    **dict.fromkeys(("rp", "ra", "rf", "rc"), "Recovery"),
+    "l": "I'm leaving",
+    "s": "Not travelling",
+    "c": "Take train",
+}
+# exclusive one-time choices: a used one takes its whole keyboard; any other used button goes alone
+WHOLE_KEYBOARD = frozenset({"ok", "av", "q", "ra"})
+
+
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    """What a button led to. `done`: the action took effect, so its button (or, for a one-time
+    choice, its whole keyboard) goes."""
+
+    text: str
+    markup: dict[str, Any] | None = None
+    done: bool = False
 
 
 @dataclass(slots=True)
@@ -84,6 +109,8 @@ class ShellState:
     offset: int = 0
     bot_id: str | None = None  # the bot whose update ids `offset` counts
     confirmed_for: str | None = None  # "<bot id>:<chat id>" (rule 16 proves one target)
+    # the "I got both" nonce that proved it, saved with it; None in an older file: unknown
+    accepted_nonce: str | None = None
 
 
 def load_state(path: Path) -> ShellState | None:
@@ -94,7 +121,10 @@ def load_state(path: Path) -> ShellState | None:
             isinstance(s.offset, bool)
             or not isinstance(s.offset, int)
             or s.offset < 0
-            or not all(v is None or isinstance(v, str) for v in (s.bot_id, s.confirmed_for))
+            or not all(
+                v is None or isinstance(v, str)
+                for v in (s.bot_id, s.confirmed_for, s.accepted_nonce)
+            )
         ):
             raise ValueError("wrong types")
     except FileNotFoundError:
@@ -152,12 +182,18 @@ class Bot:
         self._cursor = UpdateCursor(CursorPhase.READY if trusted else CursorPhase.UNTRUSTED)
         if loaded is not None and trusted:
             self.state = loaded
-        else:  # another bot's or no cursor: only the confirmation (it names its bot) is kept
-            self.state = ShellState(confirmed_for=loaded.confirmed_for if loaded else None)
+        elif loaded is not None:  # another bot's cursor: only the confirmation (it names its bot)
+            self.state = ShellState(
+                confirmed_for=loaded.confirmed_for, accepted_nonce=loaded.accepted_nonce
+            )
+        else:
+            self.state = ShellState()
         self._proof: DeliveryProof | None = None
         self._arrival_drafts: dict[str, ArrivalDraft] = {}
         self._save_phase = SavePhase.READY
         self._save_lock = asyncio.Lock()  # one save at a time: no shared .tmp, the newest wins
+        self._keyboard_lock = asyncio.Lock()
+        self._retired: dict[int, set[str] | None] = {}
         # saves: drained by close(), never cancelled (serve's cleanup leaves them out too)
         self.writes: set[asyncio.Task[bool]] = set()
         self._tasks: set[asyncio.Task[None]] = set()  # handlers, cancelled by close()
@@ -225,18 +261,19 @@ class Bot:
             self._spawn(ups)
             ups = [u for u in _updates(nxt) if u["update_id"] >= self.state.offset]
 
-    async def _save(self, confirmed_for: str | None = None) -> bool:
+    async def _save(self, confirmed_for: str | None = None, nonce: str | None = None) -> bool:
+        """`confirmed_for` and the `nonce` that proved it are written together or not at all."""
         # a cancelled caller leaves the write running and the lock held until its worker ends
-        task = asyncio.ensure_future(self._write(confirmed_for))
+        task = asyncio.ensure_future(self._write(confirmed_for, nonce))
         self.writes.add(task)
         task.add_done_callback(self.writes.discard)
         return await asyncio.shield(task)
 
-    async def _write(self, confirmed_for: str | None = None) -> bool:
+    async def _write(self, confirmed_for: str | None = None, nonce: str | None = None) -> bool:
         async with self._save_lock:
             snap = replace(self.state)  # the worker writes this copy, never a state being changed
             if confirmed_for is not None:
-                snap.confirmed_for = confirmed_for
+                snap.confirmed_for, snap.accepted_nonce = confirmed_for, nonce
             try:
                 await asyncio.to_thread(save_state, self._path, snap)  # off the loop (rule 12)
             except OSError as e:
@@ -245,7 +282,7 @@ class Bot:
                 self._save_phase = SavePhase.FAILED
                 return False
             if confirmed_for is not None:
-                self.state.confirmed_for = confirmed_for
+                self.state.confirmed_for, self.state.accepted_nonce = confirmed_for, nonce
             if self._save_phase is SavePhase.FAILED:
                 log.warning("Telegram state saved again")
             self._save_phase = SavePhase.READY
@@ -292,12 +329,12 @@ class Bot:
                 await self._message(msg)
             # an edited message is read only for its location (live location moves edit it)
         except _TimedOut:
-            await self._reply("NS did not answer in time; try again.")
+            await self._reply(TIMED_OUT)
         except Exception:
             # the exception text stays out of the chat; without a reply the user cannot tell
             # whether a skip or a lock took effect
             log.exception("Telegram command failed")
-            await self._reply("That failed; see the app log.")
+            await self._reply(FAILED)
 
     def _location(self, msg: dict[str, Any]) -> None:
         loc = _obj(msg.get("location"))
@@ -358,51 +395,108 @@ class Bot:
             if t.departure is None:
                 await self._reply(USAGE_CHOOSE)
                 return
-            await self._choose(
+            out = await self._choose(
                 t.profile_id, name, t.departure, t.train, t.service_date, t.direction
             )
+            await self._reply(out.text)
         elif word == "/leaving":
-            await self._leaving(t.profile_id, t.service_date, t.direction)
+            await self._reply((await self._leaving(t.profile_id, t.service_date, t.direction)).text)
         else:
             whole = t.whole_day or t.direction is None
-            await self._skip(t.profile_id, t.service_date, t.direction, whole)
+            await self._reply(
+                (await self._skip(t.profile_id, t.service_date, t.direction, whole)).text
+            )
 
     async def _button(self, cb: dict[str, Any]) -> None:
+        """Every tap is answered with the tapped button's label and what it led to. A tap that
+        took effect also removes the used button from its message (a one-time choice: the whole
+        keyboard); a refused or failed tap leaves the keyboard as it was."""
         try:
             await self._api.call("answerCallbackQuery", {"callback_query_id": cb.get("id")})
         except TelegramError as e:
             log.warning("Telegram answerCallbackQuery failed (%s)", e.code)
         if self._cursor.closed:
             return
-        data = cb.get("data")
+        data, message = cb.get("data"), _obj(cb.get("message"))
+        try:
+            out = await self._dispatch(data, cb.get("id"))
+        except _TimedOut:
+            out = Outcome(TIMED_OUT)
+        except Exception:
+            log.exception("Telegram button failed")
+            out = Outcome(FAILED)
+        label = _label(message, data)
+        text = out.text if out.text.startswith(label + ":") else f"{label}: {out.text}"
+        replied = await self._reply(text, out.markup)
+        if out.done and replied:
+            tag = data.split("|", 1)[0] if isinstance(data, str) else ""
+            await self._retire(message, None if tag in WHOLE_KEYBOARD else data)
+
+    async def _retire(self, message: dict[str, Any], data: str | None) -> None:
+        # Callback snapshots can predate another tap's edit, so edits share retired controls.
+        async with self._keyboard_lock:
+            await self._retire_locked(message, data)
+
+    async def _retire_locked(self, message: dict[str, Any], data: str | None) -> None:
+        mid = message.get("message_id")
+        if type(mid) is not int or self._cursor.closed:
+            log.info("no Telegram message to remove the used button from")
+            return
+        rows: list[Any] = []
+        retired = self._retired.setdefault(mid, set())
+        if data is not None and retired is not None:
+            retired.add(_button_key(data))
+            old = _obj(message.get("reply_markup")).get("inline_keyboard")
+            old = old if isinstance(old, list) else []
+            rows = [
+                kept
+                for row in old
+                if isinstance(row, list)
+                and (kept := [b for b in row if _button_key(_obj(b).get("callback_data")) not in retired])
+            ]
+            if rows == old:  # no keyboard, or the button is not on it: wiping it would lose others
+                log.info("the used button is not on its Telegram message's keyboard")
+                return
+        else:
+            self._retired[mid] = None
+        try:  # handle() checked this message's chat is self._chat
+            await self._api.call(
+                "editMessageReplyMarkup",
+                {
+                    "chat_id": self._chat,
+                    "message_id": mid,
+                    "reply_markup": {"inline_keyboard": rows},
+                },
+            )
+        except TelegramError as e:
+            log.info("Telegram keyboard removal failed (%s: %s)", e.code, e)
+
+    async def _dispatch(self, data: Any, action_id: Any) -> Outcome:
         parts = data.split("|") if isinstance(data, str) else []
         if parts[:1] == ["av"] and len(parts) == 2:
-            await self._arrival_confirm(parts[1])
-            return
+            return await self._arrival_confirm(parts[1])
         if parts[:1] == ["q"] and len(parts) == 3:
-            await self._answer(parts[1], parts[2])
-            return
+            return await self._answer(parts[1], parts[2])
         if parts[:1] == ["ok"] and len(parts) == 2:
-            await self._confirm(parts[1])
-            return
+            return await self._confirm(parts[1])
         if parts[:1] and parts[0] in {"rp", "ra", "rf", "rc"}:
-            await self._recovery_button(parts, cb.get("id"))
-            return
+            return await self._recovery_button(parts, action_id)
         try:
             tag, pid, d, day, *rest = parts
             direction, service_date = Direction(d), date.fromisoformat(day)
             at = time.fromisoformat(rest[0]) if tag == "c" and rest else None
-        except ValueError:  # unparseable: answered, ignored
-            return
+        except ValueError:
+            return Outcome(INVALID)
         names = {x.profile_id: x.profile_name for x in self._rt.view().directions}
         name = display_name(names.get(pid, pid))
         if tag == "l" and not rest:
-            await self._leaving(pid, service_date, direction)
-        elif tag == "s" and not rest:
-            await self._skip(pid, service_date, direction, False)
-        elif at is not None and len(rest) <= 2:
-            await self._choose(pid, name, at, rest[1] if len(rest) == 2 else None,
-                               service_date, direction)  # fmt: skip
+            return await self._leaving(pid, service_date, direction)
+        if tag == "s" and not rest:
+            return await self._skip(pid, service_date, direction, False)
+        if at is not None and len(rest) <= 2:
+            return await self._choose(pid, name, at, rest[1] if len(rest) == 2 else None,
+                                      service_date, direction)  # fmt: skip
+        return Outcome(INVALID)
 
     async def _arrival_review(self, args: Sequence[str]) -> None:
         if not self.confirmed:
@@ -467,15 +561,13 @@ class Bot:
             },
         )
 
-    async def _arrival_confirm(self, nonce: str) -> None:
+    async def _arrival_confirm(self, nonce: str) -> Outcome:
         saved = self._arrival_drafts.get(nonce)
         if not self.confirmed or saved is None:
-            await self._reply("That arrival review is old. Enter /arrived again.")
-            return
+            return Outcome("That arrival review is old. Enter /arrived again.")
         if saved.phase_at(self._rt.now(), MAX_AGE) is ReviewPhase.EXPIRED:
             self._arrival_drafts.pop(nonce, None)
-            await self._reply("That arrival review is old. Enter /arrived again.")
-            return
+            return Outcome("That arrival review is old. Enter /arrived again.")
         draft, revision = saved.arrival, saved.revision
         result = await self._call_runtime(
             self._rt.confirm_arrival(
@@ -487,33 +579,35 @@ class Bot:
                 original_planned_arrival=draft.original_planned_arrival,
             )
         )
-        await self._reply(
-            result.text if isinstance(result, Refused) else "Arrival saved. " + arrival_text(result)
-        )
+        if isinstance(result, Refused):
+            return Outcome(result.text)
+        return Outcome("Arrival saved. " + arrival_text(result), done=True)
 
-    async def _confirm(self, nonce: str) -> None:
+    async def _confirm(self, nonce: str) -> Outcome:
         proof = self._proof
         if proof is not None and proof.claim(nonce):
-            accepted = await self._save(f"{self._api.bot_id}:{self._chat}")
-            proof.saved(accepted)
-            await self._reply(
-                "Delivery confirmed. Setup is complete."
-                if accepted
-                else "Delivery proof was not saved. Tap the confirmation again to retry."
-            )
-        else:
-            await self._reply("That test is old; send /test again.")
+            saved = await self._save(f"{self._api.bot_id}:{self._chat}", nonce)
+            proof.saved(saved)
+            if saved:
+                return Outcome("Delivery confirmed. Setup is complete.", done=True)
+            return Outcome("Delivery proof was not saved. Tap the confirmation again to retry.")
+        if proof is not None and proof.matches(nonce) and proof.phase is ProofPhase.SAVING:
+            return Outcome("Delivery confirmation is being saved.")  # a double tap
+        accepted = self.state.accepted_nonce
+        if self.confirmed and accepted is not None and DeliveryProof(accepted).matches(nonce):
+            # a second tap on the test that proved it, also after a restart or a later /test;
+            # a no-op, so its keyboard stays
+            return Outcome("Delivery is already confirmed.")
+        return Outcome("That test is old; send /test again.")
 
     # --- actions ---
 
-    async def _recovery_button(self, parts: list[str], action_id: Any) -> None:
+    async def _recovery_button(self, parts: list[str], action_id: Any) -> Outcome:
         if not self.confirmed:
-            await self._reply("Confirm phone delivery with /test before selecting a recovery.")
-            return
-        stale = "That recovery button is old; open /status again."
+            return Outcome("Confirm phone delivery with /test before selecting a recovery.")
+        stale = Outcome("That recovery button is old; open /status again.")
         if not isinstance(action_id, str) or not action_id or len(action_id) > 128:
-            await self._reply(stale)
-            return
+            return stale
         view = self._rt.view()
         occurrences = [o for o in view.occurrences if not o.resolved and not o.not_travelling]
         tag = parts[0]
@@ -531,8 +625,7 @@ class Bot:
             if len(plans) == 1:
                 occurrence, plan = plans[0]
                 if tag == "rp":
-                    await self._reply(*recovery_origin_prompt(plan))
-                    return
+                    return Outcome(*recovery_origin_prompt(plan))  # nothing happened yet
                 if re.fullmatch(r"[0-9]{1,4}", parts[2]) and int(parts[2]) in recovery_origins(
                     plan
                 ):
@@ -543,12 +636,10 @@ class Bot:
                         )
                     )
                     if isinstance(offer, Refused):
-                        await self._reply(offer.text)
-                    else:
-                        await self._reply(
-                            render_recovery_offer(offer), recovery_offer_buttons(offer)
-                        )
-                    return
+                        return Outcome(offer.text)
+                    return Outcome(
+                        render_recovery_offer(offer), recovery_offer_buttons(offer), done=True
+                    )
         elif tag == "rf" and len(parts) == 2 and re.fullmatch(r"[0-9a-f]{24}", parts[1]):
             offers = [
                 (o, o.recovery_offer)
@@ -566,12 +657,12 @@ class Bot:
                     )
                 )
                 if isinstance(selected, Refused):
-                    await self._reply(selected.text)
-                else:
-                    await self._reply(
-                        render_selected_recovery(selected), recovery_progress_buttons(selected)
-                    )
-                return
+                    return Outcome(selected.text)
+                return Outcome(
+                    render_selected_recovery(selected),
+                    recovery_progress_buttons(selected),
+                    done=True,
+                )
         elif (
             tag == "rc"
             and len(parts) == 5
@@ -624,29 +715,29 @@ class Bot:
                             )
                         )
                     else:
-                        await self._reply(stale)
-                        return
+                        return stale
                     if isinstance(result, Refused):
-                        await self._reply(result.text)
-                    else:
-                        await self._reply(
-                            render_selected_recovery(result), recovery_progress_buttons(result)
-                        )
-                    return
-        await self._reply(stale)
+                        return Outcome(result.text)
+                    return Outcome(
+                        render_selected_recovery(result),
+                        recovery_progress_buttons(result),
+                        done=True,
+                    )
+        return stale
 
     async def _choose(
         self, pid: str, name: str, at: time, train: str | None,
         day: date | None, direction: Direction | None,
-    ) -> None:  # fmt: skip
+    ) -> Outcome:  # fmt: skip
         refused = await self._call_runtime(self._rt.choose_at(pid, at, train, day, direction))
-        await self._reply(f"Locked the {at:%H:%M} for {name}." if refused is None else refused.text)
-
-    async def _answer(self, prompt_id: str, answer: str) -> None:
-        """A button on a question; TCC's own next message is the reply, a refusal says why not."""
-        refused = await self._call_runtime(self._rt.answer_prompt(prompt_id, answer))
         if refused is not None:
-            await self._reply(refused.text)
+            return Outcome(refused.text)
+        return Outcome(f"Locked the {at:%H:%M} for {name}.", done=True)
+
+    async def _answer(self, prompt_id: str, answer: str) -> Outcome:
+        """A button on a question; TCC's own next message follows, a refusal says why not."""
+        refused = await self._call_runtime(self._rt.answer_prompt(prompt_id, answer))
+        return Outcome("Answer saved.", done=True) if refused is None else Outcome(refused.text)
 
     async def _forget(self, args: Sequence[str]) -> None:
         if len(args) != 1:
@@ -668,22 +759,23 @@ class Bot:
             f"Forgot {code}." if done else f"{code} is not a remembered boarding station."
         )
 
-    async def _leaving(self, pid: str, day: date | None, direction: Direction | None) -> None:
+    async def _leaving(self, pid: str, day: date | None, direction: Direction | None) -> Outcome:
         refused = await self._call_runtime(self._rt.leaving(pid, day, direction))
-        await self._reply("Marked as leaving now." if refused is None else _nothing(refused))
+        if refused is not None:
+            return Outcome(_nothing(refused))
+        return Outcome("Marked as leaving now.", done=True)
 
     async def _skip(
         self, pid: str, day: date | None, direction: Direction | None, whole: bool
-    ) -> None:
+    ) -> Outcome:
         refused = await self._call_runtime(
             self._rt.not_travelling(pid, day, direction, whole_day=whole)
         )
         if refused is not None:
-            await self._reply(_nothing(refused))
-        elif whole:
-            await self._reply("Not travelling today: alerts for both directions stop.")
-        else:
-            await self._reply("Not travelling: alerts for that journey stop.")
+            return Outcome(_nothing(refused))
+        if whole:
+            return Outcome("Not travelling today: alerts for both directions stop.", done=True)
+        return Outcome("Not travelling: alerts for that journey stop.", done=True)
 
     async def _call_runtime(self, aw: Awaitable[T]) -> T:
         """The runtime call is its own task: a timeout or a cancelled handler leaves it to finish
@@ -717,7 +809,7 @@ class Bot:
         if self._proof is proof:
             proof.arm()
 
-    async def _reply(self, text: str, markup: dict[str, Any] | None = None) -> None:
+    async def _reply(self, text: str, markup: dict[str, Any] | None = None) -> bool:
         parts = split_text(text)
         try:
             for i, part in enumerate(parts):
@@ -725,6 +817,8 @@ class Bot:
                 await self._send(part, **extra)
         except TelegramError as e:
             log.warning("Telegram reply failed (%s: %s)", e.code, e)
+            return False
+        return not self._cursor.closed
 
     async def _send(self, text: str, **params: Any) -> None:
         if self._cursor.phase is CursorPhase.CLOSED:
@@ -734,6 +828,23 @@ class Bot:
 
 def _nothing(refused: Refused) -> str:
     return f"Nothing to act on: {refused.text}."
+
+
+def _button_key(data: Any) -> Any:
+    # A recovery action invalidates every control for the same selection, revision and step.
+    return data.rsplit("|", 1)[0] if isinstance(data, str) and data.startswith("rc|") else data
+
+
+def _label(message: dict[str, Any], data: Any) -> str:
+    """The tapped button's own text from its message's keyboard, else a short one for its tag."""
+    rows = _obj(message.get("reply_markup")).get("inline_keyboard")
+    for row in rows if isinstance(rows, list) else []:
+        for button in row if isinstance(row, list) else []:
+            text = _obj(button).get("text")
+            if _obj(button).get("callback_data") == data and isinstance(text, str) and text:
+                return text
+    tag = data.split("|", 1)[0] if isinstance(data, str) else ""
+    return BUTTON_LABELS.get(tag, "Button")
 
 
 def _obj(v: Any) -> dict[str, Any]:

@@ -66,6 +66,7 @@ class FakeTelegram:
         self.calls: list[str] = []  # every request's method, failed ones included
         self.sent: list[dict[str, Any]] = []  # sendMessage params of answered sends
         self.answered: list[str] = []  # answerCallbackQuery ids
+        self.edits: list[dict[str, Any]] = []  # editMessageReplyMarkup params of answered edits
         self.polls: list[dict[str, Any]] = []  # getUpdates params, failed ones included
         self.updates: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.fail: Callable[[str], httpx.Response | Exception | None] = lambda method: None
@@ -102,6 +103,9 @@ class FakeTelegram:
             return ok({"message_id": len(self.sent)})
         if method == "answerCallbackQuery":
             self.answered.append(params["callback_query_id"])
+            return ok(True)
+        if method == "editMessageReplyMarkup":
+            self.edits.append(params)
             return ok(True)
         if method == "getUpdates":
             return ok(await self._get_updates(params))
