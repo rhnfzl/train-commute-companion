@@ -1,0 +1,71 @@
+blueprint:
+  name: Train Commute Companion loud alert
+  description: Flash a light or speak a short reminder when a selected commute sends a loud alert.
+  domain: automation
+  source_url: https://github.com/rhnfzl/train-commute-companion/blob/main/custom_components/train_commute_companion/blueprints/loud_alert.yaml
+  input:
+    profile_id:
+      name: Commute profile ID
+      description: Copy the profile's id from the profiles list in your saved profiles YAML.
+      selector:
+        text:
+    lights:
+      name: Lights to flash
+      description: Select lights that support the flash action.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: light
+    speaker:
+      name: Speaker
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: media_player
+    speech_engine:
+      name: Text-to-speech engine
+      description: Select an engine and a speaker to enable the spoken reminder.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: tts
+
+triggers:
+  - trigger: event
+    event_type: train_commute_companion_alert
+    event_data:
+      profile_id: !input profile_id
+      severity: loud
+
+variables:
+  lights: !input lights
+  speaker: !input speaker
+  speech_engine: !input speech_engine
+
+actions:
+  - if:
+      - condition: template
+        value_template: "{{ lights | length > 0 }}"
+    then:
+      - action: light.turn_on
+        continue_on_error: true
+        target:
+          entity_id: !input lights
+        data:
+          flash: short
+  - if:
+      - condition: template
+        value_template: "{{ speaker != '' and speech_engine != '' }}"
+    then:
+      - action: tts.speak
+        target:
+          entity_id: "{{ speech_engine }}"
+        data:
+          media_player_entity_id: !input speaker
+          message: "Train Commute Companion sent a loud alert. Check your phone."
+
+mode: queued
