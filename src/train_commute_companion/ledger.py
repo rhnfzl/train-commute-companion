@@ -20,6 +20,7 @@ from train_commute_companion.lifecycle import (
     PollAnswers,
     left_note,
     merged_pool,
+    next_stated_delay,
     origin_answer,
 )
 from train_commute_companion.lifecycle_lock import progress_of
@@ -353,6 +354,23 @@ class LiveLedger:
         )
 
     def notification_enabled(self, o: Obligation) -> bool:
+        if (
+            o.event.kind is EventKind.DELAYED
+            and o.event.severity is Severity.SILENT
+            and not alert_facts(o.event).past_latest_arrival
+        ):
+            told = alert_facts(o.event).told
+            settings = self._alerts(o)
+            if told and (
+                max(int(t.said) for t in told) < settings.delay_min
+                or not any(
+                    next_stated_delay(
+                        t.previous_min, int(t.said), settings.delay_min, settings.delay_step_min
+                    ) != t.previous_min
+                    for t in told
+                )
+            ):
+                return False
         state = None if o.occurrence is None else self._occurrence(o.occurrence)
         if (
             state is not None

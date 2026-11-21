@@ -86,7 +86,8 @@ def segment_key(leg: Leg) -> str:
 
 
 def next_stated_delays(
-    last: Mapping[str, Delays] | None, classified: Sequence[ClassifiedLeg]
+    last: Mapping[str, Delays] | None, classified: Sequence[ClassifiedLeg],
+    delay_min: int = 3, delay_step_min: int = 3,
 ) -> dict[str, Delays]:
     """Per segment, the delays to state next, from what the last message stated about that
     same train over the same stops. A segment a relock brought in has no history and starts
@@ -96,8 +97,8 @@ def next_stated_delays(
     for c in classified:
         was = prev.get(segment_key(c.leg), (None, None))
         out[segment_key(c.leg)] = (
-            next_stated_delay(was[0], c.dep_delay_min),
-            next_stated_delay(was[1], c.arr_delay_min),
+            next_stated_delay(was[0], c.dep_delay_min, delay_min, delay_step_min),
+            next_stated_delay(was[1], c.arr_delay_min, delay_min, delay_step_min),
         )
     return out
 
@@ -329,6 +330,8 @@ def all_good(s: OccurrenceState, poll: PollAnswers, ctx: Ctx) -> AlertEvent | No
     for x in s.lock.legs:
         c = _leg_proven(x, newest, merged, poll.answers)
         if c is None:
+            return None
+        if max(c.dep_delay_min or 0, c.arr_delay_min or 0) >= ctx.profile.alerts.delay_min:
             return None
         seen.append(c)
     if not _changes_proven(seen, s.lock.legs, poll.answers, ctx.profile.transfer_min):

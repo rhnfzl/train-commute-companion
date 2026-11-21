@@ -267,6 +267,7 @@ class ToldDelay:
 
     slot: str
     said: str
+    previous_min: int | None = None  # recheck a held update after a repeat-step edit
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,6 +302,8 @@ class AlertFacts:
     choices: tuple[tuple[str, str], ...] = ()
     # silent by a rule, not by its kind (a guess at an other station): never escalated
     held: bool = False
+    # Keep arrival-limit protection when an uncertain boarding estimate makes the event silent.
+    past_latest_arrival: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,6 +495,8 @@ class AlertSettings:
     # a second or later miss from home (work on the way back) of the same day and direction
     # is silent: TCC chose that train itself after the first miss
     quiet_repeat_misses: bool = False
+    delay_min: int = 3
+    delay_step_min: int = 3
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]

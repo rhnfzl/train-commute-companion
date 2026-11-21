@@ -181,34 +181,38 @@ def catch_from_state(s: OccurrenceState, buffer_min: int, now: datetime) -> Catc
     return catch_from(now, buffer_min, s.tap_at if s.travelling else None, s.at_station)
 
 
-DELAY_STEP_MIN = 3
-
-
-def next_stated_delay(last_min: int | None, reported_min: int | None) -> int | None:
-    """The delay the user was last told, moved only by news (7.5): a 3-min step either way
-    from what was said, or back to normal at 1 min or less. A wobble around the last stated
-    delay keeps it, so +5 to +6 or +3 to +2 says nothing. No reported time keeps it too."""
+def next_stated_delay(
+    last_min: int | None, reported_min: int | None, delay_min: int = 3, delay_step_min: int = 3
+) -> int | None:
+    """Start at the profile threshold, then move by its repeat step in either direction.
+    Recovery to 1 minute or less always counts. No reported time keeps the stated delay."""
     if reported_min is None:
         return last_min
     said = last_min or 0
-    if said > ON_TIME_MAX_MIN and reported_min <= ON_TIME_MAX_MIN:
+    if not said:
+        return reported_min if reported_min >= delay_min else last_min
+    if reported_min <= ON_TIME_MAX_MIN and reported_min < said and (
+        said > ON_TIME_MAX_MIN or said >= delay_min
+    ):
         return 0
-    return reported_min if abs(reported_min - said) >= DELAY_STEP_MIN else last_min
+    return reported_min if abs(reported_min - said) >= delay_step_min else last_min
 
 
 def _recovery(
-    e: AlertEvent, facts: AlertFacts, before: Sequence[int], said: Sequence[int]
+    e: AlertEvent, facts: AlertFacts, before: Sequence[int], said: Sequence[int], delay_min: int
 ) -> AlertEvent | None:
     """A stated delay falling to on time is "back to normal" (1 min or less), one falling
-    under the 3-min step is "nearly on time" (7.5); an on-time train never stated late says
+    under the profile threshold is "nearly on time" (7.5); an on-time train never stated late says
     nothing. A loud delay (past the arrival limit) stays a loud delay: the limit still binds."""
-    if e.severity is Severity.LOUD:
+    if e.severity is Severity.LOUD or facts.past_latest_arrival:
         return e
     if max(said) <= ON_TIME_MAX_MIN:
-        if max(before) <= ON_TIME_MAX_MIN:
-            return None
+        if max(before) <= ON_TIME_MAX_MIN and max(before) < delay_min:
+            return e if max(said) >= delay_min else None
+        if max(before) == max(said):
+            return e
         kind, tail = EventKind.BACK_TO_NORMAL, "is back to normal, on time per NS."
-    elif max(said) < DELAY_STEP_MIN and max(before) > max(said):
+    elif max(said) < delay_min and max(before) > max(said):
         kind, tail = EventKind.NEARLY_ON_TIME, "is nearly on time."
     else:
         return e
@@ -221,12 +225,20 @@ def _delay_slots(e: AlertEvent, f: AlertFacts) -> list[str]:
     return [e.key + (f"#{d.tag}" if d.tag else "") for d in f.delays]
 
 
-def _stated_delays(e: AlertEvent, f: AlertFacts, keys: dict[str, str]) -> AlertEvent | None:
+def _stated_delays(
+    e: AlertEvent, f: AlertFacts, keys: dict[str, str], delay_min: int, delay_step_min: int
+) -> AlertEvent | None:
     """The event with its delays stated, remembered in `keys`; None when it is no news."""
     slots = _delay_slots(e, f)
     was = [None if keys.get(x) is None else int(keys[x]) for x in slots]
     live = [d.minutes for d in f.delays]
-    told = [next_stated_delay(w, n) for w, n in zip(was, live, strict=True)]
+    told = [
+        next_stated_delay(w, n, delay_min, delay_step_min)
+        for w, n in zip(was, live, strict=True)
+    ]
+    if e.kind is EventKind.DELAYED and (e.severity is Severity.LOUD or f.past_latest_arrival):
+        # The arrival limit protects the traveller regardless of delay preferences.
+        told = [w if n is None else n for w, n in zip(was, live, strict=True)]
     if told != was:  # news: the message states every live value, so each is remembered
         told = [t if n is None else n for t, n in zip(told, live, strict=True)]
     said = [t or 0 for t in told]
@@ -238,13 +250,17 @@ def _stated_delays(e: AlertEvent, f: AlertFacts, keys: dict[str, str]) -> AlertE
         facts=replace(
             f,
             delays=(),
-            told=tuple(ToldDelay(x, str(t)) for x, t in zip(slots, said, strict=True)),
+            told=tuple(
+                ToldDelay(x, str(t), w) for x, t, w in zip(slots, said, was, strict=True)
+            ),
         ),
     )
-    return _recovery(e, f, before, said) if e.kind is EventKind.DELAYED else e
+    return _recovery(e, f, before, said, delay_min) if e.kind is EventKind.DELAYED else e
 
 
-def keep_stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
+def keep_stated(
+    s: OccurrenceState, events: Sequence[AlertEvent], delay_min: int = 3, delay_step_min: int = 3
+) -> Transition:
     """A stated replacement time or delay in a key moves only by news (7.5): the delay last
     stated per fact is kept in `alert_keys`, so 09:05 to 09:08 is news again while 09:05 to
     09:06 is not. A delay brought back to on time becomes its recovery message."""
@@ -273,7 +289,7 @@ def keep_stated(s: OccurrenceState, events: Sequence[AlertEvent]) -> Transition:
         if not f.delays:
             out.append(e)
             continue
-        news = _stated_delays(e, f, keys)
+        news = _stated_delays(e, f, keys, delay_min, delay_step_min)
         if news is not None:
             out.append(news)
     return Transition(replace(s, alert_keys=keys) if keys != s.alert_keys else s, tuple(out))
@@ -310,7 +326,7 @@ def quiet_events(
 ) -> tuple[AlertEvent, ...]:
     """Q9 quiet early watch. Runs before `keep_stated`, so a delay held back here is never
     remembered as stated: at the active point it is news like any first delay (7.5). A delay
-    passes from QUIET_DELAY_MIN live minutes, when loud (past the arrival limit), or when a delay
+    passes from max(delay_min, QUIET_DELAY_MIN), when loud (past the arrival limit), or when a delay
     of that train was already stated (> ON_TIME_MAX_MIN in its slot), so a change or a recovery
     of something the user heard is told."""
     if not quiet_watch(s, ctx):
@@ -325,7 +341,10 @@ def quiet_events(
         told = (s.alert_keys.get(x) for x in _delay_slots(e, f))
         return (
             e.severity is Severity.LOUD
-            or any((d.minutes or 0) >= QUIET_DELAY_MIN for d in f.delays)
+            or any(
+                (d.minutes or 0) >= max(QUIET_DELAY_MIN, ctx.profile.alerts.delay_min)
+                for d in f.delays
+            )
             or any(x is not None and int(x) > ON_TIME_MAX_MIN for x in told)
         )
 
@@ -517,7 +536,10 @@ def _locked_tail(
     locked, left = _advance_all(locked, ctx, pool, live=True)
     out = [*events, *(e for e in left if skip is None or e.train != skip)]
     t = _follow(locked, ctx, pool, (answer.query,))
-    return keep_stated(t.state, quiet_events(t.state, ctx, (*out, *t.events)))
+    return keep_stated(
+        t.state, quiet_events(t.state, ctx, (*out, *t.events)),
+        ctx.profile.alerts.delay_min, ctx.profile.alerts.delay_step_min,
+    )
 
 
 def _lock_earliest(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transition:
@@ -911,9 +933,9 @@ def merged_pool(answers: Sequence[ProviderAnswer], query: Query | None = None) -
     return Pool(query or answers[0].query, (*conns, *frags), newest.fetched_at, tuple(answers))
 
 
-def observe(
-    pool: Pool, x: LegProgress
-) -> tuple[ClassifiedLeg | None, Observation, datetime | None]:
+def observe(pool: Pool, x: LegProgress, delay_min: int = 3) -> tuple[
+    ClassifiedLeg | None, Observation, datetime | None
+]:
     """The leg's classification, its observation over the whole poll, and when the answer it
     was read from was fetched."""
     leg, ob = find_leg(pool, x.train, x.board_station)
@@ -921,7 +943,9 @@ def observe(
         return None, ob, None
     # find_leg found the leg in this pool, and every fragment comes from a raw connection of
     # one of its answers
-    seen, best = present(current_run(pool.answers, leg.train, x.board_station, x.intended_alight))
+    seen, best = present(
+        current_run(pool.answers, leg.train, x.board_station, x.intended_alight, delay_min)
+    )
     if best.leg.alternative_transport and best.kind is not LegKind.CANCELLED:
         # 6.3: a train NS now runs as other transport is no train to follow; NS itself
         # usually shows that as a cancellation, so it alerts and relocks as one
@@ -1126,7 +1150,7 @@ def _relock(
         return Transition(_progress(s, legs), tuple(events))
     via = ", ".join(c.transfer_stations) or "a direct train"
     # the replacement by identity, not by its live time: a drifting estimate is not news (7.5)
-    # and its stated time by its delay, which `keep_stated` turns into 3-min news steps
+    # and its stated time by its delay, which `keep_stated` steps by the profile preference
     late = (_departure(c) - to_utc(c.legs[0].train.planned_departure)) // timedelta(minutes=1)
     named = tuple(train_ident(x.train) for x in c.legs)
     key_facts = f"{text}|" + ",".join(named)
@@ -1199,8 +1223,8 @@ def _past_limit(ctx: Ctx, arr: datetime | None, planned: datetime | None) -> boo
 def delayed_event(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg, *, last: bool) -> AlertEvent:
     """7.9 `delayed`: silent, loud when the last leg of the outbound journey arrives after
     `latest_acceptable_arrival` (compared as instants, 7.13). A broken change is its own loud
-    event. Departure and arrival delays are each stepped by `keep_stated`, so only a 3-min move of
-    either is news, and a fall back to on time becomes its recovery message (7.5)."""
+    event. Departure and arrival delays use the profile's news step in `keep_stated`.
+    A fall back to on time becomes its recovery message (7.5)."""
     dep, arr_late = cl.dep_delay_min, cl.arr_delay_min
     stop = next((st for st in cl.leg.stops[1:] if st.code == x.alight_stop), None)
     arr = None if stop is None or stop.arrival is None else stop.arrival.value
@@ -1220,6 +1244,7 @@ def delayed_event(ctx: Ctx, x: LegProgress, cl: ClassifiedLeg, *, last: bool) ->
         delays=(LiveDelay("d", dep), LiveDelay("a", arr_late)),
         subject=f"your {_name(x)}",
         crowd_note=crowd_text([cl.leg]),
+        past_latest_arrival=past,
     )
     return make_event(
         ctx, EventKind.DELAYED, sev, text + crowd_text([cl.leg]) + ".", x.train, _name(x), stated
@@ -1506,7 +1531,7 @@ def _follow(
     now = ctx.now
     legs = list(lock.legs)
     k = first_open(lock)
-    seen = [observe(pool, x) for x in legs]
+    seen = [observe(pool, x, ctx.profile.alerts.delay_min) for x in legs]
     obs = [o[0] for o in seen]
     rc = _planned_route_change(legs[k:], pool)
     w = _Watch(s, ctx, pool, asked, lock, obs, rc)
@@ -1752,7 +1777,10 @@ def on_poll(s: OccurrenceState, ctx: Ctx, poll: PollAnswers) -> Transition:
     quiet = quiet_events(t.state, ctx, (*events, *t.events))
     if unproven_station(start):
         quiet = tuple(held(e) for e in quiet)
-    return keep_stated(bumped(start, t.state), quiet)
+    return keep_stated(
+        bumped(start, t.state), quiet,
+        ctx.profile.alerts.delay_min, ctx.profile.alerts.delay_step_min,
+    )
 
 
 # --- arrival acceptance, location, missed legs (7.2, 7.7, 7.12 rules 6, 7) ---
@@ -1923,7 +1951,10 @@ def on_location(
     t = _locate(s, ctx, event, answer, watched)
     # rule 21: a lock, catchability or missed-leg change raises the generation; a repeat
     # report that changes none of them keeps polls in flight
-    return keep_stated(bumped(start, t.state), t.events)
+    return keep_stated(
+        bumped(start, t.state), t.events,
+        ctx.profile.alerts.delay_min, ctx.profile.alerts.delay_step_min,
+    )
 
 
 def _activity(ev: Evidence, at: datetime, kinds: frozenset[str]) -> datetime | None:
