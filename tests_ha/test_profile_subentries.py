@@ -205,15 +205,21 @@ async def test_failed_state_removal_is_retried_before_the_yaml_changes(hass, mon
     assert [row["id"] for row in yaml.safe_load(path.read_text())["profiles"]] == ["p2"]
 
 
-async def test_valid_yaml_removal_can_be_imported_again(hass):
+async def test_valid_yaml_removal_can_be_imported_again(hass, monkeypatch):
     h = await setup_tcc(hass, PROFILE, now="05:00")
     path = profiles_path(hass)
     rows = yaml.safe_load(path.read_text())["profiles"]
+
+    def fail_native_write(*_):
+        raise EditorError("file_changed")
+
+    monkeypatch.setattr(subentries, "_remove_from_yaml", fail_native_write)
     path.write_text(yaml.safe_dump({"profiles": rows[1:]}))
     assert await h.host.run(lambda rt: rt.reload()) is None
     await h.entry.runtime_data.coordinator.async_refresh()
     await hass.async_block_till_done(wait_background_tasks=True)
     assert {s.unique_id for s in h.entry.subentries.values()} == {"p2"}
+    assert not subentries.excluded_profile_ids(h.entry, str(path))
 
     path.write_text(yaml.safe_dump({"profiles": rows}))
     assert await h.host.run(lambda rt: rt.reload()) is None

@@ -134,6 +134,7 @@ def async_setup_profile_subentries(entry: TccConfigEntry, profiles_path: str) ->
     removal = asyncio.Lock()
     observed = set(profile_subentries(entry))
     restore_pending = bool(excluded_profile_ids(entry, profiles_path))
+    pruning_yaml = False
 
     async def apply_removals() -> None:
         async with removal:
@@ -166,7 +167,7 @@ def async_setup_profile_subentries(entry: TccConfigEntry, profiles_path: str) ->
 
     @callback
     def update() -> None:
-        nonlocal restore_pending
+        nonlocal pruning_yaml, restore_pending
         view = data.coordinator.data
         sync_profile_subentries(entry, profiles_path, view.profiles)
         if view.started and restore_pending:
@@ -179,16 +180,21 @@ def async_setup_profile_subentries(entry: TccConfigEntry, profiles_path: str) ->
             for profile_id in observed - configured - retained:
                 if (subentry := current.get(profile_id)) is None:
                     continue
-                if isinstance(source := subentry.data.get("source_path"), str):
-                    _save_managed(entry, source, _managed(entry, source) - {profile_id})
-                hass.config_entries.async_remove_subentry(entry, subentry.subentry_id)
+                # Home Assistant dispatches entry updates inside both calls.
+                pruning_yaml = True
+                try:
+                    if isinstance(source := subentry.data.get("source_path"), str):
+                        _save_managed(entry, source, _managed(entry, source) - {profile_id})
+                    hass.config_entries.async_remove_subentry(entry, subentry.subentry_id)
+                finally:
+                    pruning_yaml = False
             observed.intersection_update(profile_subentries(entry))
             observed.update(configured)
 
     @callback
     def changed(change: ConfigEntryChange, edited: ConfigEntry) -> None:
         nonlocal restore_pending
-        if change is not ConfigEntryChange.UPDATED or edited is not entry:
+        if pruning_yaml or change is not ConfigEntryChange.UPDATED or edited is not entry:
             return
         known = _managed(entry, profiles_path)
         present = profile_subentries(entry, profiles_path).keys()
