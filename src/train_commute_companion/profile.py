@@ -432,12 +432,16 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "channels",
             "compensation_reminder",
             "quiet_repeat_misses",
+            "weather",
             "delay_min",
             "delay_step_min",
         ),
         "alerts",
     )
     d = AlertSettings()
+    weather = raw.get("weather", True)
+    if not isinstance(weather, bool):
+        c.err("alerts.weather", "must be true or false")
     delays = {}
     for key in ("delay_min", "delay_step_min"):
         value = raw.get(key, getattr(d, key))
@@ -513,6 +517,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         channels,
         compensation,
         repeat,
+        weather=weather,
         delay_min=delays["delay_min"],
         delay_step_min=delays["delay_step_min"],
     )

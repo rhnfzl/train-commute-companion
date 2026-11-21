@@ -35,6 +35,7 @@ profiles:
       # other_stations: [GV]        # board here too, see docs/other-boarding-station.md
     transfer_min: { UT: 4 }   # minutes you need to change trains, for every transfer station
     alerts:
+      weather: true                    # station forecasts and tips; warnings need your own KNMI key
       earlier_train_threshold_min: 10   # advise an earlier train from this much delay
       earlier_train_min_saving_min: 5   # only if it saves at least this much
       latest_acceptable_arrival: null   # optional "HH:MM"; later arrival makes delays loud

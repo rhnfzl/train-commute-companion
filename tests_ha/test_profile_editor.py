@@ -51,6 +51,17 @@ def test_new_profile_is_valid_and_written_only_when_saved(tmp_path):
     assert doc.path.read_text() == text
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_weather_switch_preserves_other_alert_settings(tmp_path, enabled):
+    raw = yaml.safe_load(PROFILE)
+    raw["profiles"][0]["alerts"] = {"quiet_hours": ["20:00", "06:00"]}
+    doc = document(tmp_path, yaml.safe_dump(raw))
+    text = edit_profile(doc, "p1", {**VALUES, "weather": enabled}, KNOWN, TODAY)
+    profiles, errors = parse_profiles(text, KNOWN)
+    assert not errors and profiles[0].alerts.weather is enabled
+    assert yaml.safe_load(text)["profiles"][0]["alerts"]["quiet_hours"] == ["20:00", "06:00"]
+
+
 def test_edit_preserves_id_and_all_advanced_fields(tmp_path):
     raw = yaml.safe_load(PROFILE)
     p = raw["profiles"][0]

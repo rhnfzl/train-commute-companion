@@ -39,6 +39,7 @@ from . import host as host_mod
 from . import notifier as notifier_mod
 from .arrival_flow import ArrivalFlow
 from .const import (
+    CONF_KNMI_API_KEY,
     CONF_LOUD_STYLE,
     CONF_NOTIFICATIONS_ENABLED_ENTITY,
     CONF_NOTIFICATIONS_QUIET_ENTITY,
@@ -443,7 +444,39 @@ class TccOptionsFlow(
         self._style = opts.get(CONF_LOUD_STYLE, DEFAULT_LOUD_STYLE)
         return self.async_show_menu(
             step_id="init",
-            menu_options=["profiles", "validate", "settings", "webhooks", "recovery", "arrival"],
+            menu_options=[
+                "profiles",
+                "validate",
+                "settings",
+                "webhooks",
+                "weather",
+                "recovery",
+                "arrival",
+            ],
+        )
+
+    async def async_step_weather(
+        self,
+        user_input: Mapping[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        if user_input is not None:
+            return self.async_create_entry(
+                data={
+                    **self.config_entry.options,
+                    CONF_KNMI_API_KEY: user_input.get(CONF_KNMI_API_KEY, "").strip(),
+                }
+            )
+        return self.async_show_form(
+            step_id="weather",
+            description_placeholders={"knmi_portal": "https://developer.dataplatform.knmi.nl/"},
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_KNMI_API_KEY,
+                        default=self.config_entry.options.get(CONF_KNMI_API_KEY, ""),
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+                }
+            ),
         )
 
     async def async_step_profiles(

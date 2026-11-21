@@ -66,6 +66,7 @@ from train_commute_companion.model import (
     direction_key,
 )
 from train_commute_companion.providers.base import ActiveDisruption, ProviderAnswer, Query
+from train_commute_companion.providers.weather import WeatherView
 from train_commute_companion.recovery import (
     RecoveryItinerary,
     payload,
@@ -200,6 +201,7 @@ class OccurrenceView:
     recovery_offer: RecoveryOffer | None = None
     selected_recovery: SelectedRecovery | None = None
     train_context: VehicleSnapshot | None = None
+    weather: tuple[WeatherView, ...] = ()
     usual_departure: datetime | None = None
     # a window day: the earliest (stay end included) and latest departure; None on a fixed day
     window: tuple[datetime, datetime] | None = None

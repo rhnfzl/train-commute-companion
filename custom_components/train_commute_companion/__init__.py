@@ -13,12 +13,14 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
+from train_commute_companion.providers.weather import WeatherProvider
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.store import JsonFileStore
 from train_commute_companion.webhook_send import WebhookPoster
 
 from . import host as host_mod
 from .const import (
+    CONF_KNMI_API_KEY,
     CONF_LOUD_STYLE,
     CONF_NOTIFICATIONS_ENABLED_ENTITY,
     CONF_NOTIFICATIONS_QUIET_ENTITY,
@@ -65,6 +67,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
     # plain values read here on hass.loop; build runs on the runtime thread and touches only these
     state_path = Path(hass.config.path(DOMAIN, f"state-{entry.entry_id}.json"))
     api_key: str = entry.data[CONF_API_KEY]
+    knmi_key: str | None = entry.options.get(CONF_KNMI_API_KEY) or None
     started = bool(entry.data.get(CONF_STARTED, False))
     profiles_path: str = entry.options.get(
         CONF_PROFILES_PATH, hass.config.path(DOMAIN, "profiles.yaml")
@@ -101,6 +104,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
     def build() -> host_mod.Parts:
         clock = host_mod.make_clock()
         provider, close = host_mod.make_provider(api_key, clock)
+        weather_client = host_mod.make_weather_client()
+        close = _closing_client(close, weather_client)
         webhooks = None
         if webhook_urls:
             client = host_mod.make_webhook_client()
@@ -123,6 +128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
             require_stations=True,
             webhooks=webhooks,
             primary_destination=lambda: notifier.destination_id,
+            weather=WeatherProvider(weather_client, clock.now, knmi_key),
         )
         return host_mod.Parts(rt, clock, close)
 

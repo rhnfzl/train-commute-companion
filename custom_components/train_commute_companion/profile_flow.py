@@ -473,10 +473,11 @@ class ProfileEditorFlow:
             )] = NumberSelector(
                 NumberSelectorConfig(min=1, max=1440, step=1, mode=NumberSelectorMode.BOX)
             )
-        for key in ("compensation_reminder", "quiet_repeat_misses"):
+        for key in ("compensation_reminder", "quiet_repeat_misses", "weather"):
             fields[
                 vol.Optional(
-                    key, default=values.get(key, existing.get("alerts", {}).get(key, False))
+                    key,
+                    default=values.get(key, existing.get("alerts", {}).get(key, key == "weather")),
                 )
             ] = BooleanSelector()
         location = existing.get("location")

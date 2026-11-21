@@ -361,7 +361,7 @@ async def test_an_empty_catalogue_is_a_clear_error_and_does_not_write(hass):
 async def test_options_profile_edit_preserves_advanced_settings(hass):
     raw = yaml.safe_load(PROFILE)
     raw["profiles"][0]["pauses"] = [{"start": "2027-04-01", "end": "2027-04-07"}]
-    raw["profiles"][0]["alerts"] = {"delay_min": 7, "delay_step_min": 4}
+    raw["profiles"][0]["alerts"] = {"delay_min": 7, "delay_step_min": 4, "weather": False}
     write_profiles(hass, yaml.safe_dump(raw))
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -394,7 +394,7 @@ async def test_options_profile_edit_preserves_advanced_settings(hass):
     assert saved["profiles"][0]["id"] == "p1"
     assert saved["profiles"][0]["pauses"] == raw["profiles"][0]["pauses"]
     assert saved["profiles"][0]["alerts"] == {
-        "delay_min": 10, "delay_step_min": 5, "disabled_categories": []
+        "delay_min": 10, "delay_step_min": 5, "disabled_categories": [], "weather": False
     }
     assert saved["profiles"][1] == raw["profiles"][1]
 

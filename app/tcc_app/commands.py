@@ -23,8 +23,10 @@ from train_commute_companion.model import (
     present,
     split_direction_key,
 )
+from train_commute_companion.providers.weather import weather_text
 from train_commute_companion.recovery import render as render_recovery
 from train_commute_companion.recovery_state import RecoveryOffer, SelectedRecovery
+from train_commute_companion.serde import encode
 from train_commute_companion.vehicle import render_snapshot, snapshot_payload
 from train_commute_companion.view import LegView, OccurrenceView, RecoveryPlanView, RuntimeView
 from train_commute_companion.webhook import WebhookTestResult
@@ -209,6 +211,7 @@ def _occurrence(o: OccurrenceView) -> list[str]:
         if recovering:
             out.append("  Original train vehicle context (not the selected recovery):")
         out.extend("  " + line for line in render_snapshot(o.train_context).splitlines())
+    out.extend("  " + weather_text(w) for w in o.weather)
     for disruption in o.disruptions:
         out.append(
             f"  NS disruption context: {disruption.title} Possible route impact; check your journey."
@@ -393,6 +396,7 @@ def connections_tool(
             if o.selected_recovery is None
             else o.selected_recovery.fields(v.at),
             "train_context": None if o.train_context is None else snapshot_payload(o.train_context),
+            "weather": [{**encode(w), "text": weather_text(w)} for w in o.weather],
         }
         for o in occs
     ]
