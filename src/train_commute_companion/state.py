@@ -202,6 +202,7 @@ class DisruptionNotice:
     instance: str = ""
     audience: frozenset[str] | None = None
     receipts: Mapping[str, DisruptionReceipt] = field(default_factory=dict)
+    suppressed_destinations: frozenset[str] = frozenset()
 
 
 PromptStage = Literal["ask", "remember", "pick"]
@@ -459,3 +460,7 @@ class LookAheadLedger:
     # pending obligation id -> its facts, so one fact can be withdrawn from a message that
     # bundles several (7.12 rule 18)
     facts: Mapping[str, tuple[LookAheadFact, ...]] = field(default_factory=dict)
+    # Correction fact key -> recipients that accepted its adoption. Empty means none accepted.
+    adoption_receipts: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    # Correction fact key -> ID of the original adoption obligation.
+    adoption_ids: Mapping[str, str] = field(default_factory=dict)

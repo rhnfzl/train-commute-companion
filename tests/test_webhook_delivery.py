@@ -779,6 +779,13 @@ def wed_posts(ep: Endpoint) -> list[tuple[str, str]]:
     ]
 
 
+def assert_adoption_and_correction_once(ep: Endpoint, o: Obligation) -> None:
+    (adoption, correction) = wed_posts(ep)
+    assert adoption[0] == event_id(o.id) and adoption[1] == o.event.text
+    assert correction[0] != adoption[0] and "ignore the earlier change" in correction[1]
+    assert WARNING not in correction[1]
+
+
 @pytest.mark.parametrize("variant", ["works_continue", "works_gone", "phone_pending"])
 async def test_withdrawn_adoption_keeps_the_owed_warning_copy(tmp_path, variant):  # rules 18, 5
     rig = await mixed_rig(tmp_path)
@@ -813,8 +820,8 @@ async def test_withdrawn_adoption_keeps_the_owed_warning_copy(tmp_path, variant)
         assert warned == []
     else:
         assert len(warned) == 1 and "NS moved your" not in warned[0][1]
-    if variant != "phone_pending":
-        assert len([t for _, t in posts if "ignore the earlier change" in t]) == 1
+    # The failed webhook never received the adoption, so it gets no correction.
+    assert not any("ignore the earlier change" in t for _, t in posts)
 
 
 @pytest.mark.parametrize("two", [False, True])
@@ -829,18 +836,11 @@ async def test_rewrite_during_an_accepted_first_post_ends_the_copy(tmp_path, two
     c = seam.owed_copies(rig.rt)[event_id(o.id)]
     t0 = rig.clock.now()
     assert c.first_try == t0 and c.last_try is None  # its first POST is in flight
-    rig.clock.jump(5)
-    rig.provider.times = CONTINUE
-    second = asyncio.create_task(rig.rt.lookahead_once())
-    for _ in range(200):
-        await asyncio.sleep(0)
-        if seam.owed_copies(rig.rt).get(c.id) is not c:
-            break
-    assert "NS moved your" not in seam.owed_copies(rig.rt)[c.id].obligation.event.text  # rewritten
+    await withdraw(rig)  # Rewrite the copy while the first POST is still in flight.
+    assert "NS moved your" not in seam.owed_copies(rig.rt)[c.id].obligation.event.text
     rig.ends[HOST2].status = 503
     gate.set()
     await first
-    await second
     if not two:
         assert c.id not in seam.owed_copies(rig.rt) and c.id not in {
             x.id for x in stored_copies(rig)
@@ -927,16 +927,17 @@ async def test_partial_relapse_or_recovery_sends_only_live_facts(tmp_path, chang
     await tick(rig)
     phone = [(e.kind.value, e.text) for e in rig.notifier.attempts if e.key == o.event.key]
     hook = [
-        (r.headers["webhook-id"], p["kind"], p["text"])
+        (p["key"], p["kind"], p["text"])
         for r, p in rig.end.accepted
-        if p["key"] == o.event.key
+        if r.headers["webhook-id"] == event_id(o.id)
     ]
     if stale:
         assert phone == [] and hook == []
         return
     kind, text = render_message(rig.rt.config.profiles[0], o.look_ahead[2], live)
     assert phone == [(kind.value, text)]
-    assert hook == [(event_id(o.id), kind.value, text)]
+    key = o.event.key.removesuffix(o.fact_key) + ";".join(f.key for f in live)
+    assert hook == [(key, kind.value, text)]
 
 
 async def test_start_without_webhooks_drops_saved_copies(tmp_path, caplog):  # Review Focus 13
@@ -1244,7 +1245,7 @@ async def test_carried_bundle_keeps_an_acceptance_the_store_missed(tmp_path):  #
     rig.notifier.fails = lambda e: False
     await tick(rig)
     assert [e.key for e in rig.rt.events_log].count(n.event.key) == 1  # the phone, once
-    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)]  # the receiver, never again
+    assert_adoption_and_correction_once(rig.end, o)
 
 
 async def test_background_write_keeps_the_mark_of_an_in_flight_phone_send(tmp_path):  # rule 22
@@ -1287,7 +1288,7 @@ async def test_background_write_keeps_the_mark_of_an_in_flight_phone_send(tmp_pa
     await tick(rig)
     await rig.rt.webhooks_idle()
     assert [e.key for e in rig.rt.events_log].count(n.event.key) == 1  # the phone, once
-    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)]  # the receiver, never again
+    assert_adoption_and_correction_once(rig.end, o)
 
 
 async def test_background_write_keeps_the_mark_of_a_held_in_flight_phone_send(tmp_path):
@@ -1340,7 +1341,7 @@ async def test_background_write_keeps_the_mark_of_a_held_in_flight_phone_send(tm
     await tick(rig)
     await rig.rt.webhooks_idle()
     assert [e.key for e in rig.rt.events_log].count(n.event.key) == 1  # the phone, once
-    assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)]  # the receiver, never again
+    assert_adoption_and_correction_once(rig.end, o)
 
 
 async def test_a_try_cut_off_by_shutdown_still_starts_the_two_hours(tmp_path, caplog):  # Q1

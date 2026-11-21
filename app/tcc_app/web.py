@@ -19,6 +19,8 @@ from train_commute_companion.calendar_export import CalendarExportError, export_
 from train_commute_companion.route_export import export_preview
 from train_commute_companion.view import RuntimeView
 
+from .ntfy import NtfyProof
+from .today import ICONS, MANIFEST, MANIFEST_PATH, PAUSED_PATH, TODAY_PATH
 from .today import render as render_today
 
 log = logging.getLogger(__name__)
@@ -39,6 +41,7 @@ TODAY_HEADERS = (
     "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; "
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
+TODAY_PAGE_HEADERS = TODAY_HEADERS + "; manifest-src 'self'; img-src 'self'"
 
 
 def health_report(
@@ -138,11 +141,13 @@ def _authorized(header: str | None, secret: str) -> bool:
     return hmac.compare_digest(decoded.partition(b":")[2], secret.encode())
 
 
-def _today_authorized(header: str | None, token: str) -> bool:
+def _bearer_authorized(header: str | None, token: str) -> bool:
     scheme, _, given = (header or "").partition(" ")
-    return (
-        scheme.lower() == "bearer" and hmac.compare_digest(given.encode(), token.encode())
-    ) or _authorized(header, token)
+    return scheme.lower() == "bearer" and hmac.compare_digest(given.encode(), token.encode())
+
+
+def _today_authorized(header: str | None, token: str) -> bool:
+    return _bearer_authorized(header, token) or _authorized(header, token)
 
 
 def _response(
@@ -163,8 +168,7 @@ def health_for(
 ) -> tuple[int, dict[str, Any]]:
     """The full report only with `Authorization: Bearer <token>`; the peer address is no trust
     signal (a proxy in the same network namespace connects from loopback). Everyone else gets `ok`."""
-    scheme, _, given = headers.get("authorization", "").partition(" ")
-    if token and scheme.lower() == "bearer" and hmac.compare_digest(given.encode(), token.encode()):
+    if token and _bearer_authorized(headers.get("authorization"), token):
         return status, report
     return status, {"ok": bool(report.get("ok"))}
 
@@ -178,6 +182,7 @@ async def start_web(
     host: str = "0.0.0.0",
     health_token: str | None = None,
     today: Callable[[], tuple[RuntimeView, bool]] | None = None,
+    delivery: NtfyProof | None = None,
 ) -> asyncio.Server:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -186,8 +191,25 @@ async def start_web(
             except _Refused as e:
                 writer.write(_response(e.status))
             else:
-                if method == "GET" and (
-                    path == "/today" or path.startswith(("/calendar/", "/preview/"))
+                if method == "GET" and (path == MANIFEST_PATH or path in ICONS):
+                    if not health_token or today is None:
+                        writer.write(_response(404, extra=TODAY_HEADERS))
+                    elif path == MANIFEST_PATH:
+                        writer.write(
+                            _response(
+                                200,
+                                json.dumps(MANIFEST).encode(),
+                                "application/manifest+json",
+                                TODAY_HEADERS,
+                            )
+                        )
+                    else:
+                        writer.write(
+                            _response(200, ICONS[path].read_bytes(), "image/png", TODAY_HEADERS)
+                        )
+                elif method == "GET" and (
+                    path in (TODAY_PATH, PAUSED_PATH)
+                    or path.startswith(("/calendar/", "/preview/"))
                 ):
                     if not health_token or today is None:
                         writer.write(_response(404, extra=TODAY_HEADERS))
@@ -202,13 +224,15 @@ async def start_web(
                         )
                     else:
                         view, confirmed = today()
-                        if path == "/today":
+                        if path in (TODAY_PATH, PAUSED_PATH):
                             writer.write(
                                 _response(
                                     200,
-                                    render_today(view, confirmed).encode(),
+                                    render_today(
+                                        view, confirmed, paused=path == PAUSED_PATH
+                                    ).encode(),
                                     "text/html; charset=utf-8",
-                                    TODAY_HEADERS,
+                                    TODAY_PAGE_HEADERS,
                                 )
                             )
                         else:
@@ -247,9 +271,27 @@ async def start_web(
                                         + f'\r\nContent-Disposition: attachment; filename="{filename}"',
                                     )
                                 )
+                elif method == "POST" and path in ("/delivery/test", "/delivery/confirm"):
+                    if delivery is None or not health_token:
+                        writer.write(_response(404))
+                    elif not _bearer_authorized(headers.get("authorization"), health_token):
+                        writer.write(_response(401))
+                    else:
+                        status, result = await (
+                            delivery.test() if path == "/delivery/test" else delivery.confirm(body)
+                        )
+                        writer.write(
+                            _response(
+                                status, json.dumps(result).encode(), extra="Cache-Control: no-store"
+                            )
+                        )
                 elif method == "GET" and path == "/health":
                     status, report = health_for(headers, *health(), health_token)
-                    writer.write(_response(status, json.dumps(report).encode()))
+                    writer.write(
+                        _response(
+                            status, json.dumps(report).encode(), extra="Cache-Control: no-store"
+                        )
+                    )
                 elif method == "POST" and path == "/owntracks" and owntracks and secret:
                     if not _authorized(headers.get("authorization"), secret):
                         writer.write(_response(401, extra='WWW-Authenticate: Basic realm="tcc"'))

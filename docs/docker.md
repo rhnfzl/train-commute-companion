@@ -1,20 +1,27 @@
 # Run with Docker
 
-The Docker app follows your usual NS train journey and sends alerts to a private Telegram chat. Alerts that matter ring; quiet ones arrive without sound (Telegram has no time-sensitive or critical tier). Buttons on the alerts and a few commands let you pick a train, say you are leaving, or skip a day.
+The Docker app follows your usual NS train journey and sends phone alerts through ntfy or Telegram.
+ntfy needs no bot setup. Telegram adds buttons and commands to pick a train, say you are leaving, or skip a day.
+Loud and quiet delivery requests depend on your phone settings. Neither transport provides guaranteed critical alerts.
 
 Data: NS.
 
 [Commute weather](weather.md) uses keyless station forecasts. Set the optional `KNMI_API_KEY` in `.env` for official warnings.
 
-For multiple travellers, use the [separate household companions](household.md) recipe. Each companion has its own bot, location endpoint and stored data.
+For multiple travellers, use the [separate household companions](household.md) recipe.
+Each companion needs its own private phone destination, location endpoint, and stored data.
 
 ## What you need
 
 - Docker with Compose. The image runs on amd64 and arm64, so a Raspberry Pi with a 64-bit OS works too.
 - Your own NS API key. None is bundled. [Get an NS API key](ns-api-key.md) shows how.
-- A Telegram bot token. Create a bot with BotFather and copy the token.
+- Your own [ntfy topic and access token](ntfy.md), or a Telegram bot token from BotFather.
 
 ## First run
+
+For phone alerts without Telegram or Home Assistant, follow [ntfy phone push](ntfy.md) after downloading the files below.
+With ntfy configured, leave `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` blank. It needs no Telegram setup link.
+The steps below describe Telegram setup.
 
 You need no clone and no build. Download the compose file, settings template and example profile:
 
@@ -148,11 +155,15 @@ Everything comes from the environment (`.env`):
 | Variable | Meaning |
 | --- | --- |
 | `NS_API_KEY` | required, the primary key of the NS-App product; see [NS API key](ns-api-key.md) |
-| `TELEGRAM_BOT_TOKEN` | the bot token |
+| `TELEGRAM_BOT_TOKEN` | the bot token; optional when ntfy is configured |
 | `TELEGRAM_CHAT_ID` | optional manual override; blank uses the saved private claim or prints a one-time setup link and QR |
 | `OWNTRACKS_SECRET` | optional, 16+ printable ASCII characters without spaces; turns on the OwnTracks endpoint |
 | `TCC_HEALTH_TOKEN` | optional override, 16+ printable ASCII characters without spaces; otherwise generated and saved in `/data/health-token`; grants full `/health` and Today access |
 | `TCC_LOOKAHEAD_AT` | when the planned-works look-ahead runs, `HH:MM`, default `06:00` |
+| `TCC_NTFY_TOPIC` | optional random private topic, 32-64 letters, digits, `_` or `-`; requires your access token |
+| `TCC_NTFY_TOKEN` | your ntfy user access token; required with the topic |
+| `TCC_NTFY_SERVER` | optional HTTPS server root, default `https://ntfy.sh`; no path, credentials, query or fragment |
+| `TCC_NTFY_ENABLED` | `true` by default when configured; `false` disables ntfy while retaining valid settings; another phone transport is required |
 | `TCC_PROFILES` | profile file path inside the container, default `/config/profiles.yaml` |
 | `TCC_STATE_DIR` | writable persistent state directory, default `/data`; also holds the generated health token |
 | `TCC_WEBHOOK_URLS` | optional; webhook URLs separated by spaces or commas, for example `http://localhost:8644/webhooks/commute` |
@@ -178,7 +189,13 @@ A machine that is off cannot warn about itself, so point an external uptime chec
 
 ## Today web status
 
-Open `http://127.0.0.1:8080/today` to read current journeys, NS data freshness and service warnings. Unselected replacement plans remain proposals. Followed recovery shows explicit user-confirmed progress. Refresh the page manually for a new snapshot.
+Open `http://127.0.0.1:8080/today` to read current journeys, NS data freshness and service warnings. Unselected replacement plans remain proposals. Followed recovery shows progress you explicitly confirmed.
+
+Today refreshes once a minute while open. It reads the companion's current snapshot and makes no extra NS requests. Select **Refresh status** to update now or **Pause auto-refresh** to stop automatic updates.
+
+In a browser with home screen support, sign in to Today and choose **Add to Home Screen** or **Install app**. The shortcut opens the same private page. Your browser may ask you to sign in again. The shortcut needs a connection to your companion. [Web App Manifest specification](https://www.w3.org/TR/appmanifest/)
+
+`alerts.live_today` defaults to `true`. If any profile on the page sets it to `false`, Today offers manual refresh and omits the home screen manifest link for the whole page.
 
 The generated health token enables the page automatically. You can override it with `TCC_HEALTH_TOKEN` in `.env`.
 Apply an override with `docker compose up -d --force-recreate tcc`.
@@ -214,6 +231,21 @@ The preview includes only that journey's station codes, train numbers, planned d
 
 Anyone with the downloaded file can read its travel route and dates without a login. Share it deliberately. The preview is a saved timetable, not live status or proof of travel. The private download URL still requires your Today login. The companion does not publish an anonymous URL.
 
+## Pinned Telegram status
+
+After you confirm the loud and quiet tests, the companion adds one status pin in the bound private Telegram chat. It silently sends and pins the first message, then edits it when journey details change. The pin includes train numbers, times, platforms, delays and service warnings. Send `/status` for the full report.
+
+```yaml
+alerts:
+  telegram_status_pin: false
+```
+
+`alerts.telegram_status_pin` defaults to `true`. Set it to `false` to omit a profile from the pin. When every profile is off or removed, the companion clears its own status text and unpins it, without creating a new one. If Telegram refuses the edit, the companion still tries to unpin its message. Other pins stay in place. [Telegram Bot API](https://core.telegram.org/bots/api#pinchatmessage)
+
+To remove all profiles from a running app, replace the file contents with `profiles: []`. After reload, the next status update clears the pin. Invalid profile edits keep the previous configuration active.
+
+If you change the bot or chat, confirm delivery again for the new destination. Remove an old pin from a previous destination in Telegram if you no longer want it there.
+
 ## Webhooks
 
 With `TCC_WEBHOOK_URLS` set, every alert is also posted as signed JSON to each URL; [Webhooks](webhooks.md) has the payload, the headers and how to verify them. The payload carries profile names, stations and times, so prefer a receiver on the same machine, and use https for one anywhere else. `/test` also sends a signed loud and a signed silent test to each webhook and replies with one line per webhook saying whether it accepted both; only your tap on the phone test confirms delivery. A webhook that is down never holds back a phone alert and never turns `/health` to 503: the full report's `webhooks_failing` is `true` while some webhook URL is resting after a failed post and `null` without webhooks. Like every other detail it shows only in the full report, with `TCC_HEALTH_TOKEN`.
@@ -243,9 +275,9 @@ Add [holiday pause ranges](holiday-pauses.md) to the shared profile file to susp
 
 ## Email copies
 
-The Docker app can send native email copies alongside Telegram through certificate-verified SMTP SSL or STARTTLS. Configure `SMTP_HOST`, `SMTP_SECURITY`, `SMTP_FROM`, and `SMTP_TO`; add `SMTP_PORT`, `SMTP_USERNAME`, and `SMTP_PASSWORD` when required. [Email copies](email.md) explains setup, privacy, retries, and the separate email test command.
+The Docker app can send native email copies alongside ntfy or Telegram through certificate-verified SMTP SSL or STARTTLS. Configure `SMTP_HOST`, `SMTP_SECURITY`, `SMTP_FROM`, and `SMTP_TO`; add `SMTP_PORT`, `SMTP_USERNAME`, and `SMTP_PASSWORD` when required. [Email copies](email.md) explains setup, privacy, retries, and the separate email test command.
 
-Individual notification categories can use email only. Telegram remains required for setup and phone delivery confirmation.
+Individual notification categories can use email only. Confirm phone delivery through ntfy's local test or Telegram's `/test`.
 
 ### Follow a recovery journey
 

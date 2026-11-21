@@ -67,6 +67,8 @@ alerts:
 Set `leave_by: false` to hide this text and the Home Assistant status sensor's `leave_by` timestamp.
 With fresh departure-station weather, `weather_allowance` suggests extra minutes in this text. It defaults to on and changes advice only.
 Set `alerts.weather_allowance: false` to keep the usual leave-by time. See the [minute table and limits](weather.md#suggested-extra-time-before-departure).
+
+Docker profiles also accept `alerts.live_today` and `alerts.telegram_status_pin`. Both default to `true`. These settings control [Today refresh and the home screen shortcut](docker.md#today-web-status) and [the Telegram status pin](docker.md#pinned-telegram-status).
 The HA profile details form has the same **Show leave-by time** switch. It does not change notification timing.
 Use per-direction `active_lead_min` for check-in timing. Its default is `buffer_min + 15` when omitted.
 
@@ -116,7 +118,10 @@ alerts:
     delays: [primary]
 ```
 
-`primary` means the configured Telegram chat or Home Assistant phone. `email` means native SMTP delivery in Docker. `webhook` means every configured webhook URL. A category omitted from `channels` uses all configured channels. `disabled_categories` overrides channel choices.
+`primary` means the configured ntfy destination, Telegram chat, or Home Assistant phone.
+In Docker, configured ntfy becomes primary; Telegram can still provide commands and answers.
+`email` means native SMTP delivery in Docker. `webhook` means every configured webhook URL.
+A category omitted from `channels` uses all configured channels. `disabled_categories` overrides channel choices.
 
 Channel lists must contain at least one of `primary`, `email`, or `webhook`. Use `disabled_categories` to suppress a category entirely. Unknown categories and channels are rejected. Reliability and command feedback continue through all configured channels.
 

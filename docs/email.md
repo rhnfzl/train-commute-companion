@@ -1,8 +1,10 @@
 # Email copies
 
-The Docker app can email commute alerts alongside Telegram. Email copies help you keep a searchable record of changes.
+The Docker app can email commute alerts alongside ntfy or Telegram. Email copies help you keep a searchable record of changes.
 
-Telegram remains required for setup, interaction, and phone delivery confirmation. Individual [notification categories](notification-preferences.md) can use email only, after SMTP is configured. This does not remove the phone setup requirement.
+Confirm phone delivery through [ntfy's local setup test](ntfy.md#confirm-both-phone-alerts) or Telegram's `/test`.
+Individual [notification categories](notification-preferences.md) can use email only, after SMTP is configured.
+This does not remove the phone setup requirement. Journey actions remain on Telegram or Home Assistant where configured.
 
 ## Configure SMTP
 
@@ -37,7 +39,7 @@ Emails include the profile name and alert text. That text can identify stations,
 
 A new email copy waits until its original recipient IDs are saved. If storage fails before that write, the copy stays held. This prevents a crash and recipient change from forwarding a fact already disclosed to another recipient.
 
-Each destination has its own durable receipt. A failed email never repeats an accepted Telegram message or accepted webhook. Failed email copies retry after a 60-second rest. The shared auxiliary outbox keeps at most 200 copies and gives up two hours after the first attempt. Stale or superseded journey alerts can end earlier.
+Each destination has its own durable receipt. A failed email never repeats an accepted phone message or accepted webhook. Failed email copies retry after a 60-second rest. The shared auxiliary outbox keeps at most 200 copies and gives up two hours after the first attempt. Stale or superseded journey alerts can end earlier.
 
 A crash between SMTP acceptance and saving its receipt can repeat an email. Retries keep the same Message-ID. Mail servers may still display duplicates.
 

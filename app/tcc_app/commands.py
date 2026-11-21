@@ -132,13 +132,23 @@ def parse_target(view: RuntimeView, args: Sequence[str]) -> Target:
     return Target(profile[0], profile[1], direction, service_date, departure, train, whole_day)
 
 
-def _leg_line(x: LegView, prefix: str = "  ") -> str:
+def _leg_line(x: LegView, prefix: str = "  ", *, for_pin: bool = False) -> str:
     state = "on time per NS" if x.state is LegKind.OK else x.state  # never read as proven (rule 20)
     line = f"{prefix}{hhmm(x.departure or x.planned_departure)} {x.board} to {x.alight}: {state}"
     if x.departure_delay_min:
         line += f", +{x.departure_delay_min} min"
     if x.departure_platform:
         line += f", platform {x.departure_platform}"
+    if for_pin:
+        line += f", train {x.train_number}"
+        if x.arrival is not None:
+            line += f", reported arrival {hhmm(x.arrival)}"
+        elif x.planned_arrival is not None:
+            line += f", planned arrival {hhmm(x.planned_arrival)}"
+        if x.arrival_delay_min:
+            line += f" (+{x.arrival_delay_min} min)"
+        if x.arrival_platform:
+            line += f", arrival platform {x.arrival_platform}"
     if x.crowd_forecast is not None:
         line += f", crowd forecast: {x.crowd_forecast} per NS"
     if x.exit_side is not None:
@@ -160,7 +170,7 @@ def _next_time(c: Connection) -> datetime:
     return reported or b.planned_departure or c.legs[0].train.planned_departure
 
 
-def _occurrence(o: OccurrenceView) -> list[str]:
+def _occurrence(o: OccurrenceView, *, for_pin: bool = False) -> list[str]:
     k = o.key
     recovering = o.selected_recovery is not None and o.selected_recovery.status == "active"
     state = "recovery active" if recovering else o.direction_state.value
@@ -175,7 +185,7 @@ def _occurrence(o: OccurrenceView) -> list[str]:
     if recovering:
         out.append(f"  Original train monitoring state: {o.direction_state.value}.")
         out.append("  Original train legs (separate from selected recovery):")
-    out.extend(_leg_line(x) for x in o.legs)
+    out.extend(_leg_line(x, for_pin=for_pin) for x in o.legs)
     for t in o.transfers:
         label = "original train change" if recovering else "change"
         line = f"  {label} at {t.station}: {t.state.value}"
@@ -185,10 +195,18 @@ def _occurrence(o: OccurrenceView) -> list[str]:
     for journey in o.retained:
         if recovering:
             out.append("  Original retained train warnings:")
-        out += [_leg_line(x, f"  if you are on the {hhmm(x.planned_departure)}: ") for x in journey]
+        out.extend(
+            _leg_line(x, f"  if you are on the {hhmm(x.planned_departure)}: ", for_pin=for_pin)
+            for x in journey
+        )
     if o.next_good is not None and not recovering:
+        leg = o.next_good.legs[0]
+        number = f", train {leg.train.train_number}" if for_pin else ""
+        track = leg.board.actual_track or leg.board.planned_track
+        if for_pin and track:
+            number += f", platform {track}"
         out.append(
-            f"  next good connection: {hhmm(_next_time(o.next_good))} from {o.next_good.legs[0].board.code}"
+            f"  next good connection: {hhmm(_next_time(o.next_good))} from {leg.board.code}{number}"
             + crowd_text(o.next_good.legs)
         )
     if (
@@ -197,30 +215,36 @@ def _occurrence(o: OccurrenceView) -> list[str]:
         and o.advice.advised_train is not None
         and not o.advice.withdrawn
     ):
-        out.append(f"  earlier train advised: the {hhmm(o.advice.advised_train.planned_departure)}")
+        train = o.advice.advised_train
+        number = f", train {train.train_number}" if for_pin else ""
+        out.append(f"  earlier train advised: the {hhmm(train.planned_departure)}{number}")
     for plan in o.replacement_plans:
-        out.append(
-            f"  NS replacement plan checked {hhmm(plan.checked_at)}; starting position not confirmed:"
-        )
+        checked = "" if for_pin else f" checked {hhmm(plan.checked_at)}"
+        out.append(f"  NS replacement plan{checked}; starting position not confirmed:")
         out.extend("  " + line for line in render_recovery(plan.itinerary).splitlines())
     if o.recovery_offer is not None:
-        out.extend("  " + line for line in render_recovery_offer(o.recovery_offer).splitlines())
+        out.extend(
+            "  " + line
+            for line in render_recovery_offer(o.recovery_offer, for_pin=for_pin).splitlines()
+        )
     if o.selected_recovery is not None:
         out.extend(
-            "  " + line for line in render_selected_recovery(o.selected_recovery).splitlines()
+            "  " + line
+            for line in render_selected_recovery(o.selected_recovery, for_pin=for_pin).splitlines()
         )
-    if o.train_context is not None:
+    if not for_pin and o.train_context is not None:
         if recovering:
             out.append("  Original train vehicle context (not the selected recovery):")
         out.extend("  " + line for line in render_snapshot(o.train_context).splitlines())
-    out.extend("  " + weather_text(w) for w in o.weather)
+    if not for_pin:
+        out.extend("  " + weather_text(w) for w in o.weather)
     for disruption in o.disruptions:
         out.append(
             f"  NS disruption context: {disruption.title} Possible route impact; check your journey."
         )
     if warning := _disruption_warning(o):
         out.append(warning)
-    out.append(_health_line(o.health))
+    out.append(_health_line(o.health, for_pin=for_pin))
     return out
 
 
@@ -233,19 +257,19 @@ def _disruption_warning(occurrence: OccurrenceView) -> str | None:
     return None
 
 
-def _health_line(h: BoardHealth) -> str:
+def _health_line(h: BoardHealth, *, for_pin: bool = False) -> str:
     if h.fresh:
         return (
             "  NS data: fresh, last poll failed" if h.consecutive_failures else "  NS data: fresh"
         )
     return (
         f"  NS data: not fresh since {hhmm(h.last_ok_at)}"
-        if h.last_ok_at
+        if h.last_ok_at and not for_pin
         else "  NS data: not fresh"
     )
 
 
-def _warnings(view: RuntimeView) -> list[str]:
+def _warnings(view: RuntimeView, *, for_pin: bool = False) -> list[str]:
     lines = []
     if view.refusal:
         lines.append(f"Profile file refused: {view.refusal}")
@@ -253,7 +277,7 @@ def _warnings(view: RuntimeView) -> list[str]:
         lines.append("Your NS key was rejected.")
     if not view.store_ok:
         lines.append("State cannot be saved; retrying.")
-    if view.undelivered:
+    if view.undelivered and not for_pin:
         lines.append(f"{view.undelivered} alerts not delivered yet.")
     return lines
 
@@ -270,7 +294,7 @@ def warning_lines(view: RuntimeView, confirmed: bool) -> list[str]:
         *_warnings(view),
         *(m.text for m in view.moved),
         *_check_lines(view),
-        *([] if confirmed else ["Delivery not confirmed yet: send /test."]),
+        *([] if confirmed else ["Delivery not confirmed yet. Complete your phone delivery test."]),
     ]
 
 
@@ -293,26 +317,30 @@ def _works_ahead(view: RuntimeView) -> list[str]:
     return lines
 
 
-def _check_lines(view: RuntimeView) -> list[str]:
+def _check_lines(view: RuntimeView, *, for_pin: bool = False) -> list[str]:
     lines = []
     for ok in view.lookahead_last_ok.values():
         if ok is None:
             lines.append("Planned-works check: not run yet")
         elif _stale(view, ok):
             lines.append(
-                f"Planned-works check: last ok {_day(ok.astimezone(TZ).date())} {hhmm(ok)}"
+                "Planned-works check: not fresh"
+                if for_pin
+                else f"Planned-works check: last ok {_day(ok.astimezone(TZ).date())} {hhmm(ok)}"
             )
     return lines
 
 
-def render_status(view: RuntimeView, confirmed: bool) -> str:
+def render_status(view: RuntimeView, confirmed: bool, *, for_pin: bool = False) -> str:
     pending = [o for o in view.occurrences if not o.resolved]
-    lines = [x for o in pending for x in _occurrence(o)]
-    lines += _warnings(view)
+    lines = [x for o in pending for x in _occurrence(o, for_pin=for_pin)]
+    lines += _warnings(view, for_pin=for_pin)
     lines += [m.text for m in view.moved]
-    lines += works_lines(view)
+    works, checks = _works_ahead(view), _check_lines(view, for_pin=for_pin)
+    # State storage sorts mapping keys, so its order can change across a restart.
+    lines += sorted(works) + sorted(checks) if for_pin else works + checks
     if not confirmed:
-        lines.append("Delivery not confirmed yet: send /test.")
+        lines.append("Delivery not confirmed yet. Complete your phone delivery test.")
     if not pending:
         lines.append("No journey is being followed now.")
     lines.append("Data: NS")
@@ -320,15 +348,19 @@ def render_status(view: RuntimeView, confirmed: bool) -> str:
 
 
 def view_for_profile(view: RuntimeView, profile_id: str) -> RuntimeView:
+    return view_for_profiles(view, {profile_id})
+
+
+def view_for_profiles(view: RuntimeView, profile_ids: set[str]) -> RuntimeView:
     """The view as one profile alone would see it; the refusal text echoes rejected values and
     read errors, so it is replaced by a fixed text."""
-    keys = {direction_key(profile_id, d) for d in Direction}  # exact keys, never a prefix match
+    keys = {direction_key(pid, d) for pid in profile_ids for d in Direction}
     return replace(
         view,
-        profiles=tuple(p for p in view.profiles if p.id == profile_id),
-        directions=tuple(d for d in view.directions if d.profile_id == profile_id),
-        occurrences=tuple(o for o in view.occurrences if o.key.profile_id == profile_id),
-        moved=tuple(m for m in view.moved if m.profile_id == profile_id),
+        profiles=tuple(p for p in view.profiles if p.id in profile_ids),
+        directions=tuple(d for d in view.directions if d.profile_id in profile_ids),
+        occurrences=tuple(o for o in view.occurrences if o.key.profile_id in profile_ids),
+        moved=tuple(m for m in view.moved if m.profile_id in profile_ids),
         works={k: v for k, v in view.works.items() if k in keys},
         lookahead_last_ok={k: v for k, v in view.lookahead_last_ok.items() if k in keys},
         refusal=REFUSAL_HIDDEN if view.refusal else None,
@@ -533,9 +565,15 @@ def recovery_origin_prompt(plan: RecoveryPlanView) -> tuple[str, dict[str, Any]]
     return "\n".join(lines), {"inline_keyboard": rows}
 
 
-def render_recovery_offer(offer: RecoveryOffer) -> str:
+def render_recovery_offer(offer: RecoveryOffer, *, for_pin: bool = False) -> str:
+    header = (
+        "Refreshed recovery offer."
+        if for_pin
+        else f"Refreshed recovery offer checked {hhmm(offer.checked_at)}."
+    )
     return (
-        f"Refreshed recovery offer checked {hhmm(offer.checked_at)}.\n"
+        header
+        + "\n"
         + render_recovery(offer.itinerary)
         + "\nFollow accepts any planned-only times shown above and unverified accessibility and assistance."
         + "\nOnly your explicit boarding and arrival confirmations change progress."
@@ -555,7 +593,7 @@ def recovery_offer_buttons(offer: RecoveryOffer) -> dict[str, Any]:
     }
 
 
-def render_selected_recovery(selected: SelectedRecovery) -> str:
+def render_selected_recovery(selected: SelectedRecovery, *, for_pin: bool = False) -> str:
     lines = [f"Recovery {selected.status}. Progress uses only your explicit confirmations."]
     last = next(
         (action for action in reversed(selected.confirmations) if action.place is not None), None
@@ -567,8 +605,9 @@ def render_selected_recovery(selected: SelectedRecovery) -> str:
     lines.append(f"Last confirmed place: {place.name} at {hhmm(at)}.")
     if selected.next_action is not None:
         step = selected.itinerary.steps[selected.index]
+        times = f" {hhmm(step.departure)}-{hhmm(step.arrival)}" if for_pin else ""
         lines.append(
-            f"Current step: {step.mode} {step.operator or ''} {step.service_reference or ''}: {step.origin.name} to {step.destination.name}."
+            f"Current step:{times} {step.mode} {step.operator or ''} {step.service_reference or ''}: {step.origin.name} to {step.destination.name}."
         )
         lines.append(f"Next confirmation: {selected.next_action.replace('_', ' ')}.")
     if selected.monitoring_error:

@@ -51,6 +51,19 @@ def test_new_profile_is_valid_and_written_only_when_saved(tmp_path):
     assert doc.path.read_text() == text
 
 
+def test_ntfy_switch_roundtrips_and_preserves_other_alert_settings(tmp_path):
+    doc = document(tmp_path)
+    for value in (False, True):
+        text = edit_profile(
+            doc, "p1", {**VALUES, "ntfy_enabled": value, "leave_by": False}, KNOWN, TODAY
+        )
+        profiles, errors = parse_profiles(text, KNOWN)
+        assert not errors
+        assert profiles[0].alerts.ntfy_enabled is value
+        assert profiles[0].alerts.leave_by is False
+        doc = document(tmp_path, text)
+
+
 def test_check_in_times_roundtrip_and_can_return_to_default(tmp_path):
     doc = document(tmp_path)
     values = {**VALUES, "outbound_active_lead": 40.0, "return_active_lead": 25, "leave_by": False}

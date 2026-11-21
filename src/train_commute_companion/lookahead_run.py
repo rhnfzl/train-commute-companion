@@ -27,6 +27,10 @@ from train_commute_companion.state import (
     PollFailure,
 )
 from train_commute_companion.store import PersistedState
+from train_commute_companion.timetable_receipts import (
+    adoption_correction,
+    merge_adoption_receipts,
+)
 from train_commute_companion.webhook_queue import CopyQueue
 
 log = logging.getLogger(__name__)
@@ -102,7 +106,14 @@ async def probe_direction(
 
 
 def apply_run(
-    st: PersistedState, queue: CopyQueue, p: Profile, d: Direction, run: ProbedRun
+    st: PersistedState,
+    queue: CopyQueue,
+    p: Profile,
+    d: Direction,
+    run: ProbedRun,
+    *,
+    track_adoptions: bool = False,
+    pending_ledger: LookAheadLedger | None = None,
 ) -> PersistedState | None:
     """`st` (the state now, at write time) with the run, its owed copies in `queue` following its
     messages; None when it is discarded (rule 21), and then those copies are left as they were."""
@@ -116,11 +127,23 @@ def apply_run(
     )
     ledger = replace(stored, started_revision=run.revision, started_baseline=run.baseline)
     current = st.baselines.get(dk, BaselineHistory())
+    if pending_ledger is not None:
+        ledger = replace(ledger, adoption_receipts=merge_adoption_receipts(ledger, pending_ledger))
     all_bases = {
         (x.id, y): st.baselines.get(direction_key(x.id, y), BaselineHistory())
         for x in cfg.profiles
         for y in Direction
         if (x.id, y) != (p.id, d)
+    }
+    # A queued adoption or an already-attempted copy can still report a late acceptance.
+    started = (*stored.pending, *(c.obligation for c in queue.copies.values() if c.first_try))
+    awaiting = {
+        correction
+        for o in started
+        if o.look_ahead is not None
+        and o.look_ahead[:2] == (p.id, d)
+        and (correction := adoption_correction(o)) is not None
+        and ledger.adoption_ids.get(correction) in (None, o.id)
     }
     out = run_lookahead(
         p,
@@ -136,6 +159,8 @@ def apply_run(
         skipped=_skipped_dates(st, p, d),
         probe_finished=run.probe_finished,
         replaced=lambda sd: travel_replaces(st, p, d, commute_day_for(p, d, sd)),
+        awaiting_adoption=awaiting,
+        track_adoptions=track_adoptions,
     )
     if out is None:
         log.info("look-ahead for %s discarded: configuration or baseline changed", dk)
@@ -181,13 +206,17 @@ def _carry_copies(
     for old, new in carried_ids(stored, new_ledger).items():
         if old not in was or new not in pending:
             continue
-        n = replace(pending[new], webhook_copied=True)
+        prior = was[old]
         c = next((c for c in queue.copies.values() if c.obligation.id == old), None)
+        pending[new] = n = replace(
+            pending[new],
+            target_ids=prior.target_ids,
+            primary_target_pending=prior.primary_target_pending,
+            primary_suppressed=prior.primary_suppressed,
+            webhook_copied=c is not None or prior.webhook_copied or old in queue.copied,
+        )
         if c is not None:  # the same copy: its webhook-id, receipts and tries stay
             queue.rewrite(c, n)
-            pending[new] = n
-        elif was[old].webhook_copied or old in queue.copied:  # it ended: no second one
-            pending[new] = n
     return pending
 
 
@@ -216,11 +245,17 @@ def _rewrite_withdrawn(
         day = o.look_ahead[2]
         kind, text = render_message(p, day, rest)
         b = baseline_on(new_hist, p, d, day)
+        fact_key = bundle_key(rest)
         o = replace(
             o,
             baseline_version=b.version if b else None,
-            fact_key=bundle_key(rest),
-            event=replace(o.event, kind=kind, text=text),
+            fact_key=fact_key,
+            event=replace(
+                o.event,
+                kind=kind,
+                text=text,
+                key=o.event.key.removesuffix(o.fact_key) + fact_key,
+            ),
         )
         queue.rewrite(c, o)
         rewritten[o.id] = rest
@@ -246,8 +281,5 @@ def _copies_through(
     rewritten = _rewrite_withdrawn(queue, p, d, was, stored, current, new_hist)
     owed = {c.obligation.id for c in queue.copies.values()}
     carry = {i: f for i, f in stored.facts.items() if i in owed}
-    return replace(
-        new_ledger,
-        pending=tuple(pending.values()),
-        facts={**carry, **rewritten, **new_ledger.facts},
-    )
+    facts = {**carry, **rewritten, **new_ledger.facts}
+    return replace(new_ledger, pending=tuple(pending.values()), facts=facts)

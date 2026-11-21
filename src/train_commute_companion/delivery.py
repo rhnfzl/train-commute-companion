@@ -19,7 +19,13 @@ from train_commute_companion.model import (
     WebhookCopy,
     alert_facts,
 )
-from train_commute_companion.notify import NotificationPaused, Notifier, WebhookPort, destination_id
+from train_commute_companion.notify import (
+    NotificationPaused,
+    NotificationSuppressed,
+    Notifier,
+    WebhookPort,
+    destination_id,
+)
 
 APP_WARNINGS = frozenset(
     {EventKind.KEY_REJECTED, EventKind.PROFILE_REFUSED, EventKind.STORAGE_FAILED}
@@ -95,6 +101,22 @@ def receive_copy(copy: WebhookCopy, destinations: Collection[str], now: datetime
     )
 
 
+def same_disruption_revision(a: Obligation, b: Obligation) -> bool:
+    if (
+        a.occurrence is None
+        or a.occurrence != b.occurrence
+        or a.event.kind != b.event.kind
+        or a.event.kind not in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED)
+    ):
+        return False
+    x, y = alert_facts(a.event), alert_facts(b.event)
+    return (
+        x.disruption_id == y.disruption_id
+        and x.disruption_instance == y.disruption_instance
+        and x.disruption_revision == y.disruption_revision
+    )
+
+
 def covers(x: Obligation, o: Obligation) -> bool:
     """Rule 5(b): `x` is a newer message about what `o` reported (same occurrence and train,
     the same kind or both delay news). Rule 5(a): a warning is never covered."""
@@ -111,6 +133,7 @@ def covers(x: Obligation, o: Obligation) -> bool:
         and x.event.train == o.event.train
         and alert_facts(x.event).disruption_id == alert_facts(o.event).disruption_id
         and to_utc(x.event.created_at) > to_utc(o.event.created_at)
+        and not same_disruption_revision(x, o)
     )
 
 
@@ -124,7 +147,9 @@ class Ledger(Protocol):
     def newer_covers(self, o: Obligation) -> bool: ...
     def revision_live(self, key: OccurrenceKey, rev: int) -> bool: ...
     def in_quiet_hours(self, profile_id: str, now: datetime) -> bool: ...
-    def current(self, o: Obligation) -> AlertEvent:
+    def current(
+        self, o: Obligation, destination: str | None = None, *, for_copy: bool = False
+    ) -> AlertEvent | None:
         """The message regenerated from the current state right before sending (rule 5): the
         current profile name, a journey warning naming the current lock and its next good
         connection now, never the replacement frozen when the obligation was written."""
@@ -172,6 +197,8 @@ def primary_delivery_verdict(
     destination: str | None,
     audience_written: bool,
 ) -> DeliveryVerdict:
+    if o.primary_suppressed:
+        return DeliveryVerdict.DROP
     verdict = revalidate(o, ledger, now)
     if verdict is not DeliveryVerdict.SEND:
         return verdict
@@ -206,10 +233,15 @@ async def deliver(
     if verdict is DeliveryVerdict.HOLD:
         return o, False
     try:
-        if await notifier.send(ledger.current(o)):
+        event = ledger.current(o, destination)
+        if event is None:
+            return None, False
+        if await notifier.send(event):
             return None, True
     except NotificationPaused:
         return o, False
+    except NotificationSuppressed:
+        return None, False
     return replace(o, attempts=o.attempts + 1), False
 
 
@@ -257,10 +289,21 @@ async def post_copy(
         return c
     if not audience_written(c):
         return c
+    events = {
+        u: event
+        for u in todo
+        if (event := ledger.current(c.obligation, destination_id(port, u), for_copy=True))
+        is not None
+    }
+    if not events:
+        return None
+    if not due.intersection(events):
+        return c
     c = start_copy(c, now)
     started(c)
-    event = ledger.current(c.obligation)
-    pending = {asyncio.create_task(port.post(event, c.id, (u,))) for u in todo if u in due}
+    pending = {
+        asyncio.create_task(port.post(event, c.id, (u,))) for u, event in events.items() if u in due
+    }
 
     def received(task: asyncio.Task[tuple[frozenset[str], frozenset[str]]]) -> None:
         nonlocal c
@@ -288,4 +331,4 @@ async def post_copy(
                 task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
-    return None if all(destination_id(port, u) in c.done for u in todo) else c
+    return None if all(destination_id(port, u) in c.done for u in events) else c

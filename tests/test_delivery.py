@@ -67,7 +67,9 @@ class View:
     def in_quiet_hours(self, profile_id: str, now: datetime) -> bool:
         return self.quiet
 
-    def current(self, o: Obligation) -> AlertEvent:
+    def current(
+        self, o: Obligation, destination: str | None = None, *, for_copy: bool = False
+    ) -> AlertEvent:
         return o.event
 
 
@@ -174,7 +176,9 @@ def test_send_regenerates_the_message_from_current_state():  # rule 5
 
     @dataclass
     class Current(View):
-        def current(self, o: Obligation) -> AlertEvent:
+        def current(
+            self, o: Obligation, destination: str | None = None, *, for_copy: bool = False
+        ) -> AlertEvent:
             return replace(o.event, text=now_text)  # the 08:44 named earlier has left
 
     class Record:
@@ -225,7 +229,9 @@ async def test_post_copy_follows_revalidation():
 
     @dataclass
     class Current(View):
-        def current(self, o: Obligation) -> AlertEvent:
+        def current(
+            self, o: Obligation, destination: str | None = None, *, for_copy: bool = False
+        ) -> AlertEvent:
             return replace(o.event, text=now_text)
 
     r = await post_copy(c, Current(), port, NOW)

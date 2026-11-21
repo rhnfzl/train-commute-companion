@@ -126,6 +126,9 @@ def edit_profile(
         "weather",
         "leave_by",
         "weather_allowance",
+        "live_today",
+        "telegram_status_pin",
+        "ntfy_enabled",
     ):
         if key not in values:
             continue
@@ -133,7 +136,17 @@ def edit_profile(
             raise EditorError("invalid_profile")
         alerts = copy.deepcopy(profile.get("alerts", {}))
         if (
-            values[key] != (key in ("leave_by", "weather_allowance"))
+            values[key]
+            != (
+                key
+                in (
+                    "leave_by",
+                    "weather_allowance",
+                    "live_today",
+                    "telegram_status_pin",
+                    "ntfy_enabled",
+                )
+            )
             or key in alerts
             or key == "weather"
         ):

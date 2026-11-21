@@ -18,6 +18,10 @@ from train_commute_companion.model import (
 from train_commute_companion.revisions import find_profile, same_route
 from train_commute_companion.state import OccurrenceState, is_sent
 from train_commute_companion.store import PersistedState, StorageError, Store
+from train_commute_companion.timetable_receipts import (
+    merge_adoption_receipts,
+    receipt_write_pending,
+)
 from train_commute_companion.webhook_queue import CopyQueue
 
 log = logging.getLogger(__name__)
@@ -105,7 +109,18 @@ class _Delta:
                 )
         obls = tuple(self.changed.get(o.id, o) for o in st.obligations if o.id not in self.gone)
         bases = {k: v for k, v in self.bases.items() if self._runs(st, k)}
-        leds = {k: v for k, v in self.leds.items() if self._runs(st, k)}
+        leds = {}
+        for k, v in self.leds.items():
+            if not self._runs(st, k):
+                continue
+            current = st.lookahead.get(k)
+            if current is not None:
+                # Delivery can have recorded acceptance while this run waited to be saved.
+                v = replace(
+                    v,
+                    adoption_receipts=merge_adoption_receipts(v, current),
+                )
+            leds[k] = v
         return replace(
             st,
             occurrences=out,
@@ -163,9 +178,20 @@ class StateWriter:
     store. `outbox`: the webhook copies a write takes along, which live apart from the state."""
 
     def __init__(
-        self, store: Store, outbox: CopyQueue, storage_note: Callable[[], Obligation]
+        self,
+        store: Store,
+        outbox: CopyQueue,
+        storage_note: Callable[[], Obligation],
+        prepare: Callable[[PersistedState, PersistedState], PersistedState] = lambda state, old: (
+            state
+        ),
+        on_saved: Callable[[PersistedState], None] = lambda state: None,
+        prune: Callable[[PersistedState], PersistedState] = lambda state: state,
     ) -> None:
+        self._on_saved = on_saved
+        self._prune = prune
         self._store, self._outbox, self._storage_note = store, outbox, storage_note
+        self._prepare = prepare
         self._st = PersistedState(
             config=None,
             config_snapshots={},
@@ -224,6 +250,10 @@ class StateWriter:
         """What the alerts of unwritten changes are judged on: what the last write tried."""
         return self._st if self._journal.shadow is None else self._journal.shadow
 
+    def correction_waits(self, o: Obligation) -> bool:
+        waiting = self._journal.shadow
+        return waiting is not None and receipt_write_pending(self._durable, waiting, o)
+
     def begin(self, st: PersistedState) -> None:
         """The state a start runs from, as if just written."""
         if self.phase is WritePhase.PENDING:
@@ -232,7 +262,7 @@ class StateWriter:
 
     def propose(self, st: PersistedState) -> None:
         """An unwritten candidate everything runs from until the next commit decides it."""
-        self._st = st
+        self._st = self._prepare(st, self._st)
 
     def retry(self) -> None:
         """The waiting changes, written again."""
@@ -256,9 +286,14 @@ class StateWriter:
         for o in (*self._st.obligations, *self._journal.held.values(), *self._notes.values()):
             if o.id in self._journal.gone:
                 continue  # finished while the store was down (rule 22)
-            mem = o.id in self._journal.held or o.id in self._notes
-            if mem or any(x.id == o.id for x in self._st.obligations):
-                yield o, o.id in self._journal.held
+            held = self._journal.held.get(o.id)
+            current = (
+                held
+                or self._notes.get(o.id)
+                or next((x for x in self._st.obligations if x.id == o.id), None)
+            )
+            if current is not None:
+                yield current, held is not None
 
     def settle(self, o: Obligation, kept: Obligation | None, sent: bool) -> bool:
         """A send's outcome if `o` is sent from memory (where it is now: a write landing during
@@ -277,6 +312,7 @@ class StateWriter:
 
     def commit(self, st: PersistedState, kind: Change) -> None:
         """Rule 22: writes the candidate `st` with every change still waiting."""
+        st = self._prepare(st, self._st)
         self._st = st
         self._write(
             st,
@@ -302,7 +338,7 @@ class StateWriter:
                         c for c in written.webhook_copies if c.id not in discarded
                     ),
                 )
-            written = _prune(written)
+            written = self._prune(_prune(self._prepare(written, self._st)))
             self._store.save(written)
         except StorageError as error:
             self.store_ok = False
@@ -313,6 +349,7 @@ class StateWriter:
         self._st = self._durable = written
         for cid in discarded:
             self._outbox.drop(cid)
+        self._on_saved(written)
         self.store_ok = True
         self._notes = {}
         return True
@@ -325,6 +362,7 @@ class StateWriter:
     ) -> None:
         """A delivery pass, `outcome` being what it did to any state: replayed onto whatever is
         written next after a failed write, which must not bring the `finished` alerts back."""
+        st = self._prepare(st, self._st)
         self._st = st
         self._journal.gone |= set(finished)
         mem = set(self._journal.held) | set(
@@ -346,6 +384,7 @@ class StateWriter:
         as the newest to retry (`stage`), and when nothing recomputes it (`keep`, or its own
         `op`) to replay onto whatever is written next. Its new alerts go from memory. A first
         configuration runs anyway: nothing else could."""
+        cand = self._prepare(cand, self._st)
         # only what this change did: restaging carries other waiting changes it must not replace
         mine = _Delta(self._durable, cand) if op is None and keep else None
         if self._journal.base is not None and cand is not self._journal.base:
@@ -356,7 +395,8 @@ class StateWriter:
                 if isinstance(x, _Delta):
                     x.supersede(mine)
         try:
-            write = _prune(self._outbox.with_copies(self._compose(cand)))
+            write = self._prepare(self._outbox.with_copies(self._compose(cand)), self._st)
+            write = self._prune(_prune(write))
             self._store.save(write)
         except StorageError as e:
             self._pend(cand, stage, op)
@@ -367,6 +407,7 @@ class StateWriter:
                 self._notes[o.id] = o
             return False
         self._st = self._durable = write
+        self._on_saved(write)
         self._journal = _WriteJournal()
         self.store_ok = True
         return True

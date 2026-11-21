@@ -222,6 +222,10 @@ class _Draft:
     per_date: dict[str, tuple[str, ...]]
     pending: list[Obligation]
     bundled: dict[str, tuple[LookAheadFact, ...]]
+    adoption_receipts: dict[str, frozenset[str]]
+    adoption_ids: dict[str, str]
+    awaiting_adoption: Collection[str]
+    track_adoptions: bool
     carried: list[_Bundle] = field(default_factory=list)
     facts: dict[date, list[LookAheadFact]] = field(default_factory=dict)
     owned: dict[date, list[tuple[str, int]]] = field(default_factory=dict)  # marks of its message
@@ -252,10 +256,20 @@ class _Draft:
             rest = [f for f in self.bundled.pop(o.id, ()) if f.key != tag]
             if rest and o.look_ahead is not None:
                 self.carried.append(_Bundle(o.look_ahead[2], rest, o.id, o.expires_at))
-        if not untold:
+        correction = cancel_key(w.version)
+        awaiting = correction in self.awaiting_adoption and (
+            self.track_adoptions or correction in self.adoption_receipts
+        )
+        if awaiting:
+            self.adoption_receipts.setdefault(correction, frozenset())
+        if (
+            awaiting
+            or self.adoption_receipts.get(correction)
+            or (not untold and correction not in self.adoption_receipts)
+        ):
             self.add_fact(
                 w.effective_from,
-                LookAheadFact(cancel_key(w.version), text, loud=False, warning=False),
+                LookAheadFact(correction, text, loud=False, warning=False),
             )
 
     def stamp_owned(self, sd: date, owner: str) -> None:
@@ -527,7 +541,7 @@ class _MessageBuilder:
         expires: datetime | None,
     ) -> Obligation:
         return Obligation(
-            id=f"{event.key}|{self.now.isoformat()}",
+            id=f"{event.key}|{self.revision}|{self.now.isoformat()}",
             event=event,
             occurrence=None,
             look_ahead=(self.p.id, self.d, day),
@@ -578,6 +592,10 @@ def _fact_messages(
         if b.was is None and not is_adopt and not any(f.cancels for f in b.facts):
             expires = w.journey_end(sd)
         ob = w.obligation(event, sd, version, fact_key, expires)
+        if draft.track_adoptions and is_adopt and version is not None:
+            correction = cancel_key(version)
+            draft.adoption_ids[correction] = ob.id
+            draft.adoption_receipts[correction] = frozenset()
         events.append(event)
         draft.pending.append(ob)
         draft.bundled[ob.id] = tuple(b.facts)
@@ -645,6 +663,8 @@ def run_lookahead(
     skipped: Collection[date] = (),
     probe_finished: bool = True,
     replaced: Callable[[date], bool] | None = None,
+    awaiting_adoption: Collection[str] = (),
+    track_adoptions: bool = False,
 ) -> tuple[BaselineHistory, LookAheadLedger, list[AlertEvent]] | None:
     """The direction's serialised look-ahead writer. Every fact is written to the ledger and
     stored as a pending message before any delivery. `others` are the other profiles and
@@ -668,6 +688,10 @@ def run_lookahead(
         dict(ledger.per_date),
         list(ledger.pending),
         dict(ledger.facts),
+        dict(ledger.adoption_receipts),
+        dict(ledger.adoption_ids),
+        awaiting_adoption,
+        track_adoptions,
     )
 
     histories = {
@@ -748,6 +772,8 @@ def run_lookahead(
         started_baseline=final.latest,
         last_applied=now,
         facts={o.id: draft.bundled[o.id] for o in draft.pending if o.id in draft.bundled},
+        adoption_receipts=draft.adoption_receipts,
+        adoption_ids=draft.adoption_ids,
     )
     return final, new_ledger, events
 
