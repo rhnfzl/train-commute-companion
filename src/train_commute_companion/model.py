@@ -81,6 +81,7 @@ class EventKind(StrEnum):
     MISSED_TRANSFER = "missed_transfer"
     LEAVE_NOW = "leave_now"
     DEPARTURE_REMINDER = "departure_reminder"
+    WAKE_ALARM = "wake_alarm"
     PLATFORM_CHANGE = "platform_change"
     CUT_SHORT = "cut_short"
     ROUTE_CHANGED = "route_changed"
@@ -280,6 +281,26 @@ class ToldDelay:
     previous_min: int | None = None  # recheck a held update after a repeat-step edit
 
 
+# Train identity and both endpoints of one leg of a proposed connection.
+TrainSegment = tuple[TrainId, str, str]
+AlternativeStyle = Literal["connection", "catch", "station", "option", "conditional", "onward"]
+
+
+@dataclass(frozen=True, slots=True)
+class Alternative:
+    station: str
+    route: tuple[TrainSegment, ...]
+    prior: tuple[TrainSegment, ...] = ()
+    style: AlternativeStyle = "connection"
+    moved_route: bool = False
+    respect_plan: bool = True
+    earlier_than: datetime | None = None
+
+
+def connection_route(connection: Connection) -> tuple[TrainSegment, ...]:
+    return tuple((leg.train, leg.board.code, leg.alight.code) for leg in connection.legs)
+
+
 @dataclass(frozen=True, slots=True)
 class AlertFacts:
     """What an alert states, as data, so nothing reads its key or text back. The key stays a
@@ -316,6 +337,7 @@ class AlertFacts:
     past_latest_arrival: bool | None = None
     arrival_deadline: datetime | None = None
     navigation: tuple[str, str] | None = None  # Apple Maps and Google Maps
+    alternative: Alternative | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,6 +415,7 @@ class AdviceRecord:
     # the episode's LEAVE_NOW reached the user; pending until then. An undelivered episode that
     # stops holding is ended silently (`withdrawn` with this False), so it can start again.
     delivered: bool = field(kw_only=True)
+    accepted_targets: frozenset[str] = frozenset()
 
     @property
     def phase(self) -> AdvicePhase:
@@ -411,10 +434,10 @@ class AdviceRecord:
     def withdraw(self) -> "AdviceRecord":
         return replace(self, withdrawn=True)
 
-    def accept_delivery(self) -> "AdviceRecord":
+    def accept_delivery(self, targets: frozenset[str] = frozenset()) -> "AdviceRecord":
         if self.advised_train is None:
             raise ValueError("advice episode is missing")
-        return replace(self, delivered=True)
+        return replace(self, delivered=True, accepted_targets=self.accepted_targets | targets)
 
 
 @dataclass(frozen=True, slots=True)
@@ -553,6 +576,10 @@ class AlertSettings:
     navigate: bool = True
     compensation_details: bool = True
     timetable_update: bool = True
+    wake_at: time | None = None
+    checked_alternatives: bool = True
+    partner_eta: bool = False
+    partner_phone: str | None = None
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]

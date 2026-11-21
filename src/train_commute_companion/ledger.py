@@ -17,6 +17,7 @@ from train_commute_companion.advice import (
 )
 from train_commute_companion.arrival import arrival_status
 from train_commute_companion.calendar import TZ, hhmm, to_utc
+from train_commute_companion.checked_alternatives import option_clause
 from train_commute_companion.classify import current_connection, current_run, find_leg
 from train_commute_companion.compensation import reminder_text
 from train_commute_companion.delivery import JOURNEY_WARNINGS, covers
@@ -32,6 +33,7 @@ from train_commute_companion.lifecycle import (
     observe,
     origin_answer,
     place_zone,
+    progress_route,
 )
 from train_commute_companion.lifecycle_lock import progress_of
 from train_commute_companion.location import DEPARTURE_REMINDER_WINDOW, STALE_LOCATION
@@ -52,6 +54,7 @@ from train_commute_companion.model import (
     DELAY_NEWS,
     AlertEvent,
     AlertSettings,
+    Alternative,
     Ctx,
     Direction,
     EventKind,
@@ -63,6 +66,7 @@ from train_commute_companion.model import (
     Severity,
     TrainId,
     alert_facts,
+    connection_route,
     direction_key,
     display_name,
     okey,
@@ -165,6 +169,8 @@ class PollMemory:
 
     # the latest healthy answers, what rule 5(b) regenerates messages from
     boards: dict[str, tuple[ProviderAnswer, ...]] = field(default_factory=dict)
+    # A location report can make a replacement with its own fresh trip searches.
+    option_boards: dict[str, tuple[ProviderAnswer, ...]] = field(default_factory=dict)
     blind: dict[str, datetime] = field(default_factory=dict)  # start of its blindness outage
     offline: set[str] = field(default_factory=set)
     # before a lock: the usual train as the last healthy answer showed it
@@ -218,7 +224,15 @@ class PollMemory:
         return EpisodeTransition.EXITED
 
     def forget(self, k: str) -> None:
-        for held in (self.boards, self.blind, self.before, self.seen, self.suspect, self.polled):
+        for held in (
+            self.boards,
+            self.option_boards,
+            self.blind,
+            self.before,
+            self.seen,
+            self.suspect,
+            self.polled,
+        ):
             held.pop(k, None)
         self.offline.discard(k)
         self.told_blind.discard(k)
@@ -318,24 +332,6 @@ def _current_body(
     ctx: Ctx,
     answers: tuple[ProviderAnswer, ...],
 ) -> str | None:
-    if e.kind is EventKind.LEAVE_NOW:
-        origin = origin_answer(answers, ctx, s)
-        c = (
-            None
-            if origin is None
-            else still_advised(s, ctx, origin, train, usual_arrival(s, ctx, origin))
-        )
-        buffer = (
-            ctx.profile.journey(ctx.direction).buffer_min if ctx.profile.alerts.leave_by else None
-        )
-        return None if c is None else leave_now_text(c, ctx.now.tzinfo, buffer)
-    if e.kind is EventKind.NEXT_CONNECTION:
-        pool = merged_pool(answers)
-        for j in (*((s.lock,) if s.lock else ()), *s.retained):
-            i = next((i for i, x in enumerate(j.legs) if x.train == train), None)
-            if i is not None:
-                return left_note(s, ctx, pool, j, i).body
-        return None
     if e.kind is EventKind.ALL_GOOD:  # with the platform the latest answers give (7.9)
         g = all_good(
             replace(s, all_good_evaluated=False), PollAnswers(answers, (), s.generation), ctx
@@ -358,7 +354,9 @@ class LiveLedger:
         memory: PollMemory,
         now: Callable[[], datetime],
         available_channels: Callable[[], frozenset[NotificationChannel]] = lambda: CHANNELS,
-        format_event: Callable[[AlertEvent], AlertEvent] = lambda event: event,
+        format_event: Callable[
+            [Obligation, AlertEvent, OccurrenceState | None], AlertEvent | None
+        ] = lambda obligation, event, state: event,
         primary_enabled: Callable[[AlertSettings], bool] = lambda settings: True,
         departure_weather: Callable[[str, datetime, datetime], WeatherView | None] = (
             lambda station, when, now: None
@@ -607,7 +605,9 @@ class LiveLedger:
                 and arrival_prompt_enabled(profile.alerts)
             )
         if o.event.kind is EventKind.STATION_NAVIGATION:
-            return alert_facts(self._format_event(o.event)).navigation is not None
+            state = None if o.occurrence is None else self._occurrence(o.occurrence)
+            event = self._format_event(o, o.event, state)
+            return event is not None and alert_facts(event).navigation is not None
         if o.event.kind is EventKind.COMPENSATION_REMINDER:
             facts = alert_facts(o.event)
             record = self._state.journey_records.get(facts.arrival_record)
@@ -825,6 +825,17 @@ class LiveLedger:
             return unfinished
         if e.kind is EventKind.ALL_GOOD:
             return self._all_good_holds(e, s)
+        if e.kind is EventKind.EARLIER_TRAIN_WITHDRAWN and self._alerts(o).checked_alternatives:
+            advice = s.advice
+            if (
+                advice is None
+                or advice.advised_train != e.train
+                or advice.sent_at is None
+                or not e.key.endswith(":" + advice.sent_at.isoformat())
+                or not o.target_ids
+                or not o.target_ids <= advice.accepted_targets
+            ):
+                return False
         if e.kind in (EventKind.LEAVE_NOW, EventKind.EARLIER_TRAIN_WITHDRAWN):
             return self._advice_holds(e, s)
         if e.kind is EventKind.DATA_UNCLEAR:  # while its values are the latest told for its train
@@ -917,7 +928,25 @@ class LiveLedger:
             and not event.kind.value.startswith("recovery_")
         ):
             event = replace(event, text="Original train monitoring: " + event.text)
-        return self._format_event(event)
+        return self._format_event(o, event, state)
+
+    def pending_alternative(self, o: Obligation) -> tuple[AlertEvent, OccurrenceState] | None:
+        state = None if o.occurrence is None else self._occurrence(o.occurrence)
+        if (
+            state is None
+            or o.event.kind
+            not in _NAMES_LOCK
+            | {
+                EventKind.LEAVE_NOW,
+                EventKind.NEXT_CONNECTION,
+                EventKind.ALL_GOOD,
+                EventKind.AT_STATION,
+            }
+            or not self._alerts(o).checked_alternatives
+        ):
+            return None
+        event = self._current(o, None, for_copy=False)
+        return None if event is None or alert_facts(event).alternative is None else (event, state)
 
     def _current(
         self, o: Obligation, destination: str | None, *, for_copy: bool
@@ -1002,10 +1031,46 @@ class LiveLedger:
             )
         if ctx is None or not answers:
             return e
-        body = _current_body(e, e.train, s, ctx, answers)
-        if body is None:
+        facts = alert_facts(e)
+        if e.kind is EventKind.LEAVE_NOW:
+            origin = origin_answer(answers, ctx, s)
+            c = (
+                None
+                if origin is None
+                else still_advised(s, ctx, origin, e.train, usual_arrival(s, ctx, origin))
+            )
+            if c is None:
+                return e
+            facts = replace(facts, alternative=Alternative(c.origin, connection_route(c)))
+            buffer = (
+                ctx.profile.journey(ctx.direction).buffer_min
+                if ctx.profile.alerts.leave_by
+                else None
+            )
+            body = leave_now_text(c, ctx.now.tzinfo, buffer)
+            return replace(
+                e, text=f"{display_name(e.profile_name)}: {body}{facts.twin_note}", facts=facts
+            )
+        if e.kind is EventKind.NEXT_CONNECTION:
+            pool = merged_pool(answers)
+            for j in (*((s.lock,) if s.lock else ()), *s.retained):
+                i = next((i for i, x in enumerate(j.legs) if x.train == e.train), None)
+                if i is not None:
+                    next_event = left_note(s, ctx, pool, j, i)
+                    return replace(
+                        next_event,
+                        key=e.key,
+                        created_at=e.created_at,
+                        severity=e.severity,
+                        text=next_event.text + facts.twin_note,
+                        facts=replace(alert_facts(next_event), twin_note=facts.twin_note),
+                    )
+        body_now = _current_body(e, e.train, s, ctx, answers)
+        if body_now is None:
             return e
-        return replace(e, text=f"{display_name(e.profile_name)}: {body}{alert_facts(e).twin_note}")
+        return replace(
+            e, text=f"{display_name(e.profile_name)}: {body_now}{facts.twin_note}", facts=facts
+        )
 
     def _leave_note(
         self, s: OccurrenceState, answers: Sequence[ProviderAnswer], first: LegProgress
@@ -1042,15 +1107,35 @@ class LiveLedger:
         live = [x for x in s.lock.legs if x.state not in (LegState.CANCELLED, LegState.RELOCKED)]
         if not live or e.train in {x.train for x in live}:
             return e
-        if f.named and tuple(train_ident(x.train) for x in live)[-len(f.named) :] == f.named:
+        named = live[-len(f.named) :] if f.named else []
+        if (
+            named
+            and tuple(train_ident(x.train) for x in named) == f.named
+            and (
+                not self._alerts(o).checked_alternatives
+                or named[0].state in (LegState.PENDING, LegState.BOARDING)
+            )
+        ):
             note = _crowd_now(answers, live[-len(f.named) :], self._now())
             leave_note = (
                 self._leave_note(s, answers, live[0])
                 if f.named[0] == train_ident(live[0].train)
                 else None
             )
+            if f.alternative is None:
+                first = s.lock.legs.index(named[0])
+                f = replace(
+                    f,
+                    alternative=Alternative(
+                        named[0].board_station,
+                        progress_route(named),
+                        progress_route(s.lock.legs[:first]),
+                    ),
+                )
+                e = replace(e, facts=f)
             return _with_crowd_note(e, note, leave_note)
-        head = e.text.removesuffix(f.twin_note).removesuffix(f.next_clause)
+        clause = option_clause(e) if self._alerts(o).checked_alternatives else f.next_clause
+        head = e.text.removesuffix(f.twin_note).removesuffix(clause)
         answers = self._memory.boards.get(okey(s.key), ())
         ahead = [x for x in live if x.state in (LegState.PENDING, LegState.BOARDING)]
         left = [x for x in live if x not in ahead]
@@ -1067,6 +1152,15 @@ class LiveLedger:
             nxt = f"Now following your {now} train{onward}."
         note = _crowd_now(answers, live, self._now())
         nxt = nxt.removesuffix(".") + note + "."
+        alternative = None
+        if ahead:
+            first = s.lock.legs.index(ahead[0])
+            alternative = Alternative(
+                ahead[0].board_station,
+                progress_route(ahead),
+                progress_route(s.lock.legs[:first]),
+                "onward" if left else "connection",
+            )
         return replace(
             e,
             text=f"{head.rstrip()} {nxt}{f.twin_note}",
@@ -1075,5 +1169,6 @@ class LiveLedger:
                 next_clause=" " + nxt,
                 named=tuple(train_ident(x.train) for x in live),
                 crowd_note=note,
+                alternative=alternative,
             ),
         )

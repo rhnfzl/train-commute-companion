@@ -3,7 +3,7 @@ posted in a task of their own so a slow receiver never holds up a phone send."""
 
 import asyncio
 import logging
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -58,10 +58,12 @@ class CopyQueue:
         waits: Callable[[Obligation], bool],
         ledger: Callable[[bool], Ledger],
         audience_written: Callable[[WebhookCopy], bool] = lambda c: True,
+        prepare: Callable[[Obligation, bool, Callable[[], bool]], Awaitable[None]] | None = None,
     ) -> None:
         self.port, self._now, self._record = port, now, record
         self._waits, self._ledger = waits, ledger
         self._audience_written = audience_written
+        self._prepare = prepare
         if port is not None:
             port.on_reserve = lambda: record(
                 ()
@@ -268,15 +270,22 @@ class CopyQueue:
                 to_utc(c.obligation.event.created_at),
             ),
         ):
-            if self.copies.get(c.id) is not c:
-                continue  # removed or replaced since
+
+            def current(copy: WebhookCopy = c) -> bool:
+                if self.copies.get(copy.id) is not copy:
+                    return False
+                if (
+                    copy.first_try is not None
+                    and to_utc(self._now()) - to_utc(copy.first_try) >= GIVE_UP
+                ):
+                    self.drop(copy.id)
+                    log.warning("gave up a webhook copy after 2 h")
+                    return False
+                return not self._waits(copy.obligation)
+
+            if not current():
+                continue
             now = self._now()
-            if c.first_try is not None and to_utc(now) - to_utc(c.first_try) >= GIVE_UP:
-                self.drop(c.id)
-                log.warning("gave up a webhook copy after 2 h")
-                continue
-            if self._waits(c.obligation):
-                continue
             v = self._ledger(c.id in self.held)
             cur = c
 
@@ -291,5 +300,26 @@ class CopyQueue:
                 cur = x
                 self._record(accepted)
 
-            r = await post_copy(c, v, port, now, progress, audience_written=self._audience_written)
+            async def prepare(
+                still_due: Callable[[datetime], bool],
+                c: WebhookCopy = c,
+                current: Callable[[], bool] = current,
+            ) -> datetime | None:
+                if self._prepare is not None:
+                    await self._prepare(
+                        c.obligation,
+                        c.id in self.held,
+                        lambda: current() and still_due(self._now()),
+                    )
+                return self._now() if current() else None
+
+            r = await post_copy(
+                c,
+                v,
+                port,
+                now,
+                progress,
+                audience_written=self._audience_written,
+                prepare=prepare,
+            )
             self._merge(port, cur, r)

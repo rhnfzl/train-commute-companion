@@ -1204,7 +1204,8 @@ async def test_held_cancellation_names_the_current_lock_when_sent(tmp_path):
     await rig.rt.watchdog_once()
     told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
     assert told and all(
-        "08:25." not in t and t.endswith("Next good connection: 08:40. Leave by 08:30.")
+        "08:25." not in t
+        and t.endswith("Next good connection: 08:40. Leave by 08:30. NS checked just now: runs.")
         for t in told
     )
 
@@ -1285,11 +1286,12 @@ async def test_held_warning_names_the_journey_followed_once_the_locks_first_leg_
     await rig.rt.watchdog_once()
     told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
     assert told and all("connection: 08:25" not in t and "connection: 09:20" not in t for t in told)
-    # Unchanged route wording stays, but neither warning keeps departure advice after boarding.
-    assert sorted(t.split(". ", 1)[-1] for t in told) == [
-        "Next good connection: 08:40.",
-        "Now following your 08:40 train, then the 09:20 from UT.",
-    ]
+    assert all(
+        t.endswith(
+            "Now following your 08:40 train, then the 09:20 from UT. NS checked just now: runs."
+        )
+        for t in told
+    )
     assert all("Leave by" not in t for t in told)
     assert len(held) == 2
 
@@ -1774,7 +1776,7 @@ async def test_home_vouches_give_a_hedge_then_one_missed_message(tmp_path):  # Q
     await rig.rt.report_location("p1", LocationEvent("home", "still", at("08:24")))
     missed = [e for e in rig.rt.events_log if e.kind is EventKind.MISSED_FIRST_TRAIN]
     assert [e.text for e in missed] == [
-        "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34."
+        "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34. NS checked just now: runs."
     ]
     s = only_occurrence(rig.rt)
     assert s.lock.source is LockSource.MISSED

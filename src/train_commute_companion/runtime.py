@@ -8,6 +8,7 @@ import logging
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
+from functools import partial
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -23,12 +24,21 @@ from train_commute_companion.advice import (
 from train_commute_companion.arrival import planning_query
 from train_commute_companion.budget import POLL_DEADLINE, POLL_EVERY_S, RequestGate
 from train_commute_companion.calendar import TZ, Clock, hhmm, resolve_local, to_utc
+from train_commute_companion.checked_alternatives import (
+    Check,
+    CheckedAlternatives,
+    checked_text,
+    option_check,
+    option_clause,
+    without_option,
+)
 from train_commute_companion.choice import ChoiceTarget, choice_target, named_connections
 from train_commute_companion.classify import current_run, evidence, expected_departure, find_leg
 from train_commute_companion.compensation import ArrivalError, arrival_text, confirm
 from train_commute_companion.compensation_state import ArrivalPrompt, JourneyRecord
 from train_commute_companion.delivery import (
     APP_WARNINGS,
+    JOURNEY_WARNINGS,
     BindingPhase,
     DeliveryVerdict,
     binding_phase,
@@ -129,6 +139,7 @@ from train_commute_companion.model import (
     AlertSettings,
     BriefRow,
     Config,
+    Connection,
     Ctx,
     Direction,
     DirectionState,
@@ -170,6 +181,7 @@ from train_commute_companion.notify import (
     WebhookPort,
     destination_id,
 )
+from train_commute_companion.partner_eta import partner_text
 from train_commute_companion.profile import load_config
 from train_commute_companion.providers.base import (
     ActiveDisruptions,
@@ -189,6 +201,7 @@ from train_commute_companion.recovery_state import (
 )
 from train_commute_companion.revisions import (
     baseline_on,
+    commute_day_for,
     effective_profile,
     find_profile,
     frozen,
@@ -247,6 +260,17 @@ from train_commute_companion.travelling import resume
 from train_commute_companion.vehicle import VehicleProvider, VehicleWatch
 from train_commute_companion.vehicle_monitor import VehicleMonitor
 from train_commute_companion.view import OccurrenceView, RuntimeView, occurrence_view, runtime_view
+from train_commute_companion.wake_alarm import (
+    WAKE_CHECK_INTERVAL,
+    WakeCandidate,
+    WakeEvidence,
+    WakeSampleKey,
+    WakeSlot,
+    earlier_wake,
+    observe_wake,
+    usual_problem,
+    wake_slots,
+)
 from train_commute_companion.weather_allowance import WeatherAllowance, weather_allowance
 from train_commute_companion.webhook import event_id
 from train_commute_companion.webhook_queue import CopyQueue
@@ -342,7 +366,11 @@ class _LoggingNotifier:
         return ok
 
 
-def _advice_told(st: PersistedState, told: Sequence[tuple[Obligation, bool]]) -> PersistedState:
+def _advice_told(
+    st: PersistedState,
+    told: Sequence[tuple[Obligation, bool]],
+    accepted: Sequence[tuple[Obligation, str]],
+) -> PersistedState:
     """7.6: the advice episode a finished LEAVE_NOW belongs to is delivered once sent, and
     ended silently once dropped unsent, so the same train can be advised again."""
     occs = dict(st.occurrences)
@@ -354,8 +382,9 @@ def _advice_told(st: PersistedState, told: Sequence[tuple[Obligation, bool]]) ->
             continue
         if a.advised_train != o.event.train or to_utc(a.sent_at) != to_utc(o.event.created_at):
             continue  # an older episode's message
-        a = a.accept_delivery() if sent else a.withdraw()
-        occs[k] = replace(s, advice=a)
+        targets = frozenset(target for copy, target in accepted if copy.id == o.id)
+        if sent or not a.delivered:
+            occs[k] = replace(s, advice=a.accept_delivery(targets) if sent else a.withdraw())
     return replace(st, occurrences=occs)
 
 
@@ -478,14 +507,19 @@ class Runtime:
         webhooks: WebhookPort | None = None,
         primary_destination: Callable[[], str | None] | None = None,
         arrival_recipient: Callable[[], str | None] | None = None,
+        wake_destination: Callable[[], str | None] = lambda: None,
+        wake_ready: Callable[[], Awaitable[bool]] | None = None,
         weather: WeatherProvider | None = None,
         primary_destination_scope: Callable[[str], bool] = lambda destination: False,
         park_primary_pin: Callable[[str], bool] = lambda destination: False,
         legacy_adoption_destination: Callable[[], str | None] = lambda: LEGACY_PRIMARY,
         profile_setup: bool = False,
+        send_partner_eta: Callable[[str, str, Callable[[], bool]], Awaitable[None]] | None = None,
     ) -> None:
         # Omitted only for legacy clients and replay rigs. Shells supply actual recipient IDs.
         self._primary_destination = primary_destination or (lambda: LEGACY_PRIMARY)
+        self._wake_destination = wake_destination
+        self._wake_ready = wake_ready
         self._primary_destination_scope = primary_destination_scope
         self._park_primary_pin = park_primary_pin
         self._legacy_adoption_destination = legacy_adoption_destination
@@ -496,6 +530,7 @@ class Runtime:
         self._navigation_answers: dict[str, tuple[ProviderAnswer, ...]] = {}
         self._path = profile_path
         self._profile_setup = profile_setup
+        self._send_partner_eta = send_partner_eta
         self._queue = CopyQueue(
             webhooks,
             clock.now,
@@ -503,6 +538,7 @@ class Runtime:
             self._waits,
             lambda held: self._held_ledger if held else self._ledger,
             lambda copy: self._writer.copy_audience_written(copy),
+            self._prepare_copy_alternative,
         )
         self._writer = StateWriter(
             store,
@@ -524,6 +560,7 @@ class Runtime:
         self.known_stations = known_stations
         self._gate = RequestGate(provider, clock.now)
         self._next_quick_trip = float("-inf")
+        self._checked = CheckedAlternatives(self._gate)
         self._lookahead_slot = asyncio.Lock()
         self._next_lookahead_trip: datetime | None = None
         self._active_feed: tuple[datetime, ActiveDisruptions] | None = None
@@ -539,8 +576,13 @@ class Runtime:
         self._weather = weather
         self._weather_lock = asyncio.Lock()
         self._weather_refresh = RefreshTask(self._refresh_weather, coalesce=True)
+        self._partner_refresh = RefreshTask(self.partner_eta_once, coalesce=True)
         self._digest_refresh = RefreshTask(self.works_digest_once, coalesce=False)
         self._digest_attempts: dict[str, datetime] = {}
+        self._wake_refresh = RefreshTask(self.wake_once, coalesce=False)
+        self._wake_attempts: dict[WakeSampleKey, datetime] = {}
+        self._wake_evidence: dict[WakeSampleKey, WakeEvidence] = {}
+        self._wake_recipient: str | None = None
         self._sending = asyncio.Lock()
 
         def read() -> PersistedState:
@@ -552,7 +594,7 @@ class Runtime:
             self._memory,
             clock.now,
             lambda: self.available_channels,
-            format_event=self._notification_event,
+            format_event=self._delivery_event,
             primary_enabled=self._primary_enabled,
             departure_weather=self._station_weather,
         )
@@ -562,7 +604,7 @@ class Runtime:
             self._memory,
             clock.now,
             lambda: self.available_channels,
-            format_event=self._notification_event,
+            format_event=self._delivery_event,
             primary_enabled=self._primary_enabled,
             departure_weather=self._station_weather,
         )
@@ -864,11 +906,18 @@ class Runtime:
         )
 
     def _navigation(
-        self, state: OccurrenceState, now: datetime, event: AlertEvent | None = None
+        self,
+        state: OccurrenceState,
+        now: datetime,
+        event: AlertEvent | None = None,
+        *,
+        checked: Connection | None = None,
     ) -> tuple[str, tuple[str, str] | None]:
         profile = routing_profile(self.state, state.key.profile_id, state.route_revision)
         if profile is None or not profile.alerts.navigate:
             return "", None
+        if checked is not None:
+            return checked.origin, station_links(self._provider.positions, checked.origin)
         key = okey(state.key)
         answers = self._navigation_answers.get(key, self._memory.boards.get(key, ()))
         ctx = (
@@ -902,8 +951,8 @@ class Runtime:
             stated=facts,
         )
 
-    def _notification_event(self, event: AlertEvent) -> AlertEvent:
-        event = self._weather_event(event)
+    def _notification_event(self, event: AlertEvent, connection: Connection | None) -> AlertEvent:
+        event = self._weather_event(event, connection)
         if (
             event.kind
             not in (
@@ -921,14 +970,90 @@ class Runtime:
         state = self._writer.judged_state().occurrences.get(okey(key))
         if state is None:
             return event
-        _, maps = self._navigation(state, self.now(), event)
+        _, maps = self._navigation(state, self.now(), event, checked=connection)
         return (
             event
             if maps is None
             else replace(event, facts=replace(alert_facts(event), navigation=maps))
         )
 
-    def _weather_event(self, event: AlertEvent) -> AlertEvent:
+    def _option_check(self, event: AlertEvent, state: OccurrenceState) -> Check | None:
+        ctx = self._ctx(state, self.now())
+        if ctx is None:
+            return None
+        k = okey(state.key)
+        boards = self._memory.boards.get(k, ())
+        if event.kind is not EventKind.LEAVE_NOW:
+            boards = self._memory.option_boards.get(k, boards)
+        return option_check(event, state, ctx, boards)
+
+    def _pending_check(self, o: Obligation, ledger: LiveLedger) -> Check | None:
+        pending = ledger.pending_alternative(o)
+        return None if pending is None else self._option_check(*pending)
+
+    async def _prepare_alternative(
+        self, o: Obligation, ledger: LiveLedger, allowed: Callable[[], bool]
+    ) -> bool:
+        check = self._pending_check(o, ledger)
+        if check is None or check.query is None:
+            return False
+        if await self._checked.prepare(
+            check, lambda: self._pending_check(o, ledger) if allowed() else None
+        ):
+            self._track_key_rejection("auth", okey(check.state.key), self.now())
+        return True
+
+    async def _prepare_copy_alternative(
+        self, o: Obligation, held: bool, allowed: Callable[[], bool]
+    ) -> None:
+        await self._prepare_alternative(o, self._held_ledger if held else self._ledger, allowed)
+
+    def _delivery_event(
+        self, o: Obligation, event: AlertEvent, state: OccurrenceState | None
+    ) -> AlertEvent | None:
+        profile = routing_profile(self._writer.st, event.profile_id, o.route_revision)
+        facts = alert_facts(event)
+        advice = event.kind is EventKind.LEAVE_NOW
+        option = facts.alternative
+        connection = None
+        if (
+            profile is not None
+            and profile.alerts.checked_alternatives
+            and (
+                advice or option is not None or (option_clause(event) and o.occurrence is not None)
+            )
+        ):
+            check = None if state is None else self._option_check(event, state)
+            answer = None if check is None else self._checked.answer(check)
+            if check is not None and answer is not None:
+                connection = check.confirmed(answer, advice=advice)
+            if connection is not None and check is not None and answer is not None:
+                text = checked_text(event, check, connection, answer.fetched_at)
+            elif advice:
+                return None
+            else:
+                cancellations = None
+                if check is not None and answer is not None:
+                    newer = tuple(
+                        a for a in check.boards if to_utc(a.fetched_at) > to_utc(answer.fetched_at)
+                    )
+                    cancellations = check.cancellations((answer, *newer))
+                elif (
+                    check is not None
+                    and not check.option.route
+                    and self._gate.budget.allow(self.now(), live=False)
+                    and check.state.poll_records
+                    and check.state.poll_records[-1].ok
+                ):
+                    cancellations = check.cancellations(check.boards)
+                text = without_option(event, cancellations)
+            labels: Mapping[str, str] = getattr(self._provider, "station_labels", {})
+            event = replace(event, text=name_stations(text, labels))
+            if connection is None:
+                return self._weather_event(event)
+        return self._notification_event(event, connection)
+
+    def _weather_event(self, event: AlertEvent, connection: Connection | None = None) -> AlertEvent:
         routine = event.kind in (EventKind.ALL_GOOD, EventKind.AT_STATION)
         if self._weather is None or not (routine or "Leave by " in event.text):
             return event
@@ -947,8 +1072,10 @@ class Runtime:
                     return event
                 base, allowance = o.leave_by, o.weather_allowance
                 weather = o.weather
-                if event.kind is EventKind.LEAVE_NOW and self._allowance_ready(o):
-                    base, allowance, weather = self._earlier_weather(event, o)
+                if (event.kind is EventKind.LEAVE_NOW or connection is not None) and (
+                    self._allowance_ready(o)
+                ):
+                    base, allowance, weather = self._alternative_weather(event, o, connection)
                 text = event.text
                 if allowance is not None and base is not None:
                     text = text.replace(f"Leave by {hhmm(base)}", allowance.text, 1)
@@ -960,21 +1087,22 @@ class Runtime:
                 return replace(event, text="\n".join((text, *lines)))
         return event
 
-    def _earlier_weather(
-        self, event: AlertEvent, o: OccurrenceView
+    def _alternative_weather(
+        self, event: AlertEvent, o: OccurrenceView, connection: Connection | None
     ) -> tuple[datetime | None, WeatherAllowance | None, tuple[WeatherView, ...]]:
         state = self._writer.st.occurrences[okey(o.key)]
         profile = self._profile_for(state)
         assert profile is not None and self._weather is not None
         now = self.now()
         ctx = self._ctx(state, now)
-        answers = self._memory.boards.get(okey(o.key), ())
-        origin = None if ctx is None else origin_answer(answers, ctx, state)
-        if origin is None or ctx is None or event.train is None:
-            return None, None, ()
-        connection = still_advised(
-            state, ctx, origin, event.train, usual_arrival(state, ctx, origin)
-        )
+        if connection is None:
+            answers = self._memory.boards.get(okey(o.key), ())
+            origin = None if ctx is None else origin_answer(answers, ctx, state)
+            if origin is None or ctx is None or event.train is None:
+                return None, None, ()
+            connection = still_advised(
+                state, ctx, origin, event.train, usual_arrival(state, ctx, origin)
+            )
         if connection is None:
             return None, None, ()
         first = connection.legs[0]
@@ -1254,6 +1382,14 @@ class Runtime:
             revision = self._writer.st.config.revision if self._writer.st.config else 0
         # one poll shares `now` and the key names neither profile nor direction (7.12 rule 6)
         d = e.direction.value if e.direction else ""
+        targets = None
+        if (
+            e.kind is EventKind.EARLIER_TRAIN_WITHDRAWN
+            and s is not None
+            and (profile := self._profile_for(s)) is not None
+            and profile.alerts.checked_alternatives
+        ):
+            targets = s.advice.accepted_targets if s.advice is not None else frozenset()
         return Obligation(
             id=f"{e.profile_id}|{d}|{e.key}|{e.severity.value}|{now.isoformat()}",
             event=e,
@@ -1264,6 +1400,7 @@ class Runtime:
             fact_key=e.key,
             expires_at=None,
             attempts=0,
+            target_ids=targets,
         )
 
     def _app_obligation(self, kind: EventKind, body: str, now: datetime, tag: str) -> Obligation:
@@ -1316,6 +1453,9 @@ class Runtime:
             s = replace(s, history_flags=frozenset(flags))
         if s.selected_recovery is not None and s.selected_recovery.status == "active":
             events = tuple(e for e in events if e.kind not in ORIGINAL_ROUTINE)
+        profile = self._profile_for(s)
+        if profile is not None and profile.alerts.checked_alternatives:
+            events = self._replacement_check_in(profile.alerts, events)
         keys = dict(s.alert_keys)
         if polled:
             forget_ended(keys, events)
@@ -1332,12 +1472,48 @@ class Runtime:
         labels: Mapping[str, str] = getattr(self._provider, "station_labels", {})
         for e in out:
             mark_sent(keys, e.key, e.severity)
-            e = replace(e, text=name_stations(e.text, labels))
+            facts = alert_facts(e)
+            e = replace(
+                e,
+                text=name_stations(e.text, labels),
+                facts=replace(
+                    facts,
+                    next_clause=name_stations(facts.next_clause, labels),
+                    crowd_note=name_stations(facts.crowd_note, labels),
+                ),
+            )
             if twins:  # 7.13: alerts name the service date while two occurrences exist
                 note = f" (service date {s.key.service_date.isoformat()})"
                 e = replace(e, text=e.text + note, facts=replace(alert_facts(e), twin_note=note))
             obligations.append(self._obligation(e, s, now))
         return replace(s, alert_keys=keys), obligations
+
+    def _replacement_check_in(
+        self, settings: AlertSettings, events: Sequence[AlertEvent]
+    ) -> Sequence[AlertEvent]:
+        for warning in events:
+            facts = alert_facts(warning)
+            option = facts.alternative
+            if (
+                option is None
+                or not option.route
+                or facts.on
+                or warning.kind
+                not in JOURNEY_WARNINGS | {EventKind.MISSED_FIRST_TRAIN, EventKind.MISSED_TRANSFER}
+            ):
+                continue
+            primary = self._primary_enabled(settings)
+            warned = channels_for(settings, warning.kind, primary_enabled=primary)
+            updated = []
+            for event in events:
+                if event.kind in (EventKind.ALL_GOOD, EventKind.AT_STATION):
+                    routine = channels_for(settings, event.kind, primary_enabled=primary)
+                    if routine <= warned:
+                        continue
+                    event = replace(event, facts=replace(alert_facts(event), alternative=option))
+                updated.append(event)
+            return updated
+        return events
 
     def _apply(
         self,
@@ -1651,9 +1827,21 @@ class Runtime:
 
     def _prune_for_write(self, st: PersistedState) -> PersistedState:
         now = self._clock.now()
-        st = prune_adoptions(st, now.astimezone(TZ).date(), self._primary_in_flight)
+        day = now.astimezone(TZ).date()
+        st = prune_adoptions(st, day, self._primary_in_flight)
         rows = _retained_alerts(st.alert_history, now)
-        return st if rows == st.alert_history else replace(st, alert_history=rows)
+        wakes = {pid: date for pid, date in st.wake_alarm_dates.items() if date >= day}
+        cutoff = day - timedelta(days=1)
+        partner_days = {key: date for key, date in st.partner_eta_days.items() if date >= cutoff}
+        if (
+            rows == st.alert_history
+            and wakes == st.wake_alarm_dates
+            and partner_days == st.partner_eta_days
+        ):
+            return st
+        return replace(
+            st, alert_history=rows, wake_alarm_dates=wakes, partner_eta_days=partner_days
+        )
 
     def _history_row(self, o: Obligation, event: AlertEvent) -> SentAlert | None:
         # Station check-ins and prompts can name a station detected from the phone.
@@ -1673,14 +1861,22 @@ class Runtime:
     def _save_rest(self, received: Sequence[tuple[Obligation, str, AlertEvent]] = ()) -> None:
         """Writes the webhook rests now, synchronously, before a try's request leaves (rule 22:
         a failed write takes the same path as any other)."""
+        advice = tuple((o, True) for o, _, _ in received if self._checked_advice(o))
         accepted = tuple(
             (o, target)
             for o, target, _ in received
             if o.event.kind in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED)
             or adoption_correction(o) is not None
+            or self._checked_advice(o)
         )
         history = tuple(row for o, _, event in received if (row := self._history_row(o, event)))
-        self._record_delivery(set(), {}, (), True, accepted=accepted, history=history)
+        self._record_delivery(set(), {}, advice, True, accepted=accepted, history=history)
+
+    def _checked_advice(self, o: Obligation) -> bool:
+        if o.event.kind is not EventKind.LEAVE_NOW:
+            return False
+        profile = routing_profile(self._writer.st, o.event.profile_id, o.route_revision)
+        return profile is not None and profile.alerts.checked_alternatives
 
     async def webhooks_idle(self) -> None:
         """Waits until no webhook pass runs (a clean shutdown, tests)."""
@@ -1806,6 +2002,50 @@ class Runtime:
                     r, sent = o, False
                 else:
 
+                    def still_due(obligation: Obligation = o) -> bool:
+                        current = next(
+                            (
+                                (p, held)
+                                for p, held in self._writer.pending()
+                                if p.id == obligation.id
+                            ),
+                            None,
+                        )
+                        if (
+                            current is None
+                            or current[0].event != obligation.event
+                            or self._waits(current[0])
+                        ):
+                            return False
+                        pending, held = current
+                        return (
+                            primary_delivery_verdict(
+                                pending,
+                                self._held_ledger if held else self._ledger,
+                                self.now(),
+                                self._primary_destination(),
+                                self._writer.audience_written(pending),
+                            )
+                            is DeliveryVerdict.SEND
+                        )
+
+                    if still_due() and await self._prepare_alternative(o, v, still_due):
+                        current = next(
+                            (
+                                (pending, held)
+                                for pending, held in self._writer.pending()
+                                if pending.id == o.id
+                            ),
+                            None,
+                        )
+                        if current is None:
+                            continue
+                        o, held = current
+                        if self._waits(o):
+                            continue
+                        v = self._held_ledger if held else self._ledger
+                        now, destination = self.now(), self._primary_destination()
+
                     def remember(
                         event: AlertEvent,
                         obligation: Obligation = o,
@@ -1840,9 +2080,14 @@ class Runtime:
                     and (
                         o.event.kind in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED)
                         or adoption_accepted
+                        or self._checked_advice(o)
                     )
                 ):
                     accepted.append((o, destination))
+                if r is None and not sent and self._checked_advice(o):
+                    copy = self._queue.copies.get(event_id(o.id))
+                    if copy is not None and copy.target_ids:
+                        r = o  # only the queued destination may receive this advice
                 if r is not None:
                     r = self._queue.after_send(r)
                 if r is None and o.event.kind in (
@@ -1924,7 +2169,7 @@ class Runtime:
                 k: replace(v, pending=_survivors(v.pending, finished, kept, marks))
                 for k, v in st.lookahead.items()
             }
-            st = _advice_told(st, told)
+            st = _advice_told(st, told, accepted)
             st = disruptions_told(st, told)
             st = disruptions_received(st, accepted)
             for obligation, target in accepted:
@@ -1956,7 +2201,10 @@ class Runtime:
                 st = replace(
                     st, alert_history=_retained_alerts((*st.alert_history, *history), receipt_time)
                 )
-            if any(o.occurrence is not None for o, _ in accepted):
+            if any(
+                o.occurrence is not None and o.event.kind is not EventKind.LEAVE_NOW
+                for o, _ in accepted
+            ):
                 return self._receipt_followups(st, receipt_time)
             return st
 
@@ -2068,6 +2316,95 @@ class Runtime:
         self._refresh_weather_soon()
         self._refresh_digest_soon()
         self._recovery.refresh_soon()
+        if (
+            self._send_partner_eta is not None
+            and self.config is not None
+            and any(p.alerts.partner_eta and p.alerts.partner_phone for p in self.config.profiles)
+        ):
+            self._partner_refresh.request()
+
+    async def partner_eta_once(self) -> None:
+        send = self._send_partner_eta
+        if send is None:
+            return
+        for key in tuple(self._writer.st.occurrences):
+            st = self._writer.st
+            state = st.occurrences.get(key)
+            if state is None or state.key.direction is not Direction.RETURN:
+                continue
+            pid, day = state.key.profile_id, state.key.service_date
+            profile = find_profile(st.config, pid)
+            ctx = self._ctx(state, self.now())
+            if (
+                profile is None
+                or not profile.alerts.partner_eta
+                or not (partner := profile.alerts.partner_phone)
+                or key in st.partner_eta_days
+                or ctx is None
+                or ctx.profile.home_station != profile.home_station
+                or self._ledger.in_quiet_hours(pid, ctx.now)
+            ):
+                continue
+            commute_day = commute_day_for(ctx.profile, Direction.RETURN, day)
+            if not profile.commutes_on(commute_day) or profile.paused_on(day):
+                continue
+            boards = tuple(
+                board
+                for board in self._memory.boards.get(key, ())
+                if timedelta() <= to_utc(ctx.now) - to_utc(board.fetched_at) < FRESH_FOR
+            )
+            if not boards:
+                continue
+            observation = occurrence_view(state, ctx, boards)
+            if not (message := partner_text(ctx, state, observation)):
+                continue
+            expires = min(
+                to_utc(present(observation.legs[-1].arrival)),
+                min(to_utc(board.fetched_at) for board in boards) + FRESH_FOR,
+            )
+            # A lost push receipt can otherwise repeat a private message after restart.
+            if not self._writer.commit_strict(
+                replace(st, partner_eta_days={**st.partner_eta_days, key: day})
+            ):
+                continue
+
+            def allowed(
+                profile: Profile = profile,
+                key: str = key,
+                expires: datetime = expires,
+                partner: str = partner,
+                message: str = message,
+            ) -> bool:
+                current = self._writer.st
+                now = self.now()
+                p = find_profile(current.config, profile.id)
+                s = current.occurrences.get(key)
+                if (
+                    p is None
+                    or s is None
+                    or not p.alerts.partner_eta
+                    or p.alerts.partner_phone != partner
+                    or not same_route(profile, p)
+                    or not p.commutes_on(commute_day_for(p, Direction.RETURN, s.key.service_date))
+                    or p.paused_on(s.key.service_date)
+                    or to_utc(now) >= expires
+                    or self._ledger.in_quiet_hours(p.id, now)
+                ):
+                    return False
+                context = occurrence_ctx(current, s, now)
+                if context is None or context.profile.home_station != p.home_station:
+                    return False
+                fresh = tuple(
+                    board
+                    for board in self._memory.boards.get(key, ())
+                    if timedelta() <= to_utc(now) - to_utc(board.fetched_at) < FRESH_FOR
+                )
+                return (
+                    bool(fresh)
+                    and partner_text(context, s, occurrence_view(s, context, fresh)) == message
+                )
+
+            await send(partner, message, allowed)
 
     async def _poll_occurrences(self) -> None:
         for k in sorted(self._writer.st.occurrences):
@@ -2230,6 +2567,7 @@ class Runtime:
             self._navigation_answers.pop(k, None)
             self._remember(k, st, answers)
             self._memory.boards[k] = answers
+            self._memory.option_boards.pop(k, None)
         return st, events
 
     def _remember_usual(self, k: str, ctx: Ctx, merged: Pool) -> None:
@@ -2409,7 +2747,147 @@ class Runtime:
         ):
             self._writer.commit(self._writer.st, Change.TICK)
         self._commute_recaps(now)
+        if self._wake_destination() is not None and wake_slots(self._writer.st, now):
+            self._wake_refresh.request()
         await self._deliver()
+
+    async def wake_once(self) -> None:
+        st = self._writer.st
+        recipient = self._wake_destination()
+        if recipient != self._wake_recipient:
+            self._wake_evidence.clear()
+            self._wake_attempts.clear()
+            self._wake_recipient = recipient
+        if recipient is None or self._writer.waiting:
+            return
+        now = self._clock.now()
+        slots = [
+            slot
+            for slot in wake_slots(st, now)
+            if "primary" in channels_for(slot.context.profile.alerts, EventKind.WAKE_ALARM)
+        ]
+        keys = {slot.sample_key for slot in slots}
+        self._wake_attempts = {k: v for k, v in self._wake_attempts.items() if k in keys}
+        self._wake_evidence = {k: v for k, v in self._wake_evidence.items() if k in keys}
+        for slot in slots:
+            key = slot.sample_key
+            current = partial(self._wake_current, recipient, key)
+            if not await self._can_wake(current):
+                continue
+            now = self._clock.now()
+            last = self._wake_attempts.get(key)
+            if last is None or to_utc(now) - to_utc(last) >= WAKE_CHECK_INTERVAL:
+                self._wake_attempts[key] = now
+                observed = await self._probe_wake(slot, now, current)
+                if not current():
+                    self._wake_evidence.pop(key, None)
+                    return
+                sample = (
+                    None
+                    if observed is None
+                    else observe_wake(
+                        self._wake_evidence.get(key), observed.candidate, observed.checked_at
+                    )
+                )
+                if sample is None:
+                    self._wake_evidence.pop(key, None)
+                else:
+                    self._wake_evidence[key] = sample
+            sample = self._wake_evidence.get(key)
+            if sample is None or not sample.ready(self._clock.now()):
+                continue
+            async with self._sending:
+                if not (await self._can_wake(current) and sample.ready(self._clock.now())):
+                    continue
+                await self._send_wake(slot, sample.candidate)
+
+    async def _can_wake(self, current: Callable[[], bool]) -> bool:
+        return current() and (self._wake_ready is None or await self._wake_ready()) and current()
+
+    def _wake_current(
+        self,
+        recipient: str,
+        key: WakeSampleKey,
+    ) -> bool:
+        st = self._writer.st
+        now = self._clock.now()
+        return (
+            self._wake_destination() == recipient
+            and not self._writer.waiting
+            and not self._ledger.in_quiet_hours(key.profile_id, now)
+            and any(
+                slot.sample_key == key
+                and "primary" in channels_for(slot.context.profile.alerts, EventKind.WAKE_ALARM)
+                for slot in wake_slots(st, now)
+            )
+        )
+
+    async def _probe_wake(
+        self, slot: WakeSlot, now: datetime, current: Callable[[], bool]
+    ) -> WakeEvidence | None:
+        ctx = slot.context
+        key = slot.sample_key
+        end = to_utc(now) + POLL_DEADLINE
+        usual = await self._gate.trips(key.usual, False, None, end)
+        if (
+            isinstance(usual, str)
+            or usual_problem(ctx, usual) is None
+            or not await self._can_wake(current)
+        ):
+            return None
+        start = max(
+            key.start,
+            to_utc(now) + timedelta(minutes=key.buffer_min),
+        )
+        earlier = await self._gate.trips(
+            replace(key.usual, at=start.astimezone(TZ)),
+            False,
+            None,
+            end,
+        )
+        if isinstance(earlier, str):
+            return None
+        candidate = earlier_wake(
+            replace(ctx, now=self._clock.now()), usual, earlier, slot.normal_wake
+        )
+        return (
+            None
+            if candidate is None
+            else WakeEvidence(candidate, min(usual.fetched_at, earlier.fetched_at, key=to_utc))
+        )
+
+    async def _send_wake(self, slot: WakeSlot, candidate: WakeCandidate) -> None:
+        pid, day = slot.key
+        st = self._writer.st
+        # Reserve the one critical alert before delivery. A lost receipt cannot ring twice.
+        if not self._writer.commit_strict(
+            replace(st, wake_alarm_dates={**st.wake_alarm_dates, pid: day})
+        ):
+            return
+        ctx = replace(slot.context, now=self._clock.now())
+        reason = (
+            "Your usual departure moved earlier."
+            if candidate.reason == "timetable"
+            else f"Your usual train is {candidate.reason}."
+        )
+        body = f"Wake now for the {hhmm(candidate.departure)} train. {reason}"
+        event = make_event(ctx, EventKind.WAKE_ALARM, Severity.LOUD, body, candidate.trains[0])
+        try:
+            await self._notifier.send(event)
+        except NotificationPaused:
+
+            def rollback(current: PersistedState) -> PersistedState:
+                wakes = dict(current.wake_alarm_dates)
+                if wakes.get(pid) != day:
+                    return current
+                wakes.pop(pid)
+                if pid in st.wake_alarm_dates:
+                    wakes[pid] = st.wake_alarm_dates[pid]
+                return replace(current, wake_alarm_dates=wakes)
+
+            self._writer.commit_delivery(rollback(self._writer.st), rollback, set())
+        else:
+            self._wake_evidence.pop(slot.sample_key, None)
 
     def _recovery_notice(
         self,
@@ -3124,6 +3602,13 @@ class Runtime:
                 # an answer asked under another generation is stale; the report itself still counts
                 answer, watched = None, ()
             t = on_location(s, ctx, event, answer, watched)
+            if (
+                answer is not None
+                and failed_more is None
+                and p.alerts.checked_alternatives
+                and any(alert_facts(e).alternative is not None for e in t.events)
+            ):
+                self._memory.option_boards[k] = (answer, *watched)
             self._apply({k: (t.state, t.events)})
         await self._deliver()
         return answered
@@ -3887,6 +4372,8 @@ class Runtime:
                     await self.stop_vehicle_context()
                     await self.stop_weather()
                     await self.stop_works_digest()
+                    await self._wake_refresh.stop()
+                    await self._partner_refresh.stop()
                     await self._recovery.stop()
                     self._lifecycle.phase = RuntimePhase.STOPPED
             finally:
