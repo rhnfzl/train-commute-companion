@@ -214,6 +214,7 @@ class ProfileEditorFlow:
                         SelectSelectorConfig(
                             options=options,
                             mode=SelectSelectorMode.DROPDOWN,
+                            translation_key="profile_choice",
                         )
                     ),
                 }
@@ -317,6 +318,7 @@ class ProfileEditorFlow:
                     options=list(WEEKDAYS),
                     multiple=True,
                     mode=SelectSelectorMode.LIST,
+                    translation_key="weekdays",
                 )
             ),
             vol.Required("skip_public_holidays"): BooleanSelector(),
@@ -326,6 +328,7 @@ class ProfileEditorFlow:
                     options=categories,
                     multiple=True,
                     mode=SelectSelectorMode.DROPDOWN,
+                    translation_key="alert_categories",
                 )
             ),
         }
@@ -359,7 +362,11 @@ class ProfileEditorFlow:
             for name, options, default in choices:
                 key = f"{direction}_{name}"
                 schema[vol.Optional(key, default=defaults.get(key, default))] = SelectSelector(
-                    SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
+                    SelectSelectorConfig(
+                        options=options,
+                        mode=SelectSelectorMode.DROPDOWN,
+                        translation_key=f"journey_{name}",
+                    )
                 )
             key = f"{direction}_min_stay"
             schema[vol.Optional(key, default=defaults.get(key, 0))] = NumberSelector(
@@ -489,6 +496,7 @@ class ProfileEditorFlow:
                 SelectSelectorConfig(
                     options=pause_options,
                     mode=SelectSelectorMode.DROPDOWN,
+                    translation_key="holiday_ranges",
                 )
             )
         )
@@ -519,7 +527,11 @@ class ProfileEditorFlow:
                     {"value": selected, "label": "Unavailable destinations: " + selected}
                 )
             fields[vol.Optional(key, default=selected)] = SelectSelector(
-                SelectSelectorConfig(options=choices, mode=SelectSelectorMode.DROPDOWN)
+                SelectSelectorConfig(
+                    options=choices,
+                    mode=SelectSelectorMode.DROPDOWN,
+                    translation_key="notification_destinations",
+                )
             )
         labels = (
             ", ".join(f"minimum_{code}: {self._catalogue.name(code)}" for code in stations)
@@ -673,7 +685,11 @@ class ProfileEditorFlow:
             data_schema=vol.Schema(
                 {
                     vol.Required("day", default="done"): SelectSelector(
-                        SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
+                        SelectSelectorConfig(
+                            options=options,
+                            mode=SelectSelectorMode.DROPDOWN,
+                            translation_key="profile_day",
+                        )
                     )
                 }
             ),
@@ -734,14 +750,18 @@ class ProfileEditorFlow:
         fields: dict[Any, Any] = {
             vol.Optional("mode", default=saved.get("mode", "default")): SelectSelector(
                 SelectSelectorConfig(
-                    options=default + MODE_OPTIONS, mode=SelectSelectorMode.DROPDOWN
+                    options=default + MODE_OPTIONS,
+                    mode=SelectSelectorMode.DROPDOWN,
+                    translation_key="journey_mode",
                 )
             ),
             vol.Optional("window_start", description={"suggested_value": window[0]}): str,
             vol.Optional("window_end", description={"suggested_value": window[1]}): str,
             vol.Optional("pick", default=saved.get("pick", "default")): SelectSelector(
                 SelectSelectorConfig(
-                    options=default + PICK_OPTIONS, mode=SelectSelectorMode.DROPDOWN
+                    options=default + PICK_OPTIONS,
+                    mode=SelectSelectorMode.DROPDOWN,
+                    translation_key="journey_pick",
                 )
             ),
             vol.Optional(

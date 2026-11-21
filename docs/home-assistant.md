@@ -4,6 +4,8 @@ Data: NS. You bring your own NS API key; none is bundled. This integration follo
 
 It needs Home Assistant 2026.10 or newer and the Home Assistant companion app on your phone.
 
+Setup forms and their choices use Dutch when your Home Assistant interface language is Dutch. Train alerts and validation reports still use English.
+
 ## Install
 
 [![Open Train Commute Companion in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=rhnfzl&repository=train-commute-companion&category=integration)
