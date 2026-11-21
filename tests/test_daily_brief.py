@@ -564,23 +564,25 @@ async def test_brief_retry_rechecks_advice_and_windows_for_all_destinations(tmp_
 
 
 @pytest.mark.parametrize(
-    "setting",
+    "setting, value",
     [
-        "live_today",
-        "telegram_status_pin",
-        "navigate",
-        "timetable_update",
-        "arrival_prompt",
-        "compensation_details",
+        ("live_today", "false"),
+        ("telegram_status_pin", "false"),
+        ("navigate", "false"),
+        ("timetable_update", "false"),
+        ("arrival_prompt", "false"),
+        ("compensation_details", "false"),
+        ("checked_alternatives", "false"),
+        ("wake_at", '"06:12"'),
     ],
 )
-async def test_unrelated_toggle_preserves_a_brief_waiting_to_send(tmp_path, setting):
+async def test_unrelated_setting_preserves_a_brief_waiting_to_send(tmp_path, setting, value):
     rig = await setup(tmp_path)
     rig.notifier.fails = lambda event: event.kind is MORNING
     await run_at(rig, "06:00")
     (original,) = tells(rig, MORNING)
 
-    rig.write(text=YAML + f"    alerts: {{{setting}: false}}\n")
+    rig.write(text=YAML + f"    alerts: {{{setting}: {value}}}\n")
     rig.notifier.fails = lambda _: False
     rig.clock.set("06:05")
     await rig.rt.reload()

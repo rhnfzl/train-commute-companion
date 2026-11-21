@@ -409,8 +409,9 @@ async def test_retry_hides_only_elapsed_weather_suggestion(tmp_path, now, extra)
             await rig.rt.weather_idle()
             rig.clock.set(now)
             rig.notifier.fails = lambda event: False
-            await rig.rt.watchdog_once()
+            await rig.rt.poll_once()
             event = next(e for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW)
+            assert "NS checked just now" in event.text
             assert ("+5 min suggested" in event.text) is extra
             assert ("Leave by 17:12" if extra else "Leave by 17:17") in event.text
             assert event.text.count("Leave by") == 1
@@ -456,10 +457,12 @@ async def test_earlier_retry_uses_the_same_latest_advice_connection_for_weather(
                     fetched_at=answers[-1].fetched_at + timedelta(seconds=1),
                 ),
             )
+            rig.provider.world = updated
             rig.clock.set("16:56")
             rig.notifier.fails = lambda event: False
             await rig.rt.watchdog_once()
             event = next(e for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW)
+            assert "NS checked just now" in event.text
             assert "17:34" in event.text
             assert "Leave by 17:17" in event.text
             assert "+5 min suggested" not in event.text

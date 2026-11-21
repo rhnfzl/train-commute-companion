@@ -93,7 +93,7 @@ async def test_true_miss_with_the_phone_at_rest_is_one_loud_miss_at_twelve_minut
         (
             (
                 "Office A: you missed the 08:12. Next: 08:44 to RTD, change at UT, on time per NS,"
-                " arrives 09:50."
+                " arrives 09:50. NS checked just now: runs."
             ),
             Severity.LOUD,
         )
@@ -113,7 +113,7 @@ async def test_home_wifi_at_departure_is_an_immediate_miss_with_leave_by(tmp_pat
     await report(rig, "home", "still", "08:12:10", Evidence(wifi=True))  # connected at departure
     assert missed(rig) == [
         (
-            "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:24.",
+            "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:24. NS checked just now: runs.",
             Severity.LOUD,
         )
     ]

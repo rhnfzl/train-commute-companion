@@ -414,6 +414,10 @@ def current_text(
                 timetable_update=then.alerts.timetable_update,
                 arrival_prompt=then.alerts.arrival_prompt,
                 compensation_details=then.alerts.compensation_details,
+                wake_at=then.alerts.wake_at,
+                checked_alternatives=then.alerts.checked_alternatives,
+                partner_eta=then.alerts.partner_eta,
+                partner_phone=then.alerts.partner_phone,
             ),
         )
         != then

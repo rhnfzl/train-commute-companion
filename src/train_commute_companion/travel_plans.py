@@ -308,6 +308,9 @@ def parse_plan(
                 navigate=True,
                 compensation_details=True,
                 timetable_update=True,
+                wake_at=None,
+                partner_eta=False,
+                partner_phone=None,
             ),
             p.accessibility,
             p.transfer_min,
@@ -326,6 +329,7 @@ def parse_plan(
     if base_id is not None and base is None:
         raise ValueError("The profile whose preferences should apply was not found.")
     alerts = base.alerts if base else AlertSettings()
+    alerts = replace(alerts, partner_eta=False, partner_phone=None)
     if base_id is None and match is not None:
         alerts = replace(
             alerts,

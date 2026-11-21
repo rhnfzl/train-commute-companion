@@ -297,7 +297,7 @@ async def test_home_vouches_before_and_twelve_minutes_after_departure(hass):  # 
     assert await spied(h) == [("home", "still")] * 2  # the 08:24 vouch, once
     missed = [c for c in h.pushes if "missed" in c.data["message"]]
     assert [c.data["message"] for c in missed] == [
-        "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34."
+        "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34. NS checked just now: runs."
     ]
     assert loud(missed[0])
 
@@ -316,7 +316,7 @@ async def test_home_wifi_at_departure_is_an_immediate_miss(hass):  # Q12 rule 3a
     assert await spied(h) == [("home", "still")] * 2  # before, then at the departure with Wi-Fi
     missed = [c for c in h.pushes if "missed" in c.data["message"]]
     assert [c.data["message"] for c in missed] == [
-        "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34."
+        "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34. NS checked just now: runs."
     ]
     assert loud(missed[0])
 

@@ -830,7 +830,7 @@ async def test_newer_cancellation_on_the_advice_search_beats_an_older_recovery(t
     def split(q: Query) -> None:
         if q.at == at("17:52"):
             rig.provider.world = running_usual_world()
-        else:
+        elif q.at != at("17:22"):
             rig.clock.jump(1)
             rig.provider.world = late_usual_world()
 
@@ -875,7 +875,7 @@ async def held_then_split(tmp_path, main: list, search: list) -> list[AlertEvent
     def split(q: Query) -> None:
         if q.at == at("17:52"):
             rig.provider.world = main
-        else:
+        elif q.at != at("17:22"):
             rig.clock.jump(1)
             rig.provider.world = search
 
@@ -1136,7 +1136,9 @@ async def test_held_warning_names_the_whole_onward_suffix_with_platforms(tmp_pat
     told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
     old = next(t for t in told if "08:50" in t)
     assert "08:58" not in old
-    assert old.endswith("Now following your 08:12 train, then the 09:10 from UT (platform 5).")
+    assert old.endswith(
+        "Now following your 08:12 train, then the 09:10 from UT (platform 5). NS checked just now: runs."
+    )
 
 
 async def test_a_warning_stored_before_facts_were_kept_still_names_the_current_lock(tmp_path):
@@ -1161,7 +1163,9 @@ async def test_a_warning_stored_before_facts_were_kept_still_names_the_current_l
     told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
     old = next(t for t in told if "08:50" in t)
     assert "08:58" not in old
-    assert old.endswith("Now following your 08:12 train, then the 09:10 from UT.")
+    assert old.endswith(
+        "Now following your 08:12 train, then the 09:10 from UT. NS checked just now: runs."
+    )
 
 
 async def test_older_store_occurrence_keeps_its_schedule_through_a_reseed(tmp_path):

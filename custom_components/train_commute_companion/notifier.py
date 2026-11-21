@@ -171,6 +171,24 @@ def mobile_target(hass: HomeAssistant, service: str) -> str | None:
     return target if isinstance(target, str) and target in entries else None
 
 
+def registered_phones(hass: HomeAssistant) -> dict[str, tuple[str, str]]:
+    data = hass.data.get(MOBILE_APP)
+    entries = data.get("config_entries") if isinstance(data, dict) else None
+    if not isinstance(entries, dict):
+        return {}
+    phones = {}
+    for service in hass.services.async_services_for_domain("notify"):
+        if (
+            not service.startswith("mobile_app_")
+            or (target := mobile_target(hass, service)) is None
+        ):
+            continue
+        registration = entries.get(target)
+        if isinstance(registration, ConfigEntry):
+            phones[registration.entry_id] = (target, registration.title)
+    return phones
+
+
 async def async_push(hass: HomeAssistant, service: str, payload: dict[str, Any]) -> bool:
     return (await _push(hass, service, payload))[0]
 
@@ -213,6 +231,7 @@ async def _push_mobile(
     payload: dict[str, Any],
     retired: threading.Event | None = None,
     tasks: set[asyncio.Task[None]] | None = None,
+    allowed: Callable[[], bool] = lambda: True,
 ) -> bool:
     """mobile_app's own send path, minus its error swallowing: the relay's answer, or the local
     push confirmation, is observed directly; HA's service only logs a refused push. The relay
@@ -223,6 +242,8 @@ async def _push_mobile(
     # imported here: only reached once mobile_app is loaded, which the manifest does not require
     from homeassistant.components.mobile_app import notify as mobile_notify
 
+    if not allowed():
+        return False
     data = hass.data[MOBILE_APP]
     entry = data["config_entries"][webhook_id]
     message = {"message": payload["message"], "data": payload.get("data")}
@@ -237,7 +258,7 @@ async def _push_mobile(
         async with asyncio.timeout(NOTIFY_TIMEOUT_S):
             await mobile_notify._send_message(async_get_clientsession(hass), entry, message)
         return True
-    return await _push_local(hass, channel, entry, message, mobile_notify, retired, tasks)
+    return await _push_local(hass, channel, entry, message, mobile_notify, retired, tasks, allowed)
 
 
 def _on_confirmation(pending: dict[str, Any], settle: Callable[[bool], None]) -> Callable[[], None]:
@@ -261,6 +282,7 @@ async def _push_local(
     mobile_notify: ModuleType,
     retired: threading.Event | None,
     tasks: set[asyncio.Task[None]] | None,
+    allowed: Callable[[], bool] = lambda: True,
 ) -> bool:
     """Waits for the phone's confirmation or for HA's fallback through the relay to finish."""
     session = async_get_clientsession(hass)
@@ -275,7 +297,7 @@ async def _push_local(
         nonlocal relay_timed_out
         ok = False
         try:
-            if retired is not None and retired.is_set():
+            if (retired is not None and retired.is_set()) or not allowed():
                 return
             await mobile_notify._send_message(session, entry, d)
             ok = True
@@ -415,9 +437,37 @@ class HaNotifier:
                 return None
         return self.destination_id
 
+    @property
+    def wake_destination(self) -> str | None:
+        if self.loud_style != "critical" or self.retired.is_set():
+            return None
+        return self.destination_id
+
+    def _wake_allowed(self) -> bool:
+        return (
+            self.wake_destination is not None
+            and not self.paused
+            and not self.quiet
+            and self.phase is NotifierPhase.READY
+        )
+
+    async def wake_ready(self) -> bool:
+        async def check() -> bool:
+            return self._wake_allowed()
+
+        try:
+            async with asyncio.timeout(NOTIFY_TIMEOUT_S):
+                return await asyncio.wrap_future(
+                    asyncio.run_coroutine_threadsafe(check(), self.hass.loop)
+                )
+        except TimeoutError:
+            return False
+
     async def send(self, event: AlertEvent) -> bool:
         """Runs on the runtime thread; the work happens on `hass.loop`."""
         if self.retired.is_set():
+            if event.kind is EventKind.WAKE_ALARM:
+                raise NotificationPaused
             return False
         try:
             async with asyncio.timeout(NOTIFY_TIMEOUT_S + LOCAL_PUSH_SETTLE_S + 5):
@@ -427,6 +477,51 @@ class HaNotifier:
         except TimeoutError:
             self._timed_out_at = time.monotonic()  # hass never answered: back off too
             return False
+
+    async def send_partner_eta(self, phone: str, text: str, permitted: Callable[[], bool]) -> None:
+        async def push() -> None:
+            registered = registered_phones(self.hass).get(phone)
+            if registered is None or registered[0] == self._receipt_target:
+                return
+            target, _ = registered
+
+            def allowed() -> bool:
+                return (
+                    not self.retired.is_set()
+                    and not self.paused
+                    and not self.quiet
+                    and registered_phones(self.hass).get(phone) == registered
+                    and target != mobile_target(self.hass, self.service)
+                    and permitted()
+                )
+
+            task = cast("asyncio.Task[None]", asyncio.current_task())
+            self._tasks.add(task)
+            try:
+                await _push_mobile(
+                    self.hass,
+                    target,
+                    notify_payload(Severity.SILENT, text),
+                    self.retired,
+                    self._tasks,
+                    allowed,
+                )
+            except (
+                HomeAssistantError,
+                TimeoutError,
+                AttributeError,
+                KeyError,
+                TypeError,
+                ImportError,
+            ) as err:
+                _LOGGER.warning(
+                    "Partner arrival estimate could not be delivered (%s)", type(err).__name__
+                )
+            finally:
+                self._tasks.discard(task)
+
+        if not self.retired.is_set():
+            await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(push(), self.hass.loop))
 
     async def async_stop(self) -> None:
         """On hass.loop, once `retired` is set: cancels and awaits this notifier's sends and
@@ -439,6 +534,8 @@ class HaNotifier:
 
     async def _send(self, event: AlertEvent) -> bool:
         if self.retired.is_set():
+            if event.kind is EventKind.WAKE_ALARM:
+                raise NotificationPaused
             return False
         me = cast("asyncio.Task[None]", asyncio.current_task())
         self._tasks.add(me)
@@ -449,6 +546,8 @@ class HaNotifier:
 
     async def _deliver(self, event: AlertEvent) -> bool:
         if self.paused:
+            raise NotificationPaused
+        if event.kind is EventKind.WAKE_ALARM and not self._wake_allowed():
             raise NotificationPaused
         if event.kind in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED) and (
             mobile_target(self.hass, self.service) != self._receipt_target

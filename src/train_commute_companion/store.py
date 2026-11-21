@@ -104,6 +104,8 @@ class PersistedState:
     commute_recap_weeks: Mapping[str, date] = field(default_factory=dict)
     alert_history: tuple[SentAlert, ...] = ()
     brief_days: Mapping[str, date] = field(default_factory=dict)
+    wake_alarm_dates: Mapping[str, date] = field(default_factory=dict)
+    partner_eta_days: Mapping[str, date] = field(default_factory=dict)
 
 
 class Store(Protocol):

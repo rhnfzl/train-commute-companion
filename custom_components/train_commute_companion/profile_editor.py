@@ -178,6 +178,7 @@ def edit_profile(
         "leave_by",
         "weather_allowance",
         "location_leave_now",
+        "checked_alternatives",
         "live_today",
         "telegram_status_pin",
         "ntfy_enabled",
@@ -188,6 +189,7 @@ def edit_profile(
         "alert_history",
         "calendar_feed",
         "quick_trip",
+        "partner_eta",
     ):
         if key not in values:
             continue
@@ -197,6 +199,11 @@ def edit_profile(
         if values[key] != getattr(defaults, key) or key in alerts or key == "weather":
             alerts[key] = values[key]
             profile["alerts"] = alerts
+    if "partner_phone" in values:
+        phone = values["partner_phone"]
+        alerts = profile.get("alerts", {})
+        if phone is not None or "partner_phone" in alerts:
+            profile["alerts"] = {**alerts, "partner_phone": phone}
     for key in ("custom_timetable_horizon", "timetable_horizon_unit", "timetable_horizon_count"):
         if key in values:
             value = values[key]
@@ -213,6 +220,14 @@ def edit_profile(
             raise EditorError("invalid_profile")
         if value is not defaults.daily_brief or "daily_brief" in alerts:
             profile["alerts"] = {**alerts, "daily_brief": value}
+    if "wake_at" in values:
+        alerts = dict(profile.get("alerts", {}))
+        if wake_at := _text(values["wake_at"]):
+            alerts["wake_at"] = wake_at
+        else:
+            alerts.pop("wake_at", None)
+        if alerts or "alerts" in profile:
+            profile["alerts"] = alerts
     brief = dict(profile.get("brief", {}))
     for key in ("at", "evening_at", "only_if_something"):
         field = f"brief_{key}"

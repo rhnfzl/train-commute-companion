@@ -44,6 +44,19 @@ def test_matching_origin_supplies_a_missing_boarding_platform():
     assert board.planned_track == "7a"
 
 
+@pytest.mark.parametrize("stop_list", [False, True])
+def test_null_station_name_uses_station_code(stop_list):
+    raw = fixture("on_time_direct.json")
+    leg = raw["trips"][0]["legs"][0]
+    leg["origin"]["name"] = None
+    if stop_list:
+        leg["stops"][0]["name"] = None
+    else:
+        leg.pop("stops")
+    stop = map_trips(raw, Q, NOW).connections[0].legs[0].board
+    assert stop.name == stop.code == "AAA"
+
+
 def test_transfer_fields():
     c = map_trips(fixture("one_transfer.json"), Q, NOW).connections[0]
     leg0, leg1 = c.legs

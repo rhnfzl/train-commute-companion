@@ -66,6 +66,7 @@ Leave-by time uses the earlier of planned and NS-expected departure, minus that 
 A delayed train never moves leave-by later. The followed train determines this time, including a train you choose instead of your usual train.
 
 **Show leave-by time** in the details form controls `alerts.leave_by` and defaults to on.
+**Check suggested trains** controls `alerts.checked_alternatives` and defaults to on. It asks NS again before an alert suggests a different train.
 Turn off **Show leave-by time** to hide leave-by text and the status sensor's timestamp. Other check-in and advice wording stays available.
 
 **Suggest extra time for weather** controls `alerts.weather_allowance` and defaults to on.
@@ -117,6 +118,15 @@ The morning brief uses the **Routine** notification settings. Evening alerts use
 Checks due together share one planned-works listing. The brief reuses recent trip and disruption data when available. It makes at most one additional trip request per fixed direction and one active-disruption request across the batch. It uses the station weather cache and can refresh known stations. For a window trip, the brief uses the train already being followed. Missing train information leaves the scheduled time or travel window visible.
 
 A mock weekday profile had one outbound transfer and a direct return. Its regular seven-day lookahead used 20 trip requests and one works listing. With both daily checks enabled and empty caches, the morning used 22 trip requests, one works listing and one disruption listing. A separate evening check added four trip requests and one works listing for tomorrow. Live polling, optional weather and retries are outside these counts. Both checks use the shared NS request budget and cooldown.
+
+## Earlier wake alert
+
+Enter **Usual wake time** in a profile's Home Assistant details, or set `alerts.wake_at: "06:50"`. Leave it blank to turn off earlier wake alerts.
+This option needs a bound Home Assistant phone with **Critical** notifications selected. [Home Assistant critical notifications](https://companion.home-assistant.io/docs/notifications/critical-notifications/)
+
+For a fixed outbound commute, the companion keeps the time between your usual wake and departure. It sends one critical alert if two fresh NS checks agree that you need an earlier train.
+The evening timetable check can start these checks earlier. Missing or conflicting train data does not trigger an alarm.
+Your usual phone alarm and the companion's followed train stay as scheduled.
 
 ## Timetable lookahead
 
@@ -187,3 +197,17 @@ Saving uses YAML serialization. Comments, anchors and formatting can change, but
 New files can only be created inside the Home Assistant config folder. Existing files outside that folder can be edited only when their directory is in Home Assistant's external-directory allowlist. Files are saved atomically after validation and a check against the contents read when the form opened.
 
 No API keys, phone tokens or webhook secrets are written into the profiles file by these forms.
+
+## Partner arrival updates
+
+**Share delays with a partner** can send one silent update during a delayed return commute.
+Get your partner's permission and select their registered Home Assistant phone in **Partner phone**.
+Leave the switch off to stop sharing.
+
+The update contains the delay and expected arrival time. It skips stale estimates and journeys
+with an unconfirmed connection. It uses the reported delay of at least ten minutes and respects
+quiet hours and the integration's notification controls. An unavailable phone can miss the update.
+
+The editor saves `alerts.partner_eta` (default `false`) and `alerts.partner_phone`, the selected
+Home Assistant mobile app registration ID. Removing the phone or leaving the switch off disables
+sending. Select the phone again after re-registering it. This option sends through Home Assistant.

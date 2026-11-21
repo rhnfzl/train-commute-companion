@@ -148,7 +148,7 @@ def _stop(raw: dict[str, Any], aliases: dict[str, str], at: datetime, *, allow_p
     pa, pd = _dt(raw.get("plannedArrivalDateTime")), _dt(raw.get("plannedDepartureDateTime"))
     return Stop(
         code=str(code),
-        name=str(raw.get("name", code)),
+        name=_str(raw.get("name")) or code,
         planned_arrival=pa,
         planned_departure=pd,
         arrival=_obs(pa, _dt(raw.get("actualArrivalDateTime")), at),
@@ -178,7 +178,7 @@ def _end_stop(
     o = _obs(p, a, at)
     return Stop(
         code=code,
-        name=str(raw.get("name", code)),
+        name=_str(raw.get("name")) or code,
         planned_arrival=None if depart else p,
         planned_departure=p if depart else None,
         arrival=None if depart else o,
