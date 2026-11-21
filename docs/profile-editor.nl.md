@@ -1,6 +1,14 @@
 # Profielen instellen in Home Assistant
 
-Kies bij de installatie je stations, reisdagen en tijden. Open later **Configureren > Profielen toevoegen of wijzigen** om deze gegevens aan te passen.
+Kies bij de installatie je stations, reisdagen en tijden. Home Assistant toont daarna elk reisprofiel bij de integratie.
+
+Gebruik **Woon-werkprofiel toevoegen** voor een nieuwe reis. Open het menu van een profiel om het te wijzigen of te verwijderen. **Configureren > Profielen toevoegen of wijzigen** blijft ook beschikbaar.
+
+Bestaande profielen behouden hun apparaten, entiteits-ID's en instellingen. Verwijder je een profiel in Home Assistant, dan stopt de bewaking en verdwijnt het profiel uit het YAML-bestand.
+
+Als opslaan mislukt, blijft het profiel uitgeschakeld. Home Assistant probeert het opnieuw wanneer de integratie start.
+
+Kopieer het ingestelde YAML-bestand om je profielen te exporteren. Kies bij een nieuwe installatie **Een bestaand YAML-bestand gebruiken** om de kopie te importeren. Behoud de profiel-ID's.
 
 ## Locatie
 

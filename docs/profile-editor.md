@@ -15,11 +15,17 @@ Create and edit commutes in Home Assistant without looking up station codes or c
 
 The file is created at `train_commute_companion/profiles.yaml` in the config folder, and only after you confirm both tests. An existing file is never replaced. Turn on **Use an existing YAML file** to use a file you already have.
 
-Add more commutes later under Configure > Add or edit profiles.
+Use **Add commute profile** on the integration page to add another commute.
 
 ## Edit or add a profile
 
-Open the integration's Configure menu and choose **Add or edit profiles**. Pick a profile or choose **Add a profile**. Existing profile IDs remain unchanged.
+Home Assistant shows each commute under the integration. Use a profile's menu to edit or remove it. You can also use **Configure > Add or edit profiles**.
+
+Existing profiles appear when Home Assistant loads the file. Each profile keeps its devices, entity IDs and registry settings. Removing a profile in Home Assistant stops monitoring it and removes its row from the file.
+
+If a write fails, the profile stays disabled. Home Assistant retries the removal when the integration starts again.
+
+Export your profiles by copying the configured YAML file. To import them into another installation, choose **Use an existing YAML file** and select that copy. Keep the profile IDs in the copy.
 
 A new profile gets a free name, such as "commute 2". Two profiles cannot run on the same weekday. If you pick a day that another profile uses, the form names that profile. Pick other days, or change the other profile first.
 

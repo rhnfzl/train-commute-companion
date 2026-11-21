@@ -193,7 +193,12 @@ async def test_mixed_and_disabled_profiles_filter_or_withdraw_the_pin(rig):
 
 
 @pytest.mark.parametrize(
-    "empty", ["profiles: []", '# Remove all travellers\n"profiles": &none !!seq []']
+    "empty",
+    [
+        "profiles: []",
+        '# Remove all travellers\n"profiles": &none !!seq []',
+        "defaults: {notes: keep}\nprofiles: []",
+    ],
 )
 async def test_reload_of_empty_profiles_withdraws_pin_but_invalid_yaml_does_not(
     rig, tmp_path, empty
@@ -223,6 +228,9 @@ async def test_reload_of_empty_profiles_withdraws_pin_but_invalid_yaml_does_not(
                 "<<: !!omap [{profiles: []}]",
                 "<<: !!pairs [{profiles: []}]",
                 "<<: !unsupported {profiles: []}",
+                "defaults: &empty []\nprofiles: *empty",
+                "metadata: &profile_key profiles\n*profile_key: []",
+                "<<: {profiles: [null]}\nprofiles: []",
             ):
                 running.write(text=invalid)
                 await running.rt.reload()

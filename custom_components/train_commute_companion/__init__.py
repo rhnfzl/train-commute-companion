@@ -39,6 +39,7 @@ from .coordinator import TccCoordinator
 from .data import TccConfigEntry, TccData
 from .location import LocationTracker
 from .notifier import HaNotifier
+from .profile_subentries import async_setup_profile_subentries, excluded_profile_ids
 from .services import async_setup_services
 from .store import EntryMarkedStore, file_lock
 
@@ -99,6 +100,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         retired,
         enabled_entity=entry.options.get(CONF_NOTIFICATIONS_ENABLED_ENTITY),
         quiet_entity=entry.options.get(CONF_NOTIFICATIONS_QUIET_ENTITY),
+        profile_allowed=lambda pid: pid not in excluded_profile_ids(entry, profiles_path),
     )
 
     def build() -> host_mod.Parts:
@@ -131,6 +133,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
             wake_destination=lambda: notifier.wake_destination,
             wake_ready=notifier.wake_ready,
             send_partner_eta=notifier.send_partner_eta,
+            excluded_profiles=lambda: excluded_profile_ids(entry, profiles_path),
             weather=WeatherProvider(weather_client, clock.now, knmi_key),
         )
         return host_mod.Parts(rt, clock, close)
@@ -166,6 +169,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         entry.async_on_unload(coordinator.async_add_listener(lambda: None))
         tracker = LocationTracker(hass, entry, coordinator, host)
         entry.runtime_data = TccData(host, coordinator, stop, tracker)
+        async_setup_profile_subentries(entry, profiles_path)
         from .arrival_controls import listen_for_arrival
         from .timetable_controls import listen_for_timetable
 

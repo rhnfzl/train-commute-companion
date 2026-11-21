@@ -1173,15 +1173,25 @@ def _explicit_empty_profiles(text: str) -> bool:
     root = yaml.compose(text.lstrip("\ufeff"), Loader=_Loader)
     if not isinstance(root, yaml.MappingNode) or root.tag != "tag:yaml.org,2002:map":
         return False
-    if len(root.value) != 1:
+    fields = []
+    previous_end = root.start_mark.index
+    for key, value in root.value:
+        if key.tag == "tag:yaml.org,2002:merge":
+            return False
+        if key.tag == "tag:yaml.org,2002:str" and key.value == "profiles":
+            # The composer reuses the earlier node for a key written as an alias.
+            if key.start_mark.index < previous_end:
+                return False
+            fields.append((key, value))
+        previous_end = max(previous_end, key.end_mark.index, value.end_mark.index)
+    if len(fields) != 1:
         return False
-    key, value = root.value[0]
+    key, value = fields[0]
     return (
-        key.tag == "tag:yaml.org,2002:str"
-        and key.value == "profiles"
-        and isinstance(value, yaml.SequenceNode)
+        isinstance(value, yaml.SequenceNode)
         and value.tag == "tag:yaml.org,2002:seq"
         and not value.value
+        and value.start_mark.index >= key.end_mark.index
     )
 
 
@@ -1245,12 +1255,13 @@ def load_config(
     today: date,
     *,
     available_channels: frozenset[NotificationChannel] | None = None,
+    allow_empty: bool = False,
 ) -> tuple[Config | None, list[ProfileProblem]]:
     profiles, errors = parse_profiles(
         text,
         known_stations,
         available_channels=available_channels,
-        allow_empty=previous is not None,
+        allow_empty=previous is not None or allow_empty,
     )
     pairs = overlap_pairs(profiles, today)
     errors = errors + [e for _, _, e in pairs]
@@ -1262,7 +1273,7 @@ def load_config(
         return Config(previous.revision + 1, tuple(profiles)), []
     refused = {p.id for a, b, _ in pairs for p in (a, b)}
     kept = tuple(p for p in profiles if p.id not in refused)
-    return (Config(1, kept) if kept else None), errors
+    return (Config(1, kept) if kept or (allow_empty and not errors) else None), errors
 
 
 _DST_HOUR = 2  # the hour that is repeated or skipped on the clock-change nights (5.2)

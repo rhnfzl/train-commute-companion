@@ -327,12 +327,285 @@
       "invalid_location_entity": "Kies een geschikte entiteit of laat het veld leeg."
     },
     "create_entry": {
-      "guided": "Voeg later meer woon-werkreizen toe via Configureren > Profielen toevoegen of wijzigen."
+      "guided": "Gebruik Woon-werkprofiel toevoegen op de integratiepagina voor een nieuwe reis."
     },
     "abort": {
       "no_mobile_app": "Er is geen telefoon met de Home Assistant companion-app gevonden. Installeer de app, meld je aan en probeer het opnieuw.",
       "single_instance_allowed": "Train Commute Companion is al ingesteld.",
       "reauth_successful": "De nieuwe NS-sleutel werkt en is opgeslagen."
+    }
+  },
+  "config_subentries": {
+    "profile": {
+      "entry_type": "Woon-werkprofiel",
+      "initiate_flow": {
+        "user": "Woon-werkprofiel toevoegen"
+      },
+      "step": {
+        "profile": {
+          "title": "Je woon-werkreis",
+          "description": "Kies overstapstations in reisvolgorde. Bestaande geavanceerde instellingen blijven in het bestand staan. {report}\n\nStations in de buurt van zone.home, indien bekend: {nearby}",
+          "data": {
+            "name": "Profielnaam",
+            "home_station": "Station bij huis",
+            "work_station": "Station bij werk",
+            "days": "Reisdagen",
+            "repeat_start_date": "Begindatum voor herhaling (verplicht bij een aantal reisdagen)",
+            "repeat_end_date": "Laatste reisdatum (optioneel)",
+            "repeat_every_weeks": "Herhaal elke N weken (standaard 1)",
+            "repeat_monthly": "Maandelijks: eerste tot vijfde gekozen weekdag (1 tot 5)",
+            "repeat_end_after": "Stop na dit aantal reisdagen",
+            "skip_public_holidays": "Nederlandse feestdagen overslaan",
+            "require_accessible": "NS om toegankelijke reizen vragen (assistentie moet mogelijk worden geboekt)",
+            "disabled_categories": "Meldingscategorieën voor alle ontvangers uitschakelen (systeemwaarschuwingen blijven aan)",
+            "outbound_time": "Eerste trein heen (UU:MM), optioneel bij een tijdvak",
+            "return_time": "Eerste trein terug (UU:MM), optioneel bij een tijdvak",
+            "outbound_transfers": "Overstapstations heen, in reisvolgorde",
+            "return_transfers": "Overstapstations terug, in reisvolgorde",
+            "outbound_buffer": "Minuten van je deur naar het perron voor de heenreis",
+            "return_buffer": "Minuten van je deur naar het perron voor de terugreis",
+            "outbound_mode": "Reiswijze heen",
+            "outbound_window_start": "Tijdvak heen: vroegste vertrek (UU:MM)",
+            "outbound_window_end": "Tijdvak heen: laatste vertrek (UU:MM)",
+            "outbound_pick": "Treinkeuze binnen het tijdvak heen",
+            "outbound_min_stay": "Minimale verblijfsduur voor de heenreis in minuten, 0 voor geen",
+            "return_mode": "Reiswijze terug",
+            "return_window_start": "Tijdvak terug: vroegste vertrek (UU:MM)",
+            "return_window_end": "Tijdvak terug: laatste vertrek (UU:MM)",
+            "return_pick": "Treinkeuze binnen het tijdvak terug",
+            "return_min_stay": "Minimale verblijfsduur voor de terugreis in minuten, 0 voor geen",
+            "outbound_active_lead": "Check-in, minuten voor je trein (heen)",
+            "return_active_lead": "Check-in, minuten voor je trein (terug)",
+            "outbound_arrive_by": "Heen: Wanneer moet je aankomen? (UU:MM)",
+            "outbound_walk_after_min": "Heen: Minuten lopen vanaf het aankomststation",
+            "outbound_prefer_direct_min": "Heen: Maximaal aantal minuten eerder voor een rechtstreekse trein",
+            "return_arrive_by": "Terug: Wanneer moet je aankomen? (UU:MM)",
+            "return_walk_after_min": "Terug: Minuten lopen vanaf het aankomststation",
+            "return_prefer_direct_min": "Terug: Maximaal aantal minuten eerder voor een rechtstreekse trein"
+          },
+          "data_description": {
+            "outbound_mode": "Vast volgt je gebruikelijke trein. Tijdvak kiest een trein tussen de twee vertrektijden.",
+            "outbound_window_start": "Bij een tijdvak is dit het vroegste vertrek. Bij een vaste trein begint hier het volgen. Laat beide tijden leeg voor de standaardinstelling bij een vaste trein.",
+            "outbound_window_end": "Bij een tijdvak is dit het laatste vertrek. Deze tijd is altijd nodig bij een tijdvak.",
+            "outbound_pick": "Kiezen wanneer ik vertrek volgt pas een trein als je vertrekt. Daarna kiest het de eerstvolgende trein die je kunt halen. Zonder locatie gebruikt het de vroegste trein met stille meldingen bij gemiste treinen.",
+            "outbound_min_stay": "Alleen bij een tijdvak. Het tijdvak begint niet eerder dan je aankomst op de andere reis plus dit aantal minuten. Bijvoorbeeld 480 voor 8 uur op het werk.",
+            "return_mode": "Vast volgt je gebruikelijke trein. Tijdvak kiest een trein tussen de twee vertrektijden.",
+            "return_window_start": "Bij een tijdvak is dit het vroegste vertrek. Bij een vaste trein begint hier het volgen. Laat beide tijden leeg voor de standaardinstelling bij een vaste trein.",
+            "return_window_end": "Bij een tijdvak is dit het laatste vertrek. Deze tijd is altijd nodig bij een tijdvak.",
+            "return_pick": "Kiezen wanneer ik vertrek volgt pas een trein als je vertrekt. Daarna kiest het de eerstvolgende trein die je kunt halen. Zonder locatie gebruikt het de vroegste trein met stille meldingen bij gemiste treinen.",
+            "return_min_stay": "Alleen bij een tijdvak. Het tijdvak begint niet eerder dan je aankomst op de andere reis plus dit aantal minuten. Bijvoorbeeld 480 voor 8 uur op het werk.",
+            "outbound_active_lead": "Laat leeg voor je reistijd naar het perron plus 15 minuten. Beëindigt het vroege stille volgen. Moet minstens je reistijd naar het perron zijn.",
+            "return_active_lead": "Laat leeg voor je reistijd naar het perron plus 15 minuten. Beëindigt het vroege stille volgen. Moet minstens je reistijd naar het perron zijn.",
+            "outbound_arrive_by": "Vul bij Aankomen vóór de tijd in waarop je op je bestemming moet zijn, inclusief lopen vanaf het station.",
+            "outbound_walk_after_min": "Standaard 0.",
+            "outbound_prefer_direct_min": "Standaard 15. Gebruik 0 om voorkeur voor rechtstreeks reizen uit te zetten.",
+            "return_arrive_by": "Vul bij Aankomen vóór de tijd in waarop je op je bestemming moet zijn, inclusief lopen vanaf het station.",
+            "return_walk_after_min": "Standaard 0.",
+            "return_prefer_direct_min": "Standaard 15. Gebruik 0 om voorkeur voor rechtstreeks reizen uit te zetten."
+          }
+        },
+        "profile_day": {
+          "title": "Instellingen voor {day}",
+          "description": "Laat een veld op Zoals elke dag of leeg staan om de normale instelling te gebruiken. Een tijdvak heeft beide tijden nodig. {report}",
+          "data": {
+            "mode": "Reiswijze",
+            "window_start": "Tijdvak: vroegste vertrek (UU:MM)",
+            "window_end": "Tijdvak: laatste vertrek (UU:MM)",
+            "pick": "Treinkeuze binnen het tijdvak",
+            "min_stay": "Minimale verblijfsduur in minuten",
+            "arrive_by": "Wanneer moet je aankomen? (UU:MM)",
+            "walk_after_min": "Minuten lopen vanaf het aankomststation",
+            "prefer_direct_min": "Maximaal aantal minuten eerder voor een rechtstreekse trein"
+          },
+          "data_description": {
+            "mode": "Een vaste dag gebruikt de eerste trein die je voor die weekdag hebt ingesteld, of de normale eerste trein.",
+            "min_stay": "Alleen voor dagen met een tijdvak. Leeg gebruikt de normale instelling; 0 schakelt de verblijfsduur voor die dag uit.",
+            "arrive_by": "Vul bij Aankomen vóór de tijd in waarop je op je bestemming moet zijn, inclusief lopen vanaf het station.",
+            "walk_after_min": "Standaard 0.",
+            "prefer_direct_min": "Standaard 15. Gebruik 0 om voorkeur voor rechtstreeks reizen uit te zetten."
+          }
+        },
+        "profile_day_pick": {
+          "title": "Instellingen per dag",
+          "description": "Kies een dag om te wijzigen, of Klaar om af te sluiten. Ingestelde dagen: {overrides}. {report}",
+          "data": {
+            "day": "Dag"
+          }
+        },
+        "profile_details": {
+          "title": "Overstaptijd en vakanties",
+          "description": "Overstapstations: {stations}.\nBestaande vakantieperiodes: {pauses}.\nBehoud bestaande periodes, tenzij je ze wilt toevoegen, vervangen of verwijderen. De begin- en einddatum tellen mee. {report}",
+          "data": {
+            "pause_action": "Vakantieperiodes",
+            "pause_start": "Begin vakantie",
+            "pause_end": "Einde vakantie",
+            "channel_journey": "Ontvangers voor reiswijzigingen",
+            "channel_transfers": "Ontvangers voor aansluitingen",
+            "channel_advice": "Ontvangers voor vertrekadvies",
+            "channel_delays": "Ontvangers voor vertragingen",
+            "channel_platforms": "Ontvangers voor perronwijzigingen",
+            "channel_crowding": "Ontvangers voor verwachte drukte",
+            "channel_planned_works": "Ontvangers voor geplande werkzaamheden",
+            "channel_disruptions": "Ontvangers voor actuele verstoringen",
+            "channel_routine": "Ontvangers voor routineberichten en herinneringen aan geld terug",
+            "edit_weekday_times": "Andere vertrektijden per weekdag instellen",
+            "compensation_reminder": "Herinner me aan geld terug van NS na een bevestigde vertraging",
+            "compensation_details": "Toon reisgegevens in de geld-terugherinnering",
+            "timetable_update": "Dienstregeling bijwerken vanuit meldingen",
+            "arrival_prompt": "Vraag of ik rond de door NS gemelde tijd aankwam",
+            "navigate": "Toon kaartknoppen voor mijn instapstation",
+            "quiet_repeat_misses": "Stille melding bij gemiste treinen na de eerste van de dag",
+            "delay_min": "Eerste vertragingsmelding vanaf dit aantal minuten",
+            "delay_step_min": "Verandering in minuten voor een volgende vertragingsmelding",
+            "edit_day_overrides": "Voor sommige dagen een andere reiswijze, tijdvak, treinkeuze of verblijfsduur instellen",
+            "outbound_other_stations": "Andere instapstations voor de heenreis",
+            "return_other_stations": "Andere instapstations voor de terugreis",
+            "other_station_radius_m": "Afstand tot een ander station in meters",
+            "other_station_dwell_min": "Minuten op een ander station voordat dit meetelt",
+            "ask_to_remember_station": "Aanbieden om een nieuw instapstation te onthouden",
+            "custom_timetable_horizon": "Aangepaste periode voor dienstregelingcontrole",
+            "timetable_horizon_unit": "Eenheid voor controleperiode",
+            "timetable_horizon_count": "Aantal dagen of reisdagen",
+            "leave_by": "Vertrek uiterlijk tonen",
+            "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen",
+            "weather_allowance": "Extra reistijd bij weersverwachting voorstellen",
+            "location_leave_now": "Vertrekmelding als je nog thuis of op je werk bent",
+            "live_today": "Vandaag automatisch vernieuwen",
+            "calendar_feed": "Toon deze reis in de privéagenda",
+            "telegram_status_pin": "Ritstatus vastzetten in Telegram",
+            "ntfy_enabled": "ntfy-meldingen op je telefoon",
+            "arrive_by": "Treinen kiezen op aankomsttijd",
+            "commute_stats": "Woon-werkstatistieken bijhouden",
+            "weekly_recap": "Stil weekoverzicht ontvangen",
+            "after_trip_note": "Stil bericht na elke reis ontvangen",
+            "alert_history": "Verzonden meldingen bewaren",
+            "daily_brief": "Dagelijks reisoverzicht en avondcontrole",
+            "brief_at": "Tijd voor het ochtendoverzicht",
+            "brief_evening_at": "Tijd voor de avondcontrole",
+            "brief_only_if_something": "Ochtendoverzicht alleen als er actie nodig is",
+            "quick_trip": "Snelle treinchecks toestaan",
+            "ha_person": "Persoon voor locatie in Home Assistant",
+            "disable_ha_location": "Locatie via Home Assistant uitschakelen",
+            "quiet_start": "Begin stille uren (UU:MM)",
+            "quiet_end": "Einde stille uren (UU:MM)",
+            "works_digest_day": "Dag voor het weekoverzicht van werkzaamheden",
+            "works_digest_time": "Tijd voor het weekoverzicht (UU:MM)"
+          },
+          "data_description": {
+            "delay_min": "Standaard 3. Hele minuten van 1 tot 1440. Vóór het actieve moment geldt minimaal 5. Meldingen over uitval, aansluitingen en je uiterste aankomsttijd blijven aan.",
+            "delay_step_min": "Standaard 3. Hele minuten van 1 tot 1440, gemeten vanaf de laatst gemelde vertraging, bij meer of minder vertraging. Herstel tot 1 minuut of minder telt altijd mee.",
+            "compensation_reminder": "Optionele vergelijking met het opgeslagen reisplan nadat je zelf je aankomst bevestigt. Gebruikt de meldingsinstellingen voor routineberichten. Dit bepaalt niet of je recht hebt op geld terug.",
+            "compensation_details": "Toont het geplande traject en de bekende aankomsttijden. Standaard aan als geld-terugherinneringen zijn ingeschakeld.",
+            "timetable_update": "Toon een knop om de bevestigde vertrektijd in dit profiel op te slaan. Standaard aan.",
+            "arrival_prompt": "Standaard aan. Werkt alleen met herinneringen voor geld terug. Je bevestigt zelf je aankomst.",
+            "navigate": "Standaard aan. Gebruikt alleen openbare stationscoördinaten van NS.",
+            "quiet_repeat_misses": "Als je thuis of op het werk blijft terwijl meerdere treinen vertrekken, maakt alleen de eerste melding over een gemiste trein geluid. De volgende meldingen komen stil binnen.",
+            "outbound_other_stations": "TCC volgt automatisch een trein vanaf deze stations als je telefoon daar is en er nog geen trein wordt gevolgd.",
+            "return_other_stations": "TCC volgt automatisch een trein vanaf deze stations als je telefoon daar is en er nog geen trein wordt gevolgd.",
+            "other_station_radius_m": "Hoe dicht je telefoon bij een station moet zijn. Standaard 500.",
+            "other_station_dwell_min": "0 betekent dat één locatiebepaling genoeg is. Standaard 0.",
+            "ask_to_remember_station": "Nadat je Ja zegt bij een nieuw station, vraagt TCC één keer of het dit station moet onthouden.",
+            "custom_timetable_horizon": "Standaard aan. Zet uit om maximaal drie reisdagen binnen tien kalenderdagen te controleren.",
+            "timetable_horizon_unit": "Tel kalenderdagen vanaf morgen of tel alleen komende reisdagen met een vaste reis.",
+            "timetable_horizon_count": "Voer een geheel getal van 1 tot en met 14 in. De standaardwaarde is zeven.",
+            "leave_by": "Toon wanneer je uiterlijk moet vertrekken in de check-in, het vertrekadvies en de statussensor. Gebruikt je reistijd naar het perron. Standaard aan.",
+            "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer.",
+            "weather_allowance": "Stel extra minuten voor bij regen, mist, sneeuw of mogelijke gladheid in de verwachting bij het vertrekstation. Alleen advies, wijzigt geen treinen of timers. Vereist weer en vertrek uiterlijk. Standaard aan.",
+            "location_leave_now": "Stuur één stille melding rond je vertrektijd als een recente locatiemelding laat zien dat je nog thuis of op je werk bent. Vereist locatie en een vertrektijd.",
+            "live_today": "Vernieuw de privépagina Vandaag in Docker automatisch en bied een snelkoppeling voor het beginscherm aan. Alle getoonde profielen moeten dit toestaan. Standaard aan.",
+            "calendar_feed": "Neem geplande reizen op in de privéagenda van Docker. De agenda heeft een eigen token nodig. Standaard ingeschakeld.",
+            "telegram_status_pin": "Neem dit profiel op in het stille, vastgezette statusbericht in het bevestigde privégesprek in Telegram. Alleen voor Docker. Standaard aan.",
+            "ntfy_enabled": "Stuur meldingen van dit profiel via ntfy wanneer ntfy in de Docker-app is ingesteld. Standaard aan. E-mail, webhooks en Home Assistant-meldingen blijven hun eigen instellingen gebruiken.",
+            "arrive_by": "Standaard aan. Uit kiest de vroegste haalbare trein in het vertrektijdvak en controleert de aankomsttijd niet.",
+            "alert_history": "Bewaar recent verzonden meldingen lokaal en toon ze op de privépagina Vandaag in Docker. Standaard uit.",
+            "daily_brief": "Standaard aan. Geeft een overzicht op reisdagen en controleert 's avonds de volgende woon-werkreis.",
+            "brief_at": "Gebruik UU:MM in de tijdzone Amsterdam. Laat leeg voor de ingestelde controletijd, normaal 06:00.",
+            "brief_evening_at": "Gebruik UU:MM in de tijdzone Amsterdam. Laat leeg voor 20:00.",
+            "brief_only_if_something": "Slaat het overzicht over op gewone reisdagen. De avondcontrole stuurt alleen een melding als er actie nodig is.",
+            "quick_trip": "Standaard aan. Zet dit uit om snelle treinchecks voor deze hele installatie uit te schakelen.",
+            "ha_person": "Kies een persoon om Home Assistant als locatiebron in te schakelen of te wijzigen. Laat leeg om de huidige locatiebron te behouden.",
+            "disable_ha_location": "Schakelt alleen de locatiebron van Home Assistant uit. De opgeslagen locaties blijven bewaard.",
+            "quiet_start": "Vul twee verschillende tijden in. Laat beide velden leeg om stille uren uit te schakelen.",
+            "quiet_end": "Mag op de volgende dag vallen. Meldingen met geluid gaan ook tijdens stille uren door.",
+            "works_digest_day": "Kies Uit om het weekoverzicht uit te schakelen.",
+            "works_digest_time": "Verplicht als je een dag kiest. Gebruik Nederlandse tijd."
+          }
+        },
+        "profile_error": {
+          "title": "Profiel is niet opgeslagen",
+          "description": "{report}\nSluit deze editor en open hem opnieuw nadat je het probleem hebt opgelost. Er zijn geen profielwijzigingen opgeslagen."
+        },
+        "profile_location": {
+          "title": "Locatie via Home Assistant",
+          "description": "Kies zones en optionele telefoonsensoren voor {person}. Laat optionele velden leeg om ze te wissen. Zonder thuiszone gebruikt de app zone.home.\n\nWi-Fi-tracker op hetzelfde apparaat, indien gevonden: {wifi_hint}\n\n{report}",
+          "data": {
+            "ha_home_zone": "Thuiszone",
+            "ha_work_zone": "Werkzone",
+            "ha_home_wifi": "Wi-Fi-tracker thuis",
+            "ha_work_wifi": "Wi-Fi-tracker op het werk",
+            "ha_activity": "Bewegingssensor"
+          },
+          "data_description": {
+            "ha_home_wifi": "Kies een tracker die thuis meldt als je telefoon op dit netwerk zit.",
+            "ha_work_wifi": "Kies een tracker die thuis meldt als je telefoon op dit netwerk zit."
+          }
+        },
+        "profile_preview": {
+          "title": "Bekijk je volgende treinreis",
+          "description": "NS-dienstregeling voor {departure}, lokale tijd.\n\n{route}\n\nVertrekspoor: {platform} (? betekent onbekend).\n\nDe reis kan nog veranderen. Bij een flexibel tijdvenster toont dit een mogelijke trein."
+        },
+        "profile_weekdays": {
+          "title": "Vertrektijden per weekdag",
+          "description": "Standaard heen: {outbound_default}. Standaard terug: {return_default}. Laat een veld leeg om de standaardtijd te gebruiken. Gebruik UU:MM. Een terugreis na middernacht gebruikt de weekdag waarop je woon-werkreis begint. {report}",
+          "data": {
+            "outbound_mon": "Maandag heen",
+            "outbound_tue": "Dinsdag heen",
+            "outbound_wed": "Woensdag heen",
+            "outbound_thu": "Donderdag heen",
+            "outbound_fri": "Vrijdag heen",
+            "outbound_sat": "Zaterdag heen",
+            "outbound_sun": "Zondag heen",
+            "return_mon": "Maandag terug",
+            "return_tue": "Dinsdag terug",
+            "return_wed": "Woensdag terug",
+            "return_thu": "Donderdag terug",
+            "return_fri": "Vrijdag terug",
+            "return_sat": "Zaterdag terug",
+            "return_sun": "Zondag terug"
+          }
+        }
+      },
+      "error": {
+        "file_missing": "Geen profielenbestand op {path}. Kopieer eerst het voorbeeldbestand daarheen (examples/profiles.yaml in de repository).",
+        "file_unreadable": "Het profielenbestand kan niet worden gelezen. Controleer de bestandsrechten.",
+        "path_not_allowed": "Home Assistant mag dit pad niet lezen. Zet het bestand in de configuratiemap of voeg de map toe aan allowlist_external_dirs.",
+        "send_failed": "De testmelding naar notify.{service} is niet aangekomen. Controleer de companion-app of kies een andere ontvanger.",
+        "bad_webhook_url": "Elke regel moet een http- of https-URL zonder gebruikersnaam of wachtwoord zijn.",
+        "weak_webhook_secret": "Het geheim moet minimaal 16 tekens hebben of een geldige whsec_-waarde zijn.",
+        "weak_webhook_token": "Het token moet minimaal 16 gewone ASCII-tekens zonder spaties hebben.",
+        "webhook_test_failed": "Een test is niet geaccepteerd: {failed}. Controleer de ontvanger, het geheim en het token. Sla daarna opnieuw op.",
+        "invalid_profile": "Het profiel is niet geldig. Bekijk het rapport hierboven.",
+        "file_changed": "Het bestand is gewijzigd of bestaat al. Open de editor opnieuw om de huidige inhoud te gebruiken.",
+        "save_failed": "Het bestand kon niet worden opgeslagen. Controleer de maprechten. De bestaande inhoud is niet vervangen.",
+        "invalid_auth": "NS heeft deze sleutel geweigerd. Configureer de integratie opnieuw met een geldige sleutel.",
+        "cannot_connect": "De stationslijst kon niet bij NS worden opgehaald. Probeer het opnieuw.",
+        "recovery_refused": "De actie is geweigerd. Lees de huidige reis en bereid deze zo nodig opnieuw voor.",
+        "recovery_acknowledgement": "Bevestig de plek en de vereiste beperkingen voordat je verdergaat.",
+        "arrival_refused": "De aankomst is niet geaccepteerd. Lees de reden en controleer deze reis opnieuw.",
+        "arrival_acknowledgement": "Bevestig je eigen aankomst pas nadat je de bestemming, tijd en het plan hebt gecontroleerd.",
+        "arrival_time": "Kies een geldige datum en tijd in Amsterdam. Kies bij een herhaald uur in het najaar de tijdzone-offset.",
+        "settings_changed": "De instellingen zijn gewijzigd terwijl dit formulier openstond. Bekijk de huidige instellingen en probeer het opnieuw.",
+        "unknown_station": "Kies een station uit de lijst.",
+        "same_station": "Thuis en werk moeten verschillende stations zijn.",
+        "days_clash": "Je profiel {other} gebruikt al een van deze dagen. Kies andere dagen of wijzig eerst {other}.",
+        "name_taken": "Een ander profiel heeft deze naam al. Kies een andere naam.",
+        "file_broken": "Het bestand op dit pad heeft een probleem: {report}. Herstel het bestand of vul het pad naar een ander profielenbestand in.",
+        "invalid_location_person": "Kies een beschikbare persoon of schakel locatie via Home Assistant uit.",
+        "invalid_location_entity": "Kies een geschikte entiteit of laat het veld leeg."
+      },
+      "abort": {
+        "not_loaded": "Laad de integratie opnieuw voordat je een profiel bewerkt."
+      }
     }
   },
   "options": {

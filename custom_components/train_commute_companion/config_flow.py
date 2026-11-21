@@ -12,6 +12,7 @@ from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
+    ConfigSubentryFlow,
     OptionsFlowWithReload,
 )
 from homeassistant.const import CONF_API_KEY
@@ -59,6 +60,7 @@ from .flow_state import FlowProof, ProofPhase
 from .notifier import async_push, notify_payload
 from .profile_editor import EditorError
 from .profile_flow import ProfileEditorFlow
+from .profile_subentries import PROFILE_SUBENTRY, ProfileSubentryFlow
 from .recovery_flow import RecoveryFlow
 from .validate import check_path, file_problem, validate_file
 
@@ -206,9 +208,15 @@ class _TestPushMixin:
         return await self._test_menu()
 
 
-class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN):
+class TccConfigFlow(ProfileEditorFlow[ConfigFlowResult], _TestPushMixin, ConfigFlow, domain=DOMAIN):
     VERSION = 1
     _back = "notify"
+
+    @classmethod
+    def async_get_supported_subentry_types(
+        cls, config_entry: ConfigEntry
+    ) -> dict[str, type[ConfigSubentryFlow]]:
+        return {PROFILE_SUBENTRY: ProfileSubentryFlow}
 
     def __init__(self) -> None:
         self._key = ""
@@ -415,7 +423,11 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
 
 
 class TccOptionsFlow(
-    ArrivalFlow, RecoveryFlow, ProfileEditorFlow, _TestPushMixin, OptionsFlowWithReload
+    ArrivalFlow,
+    RecoveryFlow,
+    ProfileEditorFlow[ConfigFlowResult],
+    _TestPushMixin,
+    OptionsFlowWithReload,
 ):
     _back = "settings"
 

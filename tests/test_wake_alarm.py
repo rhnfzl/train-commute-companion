@@ -178,16 +178,20 @@ async def test_cached_wake_cannot_ring_after_catch_deadline(tmp_path):
     assert not rig.rt.state.wake_alarm_dates
 
 
-async def test_receiver_removed_mid_probe_stops_the_second_request(tmp_path):
+@pytest.mark.parametrize("revoked", ["receiver", "profile"])
+async def test_revocation_mid_probe_stops_the_second_request(tmp_path, revoked):
     rig = Rig(tmp_path, now="06:18")
     rig.write(text=wake_profile())
     rig.provider.world = [STOPPED, EARLY]
     await start_runtime(rig, "ha-mobile:phone")
 
-    def remove_receiver(_):
-        rig.rt._wake_destination = lambda: None
+    def revoke(_):
+        if revoked == "receiver":
+            rig.rt._wake_destination = lambda: None
+        else:
+            rig.rt._excluded_profiles = lambda: frozenset({"p1"})
 
-    rig.provider.hook = remove_receiver
+    rig.provider.hook = revoke
     count = len(rig.provider.calls)
     await rig.rt.wake_once()
     assert len(rig.provider.calls) == count + 1

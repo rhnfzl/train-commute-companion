@@ -89,6 +89,7 @@ async def test_private_return_estimate_requires_opt_in_target_and_delay(
         ("expired", False),
         ("opt_out", False),
         ("new_phone", False),
+        ("removed_profile", False),
         ("wake", True),
         ("checked_alternatives", True),
     ],
@@ -128,6 +129,8 @@ async def test_pending_estimate_checks_only_current_consent_and_train_evidence(
     await asyncio.wait_for(began.wait(), 2)
     if update == "expired":
         rig.clock.set("18:01")
+    elif update == "removed_profile":
+        rig.rt._excluded_profiles = lambda: frozenset({"p1"})
     else:
         current = {
             "opt_out": "partner_eta: false, partner_phone: partner",

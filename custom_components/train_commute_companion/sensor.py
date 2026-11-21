@@ -9,7 +9,7 @@ from typing import Any
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
 from train_commute_companion.model import (
@@ -369,7 +369,7 @@ def wanted(coordinator: TccCoordinator, view: RuntimeView) -> dict[str, Callable
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: TccConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant, entry: TccConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
     coordinator = entry.runtime_data.coordinator
     entry.async_on_unload(
