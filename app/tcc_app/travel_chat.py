@@ -10,6 +10,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from train_commute_companion.calendar import TZ
+from train_commute_companion.recurrence import MAX_TRIPS
 
 from .telegram import callback_data
 from .travel_actions import LANGUAGE_SOURCE, TravelActions, TravelRuntime
@@ -50,7 +51,9 @@ TEXT_STEPS = {
     "start_date": "When does this plan start? Enter today, tomorrow, or YYYY-MM-DD.",
     "weekdays": "Which days? Enter names such as Tue Thu.",
     "interval_weeks": "Repeat every how many weeks? Enter 1 for weekly or 2 for every other week.",
-    "end_date": "When is the last date? Enter YYYY-MM-DD or use Ongoing.",
+    "monthly": "Which weekday of each month? Enter a number from 1 to 5 and a day, such as 1 Mon.",
+    "end_date": "Enter a last date (YYYY-MM-DD), or choose Ongoing or After N trips.",
+    "end_after": f"How many trips should this plan include? Enter 1 to {MAX_TRIPS}.",
     "skip_dates": "Enter dates to skip, separated by spaces, or tap No skips.",
 }
 DRAFT_TTL = timedelta(hours=1)
@@ -65,8 +68,10 @@ CHANGE_SCHEMA = {
             "name": "optional short label",
             "start_date": "YYYY-MM-DD in Europe/Amsterdam",
             "end_date": "optional YYYY-MM-DD or null (ongoing recurrence)",
-            "weekdays": "optional ISO weekday numbers 1 to 7; omit for one date",
+            "end_after": "optional number of trips, instead of an end_date",
+            "weekdays": "optional ISO weekday numbers 1 to 7 for weekly recurrence",
             "interval_weeks": "optional integer, 1 for weekly, 2 for every other week",
+            "monthly": "optional {ordinal: 1 to 5, weekday: ISO number 1 to 7}, instead of weekdays",
             "skip_dates": "optional array of dates to skip",
             "profile_id": "optional existing profile ID to inherit preferences from",
             "outbound": (
@@ -141,7 +146,7 @@ class TravelChat:
 
     def _ask_text(self, step: str) -> TravelReply:
         choices = {
-            "end_date": (("Ongoing", "ongoing"),),
+            "end_date": (("Ongoing", "ongoing"), ("After N trips", "count")),
             "skip_dates": (("No skips", "none"),),
         }
         return self._ask(step, TEXT_STEPS[step], *choices.get(step, ()))
@@ -320,6 +325,7 @@ class TravelChat:
                     "When should this plan repeat?",
                     ("Once", "once"),
                     ("Repeating", "repeat"),
+                    ("Monthly", "monthly"),
                 )
             if step == "weekdays":
                 tokens = value.replace(",", " ").lower().split()
@@ -332,6 +338,18 @@ class TravelChat:
                 if not 1 <= plan[step] <= 52:
                     raise ValueError
                 return self._ask_text("end_date")
+            if step == "monthly":
+                match = re.fullmatch(r"([1-5])\s+(\w+)", value.casefold())
+                if match is None or match[2][:3] not in WEEKDAYS:
+                    raise ValueError
+                plan[step] = {"ordinal": int(match[1]), "weekday": WEEKDAYS[match[2][:3]]}
+                return self._ask_text("end_date")
+            if step == "end_after":
+                count = int(value)
+                if not 1 <= count <= MAX_TRIPS:
+                    raise ValueError
+                plan[step] = count
+                return self._ask_text("skip_dates")
             if step == "end_date":
                 plan[step] = None if value.casefold() == "ongoing" else self._day(value)
                 return self._ask_text("skip_dates")
@@ -437,7 +455,14 @@ class TravelChat:
             self._step = ""
             return TravelReply("Closed. No change saved.", done=True)
         if step == "repeat":
-            return self._ask_text("weekdays") if value == "repeat" else self._mode()
+            if value == "repeat":
+                return self._ask_text("weekdays")
+            if value == "monthly":
+                return self._ask_text("monthly")
+            if value == "once":
+                return self._mode()
+        if step == "end_date" and value == "count":
+            return self._ask_text("end_after")
         if step == "preset" and re.fullmatch(r"[0-9]{1,6}", value):
             index = int(value)
             if index < len(self._presets):
@@ -504,8 +529,10 @@ class TravelChat:
             "destination",
             "start_date",
             "end_date",
+            "end_after",
             "weekdays",
             "interval_weeks",
+            "monthly",
             "skip_dates",
             "outbound",
             "return",

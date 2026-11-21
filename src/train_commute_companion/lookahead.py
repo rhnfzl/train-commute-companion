@@ -165,7 +165,15 @@ def overlaps_next(
         )
         return None if v is None else v.signature.legs[0].departure
 
-    return bool(find_overlaps([p, *others], start, first))
+    first_options = {
+        key: {v.signature.legs[0].departure for v in h.versions} for key, h in hs.items()
+    }
+    first_changes = {v.effective_from for history in hs.values() for v in history.versions}
+    return bool(
+        find_overlaps(
+            [p, *others], start, first, first_options=first_options, first_changes=first_changes
+        )
+    )
 
 
 def _seed_day(per_date: Mapping[str, tuple[str, ...]], version: int) -> date | None:

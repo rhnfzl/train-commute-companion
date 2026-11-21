@@ -6,7 +6,6 @@ from datetime import UTC, date, datetime, time, timedelta
 from train_commute_companion.calendar import (
     MINUTES_PER_DAY,
     TZ,
-    is_commute_day,
     minute_of_day,
     resolve_local,
 )
@@ -115,7 +114,7 @@ def schedules_active(
             # a window can open the evening before and an offset return runs a day late
             for back in (-1, 0, 1, 2):
                 day = today - timedelta(days=back)
-                if is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays):
+                if p.commutes_on(day):
                     base = first(p, d, day) if first else baselines.get((p.id, d))
                     s = dated_schedule(p, d, day, base)
                     if not p.paused_on(s.key.service_date) and in_window(s, at):

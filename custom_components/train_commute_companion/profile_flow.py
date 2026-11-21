@@ -34,11 +34,13 @@ from train_commute_companion.notification_policy import CATEGORIES
 from train_commute_companion.profile import slug
 from train_commute_companion.providers.base import AuthError, ProviderError
 from train_commute_companion.providers.ns import NsProvider
+from train_commute_companion.recurrence import MAX_TRIPS
 from train_commute_companion.transfer import FALLBACK_MIN
 
 from .flow_state import ReviewPhase
 from .profile_editor import (
     OTHER_STATION_DEFAULTS,
+    REPEAT_FIELDS,
     EditorError,
     ProfileDocument,
     coded,
@@ -64,7 +66,7 @@ _OPTIONAL_TEXT = ("time", "window_start", "window_end")
 _SINGLE_STATIONS = ("home_station", "work_station")
 
 
-class TimetableHorizonCountSelector(NumberSelector):
+class WholeNumberSelector(NumberSelector):
     def __call__(self, data: Any) -> float:
         if type(data) not in (int, float) or (isinstance(data, float) and not data.is_integer()):
             raise vol.Invalid("expected a whole number")
@@ -241,15 +243,18 @@ class ProfileEditorFlow:
         names = (f"commute {i}" if i > 1 else "commute" for i in count(1))
         return next(name for name in names if slug(name) not in taken)
 
-    def _day_clash(self, days: object) -> str | None:
+    def _day_clash(self, days: object, values: Mapping[str, Any]) -> str | None:
         """The name of another profile that already runs on one of `days`, the same
         shared-weekday rule the file check applies, said in the form's own words."""
         assert self._document is not None
+        if any(values.get(f"repeat_{key}") is not None for key in REPEAT_FIELDS):
+            return None
         wanted = {d for d in days if isinstance(d, str)} if isinstance(days, list) else set()
         for p in self._document.data["profiles"]:
             theirs = p.get("days", [])
             if (
                 p["id"] != self._profile_id
+                and p.get("repeat") is None
                 and isinstance(theirs, list)
                 and wanted & {str(d).lower() for d in theirs}
             ):
@@ -287,6 +292,7 @@ class ProfileEditorFlow:
         return {
             "name": profile.get("name") or self._free_name(),
             "days": profile.get("days", ["mon", "tue", "wed", "thu", "fri"]),
+            **{f"repeat_{key}": (profile.get("repeat") or {}).get(key) for key in REPEAT_FIELDS},
             **{key: names.get(profile.get(key, "")) for key in _SINGLE_STATIONS},
             "skip_public_holidays": profile.get("skip_public_holidays", True),
             "require_accessible": profile.get("accessibility", {}).get("require_accessible", False),
@@ -367,6 +373,24 @@ class ProfileEditorFlow:
                 ] = value
             elif name in defaults:
                 schema[vol.Required(name, description={"suggested_value": defaults[name]})] = value
+        for key in ("repeat_start_date", "repeat_end_date"):
+            saved = defaults.get(key)
+            schema[vol.Optional(key, description={"suggested_value": saved} if saved else None)] = (
+                DateSelector()
+            )
+        for key, maximum in (
+            ("repeat_every_weeks", 52),
+            ("repeat_monthly", 5),
+            ("repeat_end_after", MAX_TRIPS),
+        ):
+            saved = defaults.get(key)
+            schema[
+                vol.Optional(
+                    key, description={"suggested_value": saved} if saved is not None else None
+                )
+            ] = WholeNumberSelector(
+                NumberSelectorConfig(min=1, max=maximum, step=1, mode=NumberSelectorMode.BOX)
+            )
         for direction in ("outbound", "return"):
             key = f"{direction}_active_lead"
             saved = defaults.get(key)
@@ -412,6 +436,7 @@ class ProfileEditorFlow:
             # the form keeps names; everything after this step works with codes
             coded_values = {
                 **values,
+                **{f"repeat_{key}": values.get(f"repeat_{key}") for key in REPEAT_FIELDS},
                 **{
                     f"{d}_active_lead": values.get(f"{d}_active_lead")
                     for d in ("outbound", "return")
@@ -421,7 +446,7 @@ class ProfileEditorFlow:
             errors = {k: "unknown_station" for k in _SINGLE_STATIONS if coded_values[k] is None}
             if not errors and coded_values["home_station"] == coded_values["work_station"]:
                 errors["work_station"] = "same_station"
-            if (clash := self._day_clash(values.get("days"))) is not None:
+            if (clash := self._day_clash(values.get("days"), values)) is not None:
                 errors["days"], other = "days_clash", clash
             if self._name_taken(values.get("name")):
                 errors["name"] = "name_taken"
@@ -528,7 +553,7 @@ class ProfileEditorFlow:
             vol.Optional(
                 key, default=values.get(key, alerts.get(key, defaults.timetable_horizon_count))
             )
-        ] = TimetableHorizonCountSelector(
+        ] = WholeNumberSelector(
             NumberSelectorConfig(
                 min=1, max=MAX_TIMETABLE_HORIZON, step=1, mode=NumberSelectorMode.BOX
             )

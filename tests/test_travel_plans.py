@@ -1,5 +1,6 @@
-from datetime import time, timedelta
+from datetime import date, time, timedelta
 
+import pytest
 from builders import make_connection, make_leg
 from runtime_rig import DAY, PROFILE, Rig, at, usual_on
 
@@ -60,6 +61,115 @@ async def test_temporary_replacement_follows_the_selected_train_after_restart(tm
         rig.clock.t = at("07:55", ordinary)
         await rig.rt.poll_once()
         assert rig.occ(f"p1|outbound|{ordinary}") is not None
+
+
+async def test_monthly_plan_skips_absent_weekdays_and_ends_after_count(tmp_path):
+    rig = Rig(tmp_path)
+    await rig.rt.start()
+    change = utrecht(conflict_policy="replace")
+    plan = change["plan"]
+    del plan["end_date"], plan["weekdays"]
+    plan.update(
+        start_date="2026-11-01",
+        monthly={"ordinal": 5, "weekday": 1},
+        end_after=2,
+        skip_dates=["2026-11-30"],
+    )
+    saved = save(rig.rt, change, "monthly-trip")
+    await rig.restart()
+
+    actual = rig.rt.state.travel_plans[saved["plan_id"]]
+    assert tuple(actual.dates(date(2026, 11, 1), date(2027, 9, 1))) == (
+        date(2027, 3, 29),
+        date(2027, 5, 31),
+    )
+    assert not actual.runs(date(2027, 8, 30))
+    (listed,) = rig.rt.list_travel_plans()["plans"]
+    assert listed["end_date"] is None
+    assert listed["end_after"] == 2
+    assert listed["monthly"] == {"ordinal": 5, "weekday": 1}
+
+
+async def test_ongoing_monthly_preview_stops_after_detecting_more_conflicts(tmp_path, monkeypatch):
+    from train_commute_companion import travel_changes
+
+    rig = Rig(tmp_path)
+    await rig.rt.start()
+    change = utrecht()
+    plan = change["plan"]
+    del plan["end_date"], plan["weekdays"]
+    plan.update(start_date="2026-11-01", monthly={"ordinal": 1, "weekday": 1}, skip_dates=[])
+    original = travel_changes._regular_schedules
+    checked = 0
+
+    def counted(state, profile, day):
+        nonlocal checked
+        checked += 1
+        return original(state, profile, day)
+
+    monkeypatch.setattr(travel_changes, "_regular_schedules", counted)
+    review = rig.rt.preview_travel_plan(change)
+    assert review["status"] == "conflict"
+    (collision,) = review["conflicts"]
+    assert len(collision["dates"]) == 12
+    assert collision["dates"][0] == "2026-11-02"
+    assert collision["more_dates"]
+    assert not collision["keep"]
+    assert checked < 200
+
+
+async def test_monthly_preview_keeps_late_extra_date_with_an_overnight_return(tmp_path):
+    profile = PROFILE.split('  - id: "p2"')[0].replace(
+        "[mon, tue, wed, thu, fri]",
+        "[sat]\n    extra_dates: [2450-02-07]",
+    )
+    rig = Rig(tmp_path)
+    rig.path.write_text(profile.replace("NAME", "office_a"))
+    await rig.rt.start()
+    change = utrecht()
+    plan = change["plan"]
+    del plan["end_date"], plan["weekdays"]
+    plan.update(
+        start_date="2026-11-01",
+        monthly={"ordinal": 1, "weekday": 7},
+        skip_dates=[],
+    )
+    plan["return"] = {"mode": "exact", "departure": "08:12", "day_offset": 1}
+
+    review = rig.rt.preview_travel_plan(change)
+    assert review["status"] == "conflict"
+    (collision,) = review["conflicts"]
+    assert collision["dates"] == ["2450-02-07"]
+    assert not collision["more_dates"]
+    assert not collision["keep"]
+
+
+@pytest.mark.parametrize("monthly_first", [False, True])
+async def test_monthly_and_weekly_plans_detect_overlaps_beyond_one_year(tmp_path, monthly_first):
+    rig = Rig(tmp_path)
+    rig.path.unlink()
+    await rig.rt.start()
+    weekly = utrecht()
+    weekly["plan"].update(
+        start_date="2026-11-02",
+        end_date="2028-11-01",
+        weekdays=[1],
+        interval_weeks=52,
+        skip_dates=[],
+    )
+    monthly = utrecht()
+    del monthly["plan"]["weekdays"]
+    monthly["plan"].update(
+        start_date="2026-11-01",
+        end_date="2028-11-01",
+        monthly={"ordinal": 5, "weekday": 1},
+        skip_dates=[],
+    )
+    first, second = (monthly, weekly) if monthly_first else (weekly, monthly)
+    save(rig.rt, first, "first-repeat")
+    review = rig.rt.preview_travel_plan(second)
+    assert review["status"] == "conflict"
+    assert "2028-10-30" in review["text"]
 
 
 async def test_preview_is_revision_bound_and_retry_cannot_make_a_duplicate(tmp_path):

@@ -3,11 +3,17 @@
 import re
 from collections.abc import Mapping, Sequence
 from datetime import date, time, timedelta
+from itertools import islice
 from typing import Any, cast, get_args
 
 import yaml
 
-from train_commute_companion.calendar import MINUTES_PER_DAY, WEEKDAYS, minute_of_day
+from train_commute_companion.calendar import (
+    MINUTES_PER_DAY,
+    WEEKDAYS,
+    minute_of_day,
+    nl_public_holidays,
+)
 from train_commute_companion.model import (
     MAX_TIMETABLE_HORIZON,
     AccessibilitySettings,
@@ -31,6 +37,12 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.notification_policy import validate_channels
 from train_commute_companion.overlap import overlap_pairs
+from train_commute_companion.recurrence import (
+    MAX_TRIPS,
+    MonthlyWeekday,
+    RepeatSchedule,
+    recurring_dates,
+)
 from train_commute_companion.schedule import ACTIVE_EXTRA_MIN
 from train_commute_companion.transfer import FALLBACK_MIN
 
@@ -686,6 +698,58 @@ def _days(c: _ProfileErrors, rd: object) -> set[int]:
     return days
 
 
+def _repeat(
+    c: _ProfileErrors, raw: object, days: set[int], skip_holidays: bool | None
+) -> RepeatSchedule | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        c.err("repeat", "must be a mapping")
+        return None
+    before = len(c.errors)
+    c.keys(raw, ("start_date", "end_date", "end_after", "every_weeks", "monthly"), "repeat")
+    interval = c.integer(raw.get("every_weeks", 1), "repeat.every_weeks", 1, 52)
+    start = (
+        _date(c, raw["start_date"], "repeat.start_date")
+        if raw.get("start_date") is not None
+        else date(2, 1, 7)
+        if interval and interval > 1
+        else _DATE_MIN
+    )
+    end = _date(c, raw["end_date"], "repeat.end_date") if raw.get("end_date") is not None else None
+    if not days:
+        c.err("repeat", "choose at least one day")
+    if start is not None and end is not None and end < start:
+        c.err("repeat.end_date", "must be on or after the start date")
+    ordinal = raw.get("monthly")
+    month = None
+    if ordinal is not None:
+        ordinal = c.integer(ordinal, "repeat.monthly", 1, 5)
+        if len(days) != 1 or interval != 1:
+            c.err("repeat.monthly", "choose one weekday and clear the interval in weeks")
+        elif ordinal is not None:
+            month = MonthlyWeekday(ordinal, next(iter(days)))
+    count = raw.get("end_after")
+    if count is not None:
+        if raw.get("start_date") is None:
+            c.err("repeat.start_date", "an explicit start date is required with end_after")
+        if raw.get("end_date") is not None:
+            c.err("repeat.end_after", "choose an end date or a trip count")
+        count = c.integer(count, "repeat.end_after", 1, MAX_TRIPS)
+    if start is None or interval is None or len(c.errors) != before:
+        return None
+    if count is not None:
+        dates = recurring_dates(start, _DATE_MAX, start, frozenset(days), interval, month)
+        eligible = (
+            day for day in dates if not skip_holidays or day not in nl_public_holidays(day.year)
+        )
+        end = next(islice(eligible, count - 1, None), None)
+        if end is None:
+            c.err("repeat.end_after", "trip count extends beyond the supported calendar")
+            return None
+    return RepeatSchedule(start, end, interval, month, count)
+
+
 def _transfer_min(
     c: _ProfileErrors, raw: Mapping[str, object], known: frozenset[str] | None
 ) -> dict[str, int]:
@@ -732,6 +796,7 @@ _PROFILE_KEYS = (
     "name",
     "traveller",
     "days",
+    "repeat",
     "extra_dates",
     "pauses",
     "skip_public_holidays",
@@ -804,6 +869,7 @@ def _profile(
     if not days and extra == frozenset() and isinstance(rd, list):
         c.err("days", "no days and no extra_dates: the profile would never run")
     skip = c.boolean(raw.get("skip_public_holidays", True), "skip_public_holidays")
+    repeat = _repeat(c, raw.get("repeat"), days, skip)
     home = _station(c, raw.get("home_station"), "home_station", known)
     work = _station(c, raw.get("work_station"), "work_station", known)
     out = _journey(c, raw.get("outbound"), "outbound", known, allow_offset=False)
@@ -844,6 +910,7 @@ def _profile(
         pauses,
         accessibility,
         digest,
+        repeat=repeat,
     )
     _check_other_stations(c, profile)
     return (None, c.errors) if c.errors else (profile, [])

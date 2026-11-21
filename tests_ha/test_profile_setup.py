@@ -94,6 +94,22 @@ async def test_guided_profile_waits_for_phone_confirmation_before_writing(hass, 
     assert raw["profiles"][0]["pauses"] == [{"start": "2027-04-01", "end": "2027-04-07"}]
 
 
+@pytest.mark.parametrize("field", ["repeat_monthly", "repeat_every_weeks", "repeat_end_after"])
+async def test_recurrence_numbers_reject_booleans_in_the_form(hass, field):
+    flow = await guided(hass)
+    schema = flow["data_schema"]
+    values = {**VALUES, "days": ["mon"], "repeat_start_date": "2026-11-01"}
+    assert schema({**values, field: 1.0})[field] == 1
+    with pytest.raises(vol.Invalid):
+        schema({**values, field: True})
+
+
+async def test_recurrence_form_accepts_monthly_rule_without_start(hass):
+    flow = await guided(hass)
+    flow = await configure(hass, flow, {**VALUES, "days": ["mon"], "repeat_monthly": 1.0})
+    assert flow["step_id"] == "profile_details"
+
+
 async def test_guided_setup_never_writes_over_an_existing_file(hass):
     write_profiles(hass, PROFILE)
     flow = await guided(hass)

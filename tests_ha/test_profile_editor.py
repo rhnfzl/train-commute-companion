@@ -51,6 +51,31 @@ def test_new_profile_is_valid_and_written_only_when_saved(tmp_path):
     assert doc.path.read_text() == text
 
 
+def test_repeating_profile_roundtrips_and_can_return_to_plain_weekdays(tmp_path):
+    doc = document(tmp_path, None)
+    values = {
+        **VALUES,
+        "days": ["mon"],
+        "repeat_start_date": "2026-11-01",
+        "repeat_monthly": 1.0,
+        "repeat_end_after": 2.0,
+    }
+    text = edit_profile(doc, None, values, KNOWN, TODAY)
+    raw = yaml.safe_load(text)["profiles"][0]
+    assert raw["repeat"] == {"start_date": "2026-11-01", "monthly": 1, "end_after": 2}
+    (profile,), problems = parse_profiles(text, KNOWN)
+    assert not problems
+    assert profile.commutes_on(date(2026, 12, 7))
+    assert not profile.commutes_on(date(2027, 1, 4))
+
+    text = edit_profile(
+        document(tmp_path, text), raw["id"], {**VALUES, "repeat_start_date": None}, KNOWN, TODAY
+    )
+    saved = yaml.safe_load(text)["profiles"][0]
+    assert saved["id"] == raw["id"]
+    assert "repeat" not in saved
+
+
 def test_check_in_times_roundtrip_and_can_return_to_default(tmp_path):
     doc = document(tmp_path)
     values = {**VALUES, "outbound_active_lead": 40.0, "return_active_lead": 25, "leave_by": False}

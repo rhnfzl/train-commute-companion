@@ -101,6 +101,8 @@ This plan goes to Utrecht on Tuesdays for three weeks and skips the middle Tuesd
 
 If the agent reports a conflict, decide which trips to follow. The agent can submit a revised request with `conflict_policy` set to `replace` or `keep`. The companion checks that choice and shows any approval still needed.
 
+For the first Monday each month, use `"monthly": {"ordinal": 1, "weekday": 1}` in place of `weekdays`. The ordinal accepts 1 through 5. Months without the selected fifth weekday are skipped. Use `"end_after": 3` in place of `end_date` to end after three commute dates. The count accepts 1 to 366, excluding dates in `skip_dates`.
+
 ## Private-network access
 
 Enable Streamable HTTP when the client and app run on different machines. The companion can run on any supported Docker host, such as a small ARM board, a home lab server, or a VM. The client can run on any machine with a compatible MCP client and a route to that host.

@@ -4,9 +4,10 @@ import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from itertools import islice
 from typing import Any
 
-from train_commute_companion.calendar import TZ, has_room, is_commute_day, to_utc
+from train_commute_companion.calendar import TZ, has_room, to_utc
 from train_commute_companion.model import (
     AccessibilitySettings,
     AlertSettings,
@@ -15,6 +16,12 @@ from train_commute_companion.model import (
     Profile,
     Stations,
     UsualJourney,
+)
+from train_commute_companion.recurrence import (
+    MAX_RECURRENCE_DATE,
+    MAX_TRIPS,
+    MonthlyWeekday,
+    recurring_dates,
 )
 from train_commute_companion.schedule import dated_schedule
 
@@ -31,6 +38,8 @@ class TravelPlan:
     has_return: bool
     inherits: str | None
     replaces: tuple[str, ...] = ()
+    monthly: MonthlyWeekday | None = None
+    end_after: int | None = None
 
     @property
     def id(self) -> str:
@@ -39,10 +48,26 @@ class TravelPlan:
     def runs(self, day: date) -> bool:
         if day < self.start or (self.end is not None and day > self.end) or day in self.skip:
             return False
+        if self.monthly:
+            return self.monthly.matches(day)
         if not self.weekdays:
             return day == self.start
         week = ((day - self.start).days + self.start.weekday()) // 7
         return day.isoweekday() in self.weekdays and week % self.interval == 0
+
+    def dates(self, first: date, last: date) -> Iterator[date]:
+        return (
+            day
+            for day in recurring_dates(
+                first,
+                min(last, self.end or last),
+                self.start,
+                self.weekdays,
+                self.interval,
+                self.monthly,
+            )
+            if day not in self.skip
+        )
 
     def schedules(self, day: date) -> Iterator[DatedSchedule]:
         if self.runs(day):
@@ -202,7 +227,8 @@ def parse_plan(
 ) -> TravelPlan:
     d = fields(
         raw,
-        "name origin destination start_date end_date weekdays interval_weeks skip_dates outbound return profile_id",
+        "name origin destination start_date end_date end_after weekdays interval_weeks monthly "
+        "skip_dates outbound return profile_id",
         "Travel plan",
     )
     start = _date(d.get("start_date"), "Start")
@@ -213,20 +239,45 @@ def parse_plan(
         or any(type(i) is not int or not 1 <= i <= 7 for i in weekdays)
     ):
         raise ValueError("Weekdays must be a list of ISO weekday numbers (Monday is 1).")
-    end = (
-        (None if weekdays else start) if d.get("end_date") is None else _date(d["end_date"], "End")
-    )
+    monthly = None
+    if d.get("monthly") is not None:
+        rule = fields(d["monthly"], "ordinal weekday", "Monthly recurrence")
+        ordinal, weekday = rule.get("ordinal"), rule.get("weekday")
+        if type(ordinal) is not int or not 1 <= ordinal <= 5:
+            raise ValueError("A monthly ordinal must be a whole number from 1 to 5.")
+        if type(weekday) is not int or not 1 <= weekday <= 7:
+            raise ValueError("A monthly weekday must be an ISO weekday number (Monday is 1).")
+        if weekdays:
+            raise ValueError("Choose either a monthly rule or weekly weekdays.")
+        monthly = MonthlyWeekday(ordinal, weekday)
+    recurring = bool(weekdays) or monthly is not None
+    raw_end = d.get("end_date")
+    end = (None if recurring else start) if raw_end is None else _date(raw_end, "End")
+    end_after = d.get("end_after")
+    if end_after is not None:
+        if type(end_after) is not int or not 1 <= end_after <= MAX_TRIPS:
+            raise ValueError(f"The trip count must be a whole number from 1 to {MAX_TRIPS}.")
+        if raw_end is not None or not recurring:
+            raise ValueError("End after a trip count requires a repeat rule and no end date.")
     interval = d.get("interval_weeks", 1)
     if type(interval) is not int or not 1 <= interval <= 52 or (not weekdays and interval != 1):
         raise ValueError("An interval must be 1 to 52 weeks and needs weekdays when it exceeds 1.")
-    if end is not None and (end < start or not weekdays and end != start):
-        raise ValueError("End must be on or after the start. A date range needs weekdays.")
+    if end is not None and (end < start or not recurring and end != start):
+        raise ValueError("End must be on or after the start. A date range needs a repeat rule.")
     skip = d.get("skip_dates", [])
     if not isinstance(skip, list) or len(skip) > 366:
         raise ValueError("Skip dates must be a list of up to 366 dates.")
     skipped = frozenset(_date(item, "Skip date") for item in skip)
     if any(day < start or end is not None and day > end for day in skipped):
         raise ValueError("Skip dates must be inside the plan dates.")
+    if end_after is not None:
+        dates = recurring_dates(
+            start, MAX_RECURRENCE_DATE, start, frozenset(weekdays), interval, monthly
+        )
+        matching_dates = (day for day in dates if day not in skipped)
+        end = next(islice(matching_dates, end_after - 1, None), None)
+        if end is None:
+            raise ValueError("The trip count extends beyond the supported calendar.")
     origin = _station(d.get("origin"), known, "Origin")
     destination = _station(d.get("destination"), known, "Destination")
     if origin == destination:
@@ -301,14 +352,16 @@ def parse_plan(
         skipped,
         has_return,
         base.id if base else None,
+        monthly=monthly,
+        end_after=end_after,
     )
     floor = max(start, now.astimezone(TZ).date() - timedelta(days=1))
     if end is not None and end < floor:
         raise ValueError("The plan has no remaining travel.")
     if not any(
         to_utc(sch.window_end) > to_utc(now)
-        for i in range(7 * interval * (len(skipped) + 1) + 2)
-        for sch in plan.schedules(floor + timedelta(days=i))
+        for day in islice(plan.dates(floor, MAX_RECURRENCE_DATE), 2)
+        for sch in plan.schedules(day)
     ):
         raise ValueError("The plan has no remaining travel.")
     return plan
@@ -339,7 +392,13 @@ def plan_dict(plan: TravelPlan) -> dict[str, Any]:
         "origin": p.home_station,
         "destination": p.work_station,
         "start_date": plan.start.isoformat(),
-        "end_date": plan.end.isoformat() if plan.end else None,
+        "end_date": plan.end.isoformat() if plan.end and plan.end_after is None else None,
+        **({"end_after": plan.end_after} if plan.end_after is not None else {}),
+        **(
+            {"monthly": {"ordinal": plan.monthly.ordinal, "weekday": plan.monthly.weekday}}
+            if plan.monthly
+            else {}
+        ),
         "weekdays": sorted(plan.weekdays),
         "interval_weeks": plan.interval,
         "skip_dates": [day.isoformat() for day in sorted(plan.skip)],
@@ -353,11 +412,17 @@ def plan_dict(plan: TravelPlan) -> dict[str, Any]:
 def plan_text(plan: TravelPlan) -> str:
     p = plan.profile
     timing = plan.start.isoformat()
-    if plan.weekdays:
+    if plan.weekdays or plan.monthly:
         timing += f" to {plan.end.isoformat()}" if plan.end else " onward"
         days = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-        frequency = "weekly" if plan.interval == 1 else f"every {plan.interval} weeks"
-        timing += f", {frequency} on " + ", ".join(days[i - 1] for i in sorted(plan.weekdays))
+        if plan.monthly:
+            nth = ("first", "second", "third", "fourth", "fifth")[plan.monthly.ordinal - 1]
+            timing += f", on the {nth} {days[plan.monthly.weekday - 1]} of each month"
+        else:
+            frequency = "weekly" if plan.interval == 1 else f"every {plan.interval} weeks"
+            timing += f", {frequency} on " + ", ".join(days[i - 1] for i in sorted(plan.weekdays))
+        if plan.end_after is not None:
+            timing += f", ends after {plan.end_after} trips"
     if plan.skip:
         timing += ". Skips " + ", ".join(d.isoformat() for d in sorted(plan.skip))
     legs: list[str] = []
@@ -384,9 +449,7 @@ def overlaps(a: DatedSchedule, b: DatedSchedule) -> bool:
 
 
 def regular_date(p: Profile, day: date) -> bool:
-    return p.home_station != p.work_station and is_commute_day(
-        day, p.days, p.extra_dates, p.skip_public_holidays
-    )
+    return p.home_station != p.work_station and p.commutes_on(day)
 
 
 def scheduled_days(sch: DatedSchedule, p: Profile) -> Iterator[date]:
