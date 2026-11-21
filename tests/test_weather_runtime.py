@@ -268,6 +268,7 @@ async def test_selected_recovery_weather_uses_the_accepted_itinerary(tmp_path):
             await rig.rt.poll_once()
             await rig.rt.weather_idle()
             shown = occurrence(rig)
+            assert shown.weather_allowance is None
             steps = selected.itinerary.steps
             expected = (
                 (steps[0].origin.station_code, steps[0].departure),

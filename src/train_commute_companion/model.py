@@ -499,6 +499,7 @@ class AlertSettings:
     delay_step_min: int = 3
     weather: bool = True
     leave_by: bool = True
+    weather_allowance: bool = True
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]
