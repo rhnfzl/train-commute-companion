@@ -1,6 +1,7 @@
 """Config flow: the entry exists only once the user confirmed both test pushes (rule 16)."""
 
 import asyncio
+import os
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
@@ -56,7 +57,7 @@ from .notifier import async_push, notify_payload
 from .profile_editor import EditorError
 from .profile_flow import ProfileEditorFlow
 from .recovery_flow import RecoveryFlow
-from .validate import check_path, validate_file
+from .validate import check_path, file_problem, validate_file
 
 MOBILE_PREFIX = "mobile_app_"
 HOST_TIMEOUT_S = 10
@@ -124,9 +125,17 @@ async def send_tests(hass: HomeAssistant, service: str, loud_style: LoudStyle) -
     return loud and silent
 
 
+def picked_phone(hass: HomeAssistant, service: str | None) -> str | None:
+    services = notify_services(hass)
+    if service not in services:  # one phone is the only sensible pick
+        service = services[0] if len(services) == 1 else None
+    return service
+
+
 def notify_schema(hass: HomeAssistant, service: str | None, style: LoudStyle) -> vol.Schema:
     services = notify_services(hass)
-    pick = {"default": service} if service in services else {}
+    service = picked_phone(hass, service)
+    pick = {"default": service} if service else {}
     return vol.Schema(
         {
             vol.Required(CONF_NOTIFY, **pick): SelectSelector(
@@ -211,11 +220,15 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
         return None
 
     def _notify_form(self, error: bool = False) -> ConfigFlowResult:
+        phone = picked_phone(self.hass, self._service or None)
         return self.async_show_form(
             step_id="notify",
-            data_schema=notify_schema(self.hass, self._service or None, self._style),
+            data_schema=notify_schema(self.hass, phone, self._style),
             errors={"base": "send_failed"} if error else {},
-            description_placeholders={"service": self._service},
+            description_placeholders={
+                "service": self._service,
+                "phone": f"notify.{phone}" if phone else "the phone you pick",
+            },
         )
 
     def _failed(self) -> ConfigFlowResult:
@@ -230,21 +243,20 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
         self, user_input: Mapping[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
-        default = self.hass.config.path(DOMAIN, "profiles.yaml")
-        path = default
         if user_input is not None:
-            path = user_input[CONF_PROFILES_PATH]
             key = user_input[CONF_API_KEY]
             if (bad_key := await key_error(self.hass, key)) is not None:
                 errors["base"] = bad_key
-            guided = bool(user_input.get("guided_setup", False))
-            if not guided and (bad := await check_path(self.hass, path)) is not None:
-                errors[CONF_PROFILES_PATH] = bad
-            if not errors:
-                self._key, self._path = key, path
-                if guided:
-                    return await self._begin_editor(key, path, create=True)
-                return await self.async_step_notify()
+            else:
+                self._key = key
+                path = self.hass.config.path(DOMAIN, "profiles.yaml")
+                # a file already there (a reinstall) is used, never written over
+                if user_input.get("existing_file", False) or await self.hass.async_add_executor_job(
+                    os.path.exists, path
+                ):
+                    return await self.async_step_profiles_file()
+                self._path = path
+                return await self._begin_editor(key, path, create=True)
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
@@ -252,13 +264,44 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
                     vol.Required(CONF_API_KEY): TextSelector(
                         TextSelectorConfig(type=TextSelectorType.PASSWORD)
                     ),
-                    vol.Required(CONF_PROFILES_PATH, default=path): str,
-                    vol.Optional("guided_setup", default=False): BooleanSelector(),
+                    vol.Optional("existing_file", default=False): BooleanSelector(),
                 }
             ),
             errors=errors,
-            description_placeholders={"path": path},
         )
+
+    async def async_step_profiles_file(
+        self, user_input: Mapping[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        path = self.hass.config.path(DOMAIN, "profiles.yaml")
+        report = ""
+        if user_input is not None:
+            path = user_input[CONF_PROFILES_PATH]
+        if user_input is not None and (bad := await check_path(self.hass, path)) is not None:
+            errors[CONF_PROFILES_PATH] = bad
+        elif report := await self.hass.async_add_executor_job(file_problem, path):
+            errors[CONF_PROFILES_PATH] = "file_broken"  # shown until the file is fixed
+        elif user_input is not None:
+            self._path = path
+            return await self.async_step_notify()
+        return self.async_show_form(
+            step_id="profiles_file",
+            data_schema=vol.Schema({vol.Required(CONF_PROFILES_PATH, default=path): str}),
+            errors=errors,
+            description_placeholders={"path": path, "report": report},
+        )
+
+    async def async_step_profile_error(
+        self, user_input: Mapping[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        # a file appeared where guided setup would create one: offer it, never write over it
+        if self._editor_create and await self.hass.async_add_executor_job(
+            os.path.exists, self._editor_path
+        ):
+            self._document = self._pending_profile = None
+            return await self.async_step_profiles_file()
+        return await super().async_step_profile_error(user_input)
 
     async def async_step_notify(
         self, user_input: Mapping[str, Any] | None = None
@@ -276,7 +319,8 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
         proof = self._proof()
         if not proof.claim(self._notify_identity()):
             return self._failed()
-        if self._pending_profile is not None:
+        guided = self._pending_profile is not None
+        if guided:
             try:
                 await self._save_profile()
             except EditorError as err:
@@ -286,6 +330,7 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
         proof.finish()
         return self.async_create_entry(
             title=TITLE,
+            description="guided" if guided else None,
             data={CONF_API_KEY: self._key},
             options={
                 CONF_PROFILES_PATH: self._path,
@@ -446,7 +491,7 @@ class TccOptionsFlow(
             description_placeholders={"report": "\n".join(lines) or "No problems found."},
         )
 
-    def _settings_form(self, errors: dict[str, str]) -> ConfigFlowResult:
+    def _settings_form(self, errors: dict[str, str], report: str = "") -> ConfigFlowResult:
         if not notify_services(self.hass):
             return self.async_abort(reason="no_mobile_app")
         schema = vol.Schema({vol.Required(CONF_PROFILES_PATH, default=self._path): str}).extend(
@@ -460,12 +505,19 @@ class TccOptionsFlow(
                 for key in (CONF_NOTIFICATIONS_ENABLED_ENTITY, CONF_NOTIFICATIONS_QUIET_ENTITY)
             }
         )
-        schema = self.add_suggested_values_to_schema(schema, self.config_entry.options)
+        suggested = dict(self.config_entry.options)
+        if suggested.get(CONF_NOTIFY) not in notify_services(self.hass):
+            suggested.pop(CONF_NOTIFY, None)  # a removed phone: one remaining phone is the default
+        schema = self.add_suggested_values_to_schema(schema, suggested)
         return self.async_show_form(
             step_id="settings",
             data_schema=schema,
             errors=errors,
-            description_placeholders={"path": self._path, "service": self._service},
+            description_placeholders={
+                "path": self._path,
+                "service": self._service,
+                "report": report,
+            },
         )
 
     def _failed(self) -> ConfigFlowResult:
@@ -494,10 +546,19 @@ class TccOptionsFlow(
         self._path, self._service, self._style = candidate.path, candidate.service, candidate.style
         version = self._settings_check.begin(candidate)
         bad = await check_path(self.hass, candidate.path)
+        # only a new path is checked for problems: a broken file at the saved path must not
+        # block a phone change, and the runtime already reports it
+        report = (
+            ""
+            if bad or candidate.path == candidate.base_options.get(CONF_PROFILES_PATH)
+            else await self.hass.async_add_executor_job(file_problem, candidate.path)
+        )
         if not self._settings_current(candidate):
             return self._stale_settings()
         if bad is not None:
             return self._settings_form({CONF_PROFILES_PATH: bad})
+        if report:
+            return self._settings_form({CONF_PROFILES_PATH: "file_broken"}, report)
         if not self._settings_check.accept(version, candidate):
             return self._stale_settings()
         opts = candidate.base_options

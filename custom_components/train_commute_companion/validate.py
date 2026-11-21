@@ -38,6 +38,19 @@ def _read(path: str) -> str:
         return f.read()
 
 
+def file_problem(path: str) -> str:
+    """The first error in the profiles file at `path`, station codes not checked; "" when
+    there is no file or no error."""
+    if not os.path.isfile(path):
+        return ""
+    try:
+        text = _read(path)
+    except (OSError, UnicodeDecodeError) as err:
+        return f"cannot read ({err})"
+    lines = check_lines(text, None, datetime.now(TZ).date())[1]
+    return next((x for x in lines if not x.startswith("warning:")), "")
+
+
 def _entity_line(
     hass: HomeAssistant, where: str, entity: str, domains: tuple[str, ...]
 ) -> str | None:

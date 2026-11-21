@@ -3,21 +3,29 @@
     "step": {
       "user": {
         "title": "Train Commute Companion",
-        "description": "Enter your NS API key and where your profiles file is.",
+        "description": "Enter your NS API key. Next you pick your stations and times.",
         "data": {
           "api_key": "NS API key",
-          "profiles_path": "Profiles file",
-          "guided_setup": "Create a profile with station-name forms"
+          "existing_file": "Use an existing YAML file"
         },
         "data_description": {
           "api_key": "Your NS API key from the NS API portal.",
-          "profiles_path": "Full file path. Guided setup creates a new file; otherwise select your existing profiles file.",
-          "guided_setup": "Use an unused profiles-file path inside the Home Assistant config folder. Leave off to use an existing YAML file."
+          "existing_file": "Leave off to set up your commute with station-name forms. Turn on if you already have a profiles file."
+        }
+      },
+      "profiles_file": {
+        "title": "Your profiles file",
+        "description": "Enter the full path of your profiles file. If a profiles file is already in the default place, it is filled in. Setup never writes over that file. To use the station forms instead, move that file away and add the integration again.",
+        "data": {
+          "profiles_path": "Profiles file"
+        },
+        "data_description": {
+          "profiles_path": "Full file path, for example inside the Home Assistant config folder."
         }
       },
       "notify": {
         "title": "Where should alerts go?",
-        "description": "Pick your phone. Two test notifications are sent to notify.{service} next.",
+        "description": "Pick your phone. Two test notifications are sent to {phone} next.",
         "data": {
           "notify_service": "Phone",
           "loud_style": "Loud alert style"
@@ -189,7 +197,15 @@
       "send_failed": "The test notification to notify.{service} did not arrive. Check the companion app or pick another target.",
       "invalid_profile": "The profile is not valid. Review the report above.",
       "file_changed": "The file changed or already exists. Reopen the editor to use its current contents.",
-      "save_failed": "The file could not be saved. Check its folder permissions. Existing contents were not replaced."
+      "save_failed": "The file could not be saved. Check its folder permissions. Existing contents were not replaced.",
+      "unknown_station": "Pick a station from the list.",
+      "file_broken": "The file at this path has a problem: {report}. Fix the file, or enter the path of another profiles file.",
+      "same_station": "Home and work must be different stations.",
+      "days_clash": "Your profile {other} already runs on one of these days. Pick other days, or change {other} first.",
+      "name_taken": "Another profile already has this name. Pick another name."
+    },
+    "create_entry": {
+      "guided": "Add more commutes later under Configure > Add or edit profiles."
     },
     "abort": {
       "no_mobile_app": "No phone with the Home Assistant companion app was found. Install the app, sign in, then try again.",
@@ -465,7 +481,12 @@
       "arrival_refused": "The arrival was not accepted. Read the reason and review this journey again.",
       "arrival_acknowledgement": "Confirm your personal arrival only after reviewing the destination, time and plan.",
       "arrival_time": "Choose a valid Amsterdam date and time. For a repeated autumn hour, select its offset.",
-      "settings_changed": "The settings changed while this form was open. Review the current settings and try again."
+      "settings_changed": "The settings changed while this form was open. Review the current settings and try again.",
+      "unknown_station": "Pick a station from the list.",
+      "same_station": "Home and work must be different stations.",
+      "days_clash": "Your profile {other} already runs on one of these days. Pick other days, or change {other} first.",
+      "name_taken": "Another profile already has this name. Pick another name.",
+      "file_broken": "The file at this path has a problem: {report}. Fix the file, or enter the path of another profiles file."
     },
     "abort": {
       "validated": "Checked. Nothing was changed.",

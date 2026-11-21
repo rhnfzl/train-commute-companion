@@ -380,6 +380,7 @@ class Runtime:
         self._writer = StateWriter(store, self._queue, self._storage_note)
         self._lookahead_at = lookahead_at
         self._reload = ReloadControl()
+        self._same_station_warnings: set[tuple[str, str]] = set()
         self._lifecycle = RuntimeLifecycle()
         self._store = store
         self._provider = provider
@@ -482,6 +483,9 @@ class Runtime:
         return profile_for(self._writer.st, s)
 
     def _ctx(self, s: OccurrenceState, now: datetime) -> Ctx | None:
+        p = self._profile_for(s)
+        if p is None or p.home_station == p.work_station:
+            return None
         return occurrence_ctx(self._writer.st, s, now)
 
     def view(self) -> RuntimeView:
@@ -619,6 +623,8 @@ class Runtime:
         if config is None or self._writer.waiting:
             return
         for profile in config.profiles:
+            if profile.home_station == profile.work_station:
+                continue
             start = self._clock.now()
             decision = works_digest.digest_decision(
                 profile,
@@ -1065,7 +1071,10 @@ class Runtime:
             return sig.legs[0].departure if sig is not None else None
 
         occs = dict(self._writer.st.occurrences)
-        for sch in schedules_active(cfg, {}, now, first):
+        active = replace(
+            cfg, profiles=tuple(p for p in cfg.profiles if p.home_station != p.work_station)
+        )
+        for sch in schedules_active(active, {}, now, first):
             k = okey(sch.key)
             if k not in occs:
                 hist = self._writer.st.baselines.get(
@@ -2103,6 +2112,18 @@ class Runtime:
                     self._apply_config(cfg, now)
                     applied = cfg
         self._apply({})
+        skipped = set()
+        for p in self.config.profiles if self.config else ():
+            if p.home_station == p.work_station:
+                key = (p.id, p.home_station)
+                skipped.add(key)
+                if key not in self._same_station_warnings:
+                    log.warning(
+                        "Skipping profile %s: home and work are both %s; pick two different stations.",
+                        p.name,
+                        p.home_station,
+                    )
+        self._same_station_warnings = skipped
         if applied is not None and self._writer.waiting:
             self._mtime = None  # not written, so not active: the file watch tries again (r22)
         await self._deliver()
@@ -2153,6 +2174,8 @@ class Runtime:
             decision = route_decision(
                 s, route is not None and p is not None and same_route(route, p)
             )
+            if route is not None and route.home_station == route.work_station:
+                decision = RouteDecision.RECREATE  # an invalid old route must not retain its lock
             if decision is RouteDecision.ADOPT:
                 rev = new.revision
             elif decision is RouteDecision.RETAIN:
@@ -2191,7 +2214,7 @@ class Runtime:
 
     async def lookahead_once(self) -> None:
         cfg = self._writer.st.config
-        if cfg is None:
+        if cfg is None or all(p.home_station == p.work_station for p in cfg.profiles):
             return
         works = await self._fetch_works()
         if works is None:  # refused by the shared cooldown: retried by `daily`
@@ -2200,7 +2223,7 @@ class Runtime:
             # the profile as configured now: one held across an earlier direction's requests
             # could be stamped with a newer revision than its own (rule 21)
             p = find_profile(self._writer.st.config, pid)
-            if p is not None:
+            if p is not None and p.home_station != p.work_station:
                 await self._lookahead_direction(p, d, works)
         await self._deliver()
 

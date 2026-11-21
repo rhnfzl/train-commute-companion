@@ -60,7 +60,7 @@ Save an [explicit arrival](docs/compensation-reminders.md) to compare it with th
 1. In HACS, add `https://github.com/rhnfzl/train-commute-companion` as a custom repository of type Integration, or use the button above.
 2. Download Train Commute Companion and restart Home Assistant.
 3. Add the integration under Settings, Devices and services, and enter your NS API key.
-4. Enable guided setup to choose stations and trains in forms, or select an existing [profiles file](examples/profiles.yaml).
+4. Choose stations and trains in the forms that follow, or turn on **Use an existing YAML file** to use a [profiles file](examples/profiles.yaml) you already have.
 
 The full guide is in [docs/home-assistant.md](docs/home-assistant.md).
 

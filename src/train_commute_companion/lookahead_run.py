@@ -115,10 +115,11 @@ def apply_run(
 
 
 def lookahead_done(st: PersistedState, since: datetime) -> bool:
-    """Every configured direction has a look-ahead run written since `since`."""
+    """Every direction with different home and work stations has a run written since `since`."""
     leds = [
         st.lookahead.get(direction_key(p.id, d))
         for p in (st.config.profiles if st.config else ())
+        if p.home_station != p.work_station
         for d in Direction
     ]
     return all(

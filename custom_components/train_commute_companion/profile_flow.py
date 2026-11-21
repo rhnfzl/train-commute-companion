@@ -1,7 +1,9 @@
 """Station-name forms backed by the same portable profile file as every other shell."""
 
+from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime
+from itertools import count
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,7 @@ from homeassistant.helpers.selector import (
 from train_commute_companion.calendar import TZ, WEEKDAYS
 from train_commute_companion.model import NotificationChannel, Stations
 from train_commute_companion.notification_policy import CATEGORIES
+from train_commute_companion.profile import slug
 from train_commute_companion.providers.base import AuthError, ProviderError
 from train_commute_companion.providers.ns import NsProvider
 from train_commute_companion.transfer import FALLBACK_MIN
@@ -53,6 +56,7 @@ DAY_NAMES = dict(
     zip(WEEKDAYS, ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
 )
 _OPTIONAL_TEXT = ("time", "window_start", "window_end")
+_SINGLE_STATIONS = ("home_station", "work_station")
 
 CATEGORY_LABELS = {
     "journey": "Journey changes",
@@ -93,6 +97,32 @@ class ProfileEditorFlow:
         known = self._catalogue or Stations({})
         return {code: known.name(code) for code in known}
 
+    def _station_codes(self) -> dict[str, str]:
+        """Name -> code for the single station pickers. The picker shows its raw value, so the
+        value is the name; a name two stations share gets its code added, again until no other
+        label has it, so every station keeps exactly one label."""
+        labels = self._labels()
+        shared = Counter(labels.values())
+        out = {name: code for code, name in labels.items() if shared[name] == 1}
+        for code, name in sorted(labels.items()):
+            if shared[name] > 1:
+                label = f"{name} ({code})"
+                while label in out:
+                    label += f" ({code})"
+                out[label] = code
+        return out
+
+    def _station_code(self, text: object) -> str | None:
+        """The code for a picked label, else for the one station a typed name or code means."""
+        assert self._catalogue is not None
+        if not isinstance(text, str):
+            return None
+        codes = self._station_codes()
+        if (code := codes.get(text, codes.get(text.strip()))) is not None:
+            return code
+        found = self._catalogue.lookup(text.strip())  # case, spaces, aliases; never a guess
+        return found[0] if len(found) == 1 else None
+
     def _existing(self) -> dict[str, Any]:
         """The profile being edited, its stations as codes for the form."""
         assert self._document is not None and self._catalogue is not None
@@ -121,6 +151,8 @@ class ProfileEditorFlow:
         self._pending_profile = None
         try:
             known = self._catalogue = await station_catalogue(self.hass, key)
+            if not known:  # NS answered without stations: nothing could be picked or checked
+                return self._editor_error("cannot_connect")
             self._document = await self.hass.async_add_executor_job(
                 lambda: read_document(
                     Path(path),
@@ -188,8 +220,40 @@ class ProfileEditorFlow:
             ),
         )
 
+    def _free_name(self) -> str:
+        """commute, else commute 2, commute 3: names must stay unique in the file."""
+        assert self._document is not None
+        taken = {slug(str(p.get("name", ""))) for p in self._document.data["profiles"]}
+        names = (f"commute {i}" if i > 1 else "commute" for i in count(1))
+        return next(name for name in names if slug(name) not in taken)
+
+    def _day_clash(self, days: object) -> str | None:
+        """The name of another profile that already runs on one of `days`, the same
+        shared-weekday rule the file check applies, said in the form's own words."""
+        assert self._document is not None
+        wanted = {d for d in days if isinstance(d, str)} if isinstance(days, list) else set()
+        for p in self._document.data["profiles"]:
+            theirs = p.get("days", [])
+            if (
+                p["id"] != self._profile_id
+                and isinstance(theirs, list)
+                and wanted & {str(d).lower() for d in theirs}
+            ):
+                return str(p.get("name", ""))
+        return None
+
+    def _name_taken(self, name: object) -> bool:
+        """Another profile has this name, by the same slug rule the file check applies."""
+        assert self._document is not None
+        key = slug(name) if isinstance(name, str) else ""
+        return bool(key) and any(
+            p["id"] != self._profile_id and slug(str(p.get("name", ""))) == key
+            for p in self._document.data["profiles"]
+        )
+
     def _profile_defaults(self) -> dict[str, Any]:
         profile = self._existing()
+        names = {code: name for name, code in self._station_codes().items()}
         schedule: dict[str, Any] = {}
         for direction in ("outbound", "return"):
             journey = profile.get(direction, {})
@@ -207,10 +271,9 @@ class ProfileEditorFlow:
             if journey.get("mode") == "window" and "first_train" not in journey:
                 schedule[f"{direction}_time"] = ""  # blank: a window day needs no first train
         return {
-            "name": profile.get("name", "commute"),
+            "name": profile.get("name") or self._free_name(),
             "days": profile.get("days", ["mon", "tue", "wed", "thu", "fri"]),
-            "home_station": profile.get("home_station"),
-            "work_station": profile.get("work_station"),
+            **{key: names.get(profile.get(key, "")) for key in _SINGLE_STATIONS},
             "skip_public_holidays": profile.get("skip_public_holidays", True),
             "require_accessible": profile.get("accessibility", {}).get("require_accessible", False),
             "disabled_categories": profile.get("alerts", {}).get("disabled_categories", []),
@@ -231,8 +294,9 @@ class ProfileEditorFlow:
             {"value": code, "label": label}
             for code, label in sorted(self._labels().items(), key=lambda item: item[1])
         ]
+        # custom_value is what gives the single picker its search box; unknown text is refused
         station = SelectSelector(
-            SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
+            SelectSelectorConfig(options=sorted(self._station_codes()), custom_value=True)
         )
         transfers = SelectSelector(
             SelectSelectorConfig(
@@ -275,11 +339,17 @@ class ProfileEditorFlow:
                 )
             )
         # Suggested values also preserve an intentionally cleared input after a validation error.
-        schema: dict[Any, Any] = {
-            vol.Required(str(key), description={"suggested_value": defaults[str(key)]}): value
-            for key, value in fields.items()
-            if str(key) in defaults
-        }
+        schema: dict[Any, Any] = {}
+        for key, value in fields.items():
+            if (name := str(key)) in _SINGLE_STATIONS:
+                # optional with no default: HA fills an empty required pick list with its
+                # first station; the step itself refuses a missing station
+                saved = defaults.get(name)
+                schema[
+                    vol.Optional(name, description={"suggested_value": saved} if saved else None)
+                ] = value
+            elif name in defaults:
+                schema[vol.Required(name, description={"suggested_value": defaults[name]})] = value
         for direction in ("outbound", "return"):
             # blank text comes back as no key: a window day needs no first train
             for name in _OPTIONAL_TEXT:
@@ -309,25 +379,39 @@ class ProfileEditorFlow:
         values = dict(user_input) if user_input is not None else self._profile_defaults()
         errors: dict[str, str] = {}
         report = ""
+        other = ""
         if user_input is not None:
-            try:
-                self._pending_profile = edit_profile(
-                    self._document,
-                    self._profile_id,
-                    values,
-                    self._catalogue,
-                    datetime.now(TZ).date(),
-                )
-            except EditorError as err:
-                errors["base"], report = err.code, err.report
-            else:
-                self._editor_values = values
-                return await self.async_step_profile_details()
+            # the form keeps names; everything after this step works with codes
+            coded_values = {
+                **values,
+                **{k: self._station_code(values.get(k)) for k in _SINGLE_STATIONS},
+            }
+            errors = {k: "unknown_station" for k in _SINGLE_STATIONS if coded_values[k] is None}
+            if not errors and coded_values["home_station"] == coded_values["work_station"]:
+                errors["work_station"] = "same_station"
+            if (clash := self._day_clash(values.get("days"))) is not None:
+                errors["days"], other = "days_clash", clash
+            if self._name_taken(values.get("name")):
+                errors["name"] = "name_taken"
+            if not errors:
+                try:
+                    self._pending_profile = edit_profile(
+                        self._document,
+                        self._profile_id,
+                        coded_values,
+                        self._catalogue,
+                        datetime.now(TZ).date(),
+                    )
+                except EditorError as err:
+                    errors["base"], report = err.code, err.report
+                else:
+                    self._editor_values = coded_values
+                    return await self.async_step_profile_details()
         return self.async_show_form(
             step_id="profile",
             data_schema=self._profile_schema(values),
             errors=errors,
-            description_placeholders={"report": report},
+            description_placeholders={"report": report, "other": other},
         )
 
     async def async_step_profile_details(

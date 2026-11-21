@@ -11,7 +11,7 @@ profiles:
     pauses: []                # optional inclusive ranges: [{start: "2026-12-21", end: "2027-01-03"}]
     skip_public_holidays: true  # skip Dutch public holidays on the weekdays above
     home_station: "AAA"       # NS station code of the home side
-    work_station: "RTD"       # NS station code of the work side
+    work_station: "RTD"       # NS station code of the work side, never the home station
     outbound:                 # home to work
       first_train: "08:12"    # the train you normally take first
       transfers: ["UT"]       # transfer stations in travel order; [] for a direct train

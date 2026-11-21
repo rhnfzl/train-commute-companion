@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from train_commute_companion.model import Config, Direction, ProfileProblem
+from train_commute_companion.model import Config, Direction, ProfileProblem, Stations
 from train_commute_companion.overlap import find_overlaps
 from train_commute_companion.profile import (
     check_lines,
@@ -52,6 +52,21 @@ def test_starter_file_is_valid():
 def test_starter_file_valid_with_station_list():
     _, errors = parse_profiles(Path("examples/profiles.yaml").read_text(), STATIONS)
     assert errors == []
+
+
+@pytest.mark.parametrize("work", ['"AAA"', '"Home side"'])
+def test_same_home_and_work_station_loads_with_a_warning(work):
+    """Older versions saved such profiles: the file still loads, so it can be fixed. A code
+    and a name that mean the same station count as the same station."""
+    text = one(('work_station: "UT"', f"work_station: {work}"))
+    known = Stations({"AAA": ["Home side"], "UT": ["Utrecht Centraal"]})
+    profiles, errors = parse_profiles(text, known)
+    assert errors == [] and [p.work_station for p in profiles] == ["AAA"]
+    cfg, lines = check_lines(text, known, TODAY)
+    assert cfg is not None
+    assert lines == [
+        "warning: office_a.work_station: AAA is also the home station (pick two different stations)"
+    ]
 
 
 def test_two_profiles_different_days_ok():

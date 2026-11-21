@@ -949,12 +949,20 @@ def _times(p: Profile) -> list[tuple[str, time]]:
 def check_lines(
     text: str, known: frozenset[str] | None, today: date
 ) -> tuple[Config | None, list[str]]:
-    """`load_config` as readable lines: every error, then the clock-change hour warnings (5.3)."""
+    """`load_config` as readable lines: every error, then the warnings: home and work the same
+    station, and times in the clock-change hour (5.3)."""
     cfg, errors = load_config(text, known, None, today)
     lines = [
         f"{e.path}: {e.message}" + (f" ({e.suggestion})" if e.suggestion else "") for e in errors
     ]
     for p in cfg.profiles if cfg else ():
+        # a warning, not an error: older versions saved such profiles, and the file must
+        # still load so the profile editor can fix it (the editor form refuses it)
+        if p.home_station == p.work_station:
+            lines.append(
+                f"warning: {p.name}.work_station: {p.work_station} is also the home station "
+                "(pick two different stations)"
+            )
         for where, t in _times(p):
             if t.hour == _DST_HOUR:
                 lines.append(

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+import voluptuous as vol
 from ha_rig import (
     HOOKS,
     NOTIFY,
@@ -35,9 +36,11 @@ from webhook_receiver import Receiver
 from custom_components.train_commute_companion import notifier, validate
 from custom_components.train_commute_companion.config_flow import notify_services
 from custom_components.train_commute_companion.const import DOMAIN
+from train_commute_companion.model import Stations
 from train_commute_companion.providers.base import AuthError, ProviderError
 
 CHECK_KEY = "custom_components.train_commute_companion.config_flow.check_key"
+CATALOGUE_CALL = "custom_components.train_commute_companion.profile_flow.station_catalogue"
 SETUP = "custom_components.train_commute_companion.async_setup_entry"
 KNOWN = frozenset({"AAA", "BBB", "UT", "RTD"})
 CAVEAT = (
@@ -65,13 +68,21 @@ async def step(hass, r, data):
     return await hass.config_entries.flow.async_configure(r["flow_id"], data)
 
 
+async def file_step(hass):
+    """The user step with "Use an existing YAML file" on: the path form comes next."""
+    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    assert r["step_id"] == "user"
+    with patch(CHECK_KEY, return_value=KNOWN):
+        r = await step(hass, r, {"api_key": "k", "existing_file": True})
+    assert r["step_id"] == "profiles_file"
+    return r
+
+
 async def flow_to_notify(hass, key=KNOWN):
     write_profiles(hass, PROFILE)
+    r = await file_step(hass)
     with patch(CHECK_KEY, return_value=key):
-        r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
-        assert r["step_id"] == "user"
-        r = await step(hass, r, {"api_key": "k", "profiles_path": str(profiles_path(hass))})
-    return r
+        return await step(hass, r, {"profiles_path": str(profiles_path(hass))})
 
 
 async def flow_to_test_menu(hass, style=None):
@@ -99,6 +110,7 @@ async def test_entry_created_only_after_both_test_pushes_confirmed(hass, monkeyp
     )
     assert r["options"]["profiles_path"] == str(profiles_path(hass))
     assert r["title"] == "Train Commute Companion"
+    assert r["description"] is None  # the closing hint is for guided setup only
 
 
 async def test_critical_style_test_push_is_critical(hass, monkeypatch):
@@ -137,39 +149,118 @@ async def test_failed_test_push_stays_on_notify_step(hass, failure, monkeypatch)
         r = await step(hass, r, {"notify_service": NOTIFY})
     assert r["type"] is FlowResultType.FORM and r["step_id"] == "notify"
     assert r["errors"] == {"base": "send_failed"}
-    assert r["description_placeholders"] == {"service": NOTIFY}
+    # the text names the phone the picker now holds: the one left when the first went away
+    phone = "mobile_app_other" if failure == "missing" else NOTIFY
+    assert r["description_placeholders"] == {"service": NOTIFY, "phone": f"notify.{phone}"}
     assert not hass.config_entries.async_entries(DOMAIN)
+
+
+async def test_the_phone_form_names_the_phone_it_will_test(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    r = await flow_to_notify(hass)
+    assert r["description_placeholders"]["phone"] == f"notify.{NOTIFY}"
+    fake_phone(hass, monkeypatch, "mobile_app_other")
+    r = await flow_to_notify(hass)  # two phones: none is picked, and the text says so
+    assert r["description_placeholders"]["phone"] == "the phone you pick"
 
 
 async def test_user_step_errors(hass, monkeypatch):
     fake_phone(hass, monkeypatch)
-    write_profiles(hass, PROFILE)
-    path = str(profiles_path(hass))
     r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    assert {str(k) for k in r["data_schema"].schema} == {"api_key", "existing_file"}
     for bad, error in ((AuthError, "invalid_auth"), (ProviderError, "cannot_connect")):
         with patch(CHECK_KEY, side_effect=bad):
-            r = await step(hass, r, {"api_key": "k", "profiles_path": path})
-        assert r["errors"] == {"base": error}
+            r = await step(hass, r, {"api_key": "k", "existing_file": True})
+        assert r["step_id"] == "user" and r["errors"] == {"base": error}
+    r = await file_step(hass)
     folder = hass.config.config_dir
-    with patch(CHECK_KEY, return_value=KNOWN):
-        r = await step(hass, r, {"api_key": "k", "profiles_path": folder})
+    r = await step(hass, r, {"profiles_path": folder})
+    assert r["step_id"] == "profiles_file"
     assert r["errors"] == {"profiles_path": "file_missing"}
-    assert r["description_placeholders"] == {"path": folder}
+    assert r["description_placeholders"] == {"path": folder, "report": ""}
+
+
+async def test_existing_file_switch_with_no_file_yet_opens_a_clean_path_form(hass):
+    r = await file_step(hass)
+    assert not r["errors"]
+    assert shown_default(r, "profiles_path") == str(profiles_path(hass))
+    r = await step(hass, r, {"profiles_path": str(profiles_path(hass))})
+    assert r["step_id"] == "profiles_file" and r["errors"] == {"profiles_path": "file_missing"}
+    assert not profiles_path(hass).exists()
+
+
+async def test_a_broken_file_at_the_default_place_is_explained_on_the_path_form(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    write_profiles(hass, "profiles: [")
+    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    with patch(CHECK_KEY, return_value=KNOWN):
+        r = await step(hass, r, {"api_key": "k"})
+    assert r["step_id"] == "profiles_file"
+    assert r["errors"] == {"profiles_path": "file_broken"}
+    assert r["description_placeholders"]["report"]  # what is wrong, in words
+    r = await step(hass, r, {"profiles_path": str(profiles_path(hass))})  # sent again unchanged
+    assert r["step_id"] == "profiles_file"
+    assert r["errors"] == {"profiles_path": "file_broken"}
+    assert r["description_placeholders"]["report"]
+    broken = Path(hass.config.config_dir) / "broken.yaml"
+    broken.write_text("profiles: []")  # valid YAML the profile check refuses
+    r = await step(hass, r, {"profiles_path": str(broken)})
+    assert r["errors"] == {"profiles_path": "file_broken"}
+    other = Path(hass.config.config_dir) / "other.yaml"
+    other.write_text(PROFILE)
+    r = await step(hass, r, {"profiles_path": str(other)})  # another path is taken
+    assert r["step_id"] == "notify"
+    assert profiles_path(hass).read_text() == "profiles: ["
 
 
 async def test_path_outside_allowed_dirs_errors(hass):
-    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
-    with patch(CHECK_KEY, return_value=KNOWN):
-        r = await step(hass, r, {"api_key": "k", "profiles_path": "/etc/hosts"})
+    r = await step(hass, await file_step(hass), {"profiles_path": "/etc/hosts"})
     assert r["errors"] == {"profiles_path": "path_not_allowed"}
 
 
 async def test_a_path_that_climbs_out_of_the_config_folder_errors(hass):
-    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
     climb = str(Path(hass.config.config_dir) / ".." / ".." / "etc" / "hosts")
-    with patch(CHECK_KEY, return_value=KNOWN):
-        r = await step(hass, r, {"api_key": "k", "profiles_path": climb})
+    r = await step(hass, await file_step(hass), {"profiles_path": climb})
     assert r["errors"] == {"profiles_path": "path_not_allowed"}
+
+
+async def test_a_fresh_install_goes_from_the_key_straight_to_the_station_forms(hass):
+    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    with (
+        patch(CHECK_KEY, return_value=KNOWN),
+        patch(CATALOGUE_CALL, return_value=Stations({c: [c] for c in KNOWN})),
+    ):
+        r = await step(hass, r, {"api_key": "k"})
+    assert r["step_id"] == "profile"
+    assert not profiles_path(hass).exists()
+
+
+async def test_a_profiles_file_already_in_place_opens_the_path_form_instead(hass):
+    write_profiles(hass, PROFILE)
+    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    with patch(CHECK_KEY, return_value=KNOWN):
+        r = await step(hass, r, {"api_key": "k"})
+    assert r["step_id"] == "profiles_file"
+    assert shown_default(r, "profiles_path") == str(profiles_path(hass))
+    assert profiles_path(hass).read_text() == PROFILE
+
+
+def shown_default(r, field):
+    return next(k.default() for k in r["data_schema"].schema if str(k) == field)
+
+
+async def test_one_phone_is_picked_for_you(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    r = await flow_to_notify(hass)
+    assert shown_default(r, "notify_service") == NOTIFY
+
+
+async def test_two_phones_leave_the_pick_to_you(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    fake_phone(hass, monkeypatch, "mobile_app_other")
+    r = await flow_to_notify(hass)
+    key = next(k for k in r["data_schema"].schema if str(k) == "notify_service")
+    assert key.default is vol.UNDEFINED
 
 
 async def test_no_mobile_app_aborts(hass):
@@ -301,6 +392,9 @@ def test_validate_description_has_location_caveat_verbatim():
         data = json.loads((ROOT / "custom_components" / DOMAIN / name).read_text())
         desc = data["options"]["step"]["validate"]["description"]
         assert desc == "{report}\n\n" + CAVEAT
+        assert data["config"]["create_entry"]["guided"] == (
+            "Add more commutes later under Configure > Add or edit profiles."
+        )
     a = (ROOT / "custom_components" / DOMAIN / "strings.json").read_text()
     assert a == (ROOT / "custom_components" / DOMAIN / "translations/en.json").read_text()
 
@@ -336,6 +430,38 @@ async def test_options_settings_path_checked_like_setup(hass, monkeypatch):
         assert r["type"] is FlowResultType.FORM and r["errors"] == {"profiles_path": error}
         hass.config_entries.options.async_abort(r["flow_id"])
     assert dict(entry.options) == before
+
+
+async def test_options_settings_refuse_a_broken_profiles_file(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    entry = add_entry(hass)
+    before = dict(entry.options)
+    broken = Path(hass.config.config_dir) / "broken.yaml"
+    broken.write_text("profiles: [")
+    r = await settings(hass, entry, **current(entry, profiles_path=str(broken)))
+    assert r["type"] is FlowResultType.FORM
+    assert r["errors"] == {"profiles_path": "file_broken"}
+    assert r["description_placeholders"]["report"]  # what is wrong, in words
+    assert dict(entry.options) == before
+
+
+async def test_options_settings_change_the_phone_while_the_saved_file_is_broken(hass, monkeypatch):
+    """Only a new path is checked: a broken file at the saved path never blocks a phone change."""
+    fake_phone(hass, monkeypatch)
+    tablet = fake_phone(hass, monkeypatch, "mobile_app_tablet")
+    entry = add_entry(hass)
+    profiles_path(hass).write_text("profiles: [")
+    r = await settings(hass, entry, **current(entry, notify_service="mobile_app_tablet"))
+    assert r["type"] is FlowResultType.MENU and r["step_id"] == "test"
+    assert [level(c) for c in tablet] == ["time-sensitive", "passive"]
+    with patch(SETUP, return_value=True):
+        r = await hass.config_entries.options.async_configure(
+            r["flow_id"], {"next_step_id": "test_ok"}
+        )
+        await hass.async_block_till_done()
+    assert r["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options["notify_service"] == "mobile_app_tablet"
+    assert entry.options["profiles_path"] == str(profiles_path(hass))
 
 
 async def test_options_settings_path_only_saves_without_test_push(hass, monkeypatch):
@@ -402,6 +528,32 @@ async def test_flow_aborts_when_only_a_non_phone_target_exists(hass):
     async_mock_service(hass, "notify", "mobile_app_fake")
     r = await flow_to_notify(hass)
     assert r["type"] is FlowResultType.ABORT and r["reason"] == "no_mobile_app"
+
+
+async def test_options_settings_suggest_the_one_phone_left_when_the_saved_one_is_gone(
+    hass, monkeypatch
+):
+    fake_phone(hass, monkeypatch, "mobile_app_tablet")  # the saved phone no longer exists
+    entry = add_entry(hass)
+    r = await hass.config_entries.options.async_init(entry.entry_id)
+    r = await hass.config_entries.options.async_configure(
+        r["flow_id"], {"next_step_id": "settings"}
+    )
+    key = next(k for k in r["data_schema"].schema if str(k) == "notify_service")
+    assert (key.description or {}).get("suggested_value") is None
+    assert key.default() == "mobile_app_tablet"
+
+
+async def test_options_settings_keep_suggesting_the_saved_phone(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    fake_phone(hass, monkeypatch, "mobile_app_tablet")
+    entry = add_entry(hass)
+    r = await hass.config_entries.options.async_init(entry.entry_id)
+    r = await hass.config_entries.options.async_configure(
+        r["flow_id"], {"next_step_id": "settings"}
+    )
+    key = next(k for k in r["data_schema"].schema if str(k) == "notify_service")
+    assert key.description["suggested_value"] == NOTIFY
 
 
 async def test_options_flow_offers_only_real_phone_targets(hass, monkeypatch):
