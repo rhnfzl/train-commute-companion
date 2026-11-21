@@ -26,6 +26,7 @@ from train_commute_companion.budget import RequestBudget
 from train_commute_companion.ledger import leg_now
 from train_commute_companion.lifecycle import Choose
 from train_commute_companion.location import Evidence, LocationEvent
+from train_commute_companion.lookahead_run import lookahead_done
 from train_commute_companion.messages import RefusalKind, Refused, no_journey
 from train_commute_companion.model import (
     AlertEvent,
@@ -40,6 +41,7 @@ from train_commute_companion.model import (
     Provenance,
     Severity,
 )
+from train_commute_companion.profile import load_config
 from train_commute_companion.providers.base import (
     AuthError,
     ProviderAnswer,
@@ -51,6 +53,98 @@ from train_commute_companion.providers.base import (
 from train_commute_companion.runtime import Runtime, fresh_state
 from train_commute_companion.state import BaselineHistory, LockSource
 from train_commute_companion.store import PersistedState, StorageError
+
+
+async def test_same_station_profile_is_skipped_until_corrected(tmp_path, caplog):
+    rig = Rig(tmp_path)
+    original = PROFILE.replace("NAME", "office_a")
+    bad = original.replace('work_station: "RTD"', 'work_station: "AAA"', 1)
+    bad = bad.replace('  - id: "p2"', "    works_digest: {day: tue, time: '07:00'}\n  - id: \"p2\"")
+    rig.write(text=bad)
+    await rig.rt.start()
+    await rig.rt.works_digest_idle()
+    await rig.rt.poll_once()
+    await rig.rt.watchdog_once()
+    await rig.rt.lookahead_once()
+    await rig.rt.works_digest_idle()
+    assert not rig.rt.state.occurrences
+    assert rig.provider.calls  # the healthy profile still gets advance checks
+    assert all(q.origin != q.destination for q in rig.provider.calls)
+    assert not rig.rt.state.works_digest_weeks
+    assert all(event.profile_id != "p1" for event in rig.notifier.attempts)
+    assert lookahead_done(rig.rt.state, at("06:00"))
+    assert len(rig.rt.config.profiles) == 2  # both profiles remain editable
+    warnings = [r.message for r in caplog.records if "Skipping profile" in r.message]
+    assert warnings == [
+        "Skipping profile office_a: home and work are both AAA; pick two different stations."
+    ]
+    caplog.clear()
+    await rig.rt.reload()
+    assert not caplog.records
+    rig.write(text=original)
+    assert await rig.rt.reload() is None
+    rig.provider.calls.clear()
+    await rig.rt.poll_once()
+    assert rig.occ() is not None and rig.provider.calls
+    assert not caplog.records
+
+
+async def test_reload_warns_again_only_after_same_station_profile_was_corrected(tmp_path, caplog):
+    rig = Rig(tmp_path, now="06:00")
+    await rig.rt.start()
+    original = rig.path.read_text()
+    bad = original.replace('work_station: "RTD"', 'work_station: "AAA"', 1)
+    for _ in range(2):
+        rig.write(text=bad)
+        assert await rig.rt.reload() is None
+        await rig.rt.poll_once()
+        await rig.rt.reload()
+        rig.write(text=original)
+        assert await rig.rt.reload() is None
+    assert len([r for r in caplog.records if "Skipping profile office_a" in r.message]) == 2
+
+
+@pytest.mark.parametrize("broken_file", [False, True])
+@pytest.mark.parametrize("phase", ["idle", "locked", "retained"])
+async def test_restart_skips_saved_same_station_occurrence(tmp_path, caplog, broken_file, phase):
+    rig = Rig(tmp_path)
+    bad = PROFILE.replace("NAME", "office_a").replace('work_station: "RTD"', 'work_station: "AAA"')
+    cfg, errors = load_config(bad, None, None, DAY)
+    assert cfg is not None and not errors
+    key = OccurrenceKey("p1", Direction.OUTBOUND, DAY)
+    occurrence = fresh_state(key, cfg.revision, None)
+    if phase != "idle":
+        route = journey([L1, make_leg("UT", "AAA", "08:50", "09:24", number="5678")])
+        occurrence = replace(
+            occurrence,
+            direction_state=DirectionState.LOCKED if phase == "locked" else DirectionState.RIDING,
+            lock=route if phase == "locked" else None,
+            retained=(route,) if phase == "retained" else (),
+        )
+    rig.store.save(
+        replace(
+            rig.rt.state,
+            config=cfg,
+            config_snapshots={cfg.revision: cfg},
+            occurrences={"p1|outbound|2026-10-27": occurrence},
+        )
+    )
+    rig.write(text="profiles: [" if broken_file else bad)
+    await rig.rt.start()
+    await rig.rt.works_digest_idle()
+    rig.notifier.attempts.clear()  # a broken file has its own application warning
+    await rig.rt.poll_once()
+    await rig.rt.watchdog_once()
+    await rig.rt.lookahead_once()
+    assert not rig.provider.calls and not rig.notifier.attempts
+    assert lookahead_done(rig.rt.state, at("06:00"))
+    assert any("Skipping profile office_a" in r.message for r in caplog.records)
+    rig.write(text=PROFILE.replace("NAME", "office_a"))
+    assert await rig.rt.reload() is None
+    await rig.rt.poll_once()
+    assert rig.provider.calls
+    assert rig.occ().route_revision == rig.rt.config.revision
+    assert all(q.origin != q.destination for q in rig.provider.calls)
 
 
 async def test_running_runtime_cannot_reconcile_a_second_time(tmp_path):
