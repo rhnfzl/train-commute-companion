@@ -3,16 +3,20 @@ supervised (7.12 rule 12): a part that ends is a fault and the process exits for
 
 import asyncio
 import functools
+import json
 import logging
 import os
+import re
 import secrets
 import signal
 import stat
 import tempfile
 from collections.abc import Callable, Mapping
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field, replace
 from datetime import datetime, time
 from enum import StrEnum
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +39,9 @@ from .commands import answer
 from .email_settings import CopyPort, CopyPorts, email_settings
 from .follow import Follower
 from .telegram import TelegramApi, TelegramNotifier
+from .travel_actions import TravelActions, agent_tokens
+from .travel_language import LanguageSettings, TravelLanguage, language_settings
+from .travel_preferences import TravelPreferences
 from .web import health_report, mcp_socket_path, start_readout, start_web, state_dir
 
 log = logging.getLogger(__name__)
@@ -92,6 +99,11 @@ class Settings:
     mcp_socket: Path | None = None  # None: MCP off
     email: EmailSettings | None = None
     knmi_key: str | None = field(default=None, repr=False)
+    mcp_agents: dict[str, str] = field(default_factory=dict, repr=False)
+    mcp_remote_port: int | None = None
+    mcp_remote_bind: str = "127.0.0.1"
+    mcp_remote_hosts: tuple[str, ...] = ()
+    travel_language: LanguageSettings | None = None
 
     @staticmethod
     def from_env(env: Mapping[str, str]) -> "Settings":
@@ -110,6 +122,8 @@ class Settings:
             webhook_secret = _required(env, "TCC_WEBHOOK_SECRET")
             webhook_token = _optional(env, "TCC_WEBHOOK_TOKEN") or ""
         owntracks_secret = _optional(env, "OWNTRACKS_SECRET")
+        agents = agent_tokens(env.get("TCC_MCP_AGENTS", ""))
+        remote_port, remote_bind, remote_hosts = _remote_mcp_settings(env, agents)
         for name, value, check in (
             ("OWNTRACKS_SECRET", owntracks_secret, check_token),
             ("TCC_HEALTH_TOKEN", health_token, check_token),
@@ -136,7 +150,33 @@ class Settings:
             mcp_socket_path(env),
             email_settings(env),
             _optional(env, "KNMI_API_KEY"),
+            agents,
+            remote_port,
+            remote_bind,
+            remote_hosts,
+            language_settings(env),
         )
+
+
+def _remote_mcp_settings(
+    env: Mapping[str, str], agents: Mapping[str, str]
+) -> tuple[int | None, str, tuple[str, ...]]:
+    port = _optional(env, "TCC_MCP_REMOTE_PORT")
+    if port is None:
+        return None, "127.0.0.1", ()
+    if not re.fullmatch(r"[0-9]{1,5}", port) or not 1 <= int(port) <= 65535:
+        raise ValueError("TCC_MCP_REMOTE_PORT must be a port from 1 to 65535")
+    if not agents:
+        raise ValueError("TCC_MCP_REMOTE_PORT needs at least one TCC_MCP_AGENTS credential")
+    bind = _optional(env, "TCC_MCP_REMOTE_BIND") or "127.0.0.1"
+    try:
+        ip_address(bind)
+    except ValueError:
+        raise ValueError("TCC_MCP_REMOTE_BIND must be an IP address") from None
+    hosts = tuple(host.strip() for host in env.get("TCC_MCP_REMOTE_ALLOWED_HOSTS", "").split(","))
+    if any(not re.fullmatch(r"[a-zA-Z0-9.\-:\[\]]{1,253}", host) for host in hosts):
+        raise ValueError("TCC_MCP_REMOTE_ALLOWED_HOSTS must list exact host addresses")
+    return int(port), bind, hosts
 
 
 class ProcessPhase(StrEnum):
@@ -218,6 +258,20 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         weather=WeatherProvider(client, clock.now, s.knmi_key),
     )
     follower = Follower(rt)
+    preferences = TravelPreferences(s.state_dir / "travel-preferences.json", rt.now)
+    language = s.travel_language
+    language_identity = (
+        json.dumps([language.mode, str(language.url), language.model, language.token])
+        if language is not None
+        else None
+    )
+    actions = TravelActions(
+        rt,
+        s.mcp_agents,
+        s.state_dir / "travel-agent-access.json",
+        preferences,
+        language_identity=language_identity,
+    )
     bot = Bot(
         api,
         rt,
@@ -226,6 +280,8 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         follower,
         webhook_test,
         notifier.bind_chat,
+        travel_actions=actions,
+        travel_language=TravelLanguage(language, client) if language is not None else None,
     )
     return App(s, rt, notifier, bot, follower, webhooks)
 
@@ -233,6 +289,12 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
 def mcp_answer(app: App) -> Callable[[object], dict[str, Any]]:
     """The read-out gets a view and the confirmed flag, never the runtime or the settings."""
     return lambda req: answer(app.rt.view(), app.bot.confirmed, req)
+
+
+async def dispatch_mcp(app: App, request: dict[str, Any], token: str | None) -> dict[str, Any]:
+    if request.get("tool") in ("get_status", "get_next_connections", "get_works_ahead"):
+        return mcp_answer(app)(request)
+    return await app.bot.travel_actions.dispatch(request, token, app.bot.prompt_travel_approval)
 
 
 async def serve(app: App, port: int) -> int:
@@ -245,6 +307,8 @@ async def serve(app: App, port: int) -> int:
     runtime = asyncio.create_task(app.rt.run_forever(), name="runtime")
     server: asyncio.Server | None = None
     readout: asyncio.Server | None = None
+    remote = AsyncExitStack()
+    dispatch = functools.partial(dispatch_mcp, app)
     try:
         secret = app.settings.owntracks_secret
         server = await start_web(
@@ -261,7 +325,29 @@ async def serve(app: App, port: int) -> int:
             today=lambda: (app.rt.view(), app.bot.confirmed),
         )
         if app.settings.mcp_socket is not None:
-            readout = await start_readout(app.settings.mcp_socket, mcp_answer(app))
+            readout = await start_readout(
+                app.settings.mcp_socket,
+                mcp_answer(app),
+                actions=dispatch if app.settings.mcp_agents else None,
+            )
+        if app.settings.mcp_remote_port is not None:
+            from .mcp_remote import serve_remote
+
+            try:
+                await remote.enter_async_context(
+                    serve_remote(
+                        dispatch,
+                        lambda token: app.bot.travel_actions.agent(token) is not None,
+                        host=app.settings.mcp_remote_bind,
+                        port=app.settings.mcp_remote_port,
+                        allowed_hosts=app.settings.mcp_remote_hosts,
+                    )
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                log.warning(
+                    "Remote MCP did not start (%s); local monitoring continues.",
+                    type(error).__name__,
+                )
         bot = asyncio.create_task(app.bot.run(), name="telegram")
         app.phase = ProcessPhase.RUNNING
         done, _ = await asyncio.wait((runtime, bot), return_when=asyncio.FIRST_COMPLETED)
@@ -274,7 +360,10 @@ async def serve(app: App, port: int) -> int:
     finally:
         app.phase = ProcessPhase.STOPPING
         try:
-            await _clean_up(app, before, server, readout)
+            try:
+                await remote.aclose()
+            finally:
+                await _clean_up(app, before, server, readout)
         except BaseException:
             app.phase = ProcessPhase.FAILED
             raise

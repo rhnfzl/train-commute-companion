@@ -150,6 +150,7 @@ from train_commute_companion.revisions import (
     frozen,
     occurrence_ctx,
     profile_for,
+    routing_profile,
     same_route,
     signature_for,
 )
@@ -180,6 +181,15 @@ from train_commute_companion.state import (
 from train_commute_companion.state_writer import Change, StateWriter
 from train_commute_companion.store import PersistedState, StorageError, Store
 from train_commute_companion.tasks import RefreshTask
+from train_commute_companion.travel_changes import (
+    active_travel_schedules,
+    request_hash,
+    valid_request_id,
+)
+from train_commute_companion.travel_changes import (
+    prepare as prepare_travel_change,
+)
+from train_commute_companion.travel_plans import plan_dict, plan_suppresses, plan_text
 from train_commute_companion.travelling import resume
 from train_commute_companion.vehicle import VehicleProvider, VehicleWatch
 from train_commute_companion.vehicle_monitor import VehicleMonitor
@@ -471,7 +481,7 @@ class Runtime:
         return frozenset(channels)
 
     def _routing_ready_in(self, state: PersistedState, o: Obligation) -> bool:
-        p = find_profile(state.config, o.event.profile_id)
+        p = routing_profile(state, o.event.profile_id, o.route_revision)
         return p is None or routing_ready(
             p.alerts, o.event.kind, self.available_channels, look_ahead=o.look_ahead is not None
         )
@@ -507,6 +517,57 @@ class Runtime:
 
     def now(self) -> datetime:
         return self._clock.now()
+
+    def list_travel_plans(self) -> dict[str, Any]:
+        return {
+            "plans": [
+                {**plan_dict(p), "text": plan_text(p)} for p in self.state.travel_plans.values()
+            ]
+        }
+
+    def travel_change_receipt(self, request_id: str) -> dict[str, Any] | None:
+        receipt = self.state.travel_receipts.get(request_id)
+        return receipt.result(request_id) if receipt is not None else None
+
+    def preview_travel_plan(self, change: object) -> dict[str, Any]:
+        prepared = prepare_travel_change(self.state, change, self.now(), self.known_stations)
+        return prepared if isinstance(prepared, dict) else prepared.review()
+
+    def save_travel_plan(
+        self, change: object, review_token: str, request_id: str
+    ) -> dict[str, Any]:
+        if not valid_request_id(request_id):
+            return {"status": "invalid", "text": "The request ID is invalid."}
+        state = self.state
+        try:
+            digest = request_hash(change)
+        except ValueError as error:
+            return {"status": "invalid", "text": str(error)}
+        if (receipt := state.travel_receipts.get(request_id)) is not None:
+            if receipt.request_hash == digest:
+                return receipt.result(request_id)
+            return {
+                "status": "invalid",
+                "text": "That request ID already belongs to another change.",
+            }
+        prepared = prepare_travel_change(state, change, self.now(), self.known_stations)
+        if isinstance(prepared, dict):
+            return prepared
+        if review_token != prepared.snapshot_hash:
+            return {"status": "stale", "text": "The travel plan changed. Review the change again."}
+        if prepared.plan_id == "travel-pending":
+            pid = "travel-" + request_hash(request_id)[:16]
+            if pid in state.travel_plans or find_profile(state.config, pid) is not None:
+                return {"status": "invalid", "text": "This request conflicts with another plan ID."}
+            prepared = replace(prepared, plan_id=pid)
+        candidate, receipt = prepared.apply(state, request_id)
+        removed = {state.occurrences[key].key for key in prepared.remove_occurrences}
+        if not self._writer.commit_strict(candidate, discard_copies=removed):
+            return {"status": "retry", "text": "The change was not saved. Try again."}
+        for key in prepared.remove_occurrences:
+            self._memory.forget(key)
+        self._recovery.invalidate()
+        return receipt.result(request_id)
 
     def _profile_for(self, s: OccurrenceState) -> Profile | None:
         return profile_for(self._writer.st, s)
@@ -1264,8 +1325,10 @@ class Runtime:
     # --- polling ---
 
     def _create_occurrences(self, now: datetime) -> None:
-        cfg = self._writer.st.config
-        if cfg is None:
+        st = self._writer.st
+        cfg = st.config
+        plans = tuple(st.travel_plans.values())
+        if cfg is None and not plans:
             return
 
         def first(p: Profile, d: Direction, commute_day: date) -> time | None:
@@ -1273,23 +1336,25 @@ class Runtime:
             sig = signature_for(self._writer.st, p, d, service_date(p, d, commute_day))
             return sig.legs[0].departure if sig is not None else None
 
-        occs = dict(self._writer.st.occurrences)
-        active = replace(
-            cfg, profiles=tuple(p for p in cfg.profiles if p.home_station != p.work_station)
+        occs = dict(st.occurrences)
+        active = Config(
+            cfg.revision if cfg else 0,
+            tuple(p for p in (cfg.profiles if cfg else ()) if p.home_station != p.work_station),
         )
+        snaps = dict(st.config_snapshots)
         for sch in schedules_active(active, {}, now, first):
             k = okey(sch.key)
             if k not in occs:
-                hist = self._writer.st.baselines.get(
-                    direction_key(sch.key.profile_id, sch.key.direction)
-                )
+                hist = st.baselines.get(direction_key(sch.key.profile_id, sch.key.direction))
                 profile = find_profile(cfg, sch.key.profile_id)
+                if profile is not None and plan_suppresses(sch, profile, plans):
+                    continue
                 v = (
                     baseline_on(hist, profile, sch.key.direction, sch.key.service_date)
                     if hist is not None and profile is not None
                     else None
                 )
-                fresh = fresh_state(sch.key, cfg.revision, v.version if v else None)
+                fresh = fresh_state(sch.key, active.revision, v.version if v else None)
                 own = v.signature if v else None
                 occs[k] = replace(
                     fresh,
@@ -1297,7 +1362,17 @@ class Runtime:
                     baseline_frozen=True,
                     alert_keys=self._writer.marks_of(k),  # told while the store was down (r22)
                 )
-        self._writer.propose(replace(self._writer.st, occurrences=occs))
+        for plan, sch in active_travel_schedules(plans, now):
+            key = okey(sch.key)
+            if key not in occs:
+                rev = -plan.revision
+                snaps.setdefault(rev, Config(rev, (plan.profile,)))
+                occs[key] = replace(
+                    fresh_state(sch.key, rev, None),
+                    baseline_frozen=True,
+                    alert_keys=self._writer.marks_of(key),
+                )
+        self._writer.propose(replace(st, occurrences=occs, config_snapshots=snaps))
 
     async def poll_once(self) -> None:
         self._create_occurrences(self._clock.now())
@@ -1318,8 +1393,14 @@ class Runtime:
 
     def _disruption_context(self, state: OccurrenceState, now: datetime) -> Ctx | None:
         context = self._ctx(state, now)
-        current = find_profile(self._writer.st.config, state.key.profile_id)
+        current = routing_profile(self._writer.st, state.key.profile_id, state.route_revision)
         if context is None or current is None or current.paused_on(state.key.service_date):
+            return None
+        if (
+            current.travel_plan
+            and context.schedule.pick == "on_leave"
+            and not (state.lock or state.retained or state.travelling)
+        ):
             return None
         return context if context_enabled(state, context) else None
 
@@ -1366,7 +1447,14 @@ class Runtime:
             return  # the window only selects the first train (rule 19)
         if not followed and not s.travelling and to_utc(now) < to_utc(ctx.schedule.window_start):
             return  # a minimum stay has not ended: no poll is spent yet
-        gen, end = s.generation, ctx.schedule.window_end
+        if (
+            ctx.profile.travel_plan
+            and ctx.schedule.pick == "on_leave"
+            and not (followed or s.travelling)
+        ):
+            return  # a next-day/on-leave plan can be in the view all day waiting for the tap
+        request = OccurrenceRequest.capture(s)
+        end = ctx.schedule.window_end
         asked = _lock_trains(s)  # Q5: a poll counts toward a gap only for the lock it asked for
         deadline = to_utc(now) + POLL_DEADLINE  # one hard deadline for every request (7.1)
         got = await self._gate.all_trips(queries_needed(s, ctx), True, end, deadline)
@@ -1400,10 +1488,12 @@ class Runtime:
         elif advice_error is not None:
             log.warning("advice search for %s failed (%s)", k, advice_error)
         self._track_key_rejection(error, k, now)
-        poll = PollAnswers(answers, (PollRecord(now, error is None, error),), gen)
+        current = request.phase_for(s) is ResultPhase.CURRENT
+        if not current and s.route_revision != request.route_revision:
+            return  # a new plan can reuse the key while watching different trains
+        poll = PollAnswers(answers, (PollRecord(now, error is None, error),), request.generation)
         t = on_poll(s, ctx, poll)
         st, events = t.state, list(t.events)
-        current = s.generation == gen
         if current:  # a choice since the poll started makes the answer stale
             st, events = self._judge_poll(k, s.lock is None, st, events, ctx, poll)
         context = self._disruption_context(st, now)
@@ -1713,7 +1803,7 @@ class Runtime:
         if updated == record:
             return record
         obligations = stored.obligations
-        profile = find_profile(stored.config, key.profile_id)
+        profile = routing_profile(stored, key.profile_id, record.route_revision)
         if profile is not None and updated.reminder_due(profile.alerts.compensation_reminder):
             now = self._clock.now()
             event = AlertEvent(
@@ -1814,10 +1904,13 @@ class Runtime:
         keys = [target.key]
         if isinstance(action, NotTravelling) and action.whole_day:
             keys = list(whole_day_keys(p, target.key))  # its own route revision's day_offset
+            plan = self.state.travel_plans.get(profile_id)
+            if plan is not None and not plan.has_return:
+                keys = [key for key in keys if key.direction is Direction.OUTBOUND]
         if isinstance(action, NotTravelling):  # written with the skip: an archived occurrence
             self._queue.drop_warnings(keys)  # would no longer read as skipped
         cfg = self._writer.st.config
-        revision = cfg.revision if cfg else target.route_revision
+        revision = target.route_revision if p.travel_plan or cfg is None else cfg.revision
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
         for key in keys:
             k = okey(key)
@@ -2374,6 +2467,9 @@ class Runtime:
             # its schedule, read before the history is re-seeded below
             s = frozen(self._writer.st, s)
             route = find_profile(snaps.get(s.route_revision) or old, s.key.profile_id)
+            if route is not None and route.travel_plan:
+                occs[k] = s
+                continue
             p = find_profile(new, s.key.profile_id)
             decision = route_decision(
                 s, route is not None and p is not None and same_route(route, p)
@@ -2456,15 +2552,20 @@ class Runtime:
 
     async def _lookahead_direction(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
         start = self._clock.now()
-        config = self._writer.st.config
+        snapshot = self._writer.st
+        config = snapshot.config
         if config is None:
             return
 
         async def before_trip() -> None:
             if p.alerts.custom_timetable_horizon:
                 await self._pace_lookahead_trip()
-            current = self._writer.st.config
-            if current is None or current.revision != config.revision:
+            current = self._writer.st
+            if (
+                current.config is None
+                or current.config.revision != config.revision
+                or current.travel_revision != snapshot.travel_revision
+            ):
                 raise _ObsoleteLookahead
 
         async def probe(queries: Sequence[Query]) -> tuple[ProviderAnswer, ...] | PollFailure:
@@ -2473,7 +2574,7 @@ class Runtime:
             return got
 
         try:
-            run = await probe_direction(self._writer.st, p, d, works, start, probe)
+            run = await probe_direction(snapshot, p, d, works, start, probe)
         except _ObsoleteLookahead:
             return
         st = None if run is None else apply_run(self._writer.st, self._queue, p, d, run)

@@ -47,12 +47,12 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
 | Way | What you get | Guide |
 | --- | --- | --- |
 | Home Assistant (HACS) | Alerts on your phone through the companion app, sensors and buttons | [docs/home-assistant.md](docs/home-assistant.md) |
-| Docker | Alerts and buttons in a private Telegram chat, from a ready-made image (amd64 and arm64, so a Raspberry Pi works) | [docs/docker.md](docs/docker.md) |
+| Docker | Alerts and guided travel plans in a private Telegram chat (amd64 and arm64) | [docs/docker.md](docs/docker.md) |
 | Household | A separate Docker companion and private bot for each traveller | [docs/household.md](docs/household.md) |
 | Webhooks | Each alert as signed JSON to your own URL, from Docker or Home Assistant | [docs/webhooks.md](docs/webhooks.md) |
 | Email | Optional encrypted SMTP copies alongside Telegram in Docker | [docs/email.md](docs/email.md) |
 | Today | Private read-only journey and service status in a browser, from Docker | [docs/docker.md](docs/docker.md#today-web-status) |
-| MCP | Three read-only tools (status, next connections, planned works) for a local MCP client | [docs/mcp.md](docs/mcp.md) |
+| MCP | Journey status and optional plan management for local or private-network agents | [docs/mcp.md](docs/mcp.md) |
 
 Location (optional) helps it know when you leave and where you are. See [Where you are](#where-you-are) below.
 

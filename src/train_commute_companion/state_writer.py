@@ -9,6 +9,7 @@ from typing import Any
 
 from train_commute_companion.model import (
     Obligation,
+    OccurrenceKey,
     Severity,
     WebhookCopy,
     okey,
@@ -283,12 +284,25 @@ class StateWriter:
             stage=kind in (Change.RECOMPUTED, Change.ACTION),
         )
 
-    def commit_strict(self, state: PersistedState) -> bool:
+    def commit_strict(
+        self, state: PersistedState, *, discard_copies: Collection[OccurrenceKey] = ()
+    ) -> bool:
         """Recovery actions apply only after a write. A failed action is never queued for replay."""
         if self.phase is WritePhase.PENDING:
             return False
         try:
-            written = _prune(self._outbox.with_copies(state))
+            written = self._outbox.with_copies(state)
+            discarded = {
+                c.id for c in written.webhook_copies if c.obligation.occurrence in discard_copies
+            }
+            if discarded:
+                written = replace(
+                    written,
+                    webhook_copies=tuple(
+                        c for c in written.webhook_copies if c.id not in discarded
+                    ),
+                )
+            written = _prune(written)
             self._store.save(written)
         except StorageError as error:
             self.store_ok = False
@@ -297,6 +311,8 @@ class StateWriter:
             self._notes[note.id] = note
             return False
         self._st = self._durable = written
+        for cid in discarded:
+            self._outbox.drop(cid)
         self.store_ok = True
         self._notes = {}
         return True

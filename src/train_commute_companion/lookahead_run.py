@@ -19,7 +19,7 @@ from train_commute_companion.lookahead_probe import (
 )
 from train_commute_companion.model import Direction, Obligation, Profile, direction_key, present
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
-from train_commute_companion.revisions import baseline_on
+from train_commute_companion.revisions import baseline_on, commute_day_for, travel_replaces
 from train_commute_companion.state import (
     BaselineHistory,
     LookAheadFact,
@@ -41,6 +41,7 @@ class ProbedRun:
     baseline: int | None
     results: tuple[ProbeResult, ...]
     probe_finished: bool = True
+    travel_revision: int = 0
 
 
 def _skipped_dates(st: PersistedState, p: Profile, d: Direction) -> set[date]:
@@ -65,7 +66,14 @@ async def probe_direction(
     hist = st.baselines.get(direction_key(p.id, d), BaselineHistory())
     histories = {x: st.baselines.get(direction_key(p.id, x), BaselineHistory()) for x in Direction}
     results: list[ProbeResult] = []
-    plan = probe_dates(p, today, direction=d, histories=histories, skipped=_skipped_dates(st, p, d))
+    plan = probe_dates(
+        p,
+        today,
+        direction=d,
+        histories=histories,
+        skipped=_skipped_dates(st, p, d),
+        replaced=lambda sd: travel_replaces(st, p, d, commute_day_for(p, d, sd)),
+    )
     for day in plan.dates:
         if p.journey_on(d, day).mode == "window":
             continue  # no usual train to probe, seed or adopt on a window day
@@ -74,9 +82,23 @@ async def probe_direction(
         if isinstance(got, str):
             if not p.alerts.custom_timetable_horizon or not results:
                 return None
-            return ProbedRun(start, config.revision, hist.latest, tuple(results), False)
+            return ProbedRun(
+                start,
+                config.revision,
+                hist.latest,
+                tuple(results),
+                probe_finished=False,
+                travel_revision=st.travel_revision,
+            )
         results += evaluate(p, d, day, got, works, base)
-    return ProbedRun(start, config.revision, hist.latest, tuple(results), plan.complete)
+    return ProbedRun(
+        start,
+        config.revision,
+        hist.latest,
+        tuple(results),
+        probe_finished=plan.complete,
+        travel_revision=st.travel_revision,
+    )
 
 
 def apply_run(
@@ -85,7 +107,7 @@ def apply_run(
     """`st` (the state now, at write time) with the run, its owed copies in `queue` following its
     messages; None when it is discarded (rule 21), and then those copies are left as they were."""
     cfg = st.config
-    if cfg is None:
+    if cfg is None or st.travel_revision != run.travel_revision:
         return None
     dk = direction_key(p.id, d)
     # write time: the ledger as stored now with this run's start stamps (rule 21)
@@ -113,6 +135,7 @@ def apply_run(
         bases=all_bases,
         skipped=_skipped_dates(st, p, d),
         probe_finished=run.probe_finished,
+        replaced=lambda sd: travel_replaces(st, p, d, commute_day_for(p, d, sd)),
     )
     if out is None:
         log.info("look-ahead for %s discarded: configuration or baseline changed", dk)

@@ -463,6 +463,9 @@ class UsualJourney:
     first_train_set: bool = True
     # other boarding stations TCC follows by itself when the phone is seen there
     other_stations: tuple[str, ...] = ()
+    # Empty text identifies an exact departure with no train number supplied.
+    exact_train: str | None = None
+    arrive_by: time | None = None
 
 
 NotificationChannel = Literal["primary", "email", "webhook"]
@@ -557,6 +560,7 @@ class Profile:
     pauses: tuple[tuple[date, date], ...] = ()
     accessibility: AccessibilitySettings = field(default_factory=AccessibilitySettings)
     works_digest: WorksDigestSettings | None = None
+    travel_plan: bool = False
 
     def paused_on(self, service_date: date) -> bool:
         return any(start <= service_date <= end for start, end in self.pauses)
@@ -568,7 +572,9 @@ class Profile:
         """Resolve the commute weekday before applying a return's service-day offset: its first
         train, then its `by_weekday` override of mode, window, pick and minimum stay."""
         return resolve_day(
-            self.journey(d), _WEEKDAY_KEYS[commute_day.weekday()], self.location is not None
+            self.journey(d),
+            _WEEKDAY_KEYS[commute_day.weekday()],
+            self.location is not None or self.travel_plan,
         )
 
     def origin(self, d: Direction) -> str:

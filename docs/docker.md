@@ -93,6 +93,12 @@ Then follow the first run from step 1. After each update of the checkout, build 
 ## Commands and buttons
 
 - `/status`: the journeys being followed now
+- `/plan`: start guided travel setup
+- `/plans`: view, edit or cancel saved travel plans
+- `/agents`: review or change which connected agents can manage plans
+- `/preferences`: view confirmed travel preferences
+- `/remember`: set a travel preference for a route
+- `/forgetpref NAME`: remove a confirmed preference by name
 - `/choose [profile] [outbound|return] HH:MM [train number] [YYYY-MM-DD]`: lock that train
 - `/leaving [profile] [outbound|return]`: I'm leaving now
 - `/skip [profile] [outbound|return|day] [YYYY-MM-DD]`: not travelling, alerts for it stop
@@ -106,6 +112,34 @@ The same actions are buttons under the alerts and the `/status` reply. A questio
 Every tap gets a reply that names the button and says what it did, for example "I got both: Delivery confirmed. Setup is complete." When the tap takes effect, that button goes away and the others under the message stay, so "Not travelling" still works after "I'm leaving". A one-time choice, such as "I got both", an arrival confirmation or the answer to a question, takes all of its buttons with it. A refused tap keeps them, so you can try again.
 
 A recovery step removes both old progress and stop controls for that step. The reply carries the current controls. If the reply cannot be delivered, the original buttons stay.
+
+## Plan a trip in Telegram
+
+Send `/plan`, then choose **New plan**. Enter the stations and the first travel date. To repeat the trip, choose the weekdays, the interval in weeks and any dates to skip. Set a last date for a temporary plan, or choose **Ongoing**.
+
+Choose an exact outbound train, a departure window, an arrival deadline or **When I leave**. A deadline by itself searches the three hours leading up to it. Use a departure window to search earlier. You can add a same-day or next-day return. Use **I'm leaving** to start a **When I leave** journey.
+
+The companion shows any overlap with another plan before saving. Choose how to resolve the overlap, then check the summary and tap **Save plan**. A temporary replacement affects the dates it runs. Your usual commute resumes on other dates.
+
+The saved message gives you an **Undo** button. Use `/plans` later to inspect the dates, edit the plan or cancel it. You can do all of this with language mode off.
+
+### Remember travel preferences
+
+Use `/remember Utrecht office | RTD | UT | 09:00 | leave` to set an arrival deadline and pick the return when you leave. Enter the name, origin and destination, then the arrival time and return preference. Use `-` to leave one timing field unset. Confirm the change in Telegram.
+
+Use **Use a saved preference** in `/plan` to start with a saved route and timing options. Use `/preferences` to see what is saved or `/forgetpref Utrecht office` to review and remove it. If the companion notices repeated choices, it can ask whether to remember them. Only a confirmed preference becomes a default.
+
+## Optional plain language
+
+Set `TCC_TRAVEL_LANGUAGE=agent` to send trip requests to a compatible agent endpoint. Set it to `model` to use a chat-completions-compatible model endpoint. The default is `off`.
+
+Set `TCC_TRAVEL_LANGUAGE_URL` to the full endpoint URL. Use HTTPS for a hosted endpoint. To use bearer authentication, set `TCC_TRAVEL_LANGUAGE_TOKEN` in your private `.env`. In model mode, also set `TCC_TRAVEL_LANGUAGE_MODEL` to the model name your provider expects.
+
+Apply the settings with `docker compose up -d --force-recreate tcc`. In your private Telegram chat, close any guided setup and type a request. For example, “Utrecht every other Tuesday through March, arrive by 09:00 and pick my return when I leave.”
+
+The endpoint receives your trip request and travel context, which can include saved plans and preferences. Choose an endpoint you trust with that data. The companion checks the result and asks about unresolved details or conflicts. Language plan changes default to **Ask**. Choose **Allow once**, **Always allow**, or **Deny** on the proposed change. You can change the **Telegram language** policy in `/agents`. Preference changes still require review.
+
+In agent mode, the companion sends a JSON POST with `version: 1`, `text`, `context` and `change_schema`. Configure your agent's endpoint to return one JSON object. Return `{"change": {...}}` for a proposed plan or `{"question": "..."}` to ask for a detail. In model mode, the standard `choices[0].message.content` field must contain that JSON object. Configure the Telegram language endpoint separately from the [MCP connection](mcp.md).
 
 ## Settings
 
@@ -124,6 +158,14 @@ Everything comes from the environment (`.env`):
 | `TCC_WEBHOOK_URLS` | optional; webhook URLs separated by spaces or commas, for example `http://localhost:8644/webhooks/commute` |
 | `TCC_WEBHOOK_SECRET` | required with `TCC_WEBHOOK_URLS`, 16+ characters; signs every webhook post |
 | `TCC_WEBHOOK_TOKEN` | optional bearer token sent with every webhook post (for OpenClaw), 16+ printable ASCII characters without spaces |
+| `TCC_MCP_AGENTS` | optional JSON object of agent names and distinct random tokens, 32 to 128 characters each |
+| `TCC_MCP_REMOTE_PORT` | optional port for remote MCP, unset by default |
+| `TCC_MCP_REMOTE_BIND` | remote MCP bind address, defaults to `127.0.0.1` |
+| `TCC_MCP_REMOTE_ALLOWED_HOSTS` | comma-separated host addresses accepted by remote MCP, including any non-default port |
+| `TCC_TRAVEL_LANGUAGE` | `off` by default, or `agent` or `model` |
+| `TCC_TRAVEL_LANGUAGE_URL` | full agent or chat-completions endpoint URL |
+| `TCC_TRAVEL_LANGUAGE_TOKEN` | optional bearer token for that endpoint |
+| `TCC_TRAVEL_LANGUAGE_MODEL` | model name, required in model mode |
 
 ## Health
 
@@ -186,7 +228,7 @@ With `TCC_WEBHOOK_URLS` set, every alert is also posted as signed JSON to each U
 
 ## MCP
 
-A local MCP client such as Claude Code or Claude Desktop can read what `/status` shows through three read-only tools. There is no network port for it; see [MCP](mcp.md).
+A local MCP client can read what `/status` shows through three read-only tools. You can connect an agent to manage travel plans and preferences, or enable an authenticated connection from another machine on your encrypted private network. See [MCP setup](mcp.md).
 
 ## Location
 
