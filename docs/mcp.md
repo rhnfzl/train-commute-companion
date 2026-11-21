@@ -103,9 +103,11 @@ If the agent reports a conflict, decide which trips to follow. The agent can sub
 
 ## Private-network access
 
-Enable Streamable HTTP only when the client and app run on different machines. Use an encrypted private network between the client and the Docker host, or terminate HTTPS at a trusted local proxy. Keep the listener off the public internet. Every HTTP request must carry a registered agent's bearer token, including requests for read-only tools.
+Enable Streamable HTTP when the client and app run on different machines. The companion can run on any supported Docker host, such as a small ARM board, a home lab server, or a VM. The client can run on any machine with a compatible MCP client and a route to that host.
 
-Set up `TCC_MCP_AGENTS` as above. For example, for a Pi with encrypted private-network address `100.101.102.103`, put its actual IP in your private `.env`.
+Use an encrypted private network or terminate HTTPS at a trusted local proxy. Keep the listener off the public internet. Every HTTP request must carry a registered agent's bearer token, including requests for read-only tools.
+
+Set up `TCC_MCP_AGENTS` as above. This example uses an encrypted private-network address of `100.101.102.103`. Put your Docker host's actual address in its private `.env`.
 
 ```dotenv
 TCC_MCP_PRIVATE_IP=100.101.102.103

@@ -436,6 +436,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "delay_min",
             "delay_step_min",
             "leave_by",
+            "weather_allowance",
         ),
         "alerts",
     )
@@ -451,6 +452,9 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         else:
             delays[key] = value
     leave = c.boolean(raw.get("leave_by", d.leave_by), "alerts.leave_by")
+    allowance = c.boolean(
+        raw.get("weather_allowance", d.weather_allowance), "alerts.weather_allowance"
+    )
     compensation = raw.get("compensation_reminder", False)
     if not isinstance(compensation, bool):
         c.err("alerts.compensation_reminder", "must be true or false")
@@ -508,7 +512,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
                 channels[cast(NotificationCategory, category)] = frozenset(
                     cast(list[NotificationChannel], selected)
                 )
-    if len(c.errors) > n or thr is None or sav is None or leave is None:
+    if len(c.errors) > n or thr is None or sav is None or leave is None or allowance is None:
         return None
     return AlertSettings(
         thr,
@@ -523,6 +527,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         delay_min=delays["delay_min"],
         delay_step_min=delays["delay_step_min"],
         leave_by=leave,
+        weather_allowance=allowance,
     )
 
 

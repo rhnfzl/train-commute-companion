@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from itertools import pairwise
 from typing import Literal
 
-from train_commute_companion.calendar import TZ, to_utc
+from train_commute_companion.calendar import TZ, hhmm, to_utc
 from train_commute_companion.classify import pair_transfer
 from train_commute_companion.disruptions import disruptions_fresh
 from train_commute_companion.health import BoardHealth, board_health
@@ -88,6 +88,7 @@ from train_commute_companion.state import (
 from train_commute_companion.store import PersistedState
 from train_commute_companion.transfer import check_transfer, transfer_minimum
 from train_commute_companion.vehicle import VehicleSnapshot
+from train_commute_companion.weather_allowance import WeatherAllowance
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +210,19 @@ class OccurrenceView:
     # an other boarding station the user confirmed, or a known one TCC followed; None: the origin
     boarding_station: str | None = None
     leave_by: datetime | None = None
+    weather_allowance: WeatherAllowance | None = None
+
+    @property
+    def leave_by_text(self) -> str | None:
+        if self.leave_by is None or (
+            self.selected_recovery is not None and self.selected_recovery.status == "active"
+        ):
+            return None
+        return (
+            self.weather_allowance.text
+            if self.weather_allowance
+            else f"Leave by {hhmm(self.leave_by)}"
+        )
 
 
 @dataclass(frozen=True, slots=True)

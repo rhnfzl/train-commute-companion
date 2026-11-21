@@ -336,8 +336,10 @@ class LiveLedger:
         memory: PollMemory,
         now: Callable[[], datetime],
         available_channels: Callable[[], frozenset[NotificationChannel]] = lambda: CHANNELS,
+        format_event: Callable[[AlertEvent], AlertEvent] = lambda event: event,
     ) -> None:
         self._available_channels = available_channels
+        self._format_event = format_event
         self._written, self._judged, self._memory, self._now = written, judged, memory, now
 
     @property
@@ -666,7 +668,7 @@ class LiveLedger:
             and not event.kind.value.startswith("recovery_")
         ):
             event = replace(event, text="Original train monitoring: " + event.text)
-        return event
+        return self._format_event(event)
 
     def _current(self, o: Obligation) -> AlertEvent:
         if o.look_ahead is not None:

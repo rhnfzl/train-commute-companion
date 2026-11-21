@@ -135,7 +135,9 @@ async def test_check_in_fields_are_optional_without_a_forced_default(hass, monke
     assert flow["step_id"] == "profile_details"
     switch = next(k for k in flow["data_schema"].schema if str(k) == "leave_by")
     assert switch.default() is True
-    flow = await details(hass, flow, leave_by=False)
+    switch = next(k for k in flow["data_schema"].schema if str(k) == "weather_allowance")
+    assert switch.default() is True
+    flow = await details(hass, flow, leave_by=False, weather_allowance=False)
     assert flow["step_id"] == "notify"
     assert not profiles_path(hass).exists()
 
@@ -404,15 +406,18 @@ async def test_options_profile_edit_preserves_advanced_settings(hass):
     assert shown(flow)["delay_min"] == 7
     assert shown(flow)["delay_step_min"] == 4
     flow = await hass.config_entries.options.async_configure(
-        flow["flow_id"], {"minimum_UT": 8, "pause_action": "keep", "delay_min": 10.0,
-                          "delay_step_min": 5.0}
+        flow["flow_id"],
+        {"minimum_UT": 8, "pause_action": "keep", "delay_min": 10.0, "delay_step_min": 5.0},
     )
     assert flow["type"] is FlowResultType.ABORT and flow["reason"] == "profile_saved"
     saved = yaml.safe_load(profiles_path(hass).read_text())
     assert saved["profiles"][0]["id"] == "p1"
     assert saved["profiles"][0]["pauses"] == raw["profiles"][0]["pauses"]
     assert saved["profiles"][0]["alerts"] == {
-        "delay_min": 10, "delay_step_min": 5, "disabled_categories": [], "weather": False
+        "delay_min": 10,
+        "delay_step_min": 5,
+        "disabled_categories": [],
+        "weather": False,
     }
     assert saved["profiles"][1] == raw["profiles"][1]
 
