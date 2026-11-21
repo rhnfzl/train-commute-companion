@@ -394,7 +394,12 @@ async def test_options_profile_edit_preserves_advanced_settings(hass):
 
 @pytest.mark.parametrize("webhooks", [False, True])
 async def test_channel_form_only_offers_configured_destinations_and_saves_selection(hass, webhooks):
-    write_profiles(hass, PROFILE)
+    raw = yaml.safe_load(PROFILE)
+    if webhooks:
+        raw["profiles"][0].setdefault("alerts", {})["channels"] = {
+            "journey": ["primary", "webhook"]
+        }
+    write_profiles(hass, yaml.safe_dump(raw))
     options = {"profiles_path": str(profiles_path(hass)), "notify_service": NOTIFY}
     if webhooks:
         options["webhook_urls"] = ["https://example.test/hook"]
@@ -414,20 +419,23 @@ async def test_channel_form_only_offers_configured_destinations_and_saves_select
     )
     choices = {option["value"] for option in selector.config["options"]}
     assert choices == (
-        {"default", "primary", "webhook", "primary,webhook"} if webhooks else {"default", "primary"}
+        {"default", "primary", "webhook", "primary_webhook"} if webhooks else {"default", "primary"}
     )
+    if webhooks:
+        field = next(k for k in flow["data_schema"].schema if str(k) == "channel_journey")
+        assert field.default() == "primary_webhook"
     flow = await hass.config_entries.options.async_configure(
         flow["flow_id"],
         {
             "minimum_UT": 7,
             "pause_action": "keep",
-            "channel_journey": "webhook" if webhooks else "primary",
+            "channel_journey": "primary_webhook" if webhooks else "primary",
         },
     )
     assert flow["reason"] == "profile_saved"
     saved = yaml.safe_load(profiles_path(hass).read_text())
     assert saved["profiles"][0]["alerts"]["channels"] == {
-        "journey": ["webhook" if webhooks else "primary"]
+        "journey": ["primary", "webhook"] if webhooks else ["primary"]
     }
 
 
@@ -468,7 +476,9 @@ async def test_guided_window_profile_and_day_overrides_round_trip(hass, monkeypa
     flow = await configure(hass, flow, {**step1, **window, "return_min_stay": 480})
     flow = await details(hass, flow, edit_day_overrides=True)
     assert flow["step_id"] == "profile_day_pick"
-    flow = await configure(hass, flow, {"day": "return:fri"})
+    selector = next(v for k, v in flow["data_schema"].schema.items() if str(k) == "day")
+    assert "return_fri" in {o["value"] for o in selector.config["options"]}
+    flow = await configure(hass, flow, {"day": "return_fri"})
     assert flow["step_id"] == "profile_day"
     flow = await configure(hass, flow, {"mode": "fixed", "pick": "default"})
     assert flow["step_id"] == "profile_day" and flow["errors"]["base"] == "invalid_profile"
@@ -485,7 +495,7 @@ async def test_guided_window_profile_and_day_overrides_round_trip(hass, monkeypa
     )
     assert flow["step_id"] == "profile_day_pick"
     assert "return Friday" in flow["description_placeholders"]["overrides"]
-    flow = await configure(hass, flow, {"day": "return:thu"})
+    flow = await configure(hass, flow, {"day": "return_thu"})
     flow = await configure(hass, flow, {"mode": "default", "pick": "default", "min_stay": 0})
     assert flow["step_id"] == "profile_day_pick"  # 0 turns the stay off on Thursday
     flow = await configure(hass, flow, {"day": "done"})
@@ -629,7 +639,7 @@ async def test_editing_a_located_profile_shows_and_saves_other_stations_and_day_
         },
     )
     assert flow["step_id"] == "profile_day_pick", flow.get("errors")
-    flow = await step(flow, {"day": "return:fri"})
+    flow = await step(flow, {"day": "return_fri"})
     assert flow["step_id"] == "profile_day"
     flow = await step(
         flow, {"mode": "default", "window_start": "13:00", "window_end": "18:00", "pick": "default"}

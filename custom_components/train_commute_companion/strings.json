@@ -511,6 +511,85 @@
         "outbound": "Outbound",
         "return": "Return"
       }
+    },
+    "journey_mode": {
+      "options": {
+        "default": "Same as every day",
+        "fixed": "Fixed: follow my usual train",
+        "window": "Window: follow any train between two times"
+      }
+    },
+    "journey_pick": {
+      "options": {
+        "default": "Same as every day",
+        "earliest": "Earliest train, missed trains make a sound",
+        "earliest_silent": "Earliest train, missed trains are silent",
+        "on_leave": "Pick the train when I leave"
+      }
+    },
+    "weekdays": {
+      "options": {
+        "mon": "Monday",
+        "tue": "Tuesday",
+        "wed": "Wednesday",
+        "thu": "Thursday",
+        "fri": "Friday",
+        "sat": "Saturday",
+        "sun": "Sunday"
+      }
+    },
+    "alert_categories": {
+      "options": {
+        "journey": "Journey changes",
+        "transfers": "Connections",
+        "advice": "Departure advice",
+        "delays": "Delays",
+        "platforms": "Platform changes",
+        "crowding": "Crowd forecasts",
+        "planned_works": "Planned works",
+        "disruptions": "Active disruptions",
+        "routine": "Routine and compensation reminders"
+      }
+    },
+    "holiday_ranges": {
+      "options": {
+        "keep": "Keep existing holiday ranges",
+        "add": "Add a holiday range",
+        "replace": "Replace holiday ranges with this range",
+        "clear": "Remove all holiday ranges"
+      }
+    },
+    "notification_destinations": {
+      "options": {
+        "default": "All configured destinations",
+        "primary": "Phone",
+        "webhook": "Webhooks",
+        "primary_webhook": "Phone and webhooks"
+      }
+    },
+    "profile_choice": {
+      "options": {
+        "new": "Add a profile"
+      }
+    },
+    "profile_day": {
+      "options": {
+        "done": "Done",
+        "outbound_mon": "Monday outbound",
+        "outbound_tue": "Tuesday outbound",
+        "outbound_wed": "Wednesday outbound",
+        "outbound_thu": "Thursday outbound",
+        "outbound_fri": "Friday outbound",
+        "outbound_sat": "Saturday outbound",
+        "outbound_sun": "Sunday outbound",
+        "return_mon": "Monday return",
+        "return_tue": "Tuesday return",
+        "return_wed": "Wednesday return",
+        "return_thu": "Thursday return",
+        "return_fri": "Friday return",
+        "return_sat": "Saturday return",
+        "return_sun": "Sunday return"
+      }
     }
   },
   "issues": {

@@ -8,7 +8,9 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.10%2B-18BCF2.svg)](https://www.home-assistant.io/)
 [![License](https://img.shields.io/github/license/rhnfzl/train-commute-companion)](LICENSE)
 
-Follows your train journey, a fixed train or any train in a time window, and tells you when something changes: a delay, a cancelled train, a platform change or a transfer you can no longer make.
+Get an alert when delays, cancellations, platform changes or missed connections affect your usual train journey.
+
+Choose a fixed train or any train within a time window.
 
 Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. This project is not made by or linked to NS.
 
