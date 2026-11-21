@@ -92,21 +92,33 @@
           "return_pick": "Treinkeuze binnen het tijdvak terug",
           "return_min_stay": "Minimale verblijfsduur voor de terugreis in minuten, 0 voor geen",
           "outbound_active_lead": "Check-in, minuten voor je trein (heen)",
-          "return_active_lead": "Check-in, minuten voor je trein (terug)"
+          "return_active_lead": "Check-in, minuten voor je trein (terug)",
+          "outbound_arrive_by": "Heen: Wanneer moet je aankomen? (UU:MM)",
+          "outbound_walk_after_min": "Heen: Minuten lopen vanaf het aankomststation",
+          "outbound_prefer_direct_min": "Heen: Maximaal aantal minuten eerder voor een rechtstreekse trein",
+          "return_arrive_by": "Terug: Wanneer moet je aankomen? (UU:MM)",
+          "return_walk_after_min": "Terug: Minuten lopen vanaf het aankomststation",
+          "return_prefer_direct_min": "Terug: Maximaal aantal minuten eerder voor een rechtstreekse trein"
         },
         "data_description": {
-          "outbound_mode": "Vast volgt je gebruikelijke trein. Tijdvak volgt de vroegste geschikte trein tussen de twee tijden.",
+          "outbound_mode": "Vast volgt je gebruikelijke trein. Tijdvak kiest een trein tussen de twee vertrektijden.",
           "outbound_window_start": "Bij een tijdvak is dit het vroegste vertrek. Bij een vaste trein begint hier het volgen. Laat beide tijden leeg voor de standaardinstelling bij een vaste trein.",
           "outbound_window_end": "Bij een tijdvak is dit het laatste vertrek. Deze tijd is altijd nodig bij een tijdvak.",
           "outbound_pick": "Kiezen wanneer ik vertrek volgt pas een trein als je vertrekt. Daarna kiest het de eerstvolgende trein die je kunt halen. Zonder locatie gebruikt het de vroegste trein met stille meldingen bij gemiste treinen.",
           "outbound_min_stay": "Alleen bij een tijdvak. Het tijdvak begint niet eerder dan je aankomst op de andere reis plus dit aantal minuten. Bijvoorbeeld 480 voor 8 uur op het werk.",
-          "return_mode": "Vast volgt je gebruikelijke trein. Tijdvak volgt de vroegste geschikte trein tussen de twee tijden.",
+          "return_mode": "Vast volgt je gebruikelijke trein. Tijdvak kiest een trein tussen de twee vertrektijden.",
           "return_window_start": "Bij een tijdvak is dit het vroegste vertrek. Bij een vaste trein begint hier het volgen. Laat beide tijden leeg voor de standaardinstelling bij een vaste trein.",
           "return_window_end": "Bij een tijdvak is dit het laatste vertrek. Deze tijd is altijd nodig bij een tijdvak.",
           "return_pick": "Kiezen wanneer ik vertrek volgt pas een trein als je vertrekt. Daarna kiest het de eerstvolgende trein die je kunt halen. Zonder locatie gebruikt het de vroegste trein met stille meldingen bij gemiste treinen.",
           "return_min_stay": "Alleen bij een tijdvak. Het tijdvak begint niet eerder dan je aankomst op de andere reis plus dit aantal minuten. Bijvoorbeeld 480 voor 8 uur op het werk.",
           "outbound_active_lead": "Laat leeg voor je reistijd naar het perron plus 15 minuten. Beëindigt het vroege stille volgen. Moet minstens je reistijd naar het perron zijn.",
-          "return_active_lead": "Laat leeg voor je reistijd naar het perron plus 15 minuten. Beëindigt het vroege stille volgen. Moet minstens je reistijd naar het perron zijn."
+          "return_active_lead": "Laat leeg voor je reistijd naar het perron plus 15 minuten. Beëindigt het vroege stille volgen. Moet minstens je reistijd naar het perron zijn.",
+          "outbound_arrive_by": "Vul bij Aankomen vóór de tijd in waarop je op je bestemming moet zijn, inclusief lopen vanaf het station.",
+          "outbound_walk_after_min": "Standaard 0.",
+          "outbound_prefer_direct_min": "Standaard 15. Gebruik 0 om voorkeur voor rechtstreeks reizen uit te zetten.",
+          "return_arrive_by": "Vul bij Aankomen vóór de tijd in waarop je op je bestemming moet zijn, inclusief lopen vanaf het station.",
+          "return_walk_after_min": "Standaard 0.",
+          "return_prefer_direct_min": "Standaard 15. Gebruik 0 om voorkeur voor rechtstreeks reizen uit te zetten."
         }
       },
       "profile_details": {
@@ -141,7 +153,8 @@
           "timetable_horizon_count": "Aantal dagen of reisdagen",
           "leave_by": "Vertrek uiterlijk tonen",
           "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen",
-          "weather_allowance": "Extra reistijd bij weersverwachting voorstellen"
+          "weather_allowance": "Extra reistijd bij weersverwachting voorstellen",
+          "arrive_by": "Treinen kiezen op aankomsttijd"
         },
         "data_description": {
           "delay_min": "Standaard 3. Hele minuten van 1 tot 1440. Vóór het actieve moment geldt minimaal 5. Meldingen over uitval, aansluitingen en je uiterste aankomsttijd blijven aan.",
@@ -158,7 +171,8 @@
           "timetable_horizon_count": "Voer een geheel getal van 1 tot en met 14 in. De standaardwaarde is zeven.",
           "leave_by": "Toon wanneer je uiterlijk moet vertrekken in de check-in, het vertrekadvies en de statussensor. Gebruikt je reistijd naar het perron. Standaard aan.",
           "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer.",
-          "weather_allowance": "Stel extra minuten voor bij regen, mist, sneeuw of mogelijke gladheid in de verwachting bij het vertrekstation. Alleen advies, wijzigt geen treinen of timers. Vereist weer en vertrek uiterlijk. Standaard aan."
+          "weather_allowance": "Stel extra minuten voor bij regen, mist, sneeuw of mogelijke gladheid in de verwachting bij het vertrekstation. Alleen advies, wijzigt geen treinen of timers. Vereist weer en vertrek uiterlijk. Standaard aan.",
+          "arrive_by": "Standaard aan. Uit kiest de vroegste haalbare trein in het vertrektijdvak en controleert de aankomsttijd niet."
         }
       },
       "profile_error": {
@@ -187,7 +201,7 @@
       },
       "profile_day_pick": {
         "title": "Instellingen per dag",
-        "description": "Kies een dag om te wijzigen, of Klaar om af te sluiten. Ingestelde dagen: {overrides}.",
+        "description": "Kies een dag om te wijzigen, of Klaar om af te sluiten. Ingestelde dagen: {overrides}. {report}",
         "data": {
           "day": "Dag"
         }
@@ -200,11 +214,17 @@
           "window_start": "Tijdvak: vroegste vertrek (UU:MM)",
           "window_end": "Tijdvak: laatste vertrek (UU:MM)",
           "pick": "Treinkeuze binnen het tijdvak",
-          "min_stay": "Minimale verblijfsduur in minuten"
+          "min_stay": "Minimale verblijfsduur in minuten",
+          "arrive_by": "Wanneer moet je aankomen? (UU:MM)",
+          "walk_after_min": "Minuten lopen vanaf het aankomststation",
+          "prefer_direct_min": "Maximaal aantal minuten eerder voor een rechtstreekse trein"
         },
         "data_description": {
           "mode": "Een vaste dag gebruikt de eerste trein die je voor die weekdag hebt ingesteld, of de normale eerste trein.",
-          "min_stay": "Alleen voor dagen met een tijdvak. Leeg gebruikt de normale instelling; 0 schakelt de verblijfsduur voor die dag uit."
+          "min_stay": "Alleen voor dagen met een tijdvak. Leeg gebruikt de normale instelling; 0 schakelt de verblijfsduur voor die dag uit.",
+          "arrive_by": "Vul bij Aankomen vóór de tijd in waarop je op je bestemming moet zijn, inclusief lopen vanaf het station.",
+          "walk_after_min": "Standaard 0.",
+          "prefer_direct_min": "Standaard 15. Gebruik 0 om voorkeur voor rechtstreeks reizen uit te zetten."
         }
       }
     },
@@ -327,21 +347,33 @@
           "return_pick": "Treinkeuze binnen het tijdvak terug",
           "return_min_stay": "Minimale verblijfsduur voor de terugreis in minuten, 0 voor geen",
           "outbound_active_lead": "Check-in, minuten voor je trein (heen)",
-          "return_active_lead": "Check-in, minuten voor je trein (terug)"
+          "return_active_lead": "Check-in, minuten voor je trein (terug)",
+          "outbound_arrive_by": "Heen: Wanneer moet je aankomen? (UU:MM)",
+          "outbound_walk_after_min": "Heen: Minuten lopen vanaf het aankomststation",
+          "outbound_prefer_direct_min": "Heen: Maximaal aantal minuten eerder voor een rechtstreekse trein",
+          "return_arrive_by": "Terug: Wanneer moet je aankomen? (UU:MM)",
+          "return_walk_after_min": "Terug: Minuten lopen vanaf het aankomststation",
+          "return_prefer_direct_min": "Terug: Maximaal aantal minuten eerder voor een rechtstreekse trein"
         },
         "data_description": {
-          "outbound_mode": "Vast volgt je gebruikelijke trein. Tijdvak volgt de vroegste geschikte trein tussen de twee tijden.",
+          "outbound_mode": "Vast volgt je gebruikelijke trein. Tijdvak kiest een trein tussen de twee vertrektijden.",
           "outbound_window_start": "Bij een tijdvak is dit het vroegste vertrek. Bij een vaste trein begint hier het volgen. Laat beide tijden leeg voor de standaardinstelling bij een vaste trein.",
           "outbound_window_end": "Bij een tijdvak is dit het laatste vertrek. Deze tijd is altijd nodig bij een tijdvak.",
           "outbound_pick": "Kiezen wanneer ik vertrek volgt pas een trein als je vertrekt. Daarna kiest het de eerstvolgende trein die je kunt halen. Zonder locatie gebruikt het de vroegste trein met stille meldingen bij gemiste treinen.",
           "outbound_min_stay": "Alleen bij een tijdvak. Het tijdvak begint niet eerder dan je aankomst op de andere reis plus dit aantal minuten. Bijvoorbeeld 480 voor 8 uur op het werk.",
-          "return_mode": "Vast volgt je gebruikelijke trein. Tijdvak volgt de vroegste geschikte trein tussen de twee tijden.",
+          "return_mode": "Vast volgt je gebruikelijke trein. Tijdvak kiest een trein tussen de twee vertrektijden.",
           "return_window_start": "Bij een tijdvak is dit het vroegste vertrek. Bij een vaste trein begint hier het volgen. Laat beide tijden leeg voor de standaardinstelling bij een vaste trein.",
           "return_window_end": "Bij een tijdvak is dit het laatste vertrek. Deze tijd is altijd nodig bij een tijdvak.",
           "return_pick": "Kiezen wanneer ik vertrek volgt pas een trein als je vertrekt. Daarna kiest het de eerstvolgende trein die je kunt halen. Zonder locatie gebruikt het de vroegste trein met stille meldingen bij gemiste treinen.",
           "return_min_stay": "Alleen bij een tijdvak. Het tijdvak begint niet eerder dan je aankomst op de andere reis plus dit aantal minuten. Bijvoorbeeld 480 voor 8 uur op het werk.",
           "outbound_active_lead": "Laat leeg voor je reistijd naar het perron plus 15 minuten. Beëindigt het vroege stille volgen. Moet minstens je reistijd naar het perron zijn.",
-          "return_active_lead": "Laat leeg voor je reistijd naar het perron plus 15 minuten. Beëindigt het vroege stille volgen. Moet minstens je reistijd naar het perron zijn."
+          "return_active_lead": "Laat leeg voor je reistijd naar het perron plus 15 minuten. Beëindigt het vroege stille volgen. Moet minstens je reistijd naar het perron zijn.",
+          "outbound_arrive_by": "Vul bij Aankomen vóór de tijd in waarop je op je bestemming moet zijn, inclusief lopen vanaf het station.",
+          "outbound_walk_after_min": "Standaard 0.",
+          "outbound_prefer_direct_min": "Standaard 15. Gebruik 0 om voorkeur voor rechtstreeks reizen uit te zetten.",
+          "return_arrive_by": "Vul bij Aankomen vóór de tijd in waarop je op je bestemming moet zijn, inclusief lopen vanaf het station.",
+          "return_walk_after_min": "Standaard 0.",
+          "return_prefer_direct_min": "Standaard 15. Gebruik 0 om voorkeur voor rechtstreeks reizen uit te zetten."
         }
       },
       "profile_details": {
@@ -376,7 +408,8 @@
           "timetable_horizon_count": "Aantal dagen of reisdagen",
           "leave_by": "Vertrek uiterlijk tonen",
           "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen",
-          "weather_allowance": "Extra reistijd bij weersverwachting voorstellen"
+          "weather_allowance": "Extra reistijd bij weersverwachting voorstellen",
+          "arrive_by": "Treinen kiezen op aankomsttijd"
         },
         "data_description": {
           "delay_min": "Standaard 3. Hele minuten van 1 tot 1440. Vóór het actieve moment geldt minimaal 5. Meldingen over uitval, aansluitingen en je uiterste aankomsttijd blijven aan.",
@@ -393,7 +426,8 @@
           "timetable_horizon_count": "Voer een geheel getal van 1 tot en met 14 in. De standaardwaarde is zeven.",
           "leave_by": "Toon wanneer je uiterlijk moet vertrekken in de check-in, het vertrekadvies en de statussensor. Gebruikt je reistijd naar het perron. Standaard aan.",
           "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer.",
-          "weather_allowance": "Stel extra minuten voor bij regen, mist, sneeuw of mogelijke gladheid in de verwachting bij het vertrekstation. Alleen advies, wijzigt geen treinen of timers. Vereist weer en vertrek uiterlijk. Standaard aan."
+          "weather_allowance": "Stel extra minuten voor bij regen, mist, sneeuw of mogelijke gladheid in de verwachting bij het vertrekstation. Alleen advies, wijzigt geen treinen of timers. Vereist weer en vertrek uiterlijk. Standaard aan.",
+          "arrive_by": "Standaard aan. Uit kiest de vroegste haalbare trein in het vertrektijdvak en controleert de aankomsttijd niet."
         }
       },
       "profile_error": {
@@ -482,7 +516,7 @@
       },
       "profile_day_pick": {
         "title": "Instellingen per dag",
-        "description": "Kies een dag om te wijzigen, of Klaar om af te sluiten. Ingestelde dagen: {overrides}.",
+        "description": "Kies een dag om te wijzigen, of Klaar om af te sluiten. Ingestelde dagen: {overrides}. {report}",
         "data": {
           "day": "Dag"
         }
@@ -495,11 +529,17 @@
           "window_start": "Tijdvak: vroegste vertrek (UU:MM)",
           "window_end": "Tijdvak: laatste vertrek (UU:MM)",
           "pick": "Treinkeuze binnen het tijdvak",
-          "min_stay": "Minimale verblijfsduur in minuten"
+          "min_stay": "Minimale verblijfsduur in minuten",
+          "arrive_by": "Wanneer moet je aankomen? (UU:MM)",
+          "walk_after_min": "Minuten lopen vanaf het aankomststation",
+          "prefer_direct_min": "Maximaal aantal minuten eerder voor een rechtstreekse trein"
         },
         "data_description": {
           "mode": "Een vaste dag gebruikt de eerste trein die je voor die weekdag hebt ingesteld, of de normale eerste trein.",
-          "min_stay": "Alleen voor dagen met een tijdvak. Leeg gebruikt de normale instelling; 0 schakelt de verblijfsduur voor die dag uit."
+          "min_stay": "Alleen voor dagen met een tijdvak. Leeg gebruikt de normale instelling; 0 schakelt de verblijfsduur voor die dag uit.",
+          "arrive_by": "Vul bij Aankomen vóór de tijd in waarop je op je bestemming moet zijn, inclusief lopen vanaf het station.",
+          "walk_after_min": "Standaard 0.",
+          "prefer_direct_min": "Standaard 15. Gebruik 0 om voorkeur voor rechtstreeks reizen uit te zetten."
         }
       },
       "weather": {
@@ -575,7 +615,8 @@
         "default": "Zoals elke dag",
         "earliest": "Vroegste trein, gemiste treinen melden met geluid",
         "earliest_silent": "Vroegste trein, gemiste treinen stil melden",
-        "on_leave": "Trein kiezen wanneer ik vertrek"
+        "on_leave": "Trein kiezen wanneer ik vertrek",
+        "arrive_by": "Aankomen vóór een vaste tijd"
       }
     },
     "weekdays": {

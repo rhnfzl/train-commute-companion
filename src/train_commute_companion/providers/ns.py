@@ -765,6 +765,8 @@ class NsProvider:
         }
         if q.require_accessible:
             params["searchForAccessibleTrip"] = "true"
+        if q.search_for_arrival:
+            params["searchForArrival"] = "true"
         if q.via:
             params["viaStation"] = self._station_codes.get(q.via, q.via)
         payload = await self._get("/v3/trips", params)

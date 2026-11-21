@@ -1,5 +1,6 @@
 import asyncio
 import json
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -50,6 +51,24 @@ async def test_trips_sends_key_header_and_maps():
     assert (p["fromStation"], p["toStation"], p["viaStation"]) == ("AAA", "BBB", "UT")
     assert p["dateTime"].startswith("2026-10-27T08:00:00")
     assert a.fetched_at == NOW and a.connections
+
+
+async def test_arrival_search_adds_only_the_arrival_mode_and_preserves_accessibility():
+    def handler(req):
+        assert dict(req.url.params) == {
+            "fromStation": "AAA",
+            "toStation": "BBB",
+            "viaStation": "UT",
+            "dateTime": Q.at.isoformat(timespec="seconds"),
+            "searchForArrival": "true",
+            "searchForAccessibleTrip": "true",
+        }
+        return httpx.Response(200, content=(DATA / "on_time_direct.json").read_bytes())
+
+    q = replace(Q, search_for_arrival=True, require_accessible=True)
+    got = await provider(handler).trips(q)
+    assert got.query == q
+    assert got.connections  # the core applies the deadline, even when the provider returns later
 
 
 async def test_trip_request_resolves_catalogue_uic_ids_without_changing_the_query():

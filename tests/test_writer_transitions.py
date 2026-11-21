@@ -121,6 +121,7 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
                     "exact_train": None,
                     "arrive_by": None,
                 }
+                profile[d] |= {"arrive_by": None, "walk_after_min": 0, "prefer_direct_min": 15}
             profile["alerts"]["quiet_repeat_misses"] = False  # 2026-11-18 default
             profile["alerts"]["weather"] = True
             profile["alerts"] |= {"delay_min": 3, "delay_step_min": 3}
@@ -131,6 +132,7 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
                 "timetable_horizon_unit": "calendar_days",
                 "timetable_horizon_count": 7,
             }
+            profile["alerts"]["arrive_by"] = True
             if profile["location"] is not None:  # Q12 defaults
                 profile["location"] |= {"wifi": {}, "activity_entity": None}
                 profile["location"] |= {  # 0.3.0 other boarding station defaults

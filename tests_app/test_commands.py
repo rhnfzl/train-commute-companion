@@ -44,6 +44,20 @@ def test_shared_status_renders_the_current_leave_by(leave):
     assert answer(v, True, {"tool": "get_status", "profile": "p1"})["text"] == text
 
 
+def test_shared_status_shows_the_arrival_target_and_late_current_train():
+    v = view(
+        occ(
+            arrive_by=at("09:00"),
+            station_arrival_deadline=at("08:50"),
+            arrival_target_status="late",
+        )
+    )
+    text = render_status(v, True)
+    assert "Arrival target 09:00. Reach the destination station by 08:50." in text
+    assert "The current train does not meet the arrival target in NS data." in text
+    assert answer(v, True, {"tool": "get_status", "profile": "p1"})["text"] == text
+
+
 @pytest.mark.parametrize("args, want", [
     ([], Target("p1", "office_a")),
     (["return", "08:44", "1234", "2026-10-27"],

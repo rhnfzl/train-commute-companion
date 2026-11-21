@@ -125,6 +125,29 @@ async def test_a_new_profile_starts_with_empty_stations(hass):
     assert not profiles_path(hass).exists()
 
 
+async def test_guided_arrival_choice_requires_an_explicit_target(hass):
+    flow = await guided(hass)
+    fields = {str(k): k for k in flow["data_schema"].schema}
+    assert fields["outbound_arrive_by"].default is vol.UNDEFINED
+    assert not fields["outbound_arrive_by"].description.get("suggested_value")
+    values = {
+        **VALUES,
+        "outbound_mode": "window",
+        "outbound_pick": "arrive_by",
+        "outbound_window_start": "07:00",
+        "outbound_window_end": "08:45",
+        "outbound_walk_after_min": 10,
+        "outbound_prefer_direct_min": 5,
+    }
+    flow = await configure(hass, flow, values)
+    assert flow["step_id"] == "profile"
+    assert flow["errors"]["base"] == "invalid_profile"
+    flow = await configure(hass, flow, {**values, "outbound_arrive_by": "09:00"})
+    assert flow["step_id"] == "profile_details"
+    switch = next(k for k in flow["data_schema"].schema if str(k) == "arrive_by")
+    assert switch.default() is True
+
+
 async def test_check_in_fields_are_optional_without_a_forced_default(hass, monkeypatch):
     fake_phone(hass, monkeypatch)
     flow = await guided(hass)
@@ -627,6 +650,72 @@ async def test_reopening_a_window_profile_saves_it_unchanged(hass):
     assert flow["type"] is FlowResultType.ABORT and flow["reason"] == "profile_saved"
     saved = yaml.safe_load(profiles_path(hass).read_text())["profiles"][0]["return"]
     assert saved == raw["profiles"][0]["return"]
+
+
+@pytest.mark.parametrize("keep_default_target", [False, True])
+async def test_default_pick_change_lets_editor_repair_inherited_arrival_overrides(
+    hass, keep_default_target
+):
+    raw = yaml.safe_load(PROFILE)
+    raw["profiles"][0]["outbound"].update(
+        mode="window",
+        window=["07:00", "09:00"],
+        pick="arrive_by",
+        arrive_by="09:00",
+        by_weekday={
+            "mon": {"arrive_by": "09:15"},
+            "tue": {"arrive_by": "09:20", "walk_after_min": 8},
+        },
+    )
+    if keep_default_target:
+        raw["profiles"][0]["outbound"]["by_weekday"]["wed"] = {
+            "pick": "arrive_by",
+            "prefer_direct_min": 7,
+        }
+    write_profiles(hass, yaml.safe_dump(raw))
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "k"},
+        options={"profiles_path": str(profiles_path(hass)), "notify_service": NOTIFY},
+    )
+    entry.add_to_hass(hass)
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+
+    async def step(flow, values):
+        return await hass.config_entries.options.async_configure(flow["flow_id"], values)
+
+    with patch(CATALOGUE_CALL, return_value=CATALOGUE):
+        flow = await step(flow, {"next_step_id": "profiles"})
+    flow = await step(flow, {"profile": "edit:p1"})
+    flow = await step(flow, {**shown(flow), "outbound_pick": "earliest"})
+    assert flow["step_id"] == "profile_details", flow.get("errors")
+    flow = await step(flow, {**shown(flow), "edit_weekday_times": True})
+    flow = await step(flow, shown(flow))
+    assert flow["step_id"] == "profile_day_pick"
+    flow = await step(flow, {"day": "done"})
+    assert flow["step_id"] == "profile_day_pick" and flow["errors"]["base"] == "invalid_profile"
+    assert "outbound.by_weekday.mon.arrive_by" in flow["description_placeholders"]["report"]
+    assert yaml.safe_load(profiles_path(hass).read_text()) == raw
+
+    flow = await step(flow, {"day": "outbound_mon"})
+    assert shown(flow)["arrive_by"] == "09:15"
+    flow = await step(flow, {**shown(flow), "pick": "arrive_by"})
+    assert flow["step_id"] == "profile_day_pick"
+    flow = await step(flow, {"day": "outbound_tue"})
+    assert shown(flow)["walk_after_min"] == 8
+    flow = await step(flow, {**shown(flow), "pick": "arrive_by"})
+    flow = await step(flow, {"day": "done"})
+    assert flow["type"] is FlowResultType.ABORT and flow["reason"] == "profile_saved"
+    saved = yaml.safe_load(profiles_path(hass).read_text())["profiles"][0]["outbound"]
+    assert saved.get("pick", "earliest") == "earliest"
+    assert saved["arrive_by"] == "09:00"
+    expected = {
+        "mon": {"pick": "arrive_by", "arrive_by": "09:15"},
+        "tue": {"pick": "arrive_by", "arrive_by": "09:20", "walk_after_min": 8},
+    }
+    if keep_default_target:
+        expected["wed"] = {"pick": "arrive_by", "prefer_direct_min": 7}
+    assert saved["by_weekday"] == expected
 
 
 async def test_editing_a_located_profile_shows_and_saves_other_stations_and_day_overrides(hass):

@@ -84,6 +84,7 @@ class EventKind(StrEnum):
     CAN_SEE_TRAIN_AGAIN = "can_see_train_again"
     KEY_REJECTED = "key_rejected"
     NO_CONNECTION = "no_connection"
+    ARRIVAL_TARGET = "arrival_target"
     MISSING = "missing"
     STOPPED_FOLLOWING = "stopped_following"
     PROFILE_REFUSED = "profile_refused"
@@ -304,6 +305,7 @@ class AlertFacts:
     held: bool = False
     # None marks stored alerts written before arrival-limit protection was recorded.
     past_latest_arrival: bool | None = None
+    arrival_deadline: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,7 +419,8 @@ def okey(k: OccurrenceKey) -> str:
 
 
 Mode = Literal["fixed", "window"]
-Pick = Literal["earliest", "earliest_silent", "on_leave"]
+Pick = Literal["earliest", "earliest_silent", "on_leave", "arrive_by"]
+DEFAULT_PREFER_DIRECT_MIN = 15
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,6 +435,15 @@ class DatedSchedule:
     last_departure: datetime | None = None  # window mode: the latest departure TCC may pick
     # window mode: the minimum stay ends after the latest time, so any later train is followed
     stay_capped: bool = False
+    arrive_by: datetime | None = None  # door arrival, after walking from the station
+    walk_after_min: int = 0
+    prefer_direct_min: int = DEFAULT_PREFER_DIRECT_MIN
+
+    @property
+    def arrival_deadline(self) -> datetime | None:
+        if self.arrive_by is None:
+            return None
+        return self.arrive_by.astimezone(UTC) - timedelta(minutes=self.walk_after_min)
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,6 +454,9 @@ class DayOverride:
     window: tuple[time, time] | None = None
     pick: Pick | None = None
     min_stay_min: int | None = None
+    arrive_by: time | None = None
+    walk_after_min: int | None = None
+    prefer_direct_min: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,6 +481,8 @@ class UsualJourney:
     # Empty text identifies an exact departure with no train number supplied.
     exact_train: str | None = None
     arrive_by: time | None = None
+    walk_after_min: int = 0
+    prefer_direct_min: int = DEFAULT_PREFER_DIRECT_MIN
 
 
 NotificationChannel = Literal["primary", "email", "webhook"]
@@ -510,6 +527,7 @@ class AlertSettings:
     custom_timetable_horizon: bool = True
     timetable_horizon_unit: TimetableHorizonUnit = "calendar_days"
     timetable_horizon_count: int = 7
+    arrive_by: bool = True
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]
@@ -620,6 +638,11 @@ def resolve_day(journey: UsualJourney, weekday: str, has_location: bool) -> Usua
         mode=mode,
         pick=pick,
         min_stay_min=stay,
+        arrive_by=o.arrive_by or journey.arrive_by,
+        walk_after_min=journey.walk_after_min if o.walk_after_min is None else o.walk_after_min,
+        prefer_direct_min=(
+            journey.prefer_direct_min if o.prefer_direct_min is None else o.prefer_direct_min
+        ),
         first_train_set=journey.first_train_set or weekday in journey.first_train_by_weekday,
     )
 

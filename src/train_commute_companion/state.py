@@ -219,6 +219,7 @@ class StationPrompt:
     choices: tuple[tuple[str, str], ...]  # (answer, label)
     created_at: datetime
     name: str = ""  # the station as NS names it, for the question texts
+    trains: Mapping[str, TrainId] = field(default_factory=dict)  # pick: answer to offered train
 
 
 @dataclass(frozen=True, slots=True)

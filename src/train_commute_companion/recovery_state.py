@@ -53,7 +53,13 @@ def _fingerprint_value(value: object) -> Any:
         return value.astimezone(UTC).isoformat()
     if is_dataclass(value) and not isinstance(value, type):
         return {
-            field.name: _fingerprint_value(getattr(value, field.name)) for field in fields(value)
+            field.name: _fingerprint_value(getattr(value, field.name))
+            for field in fields(value)
+            if not (
+                isinstance(value, Query)
+                and field.name == "search_for_arrival"
+                and not value.search_for_arrival
+            )
         }
     if isinstance(value, tuple | list):
         return [_fingerprint_value(item) for item in value]

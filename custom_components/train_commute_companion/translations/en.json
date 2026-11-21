@@ -92,21 +92,33 @@
           "return_window_start": "Return window: earliest departure (HH:MM)",
           "return_window_end": "Return window: latest departure (HH:MM)",
           "return_pick": "Return train choice in window mode",
-          "return_min_stay": "Return minimum stay in minutes, 0 for none"
+          "return_min_stay": "Return minimum stay in minutes, 0 for none",
+          "outbound_arrive_by": "Outbound: When must you arrive? (HH:MM)",
+          "outbound_walk_after_min": "Outbound: Minutes to walk from the destination station",
+          "outbound_prefer_direct_min": "Outbound: Minutes earlier you would leave for a direct train",
+          "return_arrive_by": "Return: When must you arrive? (HH:MM)",
+          "return_walk_after_min": "Return: Minutes to walk from the destination station",
+          "return_prefer_direct_min": "Return: Minutes earlier you would leave for a direct train"
         },
         "data_description": {
           "outbound_active_lead": "Leave blank for travel buffer plus 15 minutes. Ends quiet early watch; must be at least your travel buffer.",
           "return_active_lead": "Leave blank for travel buffer plus 15 minutes. Ends quiet early watch; must be at least your travel buffer.",
-          "outbound_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
+          "outbound_mode": "Fixed follows your usual train. Window chooses a train between the two departure times.",
           "outbound_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
           "outbound_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
           "outbound_pick": "Pick the train when I leave follows no train until you leave. Then it takes the next train you can catch. Without location it uses the earliest train with silent misses.",
           "outbound_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work.",
-          "return_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
+          "return_mode": "Fixed follows your usual train. Window chooses a train between the two departure times.",
           "return_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
           "return_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
           "return_pick": "Pick the train when I leave follows no train until you leave. Then it takes the next train you can catch. Without location it uses the earliest train with silent misses.",
-          "return_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work."
+          "return_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work.",
+          "outbound_arrive_by": "For Arrive by a set time, enter when you need to reach your destination, including the walk from the station.",
+          "outbound_walk_after_min": "Defaults to 0.",
+          "outbound_prefer_direct_min": "Defaults to 15. Enter 0 to turn off the preference for direct trains.",
+          "return_arrive_by": "For Arrive by a set time, enter when you need to reach your destination, including the walk from the station.",
+          "return_walk_after_min": "Defaults to 0.",
+          "return_prefer_direct_min": "Defaults to 15. Enter 0 to turn off the preference for direct trains."
         }
       },
       "profile_details": {
@@ -141,7 +153,8 @@
           "other_station_dwell_min": "Minutes at another station before it counts",
           "ask_to_remember_station": "Offer to remember a new boarding station",
           "weather": "Weather forecasts, practical tips and KNMI warnings",
-          "weather_allowance": "Suggest extra time for weather"
+          "weather_allowance": "Suggest extra time for weather",
+          "arrive_by": "Choose trains by arrival time"
         },
         "data_description": {
           "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
@@ -158,7 +171,8 @@
           "other_station_dwell_min": "0 means one location fix is enough. Default 0.",
           "ask_to_remember_station": "After you say Yes at a new station, TCC asks once whether to remember it.",
           "weather": "On by default. Uses station coordinates, never phone location. Forecasts need no key. Official warnings need your own KNMI key under Configure > Weather.",
-          "weather_allowance": "Suggest extra minutes for forecast rain, fog, snow or possible ice at the departure station. Advice only, changes no trains or timers. Requires weather and leave-by text. Enabled by default."
+          "weather_allowance": "Suggest extra minutes for forecast rain, fog, snow or possible ice at the departure station. Advice only, changes no trains or timers. Requires weather and leave-by text. Enabled by default.",
+          "arrive_by": "On by default. Off uses the earliest catchable train in the departure window and ignores the arrival target."
         }
       },
       "profile_error": {
@@ -187,7 +201,7 @@
       },
       "profile_day_pick": {
         "title": "Settings by day",
-        "description": "Pick a day to change, or Done to finish. Days you set now: {overrides}.",
+        "description": "Pick a day to change, or Done to finish. Days you set now: {overrides}. {report}",
         "data": {
           "day": "Day"
         }
@@ -200,11 +214,17 @@
           "window_start": "Window: earliest departure (HH:MM)",
           "window_end": "Window: latest departure (HH:MM)",
           "pick": "Train choice in window mode",
-          "min_stay": "Minimum stay in minutes"
+          "min_stay": "Minimum stay in minutes",
+          "arrive_by": "When must you arrive? (HH:MM)",
+          "walk_after_min": "Minutes to walk from the destination station",
+          "prefer_direct_min": "Minutes earlier you would leave for a direct train"
         },
         "data_description": {
           "mode": "A fixed day uses the first train you set for that weekday, or the normal first train.",
-          "min_stay": "Window days only. Blank uses the normal setting; 0 turns the stay off that day."
+          "min_stay": "Window days only. Blank uses the normal setting; 0 turns the stay off that day.",
+          "arrive_by": "For Arrive by a set time, enter when you need to reach your destination, including the walk from the station.",
+          "walk_after_min": "Defaults to 0.",
+          "prefer_direct_min": "Defaults to 15. Enter 0 to turn off the preference for direct trains."
         }
       }
     },
@@ -327,21 +347,33 @@
           "return_window_start": "Return window: earliest departure (HH:MM)",
           "return_window_end": "Return window: latest departure (HH:MM)",
           "return_pick": "Return train choice in window mode",
-          "return_min_stay": "Return minimum stay in minutes, 0 for none"
+          "return_min_stay": "Return minimum stay in minutes, 0 for none",
+          "outbound_arrive_by": "Outbound: When must you arrive? (HH:MM)",
+          "outbound_walk_after_min": "Outbound: Minutes to walk from the destination station",
+          "outbound_prefer_direct_min": "Outbound: Minutes earlier you would leave for a direct train",
+          "return_arrive_by": "Return: When must you arrive? (HH:MM)",
+          "return_walk_after_min": "Return: Minutes to walk from the destination station",
+          "return_prefer_direct_min": "Return: Minutes earlier you would leave for a direct train"
         },
         "data_description": {
           "outbound_active_lead": "Leave blank for travel buffer plus 15 minutes. Ends quiet early watch; must be at least your travel buffer.",
           "return_active_lead": "Leave blank for travel buffer plus 15 minutes. Ends quiet early watch; must be at least your travel buffer.",
-          "outbound_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
+          "outbound_mode": "Fixed follows your usual train. Window chooses a train between the two departure times.",
           "outbound_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
           "outbound_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
           "outbound_pick": "Pick the train when I leave follows no train until you leave. Then it takes the next train you can catch. Without location it uses the earliest train with silent misses.",
           "outbound_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work.",
-          "return_mode": "Fixed follows your usual train. Window follows the earliest good train between the two window times.",
+          "return_mode": "Fixed follows your usual train. Window chooses a train between the two departure times.",
           "return_window_start": "In window mode this is the earliest departure. In fixed mode it is when watching starts. Leave both blank in fixed mode for the default.",
           "return_window_end": "In window mode this is the latest departure. It is always needed in window mode.",
           "return_pick": "Pick the train when I leave follows no train until you leave. Then it takes the next train you can catch. Without location it uses the earliest train with silent misses.",
-          "return_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work."
+          "return_min_stay": "Window mode only. The window starts no earlier than your arrival on the other trip plus this many minutes. For example 480 for 8 hours at work.",
+          "outbound_arrive_by": "For Arrive by a set time, enter when you need to reach your destination, including the walk from the station.",
+          "outbound_walk_after_min": "Defaults to 0.",
+          "outbound_prefer_direct_min": "Defaults to 15. Enter 0 to turn off the preference for direct trains.",
+          "return_arrive_by": "For Arrive by a set time, enter when you need to reach your destination, including the walk from the station.",
+          "return_walk_after_min": "Defaults to 0.",
+          "return_prefer_direct_min": "Defaults to 15. Enter 0 to turn off the preference for direct trains."
         }
       },
       "profile_details": {
@@ -376,7 +408,8 @@
           "other_station_dwell_min": "Minutes at another station before it counts",
           "ask_to_remember_station": "Offer to remember a new boarding station",
           "weather": "Weather forecasts, practical tips and KNMI warnings",
-          "weather_allowance": "Suggest extra time for weather"
+          "weather_allowance": "Suggest extra time for weather",
+          "arrive_by": "Choose trains by arrival time"
         },
         "data_description": {
           "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
@@ -393,7 +426,8 @@
           "other_station_dwell_min": "0 means one location fix is enough. Default 0.",
           "ask_to_remember_station": "After you say Yes at a new station, TCC asks once whether to remember it.",
           "weather": "On by default. Uses station coordinates, never phone location. Forecasts need no key. Official warnings need your own KNMI key under Configure > Weather.",
-          "weather_allowance": "Suggest extra minutes for forecast rain, fog, snow or possible ice at the departure station. Advice only, changes no trains or timers. Requires weather and leave-by text. Enabled by default."
+          "weather_allowance": "Suggest extra minutes for forecast rain, fog, snow or possible ice at the departure station. Advice only, changes no trains or timers. Requires weather and leave-by text. Enabled by default.",
+          "arrive_by": "On by default. Off uses the earliest catchable train in the departure window and ignores the arrival target."
         }
       },
       "profile_error": {
@@ -482,7 +516,7 @@
       },
       "profile_day_pick": {
         "title": "Settings by day",
-        "description": "Pick a day to change, or Done to finish. Days you set now: {overrides}.",
+        "description": "Pick a day to change, or Done to finish. Days you set now: {overrides}. {report}",
         "data": {
           "day": "Day"
         }
@@ -495,11 +529,17 @@
           "window_start": "Window: earliest departure (HH:MM)",
           "window_end": "Window: latest departure (HH:MM)",
           "pick": "Train choice in window mode",
-          "min_stay": "Minimum stay in minutes"
+          "min_stay": "Minimum stay in minutes",
+          "arrive_by": "When must you arrive? (HH:MM)",
+          "walk_after_min": "Minutes to walk from the destination station",
+          "prefer_direct_min": "Minutes earlier you would leave for a direct train"
         },
         "data_description": {
           "mode": "A fixed day uses the first train you set for that weekday, or the normal first train.",
-          "min_stay": "Window days only. Blank uses the normal setting; 0 turns the stay off that day."
+          "min_stay": "Window days only. Blank uses the normal setting; 0 turns the stay off that day.",
+          "arrive_by": "For Arrive by a set time, enter when you need to reach your destination, including the walk from the station.",
+          "walk_after_min": "Defaults to 0.",
+          "prefer_direct_min": "Defaults to 15. Enter 0 to turn off the preference for direct trains."
         }
       },
       "weather": {
@@ -575,7 +615,8 @@
         "default": "Same as every day",
         "earliest": "Earliest train, missed trains make a sound",
         "earliest_silent": "Earliest train, missed trains are silent",
-        "on_leave": "Pick the train when I leave"
+        "on_leave": "Pick the train when I leave",
+        "arrive_by": "Arrive by a set time"
       }
     },
     "weekdays": {

@@ -19,9 +19,11 @@ from train_commute_companion.delivery import JOURNEY_WARNINGS, covers
 from train_commute_companion.health import FRESH_FOR, WatchedLeg
 from train_commute_companion.lifecycle import (
     PollAnswers,
+    find_next_good,
     left_note,
     merged_pool,
     next_stated_delay,
+    observe,
     origin_answer,
 )
 from train_commute_companion.lifecycle_lock import progress_of
@@ -102,13 +104,18 @@ _ONGOING = frozenset(
 OBSERVED = frozenset(
     {
         EventKind.ALL_GOOD,
+        EventKind.ARRIVAL_TARGET,
         EventKind.LEAVE_NOW,
         EventKind.EARLIER_TRAIN_WITHDRAWN,
         EventKind.NEXT_CONNECTION,
     }
 )
 # loud warnings with a "next good connection" clause, written against the lock of their time
-_NAMES_LOCK = JOURNEY_WARNINGS | {EventKind.MISSED_FIRST_TRAIN, EventKind.MISSED_TRANSFER}
+_NAMES_LOCK = JOURNEY_WARNINGS | {
+    EventKind.ARRIVAL_TARGET,
+    EventKind.MISSED_FIRST_TRAIN,
+    EventKind.MISSED_TRANSFER,
+}
 _BREAKS = (EventKind.CANCELLED, EventKind.CUT_SHORT, EventKind.MISSING)
 _FINISHED_LEG_STATES = (LegState.DONE, LegState.CANCELLED, LegState.RELOCKED, LegState.MISSED)
 
@@ -525,6 +532,45 @@ class LiveLedger:
         """Rule 5(b): the message's fact, regenerated from the current state and the latest
         healthy answers."""
         e, k, mem = o.event, okey(s.key), self._memory
+        if e.kind is EventKind.ARRIVAL_TARGET:
+            ctx, facts = self._ctx(s), alert_facts(e)
+            if (
+                ctx is None
+                or ctx.schedule.arrival_deadline is None
+                or facts.arrival_deadline is None
+                or ctx.schedule.arrival_deadline != to_utc(facts.arrival_deadline)
+                or (s.selected_recovery is not None and s.selected_recovery.status == "active")
+            ):
+                return False
+            if not facts.named:
+                return is_sent(s.alert_keys, o.fact_key)
+            if s.lock is None or len(s.lock.legs) < len(facts.named):
+                return False
+            i = len(s.lock.legs) - len(facts.named)
+            suffix = s.lock.legs[i:]
+            if tuple(train_ident(x.train) for x in suffix) != facts.named or suffix[
+                0
+            ].state not in (
+                LegState.PENDING,
+                LegState.BOARDING,
+            ):
+                return False
+            answers = mem.boards.get(k, ())
+            if not any(
+                timedelta() <= to_utc(ctx.now) - to_utc(a.fetched_at) < FRESH_FOR for a in answers
+            ):
+                return False
+            pool = merged_pool(answers)
+            kept = observe(pool, s.lock.legs[i - 1])[0] if i else None
+            return (not i or kept is not None) and find_next_good(
+                s,
+                ctx,
+                pool,
+                station=suffix[0].board_station,
+                kept=kept,
+                n_before=i,
+                only=tuple(x.train for x in suffix),
+            ) is not None
         if e.kind in (EventKind.RECOVERY_UPDATE, EventKind.RECOVERY_MONITORING):
             selected = s.selected_recovery
             facts = alert_facts(e)

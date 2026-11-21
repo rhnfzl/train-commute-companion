@@ -79,7 +79,7 @@ W = 'mode: window, window: ["07:00", "10:00"], buffer_min: 10'
          "window is empty: the latest time must differ from the earliest"),
         ("{buffer_min: 10}", "outbound.first_train", "not a valid time: None"),
         (f"{{{W}, pick: soon}}", "outbound.pick",
-         "must be earliest, earliest_silent or on_leave, got 'soon'"),
+         "must be earliest, earliest_silent, on_leave or arrive_by, got 'soon'"),
         ('{first_train: "08:12", buffer_min: 10, pick: earliest}', "outbound.pick",
          "pick has no effect: no day uses mode window"),
         (f"{{{W}, min_stay_min: 0}}", "outbound.min_stay_min",

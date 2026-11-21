@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal, TypedDict, Unpack
 
+from train_commute_companion.arrival import ArrivalChoice
 from train_commute_companion.classify import (
     classify_leg,
     current_connection,
@@ -127,6 +128,8 @@ def choose_replacement(
     *,
     usual_remaining: tuple[str, ...] | None,
     candidates: Sequence[Connection] | None = None,
+    arrival: ArrivalChoice | None = None,
+    earliest: bool = False,
     **kw: Unpack[GoodKwargs],
 ) -> tuple[Connection | None, Literal["usual_pattern", "new_route", "none"]]:
     """Ranks `candidates` (default: every connection in `answer`); identity is always judged
@@ -139,6 +142,10 @@ def choose_replacement(
     cur = {id(c): current_connection(seen_in, c) for c in pool}
     ranked = sorted(pool, key=lambda c: expected_departure(cur[id(c)]))
     good = [c for c in ranked if check_good(c, answer, **kw).ok]
+    if arrival is not None:
+        eligible = [cur[id(c)] for c in good if arrival.accepts(cur[id(c)])]
+        choice = next(iter(eligible), None) if earliest else arrival.pick(eligible)
+        return choice, "new_route" if choice is not None else "none"
     for c in good:
         if usual_remaining is not None and matches_pattern(c, usual_remaining):
             return cur[id(c)], "usual_pattern"
