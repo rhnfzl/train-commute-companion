@@ -29,15 +29,30 @@ chmod 600 .env
 Run every command below from this folder. Keep `.env` and `config/` private.
 
 1. Edit `.env` with your `NS_API_KEY` and `TELEGRAM_BOT_TOKEN`. Use the primary key of the NS-App product. Leave `TELEGRAM_CHAT_ID` blank.
-2. Start it with `docker compose up -d`, then send the bot a message from a **private chat**. A group is refused at startup: every member could act and share location.
-3. The log (`docker compose logs tcc`) shows a line with the chat id. Put it in `.env` as `TELEGRAM_CHAT_ID` and apply it with `docker compose up -d --force-recreate tcc` (a plain `restart` keeps the old environment).
+2. Start it with `docker compose up -d`, then read `docker compose logs tcc`.
+3. Open the private Telegram setup link, or scan its terminal QR, and press **Start** in Telegram. Use your own private chat.
 4. In `config/profiles.yaml`, replace `AAA` and the example stations with your own and check the file:
 
    ```
    docker compose run --rm tcc tcc check-profile /config/profiles.yaml
    ```
 
-5. Send `/start` to the bot and confirm both test alerts (one loud, one silent). Setup is complete only then, and `/health` stays 503 until you do.
+5. Confirm both test alerts (one loud, one silent) with **I got both**. Send `/test` if you need another pair. `/health` stays 503 until confirmation.
+
+The setup link claims this bot once and saves your private chat in `/data/telegram.json` before routing notifications.
+Restarts reuse that binding without an environment edit or container recreation. Groups, channels, wrong codes and reused links cannot replace it.
+The link expires after 15 minutes and becomes invalid on restart. Restart the unclaimed container to print a new link.
+QR generation runs locally and never sends the link to a QR service. Anyone with the unexpired link can claim the bot first.
+Keep setup logs private and use a separate bot for each traveller. Telegram setup retries after connection failures independently of the train watchdog.
+An unreadable saved Telegram state disables automatic claiming and leaves the original file untouched. Restore a valid backup or configure a manual chat.
+
+For manual setup, set a known positive private `TELEGRAM_CHAT_ID` in `.env`, then run `docker compose up -d --force-recreate tcc`.
+You can find the ID by sending this bot a private message and reading the ignored-chat line in its log.
+Send `/start` from that chat and confirm both test alerts. Group and channel IDs are refused.
+An explicit chat overrides the saved claim while configured. Removing it restores the claimed chat. Delivery confirmation belongs to one bot and chat.
+Changing destinations requires confirmation there. Confirmation from another chat never transfers.
+
+Telegram's [private start links](https://core.telegram.org/bots/features#deep-linking) deliver the setup code with `/start`.
 
 On first startup, the log also prints a generated `TCC_HEALTH_TOKEN` for full health details and the Today page.
 Store it in a password manager. The app saves it privately as `/data/health-token` and reuses it without printing it on restart.
@@ -98,7 +113,7 @@ Everything comes from the environment (`.env`):
 | --- | --- |
 | `NS_API_KEY` | required, the primary key of the NS-App product; see [NS API key](ns-api-key.md) |
 | `TELEGRAM_BOT_TOKEN` | the bot token |
-| `TELEGRAM_CHAT_ID` | optional during setup; the one private chat allowed to talk to the bot, group IDs are refused |
+| `TELEGRAM_CHAT_ID` | optional manual override; blank uses the saved private claim or prints a one-time setup link and QR |
 | `OWNTRACKS_SECRET` | optional, 16+ printable ASCII characters without spaces; turns on the OwnTracks endpoint |
 | `TCC_HEALTH_TOKEN` | optional override, 16+ printable ASCII characters without spaces; otherwise generated and saved in `/data/health-token`; grants full `/health` and Today access |
 | `TCC_LOOKAHEAD_AT` | when the planned-works look-ahead runs, `HH:MM`, default `06:00` |

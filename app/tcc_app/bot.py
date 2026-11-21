@@ -8,11 +8,16 @@ import logging
 import os
 import re
 import secrets
+import stat
+import tempfile
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, time, timedelta
+from io import StringIO
 from pathlib import Path
 from typing import Any, TypeVar
+
+import segno
 
 from train_commute_companion.compensation import ArrivalError, arrival_text
 from train_commute_companion.compensation import confirm as check_arrival
@@ -31,6 +36,7 @@ from .bot_state import (
     ProofPhase,
     ReviewPhase,
     SavePhase,
+    SetupClaim,
     UpdateCursor,
 )
 from .commands import (
@@ -111,10 +117,13 @@ class ShellState:
     confirmed_for: str | None = None  # "<bot id>:<chat id>" (rule 16 proves one target)
     # the "I got both" nonce that proved it, saved with it; None in an older file: unknown
     accepted_nonce: str | None = None
+    claimed_for: str | None = None  # "<bot id>:<private chat id>"; never the setup code
 
 
 def load_state(path: Path) -> ShellState | None:
     try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            raise ValueError("not a regular state file")
         raw = json.loads(path.read_text(encoding="utf-8"))
         s = ShellState(**raw)
         if (
@@ -124,6 +133,13 @@ def load_state(path: Path) -> ShellState | None:
             or not all(
                 v is None or isinstance(v, str)
                 for v in (s.bot_id, s.confirmed_for, s.accepted_nonce)
+            )
+            or (
+                s.claimed_for is not None
+                and (
+                    not isinstance(s.claimed_for, str)
+                    or re.fullmatch(r"[0-9]{1,20}:[1-9][0-9]{0,19}", s.claimed_for) is None
+                )
             )
         ):
             raise ValueError("wrong types")
@@ -137,16 +153,20 @@ def load_state(path: Path) -> ShellState | None:
 
 
 def save_state(path: Path, s: ShellState) -> None:
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = None
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as f:
+            tmp = Path(f.name)
             f.write(json.dumps(asdict(s)))
             f.flush()
             os.fsync(f.fileno())  # a power loss must not leave an empty file behind the rename
         os.replace(tmp, path)
     except OSError:
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
         raise
 
 
@@ -174,20 +194,36 @@ class Bot:
         state_path: Path,
         follower: Follower | None = None,
         webhook_test: Callable[[], Awaitable[Sequence[WebhookTestResult]]] | None = None,
+        bind_chat: Callable[[int], None] | None = None,
     ) -> None:
         self._api, self._rt, self._chat, self._path = api, rt, chat_id, state_path
         self._follower, self._webhook_test = follower, webhook_test
         loaded = load_state(state_path)
+        # An unreadable binding must never turn back into an open setup link.
+        self._state_safe = loaded is not None or not os.path.lexists(state_path)
+        if chat_id is not None:  # explicit routing retains the existing state-repair behavior
+            self._state_safe = True
+        self._bind_chat = bind_chat
         trusted = loaded is not None and loaded.bot_id == api.bot_id
         self._cursor = UpdateCursor(CursorPhase.READY if trusted else CursorPhase.UNTRUSTED)
         if loaded is not None and trusted:
             self.state = loaded
         elif loaded is not None:  # another bot's cursor: only the confirmation (it names its bot)
             self.state = ShellState(
-                confirmed_for=loaded.confirmed_for, accepted_nonce=loaded.accepted_nonce
+                confirmed_for=loaded.confirmed_for,
+                accepted_nonce=loaded.accepted_nonce,
+                claimed_for=loaded.claimed_for,
             )
         else:
             self.state = ShellState()
+        binding = self.state.claimed_for
+        if self._chat is None and binding is not None:
+            bot_id, saved_chat = binding.split(":")
+            if bot_id == api.bot_id:
+                self._chat = int(saved_chat)
+        if self._chat is not None and bind_chat is not None:
+            bind_chat(self._chat)
+        self._claim: SetupClaim | None = None
         self._proof: DeliveryProof | None = None
         self._arrival_drafts: dict[str, ArrivalDraft] = {}
         self._save_phase = SavePhase.READY
@@ -201,7 +237,55 @@ class Bot:
 
     @property
     def confirmed(self) -> bool:
-        return self.state.confirmed_for == f"{self._api.bot_id}:{self._chat}"
+        return self._chat is not None and self.state.confirmed_for == (
+            f"{self._api.bot_id}:{self._chat}"
+        )
+
+    async def _setup_claim(self) -> None:
+        if self._chat is not None or self._claim is not None or not self._state_safe:
+            return
+        identity = _obj(await self._api.call("getMe", {}))
+        username = identity.get("username")
+        if (
+            identity.get("is_bot") is not True
+            or str(identity.get("id")) != self._api.bot_id
+            or not isinstance(username, str)
+            or not re.fullmatch(r"[A-Za-z0-9_]{1,32}", username)
+        ):
+            raise TelegramError(0, None, "invalid bot identity")
+        claim = SetupClaim(secrets.token_urlsafe(32), self._rt.now())
+        link = f"https://t.me/{username}?start={claim.code}"
+        qr = StringIO()
+        segno.make(link).terminal(out=qr, compact=True)
+        self._claim = claim
+        log.info(
+            "Private Telegram setup: open %s and press Start, or scan this QR. "
+            "Link expires in 15 minutes; restart for a new link. Keep setup logs private.\n%s",
+            link,
+            qr.getvalue(),
+        )
+
+    async def _try_claim(self, msg: dict[str, Any]) -> bool:
+        chat = _obj(msg.get("chat"))
+        sent = stamp(msg.get("date"))
+        args = msg["text"].split()[1:]
+        claim = self._claim
+        if (
+            self._chat is not None
+            or claim is None
+            or len(args) != 1
+            or chat.get("type") != "private"
+            or type(chat.get("id")) is not int
+            or chat["id"] <= 0
+            or sent is None
+        ):
+            return False
+        now = self._rt.now().astimezone(UTC)
+        if not -FUTURE_LIMIT <= now - sent.astimezone(UTC) <= MAX_AGE:
+            return False
+        if not claim.accepts(args[0], now):
+            return False
+        return await self._save(claimed_chat=chat["id"])
 
     # --- polling ---
 
@@ -212,6 +296,7 @@ class Bot:
                     await self._discard_backlog()
                 if self._cursor.phase is CursorPhase.CLOSED:
                     return
+                await self._setup_claim()
                 ups = await self._api.call(
                     "getUpdates",
                     {"offset": self.state.offset, "timeout": POLL_S, "allowed_updates": ALLOWED},
@@ -219,7 +304,7 @@ class Bot:
                 )
                 await self._commit_and_dispatch(_updates(ups))
             except TelegramError as e:
-                log.warning("Telegram getUpdates failed (%s: %s)", e.code, e)
+                log.warning("Telegram polling or setup failed (%s); retrying", e.code)
                 await asyncio.sleep(CONFLICT_RETRY_S if e.code == 409 else RETRY_S)
 
     async def _discard_backlog(self) -> None:
@@ -261,19 +346,44 @@ class Bot:
             self._spawn(ups)
             ups = [u for u in _updates(nxt) if u["update_id"] >= self.state.offset]
 
-    async def _save(self, confirmed_for: str | None = None, nonce: str | None = None) -> bool:
+    async def _save(
+        self,
+        confirmed_for: str | None = None,
+        nonce: str | None = None,
+        *,
+        claimed_chat: int | None = None,
+    ) -> bool:
         """`confirmed_for` and the `nonce` that proved it are written together or not at all."""
         # a cancelled caller leaves the write running and the lock held until its worker ends
-        task = asyncio.ensure_future(self._write(confirmed_for, nonce))
+        task = asyncio.ensure_future(self._write(confirmed_for, nonce, claimed_chat=claimed_chat))
         self.writes.add(task)
         task.add_done_callback(self.writes.discard)
         return await asyncio.shield(task)
 
-    async def _write(self, confirmed_for: str | None = None, nonce: str | None = None) -> bool:
+    async def _write(
+        self,
+        confirmed_for: str | None = None,
+        nonce: str | None = None,
+        *,
+        claimed_chat: int | None = None,
+    ) -> bool:
         async with self._save_lock:
+            if not self._state_safe or (
+                claimed_chat is not None
+                and (
+                    self._chat is not None
+                    or self._cursor.closed
+                    or self._claim is None
+                    or not self._claim.accepts(self._claim.code, self._rt.now())
+                )
+            ):
+                return False
             snap = replace(self.state)  # the worker writes this copy, never a state being changed
             if confirmed_for is not None:
                 snap.confirmed_for, snap.accepted_nonce = confirmed_for, nonce
+            if claimed_chat is not None:
+                snap.claimed_for = f"{self._api.bot_id}:{claimed_chat}"
+                snap.bot_id = self._api.bot_id
             try:
                 await asyncio.to_thread(save_state, self._path, snap)  # off the loop (rule 12)
             except OSError as e:
@@ -283,6 +393,11 @@ class Bot:
                 return False
             if confirmed_for is not None:
                 self.state.confirmed_for, self.state.accepted_nonce = confirmed_for, nonce
+            if claimed_chat is not None:
+                self.state.claimed_for, self.state.bot_id = snap.claimed_for, snap.bot_id
+                self._chat, self._claim = claimed_chat, None
+                if self._bind_chat is not None:
+                    self._bind_chat(claimed_chat)
             if self._save_phase is SavePhase.FAILED:
                 log.warning("Telegram state saved again")
             self._save_phase = SavePhase.READY
@@ -303,6 +418,7 @@ class Bot:
 
     async def close(self) -> None:
         self._cursor.phase = CursorPhase.CLOSED
+        self._claim = None
         self._proof = None
         for task in list(self._tasks):
             task.cancel()
@@ -315,6 +431,14 @@ class Bot:
         if self._cursor.phase is CursorPhase.CLOSED:
             return
         msg, edited, cb = (_obj(update.get(k)) for k in ALLOWED)
+        text = msg.get("text")
+        if (
+            isinstance(text, str)
+            and command_word(text) == "/start"
+            and text.split()[1:]
+            and not await self._try_claim(msg)
+        ):
+            return
         chat = _obj((msg or edited or _obj(cb.get("message"))).get("chat")).get("id")
         if self._chat is None or chat != self._chat:
             _log_foreign_chat(chat)
@@ -452,7 +576,11 @@ class Bot:
                 kept
                 for row in old
                 if isinstance(row, list)
-                and (kept := [b for b in row if _button_key(_obj(b).get("callback_data")) not in retired])
+                and (
+                    kept := [
+                        b for b in row if _button_key(_obj(b).get("callback_data")) not in retired
+                    ]
+                )
             ]
             if rows == old:  # no keyboard, or the button is not on it: wiping it would lose others
                 log.info("the used button is not on its Telegram message's keyboard")
