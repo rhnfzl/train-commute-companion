@@ -94,6 +94,40 @@ def test_check_in_default_remains_omitted_and_leave_by_defaults_on(tmp_path):
     assert "active_lead_min" not in yaml.safe_load(text)["profiles"][0]["outbound"]
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_weather_switch_preserves_other_alert_settings(tmp_path, enabled):
+    raw = yaml.safe_load(PROFILE)
+    raw["profiles"][0]["alerts"] = {"quiet_hours": ["20:00", "06:00"]}
+    doc = document(tmp_path, yaml.safe_dump(raw))
+    text = edit_profile(doc, "p1", {**VALUES, "weather": enabled}, KNOWN, TODAY)
+    profiles, errors = parse_profiles(text, KNOWN)
+    assert not errors and profiles[0].alerts.weather is enabled
+    assert yaml.safe_load(text)["profiles"][0]["alerts"]["quiet_hours"] == ["20:00", "06:00"]
+
+
+@pytest.mark.parametrize("weather", [False, True])
+@pytest.mark.parametrize("leave_by", [False, True])
+def test_weather_leave_by_and_delay_edits_stay_independent(tmp_path, weather, leave_by):
+    values = {
+        **VALUES,
+        "weather": weather,
+        "leave_by": leave_by,
+        "delay_min": 10,
+        "delay_step_min": 5,
+        "outbound_active_lead": 40,
+        "return_active_lead": 25,
+    }
+    text = edit_profile(document(tmp_path), "p1", values, KNOWN, TODAY)
+    profiles, errors = parse_profiles(text, KNOWN)
+    assert not errors
+    profile = profiles[0]
+    assert profile.alerts.weather is weather
+    assert profile.alerts.leave_by is leave_by
+    assert (profile.alerts.delay_min, profile.alerts.delay_step_min) == (10, 5)
+    assert profile.outbound.active_lead_min == 40
+    assert profile.return_.active_lead_min == 25
+
+
 def test_edit_preserves_id_and_all_advanced_fields(tmp_path):
     raw = yaml.safe_load(PROFILE)
     p = raw["profiles"][0]
@@ -178,7 +212,9 @@ def test_quiet_repeat_misses_is_written_only_once_chosen(tmp_path):
 def test_delay_controls_roundtrip_without_changing_another_profile(tmp_path):
     doc = document(tmp_path)
     original = copy.deepcopy(doc.data["profiles"][1])
-    text = edit_profile(doc, "p1", {**VALUES, "delay_min": 10.0, "delay_step_min": 5.0}, KNOWN, TODAY)
+    text = edit_profile(
+        doc, "p1", {**VALUES, "delay_min": 10.0, "delay_step_min": 5.0}, KNOWN, TODAY
+    )
     profiles, errors = parse_profiles(text, KNOWN)
     assert not errors
     assert (profiles[0].alerts.delay_min, profiles[0].alerts.delay_step_min) == (10, 5)
@@ -190,7 +226,9 @@ def test_delay_controls_roundtrip_without_changing_another_profile(tmp_path):
 def test_unchanged_delay_defaults_keep_an_older_profile_shape(tmp_path):
     doc = document(tmp_path)
     before = yaml.safe_load(edit_profile(doc, "p1", VALUES, KNOWN, TODAY))
-    text = edit_profile(doc, "p1", {**VALUES, "delay_min": 3.0, "delay_step_min": 3.0}, KNOWN, TODAY)
+    text = edit_profile(
+        doc, "p1", {**VALUES, "delay_min": 3.0, "delay_step_min": 3.0}, KNOWN, TODAY
+    )
     assert yaml.safe_load(text) == before
 
 

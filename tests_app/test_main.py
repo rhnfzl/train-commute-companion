@@ -43,6 +43,13 @@ ENV = {"NS_API_KEY": "k", "TELEGRAM_BOT_TOKEN": TOKEN}
 GENERATED = "test-generated-health-token-0001"
 
 
+def test_knmi_key_is_optional_and_not_in_settings_repr(tmp_path):
+    assert token_settings(tmp_path).knmi_key is None
+    settings = token_settings(tmp_path, KNMI_API_KEY="weather-user-test-key")
+    assert settings.knmi_key == "weather-user-test-key"
+    assert "weather-user-test-key" not in repr(settings)
+
+
 def token_settings(tmp_path, **env):
     return Settings.from_env({**ENV, "TCC_STATE_DIR": str(tmp_path), **env})
 

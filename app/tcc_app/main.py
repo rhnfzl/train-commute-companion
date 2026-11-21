@@ -10,7 +10,7 @@ import signal
 import stat
 import tempfile
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, time
 from enum import StrEnum
 from pathlib import Path
@@ -23,6 +23,7 @@ from train_commute_companion.email import EmailPoster, EmailSettings
 from train_commute_companion.model import present
 from train_commute_companion.providers.base import Provider
 from train_commute_companion.providers.ns import NsProvider
+from train_commute_companion.providers.weather import WeatherProvider
 from train_commute_companion.runtime import LOOKAHEAD_AT, Runtime
 from train_commute_companion.store import JsonFileStore
 from train_commute_companion.webhook import check_secret, check_token, parse_urls
@@ -90,6 +91,7 @@ class Settings:
     webhook_token: str = ""
     mcp_socket: Path | None = None  # None: MCP off
     email: EmailSettings | None = None
+    knmi_key: str | None = field(default=None, repr=False)
 
     @staticmethod
     def from_env(env: Mapping[str, str]) -> "Settings":
@@ -133,6 +135,7 @@ class Settings:
             webhook_token,
             mcp_socket_path(env),
             email_settings(env),
+            _optional(env, "KNMI_API_KEY"),
         )
 
 
@@ -212,6 +215,7 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         lookahead_at=s.lookahead_at,
         webhooks=webhooks,
         primary_destination=lambda: notifier.destination_id,
+        weather=WeatherProvider(client, clock.now, s.knmi_key),
     )
     follower = Follower(rt)
     bot = Bot(

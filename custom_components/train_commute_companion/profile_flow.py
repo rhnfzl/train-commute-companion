@@ -480,16 +480,18 @@ class ProfileEditorFlow:
         for key in ("edit_weekday_times", "edit_day_overrides"):
             fields[vol.Optional(key, default=values.get(key, False))] = BooleanSelector()
         for key in ("delay_min", "delay_step_min"):
-            fields[vol.Optional(
-                key, default=values.get(key, existing.get("alerts", {}).get(key, 3))
-            )] = NumberSelector(
+            fields[
+                vol.Optional(key, default=values.get(key, existing.get("alerts", {}).get(key, 3)))
+            ] = NumberSelector(
                 NumberSelectorConfig(min=1, max=1440, step=1, mode=NumberSelectorMode.BOX)
             )
-        for key in ("compensation_reminder", "quiet_repeat_misses", "leave_by"):
+        for key in ("compensation_reminder", "quiet_repeat_misses", "weather", "leave_by"):
             fields[
                 vol.Optional(
                     key,
-                    default=values.get(key, existing.get("alerts", {}).get(key, key == "leave_by")),
+                    default=values.get(
+                        key, existing.get("alerts", {}).get(key, key in ("weather", "leave_by"))
+                    ),
                 )
             ] = BooleanSelector()
         location = existing.get("location")
