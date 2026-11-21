@@ -1,5 +1,6 @@
 """Station-name forms backed by the same portable profile file as every other shell."""
 
+from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
@@ -53,6 +54,7 @@ DAY_NAMES = dict(
     zip(WEEKDAYS, ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
 )
 _OPTIONAL_TEXT = ("time", "window_start", "window_end")
+_SINGLE_STATIONS = ("home_station", "work_station")
 
 CATEGORY_LABELS = {
     "journey": "Journey changes",
@@ -92,6 +94,13 @@ class ProfileEditorFlow:
     def _labels(self) -> dict[str, str]:
         known = self._catalogue or Stations({})
         return {code: known.name(code) for code in known}
+
+    def _station_codes(self) -> dict[str, str]:
+        """Name -> code for the single station pickers. The picker shows its raw value, so the
+        value is the name; a name two stations share gets its code added."""
+        labels = self._labels()
+        shared = Counter(labels.values())
+        return {(n if shared[n] == 1 else f"{n} ({c})"): c for c, n in labels.items()}
 
     def _existing(self) -> dict[str, Any]:
         """The profile being edited, its stations as codes for the form."""
@@ -190,6 +199,7 @@ class ProfileEditorFlow:
 
     def _profile_defaults(self) -> dict[str, Any]:
         profile = self._existing()
+        names = {code: name for name, code in self._station_codes().items()}
         schedule: dict[str, Any] = {}
         for direction in ("outbound", "return"):
             journey = profile.get(direction, {})
@@ -209,8 +219,7 @@ class ProfileEditorFlow:
         return {
             "name": profile.get("name", "commute"),
             "days": profile.get("days", ["mon", "tue", "wed", "thu", "fri"]),
-            "home_station": profile.get("home_station"),
-            "work_station": profile.get("work_station"),
+            **{key: names.get(profile.get(key, "")) for key in _SINGLE_STATIONS},
             "skip_public_holidays": profile.get("skip_public_holidays", True),
             "require_accessible": profile.get("accessibility", {}).get("require_accessible", False),
             "disabled_categories": profile.get("alerts", {}).get("disabled_categories", []),
@@ -231,8 +240,9 @@ class ProfileEditorFlow:
             {"value": code, "label": label}
             for code, label in sorted(self._labels().items(), key=lambda item: item[1])
         ]
+        # custom_value is what gives the single picker its search box; unknown text is refused
         station = SelectSelector(
-            SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
+            SelectSelectorConfig(options=sorted(self._station_codes()), custom_value=True)
         )
         transfers = SelectSelector(
             SelectSelectorConfig(
@@ -310,19 +320,24 @@ class ProfileEditorFlow:
         errors: dict[str, str] = {}
         report = ""
         if user_input is not None:
-            try:
-                self._pending_profile = edit_profile(
-                    self._document,
-                    self._profile_id,
-                    values,
-                    self._catalogue,
-                    datetime.now(TZ).date(),
-                )
-            except EditorError as err:
-                errors["base"], report = err.code, err.report
-            else:
-                self._editor_values = values
-                return await self.async_step_profile_details()
+            codes = self._station_codes()
+            # the form keeps names; everything after this step works with codes
+            coded_values = {**values, **{k: codes.get(values.get(k, "")) for k in _SINGLE_STATIONS}}
+            errors = {k: "unknown_station" for k in _SINGLE_STATIONS if coded_values[k] is None}
+            if not errors:
+                try:
+                    self._pending_profile = edit_profile(
+                        self._document,
+                        self._profile_id,
+                        coded_values,
+                        self._catalogue,
+                        datetime.now(TZ).date(),
+                    )
+                except EditorError as err:
+                    errors["base"], report = err.code, err.report
+                else:
+                    self._editor_values = coded_values
+                    return await self.async_step_profile_details()
         return self.async_show_form(
             step_id="profile",
             data_schema=self._profile_schema(values),

@@ -1,6 +1,7 @@
 """Config flow: the entry exists only once the user confirmed both test pushes (rule 16)."""
 
 import asyncio
+import os
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
@@ -126,7 +127,9 @@ async def send_tests(hass: HomeAssistant, service: str, loud_style: LoudStyle) -
 
 def notify_schema(hass: HomeAssistant, service: str | None, style: LoudStyle) -> vol.Schema:
     services = notify_services(hass)
-    pick = {"default": service} if service in services else {}
+    if service not in services:  # one phone is the only sensible pick
+        service = services[0] if len(services) == 1 else None
+    pick = {"default": service} if service else {}
     return vol.Schema(
         {
             vol.Required(CONF_NOTIFY, **pick): SelectSelector(
@@ -230,21 +233,20 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
         self, user_input: Mapping[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
-        default = self.hass.config.path(DOMAIN, "profiles.yaml")
-        path = default
         if user_input is not None:
-            path = user_input[CONF_PROFILES_PATH]
             key = user_input[CONF_API_KEY]
             if (bad_key := await key_error(self.hass, key)) is not None:
                 errors["base"] = bad_key
-            guided = bool(user_input.get("guided_setup", False))
-            if not guided and (bad := await check_path(self.hass, path)) is not None:
-                errors[CONF_PROFILES_PATH] = bad
-            if not errors:
-                self._key, self._path = key, path
-                if guided:
-                    return await self._begin_editor(key, path, create=True)
-                return await self.async_step_notify()
+            else:
+                self._key = key
+                path = self.hass.config.path(DOMAIN, "profiles.yaml")
+                # a file already there (a reinstall) is used, never written over
+                if user_input.get("existing_file", False) or await self.hass.async_add_executor_job(
+                    os.path.exists, path
+                ):
+                    return await self.async_step_profiles_file()
+                self._path = path
+                return await self._begin_editor(key, path, create=True)
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
@@ -252,10 +254,27 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
                     vol.Required(CONF_API_KEY): TextSelector(
                         TextSelectorConfig(type=TextSelectorType.PASSWORD)
                     ),
-                    vol.Required(CONF_PROFILES_PATH, default=path): str,
-                    vol.Optional("guided_setup", default=False): BooleanSelector(),
+                    vol.Optional("existing_file", default=False): BooleanSelector(),
                 }
             ),
+            errors=errors,
+        )
+
+    async def async_step_profiles_file(
+        self, user_input: Mapping[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        path = self.hass.config.path(DOMAIN, "profiles.yaml")
+        if user_input is not None:
+            path = user_input[CONF_PROFILES_PATH]
+            if (bad := await check_path(self.hass, path)) is not None:
+                errors[CONF_PROFILES_PATH] = bad
+            else:
+                self._path = path
+                return await self.async_step_notify()
+        return self.async_show_form(
+            step_id="profiles_file",
+            data_schema=vol.Schema({vol.Required(CONF_PROFILES_PATH, default=path): str}),
             errors=errors,
             description_placeholders={"path": path},
         )

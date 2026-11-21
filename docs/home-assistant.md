@@ -19,9 +19,11 @@ Never delete the state file to force a downgrade.
 ## Set up
 
 1. Get an NS API key from the NS API portal. See [Get an NS API key](ns-api-key.md).
-2. For guided setup, use an unused profiles-file path inside the config folder. For existing YAML, select your configured file.
-3. Add Train Commute Companion under Settings, Devices and services. Enter the key and file path. Enable guided setup to create a profile.
-4. Pick your phone and the loud alert style (below). Two test notifications go out, one loud and one silent. Confirm that both arrived.
+2. Add Train Commute Companion under Settings, Devices and services. Enter the key.
+3. Set up your commute in the station forms that come next. Type part of a station name to search the list. See [the profile editor guide](profile-editor.md).
+4. Pick your phone and the loud alert style (below). If you have one phone, it is already picked. Two test notifications go out, one loud and one silent. Confirm that both arrived.
+
+Already have a profiles file? Turn on **Use an existing YAML file** next to the key, then enter the file's full path. If a profiles file is already in the config folder at `train_commute_companion/profiles.yaml`, setup asks for the path and fills it in. It never writes over that file.
 
 Only one NS key is set up per Home Assistant instance.
 

@@ -20,8 +20,8 @@ CATALOGUE_CALL = "custom_components.train_commute_companion.profile_flow.station
 VALUES = {
     "name": "commute",
     "days": ["mon", "tue"],
-    "home_station": "AAA",
-    "work_station": "RTD",
+    "home_station": "Home station",  # the single pickers send names, mapped to codes
+    "work_station": "Rotterdam Centraal",
     "outbound_time": "08:12",
     "return_time": "17:52",
     "outbound_transfers": ["UT"],
@@ -54,11 +54,7 @@ async def guided(hass):
         patch(CHECK, return_value=frozenset(CATALOGUE)),
         patch(CATALOGUE_CALL, return_value=CATALOGUE),
     ):
-        return await configure(
-            hass,
-            flow,
-            {"api_key": "k", "profiles_path": str(profiles_path(hass)), "guided_setup": True},
-        )
+        return await configure(hass, flow, {"api_key": "k"})
 
 
 async def test_guided_profile_waits_for_phone_confirmation_before_writing(hass, monkeypatch):
@@ -66,11 +62,9 @@ async def test_guided_profile_waits_for_phone_confirmation_before_writing(hass, 
     flow = await guided(hass)
     assert flow["step_id"] == "profile"
     selector = next(v for k, v in flow["data_schema"].schema.items() if str(k) == "home_station")
-    assert {o["label"] for o in selector.config["options"]} == {
-        "Home station",
-        "Utrecht Centraal",
-        "Rotterdam Centraal",
-    }
+    # the value is the name: the closed picker shows its raw value
+    assert selector.config["options"] == ["Home station", "Rotterdam Centraal", "Utrecht Centraal"]
+    assert selector.config["custom_value"] is True  # what gives the picker its search box
     flow = await configure(
         hass, flow, {**VALUES, "require_accessible": True, "disabled_categories": ["crowding"]}
     )
@@ -86,18 +80,42 @@ async def test_guided_profile_waits_for_phone_confirmation_before_writing(hass, 
     raw = yaml.safe_load(profiles_path(hass).read_text())
     assert raw["profiles"][0]["name"] == "commute"
     assert raw["profiles"][0]["home_station"] == "AAA"
+    assert raw["profiles"][0]["work_station"] == "RTD"
     assert raw["profiles"][0]["accessibility"] == {"require_accessible": True}
     assert raw["profiles"][0]["alerts"]["disabled_categories"] == ["crowding"]
     assert raw["profiles"][0]["transfer_min"]["UT"] == 7
     assert raw["profiles"][0]["pauses"] == [{"start": "2027-04-01", "end": "2027-04-07"}]
 
 
-async def test_guided_setup_refuses_existing_file(hass):
+async def test_guided_setup_never_writes_over_an_existing_file(hass):
     write_profiles(hass, PROFILE)
     flow = await guided(hass)
-    assert flow["step_id"] == "profile_error"
-    assert flow["errors"] == {"base": "file_changed"}
+    assert flow["step_id"] == "profiles_file"
     assert profiles_path(hass).read_text() == PROFILE
+
+
+@pytest.mark.parametrize("field", ["home_station", "work_station"])
+@pytest.mark.parametrize("typed", ["Nowhere", "AAA"])  # a raw code is not a name
+async def test_a_station_not_in_the_list_is_refused(hass, field, typed):
+    flow = await configure(hass, await guided(hass), {**VALUES, field: typed})
+    assert flow["step_id"] == "profile"
+    assert flow["errors"] == {field: "unknown_station"}
+    assert shown(flow)[field] == typed  # the typed text stays to be fixed
+    assert not profiles_path(hass).exists()
+
+
+async def test_two_stations_with_one_name_stay_apart(hass):
+    catalogue = Stations({**CATALOGUE.labels, "BBB": ["Home station"]})
+    flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    with (
+        patch(CHECK, return_value=frozenset(catalogue)),
+        patch(CATALOGUE_CALL, return_value=catalogue),
+    ):
+        flow = await configure(hass, flow, {"api_key": "k"})
+    selector = next(v for k, v in flow["data_schema"].schema.items() if str(k) == "home_station")
+    assert {"Home station (AAA)", "Home station (BBB)"} <= set(selector.config["options"])
+    flow = await configure(hass, flow, {**VALUES, "home_station": "Home station (BBB)"})
+    assert flow["step_id"] == "profile_details", flow.get("errors")
 
 
 async def test_guided_weekday_times_wait_for_validation_and_phone_confirmation(hass, monkeypatch):
@@ -119,25 +137,6 @@ async def test_guided_weekday_times_wait_for_validation_and_phone_confirmation(h
     assert saved["return"]["first_train_by_weekday"] == {"tue": "18:40"}
 
 
-async def test_guided_setup_refuses_path_outside_config_directory(hass, tmp_path):
-    flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
-    with (
-        patch(CHECK, return_value=frozenset(CATALOGUE)),
-        patch(CATALOGUE_CALL, return_value=CATALOGUE),
-    ):
-        flow = await configure(
-            hass,
-            flow,
-            {
-                "api_key": "k",
-                "profiles_path": str(tmp_path.parent / "outside.yaml"),
-                "guided_setup": True,
-            },
-        )
-    assert flow["errors"] == {"base": "path_not_allowed"}
-    assert not (tmp_path.parent / "outside.yaml").exists()
-
-
 async def test_reversed_holiday_remains_on_details_form_without_writing(hass, monkeypatch):
     fake_phone(hass, monkeypatch)
     flow = await configure(hass, await guided(hass), VALUES)
@@ -156,11 +155,7 @@ async def test_catalogue_failure_is_visible_and_does_not_write(hass):
         patch(CHECK, return_value=frozenset(CATALOGUE)),
         patch(CATALOGUE_CALL, side_effect=ProviderError),
     ):
-        flow = await configure(
-            hass,
-            flow,
-            {"api_key": "k", "profiles_path": str(profiles_path(hass)), "guided_setup": True},
-        )
+        flow = await configure(hass, flow, {"api_key": "k"})
     assert flow["errors"] == {"base": "cannot_connect"}
     assert not profiles_path(hass).exists()
 
@@ -460,7 +455,7 @@ async def test_editing_a_located_profile_shows_and_saves_other_stations_and_day_
 
 
 async def test_a_profile_that_names_its_stations_opens_filled_and_saves_codes(hass):
-    """Names fill the station fields as codes; the edited profile is saved with codes and one
+    """Names fill the station fields; the edited profile is saved with codes and one
     transfer minimum per station, and the other profile keeps its names."""
     raw = yaml.safe_load(PROFILE)
     first, second = raw["profiles"]
@@ -486,7 +481,7 @@ async def test_a_profile_that_names_its_stations_opens_filled_and_saves_codes(ha
         flow["flow_id"], {"profile": "edit:p1"}
     )
     defaults = shown(flow)
-    assert (defaults["home_station"], defaults["outbound_transfers"]) == ("AAA", ["UT"])
+    assert (defaults["home_station"], defaults["outbound_transfers"]) == ("Home station", ["UT"])
     flow = await hass.config_entries.options.async_configure(flow["flow_id"], defaults)
     assert flow["step_id"] == "profile_details", flow.get("errors")
     defaults = shown(flow)
@@ -498,3 +493,34 @@ async def test_a_profile_that_names_its_stations_opens_filled_and_saves_codes(ha
     assert saved[0]["outbound"]["transfers"] == ["UT"]
     assert saved[0]["return"]["other_stations"] == ["BBB"]
     assert saved[1] == second
+
+
+async def test_an_old_profile_stored_with_codes_opens_with_names_and_saves_codes(hass):
+    write_profiles(hass, PROFILE)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "k"},
+        options={"profiles_path": str(profiles_path(hass)), "notify_service": NOTIFY},
+    )
+    entry.add_to_hass(hass)
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    with patch(CATALOGUE_CALL, return_value=CATALOGUE):
+        flow = await hass.config_entries.options.async_configure(
+            flow["flow_id"], {"next_step_id": "profiles"}
+        )
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"profile": "edit:p1"}
+    )
+    defaults = shown(flow)
+    assert (defaults["home_station"], defaults["work_station"]) == (
+        "Home station",
+        "Rotterdam Centraal",
+    )
+    flow = await hass.config_entries.options.async_configure(flow["flow_id"], defaults)
+    assert flow["step_id"] == "profile_details", flow.get("errors")
+    flow = await hass.config_entries.options.async_configure(flow["flow_id"], shown(flow))
+    assert flow["reason"] == "profile_saved"
+    before = yaml.safe_load(PROFILE)["profiles"][0]
+    saved = yaml.safe_load(profiles_path(hass).read_text())["profiles"][0]
+    assert (saved["home_station"], saved["work_station"]) == ("AAA", "RTD")
+    assert saved["outbound"]["transfers"] == before["outbound"]["transfers"]

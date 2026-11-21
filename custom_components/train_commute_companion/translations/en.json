@@ -3,16 +3,24 @@
     "step": {
       "user": {
         "title": "Train Commute Companion",
-        "description": "Enter your NS API key and where your profiles file is.",
+        "description": "Enter your NS API key. Next you pick your stations and times.",
         "data": {
           "api_key": "NS API key",
-          "profiles_path": "Profiles file",
-          "guided_setup": "Create a profile with station-name forms"
+          "existing_file": "Use an existing YAML file"
         },
         "data_description": {
           "api_key": "Your NS API key from the NS API portal.",
-          "profiles_path": "Full file path. Guided setup creates a new file; otherwise select your existing profiles file.",
-          "guided_setup": "Use an unused profiles-file path inside the Home Assistant config folder. Leave off to use an existing YAML file."
+          "existing_file": "Leave off to set up your commute with station-name forms. Turn on if you already have a profiles file."
+        }
+      },
+      "profiles_file": {
+        "title": "Your profiles file",
+        "description": "Enter the full path of your profiles file. If a profiles file is already in the default place, it is filled in.",
+        "data": {
+          "profiles_path": "Profiles file"
+        },
+        "data_description": {
+          "profiles_path": "Full file path, for example inside the Home Assistant config folder."
         }
       },
       "notify": {
@@ -189,7 +197,8 @@
       "send_failed": "The test notification to notify.{service} did not arrive. Check the companion app or pick another target.",
       "invalid_profile": "The profile is not valid. Review the report above.",
       "file_changed": "The file changed or already exists. Reopen the editor to use its current contents.",
-      "save_failed": "The file could not be saved. Check its folder permissions. Existing contents were not replaced."
+      "save_failed": "The file could not be saved. Check its folder permissions. Existing contents were not replaced.",
+      "unknown_station": "Pick a station from the list."
     },
     "abort": {
       "no_mobile_app": "No phone with the Home Assistant companion app was found. Install the app, sign in, then try again.",
@@ -465,7 +474,8 @@
       "arrival_refused": "The arrival was not accepted. Read the reason and review this journey again.",
       "arrival_acknowledgement": "Confirm your personal arrival only after reviewing the destination, time and plan.",
       "arrival_time": "Choose a valid Amsterdam date and time. For a repeated autumn hour, select its offset.",
-      "settings_changed": "The settings changed while this form was open. Review the current settings and try again."
+      "settings_changed": "The settings changed while this form was open. Review the current settings and try again.",
+      "unknown_station": "Pick a station from the list."
     },
     "abort": {
       "validated": "Checked. Nothing was changed.",

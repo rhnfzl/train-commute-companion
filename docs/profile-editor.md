@@ -5,15 +5,14 @@ Create and edit commutes in Home Assistant without looking up station codes or c
 ## Create your first profile
 
 1. Add Train Commute Companion under Settings, Devices and services.
-2. Enter your NS API key and an unused profiles-file path inside the Home Assistant config folder.
-3. Turn on **Create a profile with station-name forms**.
-4. Choose home and work stations, travel days, first trains and travel buffers.
-5. Select transfer stations in travel order for each direction. Leave empty for a direct train.
-6. Set your minimum minutes at each selected transfer station.
-7. Keep existing holiday ranges, or choose Add and enter both dates.
-8. Choose your phone and confirm that both test notifications arrive.
+2. Enter your NS API key. Leave **Use an existing YAML file** off.
+3. Choose home and work stations, travel days, first trains and travel buffers. Type part of a name, such as "Utr", to search the station list. Pick a station from the list; other text is refused.
+4. Select transfer stations in travel order for each direction. Leave empty for a direct train.
+5. Set your minimum minutes at each selected transfer station.
+6. Keep existing holiday ranges, or choose Add and enter both dates.
+7. Choose your phone and confirm that both test notifications arrive.
 
-The file is created only after you confirm both tests. An existing file is never replaced by guided creation. Leave the guided option off to use an existing YAML file.
+The file is created at `train_commute_companion/profiles.yaml` in the config folder, and only after you confirm both tests. An existing file is never replaced. Turn on **Use an existing YAML file** to use a file you already have.
 
 ## Edit or add a profile
 
