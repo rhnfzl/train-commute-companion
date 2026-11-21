@@ -293,8 +293,8 @@ async def test_every_telegram_action(tmp_path, tg):
     await app.bot.handle(tap("s|p1|outbound|2026-10-27", 3))
     assert tg.answered == ["q1", "q2", "q3"]
     assert texts() == [
-        "Marked as leaving now.",
-        "Locked the 08:44 for Office A.",
+        "I'm leaving: Marked as leaving now.",
+        "Take train: Locked the 08:44 for Office A.",
         "Not travelling: alerts for that journey stop.",
     ]
 

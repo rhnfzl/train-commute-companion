@@ -26,10 +26,11 @@ class DeliveryProof:
             raise RuntimeError("only a completed test pair can await confirmation")
         self.phase = ProofPhase.AWAITING
 
+    def matches(self, nonce: str) -> bool:
+        return secrets.compare_digest(nonce.encode(), self.nonce.encode())
+
     def claim(self, nonce: str) -> bool:
-        if self.phase is not ProofPhase.AWAITING or not secrets.compare_digest(
-            nonce.encode(), self.nonce.encode()
-        ):
+        if self.phase is not ProofPhase.AWAITING or not self.matches(nonce):
             return False
         self.phase = ProofPhase.SAVING
         return True

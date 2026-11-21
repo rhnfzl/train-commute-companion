@@ -135,6 +135,27 @@ async def test_foreign_unconfirmed_and_old_offer_never_select(app):
     assert "button is old" in tg.sent[-1]["text"]
 
 
+async def test_recovery_button_is_named_and_removed_once_used(app):
+    rig, tg, bot = app
+    plan = occurrence(rig).replacement_plans[0]
+    markup = status_buttons(rig.rt.view())
+    message = {"chat": {"id": CHAT}, "message_id": 7, "reply_markup": markup}
+    await bot.handle({"callback_query": {"id": "q1", "data": "rf|" + "0" * 24, "message": message}})
+    assert tg.sent[-1]["text"] == "Recovery: That recovery button is old; open /status again."
+    assert tg.edits == []
+    await bot.handle(
+        {"callback_query": {"id": "q2", "data": f"rp|{plan.proposal_id}", "message": message}}
+    )
+    assert tg.sent[-1]["text"].startswith("Review recovery starting place: ")
+    assert tg.edits == []  # only a prompt: the journey buttons on /status stay
+    origin = next(b for b in buttons(tg) if b["callback_data"].startswith("ra|"))
+    prompt = {"chat": {"id": CHAT}, "message_id": 8, "reply_markup": tg.sent[-1]["reply_markup"]}
+    await bot.handle({"callback_query": {"id": "q3", "data": origin["callback_data"],
+                                         "message": prompt}})  # fmt: skip
+    assert tg.sent[-1]["text"].startswith(origin["text"] + ": ")
+    assert tg.edits == [{"chat_id": CHAT, "message_id": 8, "reply_markup": {"inline_keyboard": []}}]
+
+
 async def test_stop_and_read_only_status_show_actual_progress(app):
     rig, tg, bot = app
     await start(app)
