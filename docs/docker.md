@@ -14,18 +14,21 @@ For multiple travellers, use the [separate household companions](household.md) r
 
 ## First run
 
-You need no clone and no build. Make a folder and download the compose file and the example profile into it:
+You need no clone and no build. Download the compose file, settings template and example profile:
 
 ```
 mkdir tcc && cd tcc
 mkdir config
 curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/rhnfzl/train-commute-companion/main/examples/docker-compose.yml
+curl -fsSL -o .env.example https://raw.githubusercontent.com/rhnfzl/train-commute-companion/main/examples/.env.example
 curl -fsSL -o config/profiles.yaml https://raw.githubusercontent.com/rhnfzl/train-commute-companion/main/examples/profiles.yaml
+cp .env.example .env
+chmod 600 .env
 ```
 
 Run every command below from this folder. Keep `.env` and `config/` private.
 
-1. Create `.env` holding `NS_API_KEY` and `TELEGRAM_BOT_TOKEN`. Leave `TELEGRAM_CHAT_ID` out for now.
+1. Edit `.env` with your `NS_API_KEY` and `TELEGRAM_BOT_TOKEN`. Use the primary key of the NS-App product. Leave `TELEGRAM_CHAT_ID` blank.
 2. Start it with `docker compose up -d`, then send the bot a message from a **private chat**. A group is refused at startup: every member could act and share location.
 3. The log (`docker compose logs tcc`) shows a line with the chat id. Put it in `.env` as `TELEGRAM_CHAT_ID` and apply it with `docker compose up -d --force-recreate tcc` (a plain `restart` keeps the old environment).
 4. In `config/profiles.yaml`, replace `AAA` and the example stations with your own and check the file:
@@ -35,6 +38,12 @@ Run every command below from this folder. Keep `.env` and `config/` private.
    ```
 
 5. Send `/start` to the bot and confirm both test alerts (one loud, one silent). Setup is complete only then, and `/health` stays 503 until you do.
+
+On first startup, the log also prints a generated `TCC_HEALTH_TOKEN` for full health details and the Today page.
+Store it in a password manager. The app saves it privately as `/data/health-token` and reuses it without printing it on restart.
+Treat these setup logs as secrets. Docker host administrators and anyone who can read the logs can use this token.
+If the saved file is invalid, readable by other users, or a symlink, startup refuses. Storage failures also stop startup.
+Check the volume and owner-only file permissions. An explicit `TCC_HEALTH_TOKEN` in `.env` overrides the saved token.
 
 ## Update or pin a version
 
@@ -52,6 +61,8 @@ cd train-commute-companion
 cd examples
 mkdir config
 cp profiles.yaml config/
+cp .env.example .env
+chmod 600 .env
 ```
 
 Git ignores `.env` and `config/` there. Build the image under the name the compose file uses:
@@ -85,19 +96,24 @@ Everything comes from the environment (`.env`):
 
 | Variable | Meaning |
 | --- | --- |
-| `NS_API_KEY` | your NS key |
+| `NS_API_KEY` | required, the primary key of the NS-App product; see [NS API key](ns-api-key.md) |
 | `TELEGRAM_BOT_TOKEN` | the bot token |
-| `TELEGRAM_CHAT_ID` | the one chat allowed to talk to the bot; must be a private chat, a group id is refused |
+| `TELEGRAM_CHAT_ID` | optional during setup; the one private chat allowed to talk to the bot, group IDs are refused |
 | `OWNTRACKS_SECRET` | optional, 16+ printable ASCII characters without spaces; turns on the OwnTracks endpoint |
-| `TCC_HEALTH_TOKEN` | optional, 16+ printable ASCII characters without spaces; lets a caller with `Authorization: Bearer <token>` read the full `/health` report |
+| `TCC_HEALTH_TOKEN` | optional override, 16+ printable ASCII characters without spaces; otherwise generated and saved in `/data/health-token`; grants full `/health` and Today access |
 | `TCC_LOOKAHEAD_AT` | when the planned-works look-ahead runs, `HH:MM`, default `06:00` |
+| `TCC_PROFILES` | profile file path inside the container, default `/config/profiles.yaml` |
+| `TCC_STATE_DIR` | writable persistent state directory, default `/data`; also holds the generated health token |
 | `TCC_WEBHOOK_URLS` | optional; webhook URLs separated by spaces or commas, for example `http://localhost:8644/webhooks/commute` |
 | `TCC_WEBHOOK_SECRET` | required with `TCC_WEBHOOK_URLS`, 16+ characters; signs every webhook post |
 | `TCC_WEBHOOK_TOKEN` | optional bearer token sent with every webhook post (for OpenClaw), 16+ printable ASCII characters without spaces |
 
 ## Health
 
-`GET /health` on port 8080 answers 200 when all is well and 503 otherwise. It shows whether the runtime is alive and started, whether the state file writes, whether NS rejected the key, whether a profile was refused, how many alerts are undelivered, whether delivery was confirmed, and each journey's freshness. Every caller gets that status code and just `{"ok": true}` or `{"ok": false}`. The full report needs the header `Authorization: Bearer <TCC_HEALTH_TOKEN>` (set `TCC_HEALTH_TOKEN` first). The built-in Docker health check reads only the status code and needs no token.
+`GET /health` on port 8080 answers 200 when all is well and 503 otherwise. Every anonymous caller receives only `{"ok": true}` or `{"ok": false}`.
+Use `Authorization: Bearer <token>` with the generated token or your explicit `TCC_HEALTH_TOKEN` for the full report.
+It includes runtime, storage, NS authentication, profile, delivery and journey freshness details.
+The built-in Docker health check reads only the status code and needs no token.
 
 A machine that is off cannot warn about itself, so point an external uptime check at `/health`. Keep that on your home network and never forward port 8080 as a whole. For OwnTracks, expose only `/owntracks` (see its page).
 
@@ -105,9 +121,11 @@ A machine that is off cannot warn about itself, so point an external uptime chec
 
 Open `http://127.0.0.1:8080/today` to read current journeys, NS data freshness and service warnings. Unselected replacement plans remain proposals. Followed recovery shows explicit user-confirmed progress. Refresh the page manually for a new snapshot.
 
-Set `TCC_HEALTH_TOKEN` in `.env` to enable the page, then apply it with `docker compose up -d --force-recreate tcc`. Without the token, `/today` returns 404.
+The generated health token enables the page automatically. You can override it with `TCC_HEALTH_TOKEN` in `.env`.
+Apply an override with `docker compose up -d --force-recreate tcc`.
 
-The browser asks for HTTP Basic credentials. Use any user name and your `TCC_HEALTH_TOKEN` as the password. Clients can instead send `Authorization: Bearer <TCC_HEALTH_TOKEN>`.
+The browser asks for HTTP Basic credentials. Use any user name and the generated or explicit health token as the password.
+Clients can instead send `Authorization: Bearer <token>`.
 
 The page has no journey actions or JavaScript. It does not put tokens in links, page content or application storage. Never put the token in a URL. Avoid saving the password on a shared device.
 
@@ -144,7 +162,8 @@ With `TCC_WEBHOOK_URLS` set, every alert is also posted as signed JSON to each U
 ## Good to know
 
 - `/data` must be one volume: atomic writes and the `.started` marker live there. Run one container per state file.
-- A rejected NS key is retried with backoff (2, 5, 15, then 30 minutes). Fix the key in `.env` and apply it with `docker compose up -d --force-recreate tcc`.
+- Startup checks the NS key through the existing station-list request. Rejections appear in the log even before Telegram setup.
+- A rejected NS key is retried with backoff (2, 5, 15, then 30 minutes). Station-list retries also yield one poll interval to live requests. Use the primary key of the NS-App product ([key guide](ns-api-key.md)). Fix `.env` and apply it with `docker compose up -d --force-recreate tcc`.
 - An alert can repeat after a crash between sending and saving (delivery is at least once).
 - `docker stop` is safe; the app exits cleanly.
 

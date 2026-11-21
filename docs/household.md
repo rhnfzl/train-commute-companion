@@ -80,7 +80,13 @@ The HTTP ports bind only to the host's loopback address:
 
 The health endpoint returns only `ok` without its owner's health token. OwnTracks stays disabled until `OWNTRACKS_SECRET` is set.
 
-Generate each enabled secret independently, for example with `openssl rand -hex 32`. Use different values for both owners and for health versus OwnTracks. Store each value only in its owner's `.env`. Apply changes with the force-recreate command above.
+Each companion automatically generates a different health token, stores it privately in its own `/data/health-token`, and prints it once in its log.
+Restarts reuse the saved token without printing it. Store each token in its owner's password manager and keep the setup logs private.
+Use that token for the full health report and [Today](docker.md#today-web-status) at the owner's local port.
+The token grants access to every profile in that companion. Storage failures or unsafe token files stop that companion's startup.
+
+For OwnTracks or an explicit `TCC_HEALTH_TOKEN` override, generate separate secrets with `openssl rand -hex 32`.
+Use different values for each owner and setting. Store overrides only in the owner's `.env` and apply the force-recreate command above.
 
 For phone access, use a host reverse proxy with TLS. Give each traveller a separate address that forwards only `/owntracks` to their own loopback port. Keep `/health` private. The default loopback endpoints cannot receive phone updates over mobile data.
 
