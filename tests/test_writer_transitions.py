@@ -199,6 +199,7 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
             profile["alerts"]["alert_history"] = False
             profile["alerts"]["calendar_feed"] = True
             profile["brief"] = {"at": None, "evening_at": "20:00:00", "only_if_something": False}
+            profile["alerts"]["location_leave_now"] = True
             if profile["location"] is not None:  # Q12 defaults
                 profile["location"] |= {"wifi": {}, "activity_entity": None}
                 profile["location"] |= {  # 0.3.0 other boarding station defaults

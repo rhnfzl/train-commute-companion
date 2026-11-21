@@ -552,6 +552,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "calendar_feed",
             "quick_trip",
             "daily_brief",
+            "location_leave_now",
         ),
         "alerts",
     )
@@ -597,6 +598,9 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
     arrive = c.boolean(raw.get("arrive_by", d.arrive_by), "alerts.arrive_by")
     history = c.boolean(raw.get("alert_history", d.alert_history), "alerts.alert_history")
     calendar_feed = c.boolean(raw.get("calendar_feed", d.calendar_feed), "alerts.calendar_feed")
+    location_leave = c.boolean(
+        raw.get("location_leave_now", d.location_leave_now), "alerts.location_leave_now"
+    )
     compensation = raw.get("compensation_reminder", False)
     if not isinstance(compensation, bool):
         c.err("alerts.compensation_reminder", "must be true or false")
@@ -669,6 +673,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         or calendar_feed is None
         or quick_trip is None
         or daily_brief is None
+        or location_leave is None
     ):
         return None
     return AlertSettings(
@@ -699,6 +704,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         calendar_feed=calendar_feed,
         quick_trip=quick_trip,
         daily_brief=daily_brief,
+        location_leave_now=location_leave,
     )
 
 

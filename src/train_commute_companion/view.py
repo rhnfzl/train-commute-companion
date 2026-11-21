@@ -27,6 +27,7 @@ from train_commute_companion.lifecycle import (
 )
 from train_commute_companion.lifecycle_lock import unfinished_leg
 from train_commute_companion.location import (
+    DEPARTURE_REMINDER_WINDOW,
     PLACE_ROLES,
     Fix,
     LocationKind,
@@ -91,7 +92,7 @@ from train_commute_companion.state import (
 from train_commute_companion.store import PersistedState
 from train_commute_companion.transfer import check_transfer, transfer_minimum
 from train_commute_companion.vehicle import VehicleSnapshot
-from train_commute_companion.weather_allowance import WeatherAllowance
+from train_commute_companion.weather_allowance import WeatherAllowance, weather_allowance
 
 
 @dataclass(frozen=True, slots=True)
@@ -410,6 +411,7 @@ def still_due(
     """Q3, Q10, Q12: the key of a vouch owed for `zone` (the source's track), None when nothing
     is owed or `sent` holds it. A phone at rest sends no fixes, so the shell then tells the core
     once with a `still` event that its tracker still places the user there:
+    - leave_by: the traveller is still at the origin when it is time to leave.
     - before: the locked first train, not yet left, departs within STILL_LEAD (half the buffer
       when shorter) while `zone` is that direction's origin place (home outbound, work on
       return). Presence only (Q12 rule 6).
@@ -433,6 +435,22 @@ def still_due(
                 continue
             dep = to_utc(x.departure or x.planned_departure)
             base = f"{o.key.direction}|{o.key.service_date}|{x.train_number}|{dep.isoformat()}"
+            if place and profile.alerts.location_leave_now and o.leave_by is not None:
+                due = o.leave_by
+                forecast = next((w for w in o.weather if w.station == x.board), None)
+                if profile.alerts.weather_allowance and forecast is not None:
+                    allowance = weather_allowance(
+                        due,
+                        int(buffer.total_seconds() // 60),
+                        forecast,
+                        now,
+                        elapsed_grace=DEPARTURE_REMINDER_WINDOW,
+                    )
+                    if allowance is not None:
+                        due = allowance.suggested_leave_by
+                reminder = f"{base}|leave_by"
+                if due <= t < due + DEPARTURE_REMINDER_WINDOW and reminder not in sent:
+                    return reminder
             if (
                 place
                 and x.progress is not LegState.RIDING

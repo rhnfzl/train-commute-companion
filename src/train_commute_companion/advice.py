@@ -1,6 +1,7 @@
 """Earlier-train advice over the whole journey (7.6, 7.12 rule 17). Pure, no clock."""
 
 import itertools
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, tzinfo
 
@@ -55,7 +56,7 @@ def _trains(c: Connection) -> tuple[TrainId, ...]:
     return tuple(x.train for x in c.legs)
 
 
-def is_unrideable(c: Connection, answer: ProviderAnswer, profile_min: dict[str, int]) -> bool:
+def is_unrideable(c: Connection, answer: ProviderAnswer, profile_min: Mapping[str, int]) -> bool:
     """A leg is cancelled or cut short, or a transfer is broken: waiting does not get you there.
     Each leg is judged as the newest evidence shows it, against `c`'s own alighting stop (6.2)."""
     cur = current_connection(evidence(answer), c)

@@ -8,26 +8,32 @@ from datetime import date, datetime, time, timedelta
 from enum import StrEnum
 
 from train_commute_companion.advice import (
+    is_unrideable,
     leave_now_text,
+    ridden_journey,
     still_advised,
     usual_arrival,
     waiting_is_bad,
 )
+from train_commute_companion.arrival import arrival_status
 from train_commute_companion.calendar import TZ, hhmm, to_utc
-from train_commute_companion.classify import current_run, find_leg
+from train_commute_companion.classify import current_connection, current_run, find_leg
 from train_commute_companion.delivery import JOURNEY_WARNINGS, covers
 from train_commute_companion.disruptions import LEGACY_PRIMARY
-from train_commute_companion.health import FRESH_FOR, WatchedLeg
+from train_commute_companion.health import FRESH_FOR, BoardPhase, WatchedLeg, board_health
 from train_commute_companion.lifecycle import (
     PollAnswers,
     find_next_good,
     left_note,
+    make_event,
     merged_pool,
     next_stated_delay,
     observe,
     origin_answer,
+    place_zone,
 )
 from train_commute_companion.lifecycle_lock import progress_of
+from train_commute_companion.location import DEPARTURE_REMINDER_WINDOW, STALE_LOCATION
 from train_commute_companion.lookahead import render_message
 from train_commute_companion.lookahead_probe import (
     LOUD_FACT,
@@ -69,6 +75,7 @@ from train_commute_companion.notification_policy import (
     routing_ready,
 )
 from train_commute_companion.providers.base import ProviderAnswer
+from train_commute_companion.providers.weather import WeatherView
 from train_commute_companion.recovery_state import ORIGINAL_ROUTINE
 from train_commute_companion.revisions import (
     commute_day_for,
@@ -91,6 +98,7 @@ from train_commute_companion.state import (
 from train_commute_companion.store import PersistedState
 from train_commute_companion.timetable_receipts import correction_keys
 from train_commute_companion.unclear import train_key
+from train_commute_companion.weather_allowance import weather_allowance
 
 # ongoing facts a poll restates while they last: a held one holds while its key is live (rule 5)
 _ONGOING = frozenset(
@@ -106,6 +114,7 @@ _ONGOING = frozenset(
 OBSERVED = frozenset(
     {
         EventKind.ALL_GOOD,
+        EventKind.DEPARTURE_REMINDER,
         EventKind.ARRIVAL_TARGET,
         EventKind.LEAVE_NOW,
         EventKind.EARLIER_TRAIN_WITHDRAWN,
@@ -347,10 +356,14 @@ class LiveLedger:
         available_channels: Callable[[], frozenset[NotificationChannel]] = lambda: CHANNELS,
         format_event: Callable[[AlertEvent], AlertEvent] = lambda event: event,
         primary_enabled: Callable[[AlertSettings], bool] = lambda settings: True,
+        departure_weather: Callable[[str, datetime, datetime], WeatherView | None] = (
+            lambda station, when, now: None
+        ),
     ) -> None:
         self._available_channels = available_channels
         self._format_event = format_event
         self._primary_enabled = primary_enabled
+        self._departure_weather = departure_weather
         self._written, self._judged, self._memory, self._now = written, judged, memory, now
 
     @property
@@ -384,6 +397,98 @@ class LiveLedger:
                     state, ctx, self._memory.boards.get(okey(key), ())
                 )
         return current_text(self._state, o, now, observations)
+
+    def departure_reminder(self, s: OccurrenceState) -> AlertEvent | None:
+        ctx = self._ctx(s)
+        p = routing_profile(self._state, s.key.profile_id, s.route_revision)
+        if (
+            ctx is None
+            or p is None
+            or p.location is None
+            or not p.alerts.location_leave_now
+            or not p.alerts.leave_by
+            or not same_route(ctx.profile, p)
+            or p.paused_on(commute_day_for(p, s.key.direction, s.key.service_date))
+            or s.lock is None
+            or s.lock.unproven
+            or s.travelling
+            or s.at_station
+            or s.not_travelling
+            or (s.advice is not None and s.advice.active)
+            or (s.selected_recovery is not None and s.selected_recovery.status == "active")
+            or board_health(s.poll_records, ctx.now).phase is not BoardPhase.HEALTHY
+        ):
+            return None
+        first = s.lock.legs[0]
+        origin = p.origin(s.key.direction)
+        buffer = p.journey(s.key.direction).buffer_min
+        now = to_utc(ctx.now)
+        seen = s.zone_reports.get(place_zone(p, origin))
+        answers = tuple(
+            a
+            for a in self._memory.boards.get(okey(s.key), ())
+            if timedelta() <= now - to_utc(a.fetched_at) < FRESH_FOR
+        )
+        if (
+            first.board_station != origin
+            or first.state not in (LegState.PENDING, LegState.BOARDING)
+            or buffer <= 0
+            or seen is None
+            or not timedelta() <= now - to_utc(seen) <= STALE_LOCATION
+            or not answers
+            or okey(s.key) in self._memory.blind
+        ):
+            return None
+        pool = merged_pool(answers)
+        ride = ridden_journey(s, ctx, pool)
+        if ride is None or ride.destination != p.destination(ctx.direction):
+            return None
+        if is_unrideable(ride, pool, p.transfer_min):
+            return None
+        current = current_connection(answers, ride)
+        if any(leg.reachable is False for leg in current.legs):
+            return None
+        deadline = ctx.schedule.arrival_deadline
+        last = current.legs[-1].alight
+        reported = (
+            last.arrival.value
+            if last.arrival and last.arrival.provenance is Provenance.REPORTED
+            else None
+        )
+        if (
+            deadline is not None
+            and arrival_status(deadline, last.planned_arrival, reported) != "on_target"
+        ):
+            return None
+        departure = current.legs[0].board.departure
+        if (
+            departure is None
+            or departure.provenance is not Provenance.REPORTED
+            or departure.value is None
+            or now >= to_utc(departure.value)
+        ):
+            return None
+        due = leave_by(first.train.planned_departure, departure.value, buffer)
+        weather = (
+            self._departure_weather(origin, departure.value, ctx.now)
+            if p.alerts.weather and p.alerts.weather_allowance
+            else None
+        )
+        allowance = (
+            weather_allowance(due, buffer, weather, now, elapsed_grace=DEPARTURE_REMINDER_WINDOW)
+            if weather is not None
+            else None
+        )
+        if allowance is not None:
+            due = allowance.suggested_leave_by
+        if not timedelta() <= now - due < DEPARTURE_REMINDER_WINDOW:
+            return None
+        text = f"Leave now for the {hhmm(departure.value)} train."
+        if allowance is not None:
+            hazard = "possible ice" if allowance.hazard == "ice" else allowance.hazard
+            text += f" Allow {allowance.extra_min} extra minutes for forecast {hazard}."
+        event = make_event(ctx, EventKind.DEPARTURE_REMINDER, Severity.SILENT, text, key_facts="")
+        return replace(event, train=first.train)
 
     def _alerts(self, o: Obligation) -> AlertSettings:
         p = routing_profile(self._state, o.event.profile_id, o.route_revision)
@@ -581,6 +686,15 @@ class LiveLedger:
         """Rule 5(b): the message's fact, regenerated from the current state and the latest
         healthy answers."""
         e, k, mem = o.event, okey(s.key), self._memory
+        if e.kind is EventKind.DEPARTURE_REMINDER:
+            if (
+                not timedelta()
+                <= to_utc(self._now()) - to_utc(e.created_at)
+                < DEPARTURE_REMINDER_WINDOW
+            ):
+                return False
+            reminder = self.departure_reminder(s)
+            return reminder is not None and reminder.train == e.train
         if e.kind is EventKind.ARRIVAL_TARGET:
             ctx, facts = self._ctx(s), alert_facts(e)
             if (
@@ -805,6 +919,12 @@ class LiveLedger:
                     key = f"lookahead|{pid}|{direction.value}|{day.isoformat()}|{bundle_key(live)}"
                     event = replace(event, key=key)
                 return event
+        if o.event.kind is EventKind.DEPARTURE_REMINDER:
+            state = None if o.occurrence is None else self._occurrence(o.occurrence)
+            current = None if state is None else self.departure_reminder(state)
+            if current is None or current.train != o.event.train:
+                return None
+            return replace(o.event, text=current.text + alert_facts(o.event).twin_note)
         e = self._regenerated(o, self._relocked(o, o.event))
         p = find_profile(self._state.config, e.profile_id)
         if p is None or p.name == e.profile_name:

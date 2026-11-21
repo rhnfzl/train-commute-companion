@@ -649,6 +649,7 @@ class ProfileEditorFlow:
             "commute_stats",
             "weekly_recap",
             "after_trip_note",
+            "location_leave_now",
             "custom_timetable_horizon",
             "live_today",
             "telegram_status_pin",
