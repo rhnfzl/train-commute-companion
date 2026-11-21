@@ -19,6 +19,7 @@ from train_commute_companion.calendar_export import CalendarExportError, export_
 from train_commute_companion.route_export import export_preview
 from train_commute_companion.view import RuntimeView
 
+from .ntfy import NtfyProof
 from .today import ICONS, MANIFEST, MANIFEST_PATH, PAUSED_PATH, TODAY_PATH
 from .today import render as render_today
 
@@ -140,11 +141,13 @@ def _authorized(header: str | None, secret: str) -> bool:
     return hmac.compare_digest(decoded.partition(b":")[2], secret.encode())
 
 
-def _today_authorized(header: str | None, token: str) -> bool:
+def _bearer_authorized(header: str | None, token: str) -> bool:
     scheme, _, given = (header or "").partition(" ")
-    return (
-        scheme.lower() == "bearer" and hmac.compare_digest(given.encode(), token.encode())
-    ) or _authorized(header, token)
+    return scheme.lower() == "bearer" and hmac.compare_digest(given.encode(), token.encode())
+
+
+def _today_authorized(header: str | None, token: str) -> bool:
+    return _bearer_authorized(header, token) or _authorized(header, token)
 
 
 def _response(
@@ -165,8 +168,7 @@ def health_for(
 ) -> tuple[int, dict[str, Any]]:
     """The full report only with `Authorization: Bearer <token>`; the peer address is no trust
     signal (a proxy in the same network namespace connects from loopback). Everyone else gets `ok`."""
-    scheme, _, given = headers.get("authorization", "").partition(" ")
-    if token and scheme.lower() == "bearer" and hmac.compare_digest(given.encode(), token.encode()):
+    if token and _bearer_authorized(headers.get("authorization"), token):
         return status, report
     return status, {"ok": bool(report.get("ok"))}
 
@@ -180,6 +182,7 @@ async def start_web(
     host: str = "0.0.0.0",
     health_token: str | None = None,
     today: Callable[[], tuple[RuntimeView, bool]] | None = None,
+    delivery: NtfyProof | None = None,
 ) -> asyncio.Server:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -268,6 +271,20 @@ async def start_web(
                                         + f'\r\nContent-Disposition: attachment; filename="{filename}"',
                                     )
                                 )
+                elif method == "POST" and path in ("/delivery/test", "/delivery/confirm"):
+                    if delivery is None or not health_token:
+                        writer.write(_response(404))
+                    elif not _bearer_authorized(headers.get("authorization"), health_token):
+                        writer.write(_response(401))
+                    else:
+                        status, result = await (
+                            delivery.test() if path == "/delivery/test" else delivery.confirm(body)
+                        )
+                        writer.write(
+                            _response(
+                                status, json.dumps(result).encode(), extra="Cache-Control: no-store"
+                            )
+                        )
                 elif method == "GET" and path == "/health":
                     status, report = health_for(headers, *health(), health_token)
                     writer.write(

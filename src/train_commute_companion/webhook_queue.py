@@ -15,6 +15,7 @@ from train_commute_companion.delivery import (
     copy_destinations,
     covers,
     post_copy,
+    same_disruption_revision,
 )
 from train_commute_companion.model import Obligation, OccurrenceKey, WebhookCopy, alert_facts
 from train_commute_companion.notify import WebhookPort, destination_id
@@ -132,6 +133,18 @@ class CopyQueue:
         cid = event_id(o.id)
         if cid in self.copies:
             return False
+        targets = frozenset(destination_id(self.port, u) for u in self.port.urls)
+        if o.target_ids is not None:
+            targets &= o.target_ids
+        pinned = alert_facts(o.event).disruption_targets
+        if pinned is not None:
+            targets &= pinned
+            # Partial receipts can change the next alert's audience without changing its news.
+            for copy in self.copies.values():
+                if same_disruption_revision(o, copy.obligation):
+                    targets -= copy.target_ids or frozenset()
+            if not targets:
+                return False
         # rule 5(b): the copies this message covers end now, so a receiver that comes back never
         # gets them after it, also once its own copy was accepted or a restart came between
         for c in [c for c in self.copies.values() if covers(o, c.obligation)]:
@@ -143,12 +156,6 @@ class CopyQueue:
             )
             self.drop(old.id)
             log.warning("dropped a webhook copy: more than %d owed", MAX_COPIES)
-        targets = frozenset(destination_id(self.port, u) for u in self.port.urls)
-        if o.target_ids is not None:
-            targets &= o.target_ids
-        pinned = alert_facts(o.event).disruption_targets
-        if pinned is not None:
-            targets &= pinned
         self.copies[cid] = WebhookCopy(cid, o, target_ids=targets)
         if held:
             self.held.add(cid)

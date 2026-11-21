@@ -94,3 +94,7 @@ def lookahead_direction(rt, p, d, works):
 
 def poll_memory(rt):
     return rt._memory
+
+
+def apply_lookahead_run(rt, profile, direction, run):
+    rt._apply_lookahead_run(profile, direction, run)

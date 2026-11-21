@@ -444,6 +444,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "timetable_horizon_count",
             "live_today",
             "telegram_status_pin",
+            "ntfy_enabled",
         ),
         "alerts",
     )
@@ -479,6 +480,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
     pin = c.boolean(
         raw.get("telegram_status_pin", d.telegram_status_pin), "alerts.telegram_status_pin"
     )
+    ntfy = c.boolean(raw.get("ntfy_enabled", d.ntfy_enabled), "alerts.ntfy_enabled")
     compensation = raw.get("compensation_reminder", False)
     if not isinstance(compensation, bool):
         c.err("alerts.compensation_reminder", "must be true or false")
@@ -545,6 +547,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         or custom_horizon is None
         or live_today is None
         or pin is None
+        or ntfy is None
     ):
         return None
     return AlertSettings(
@@ -566,6 +569,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         timetable_horizon_count=horizon_count,
         live_today=live_today,
         telegram_status_pin=pin,
+        ntfy_enabled=ntfy,
     )
 
 

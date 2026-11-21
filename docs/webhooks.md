@@ -8,6 +8,8 @@ Data: NS.
 
 One POST per alert to every configured URL. The webhook gets the same alerts as your phone, with the same text, and quiet hours hold silent alerts back for both. The phone stays the channel that counts: a webhook that is down never holds back or repeats a phone alert.
 
+A webhook receives a timetable correction only when it accepted the earlier timetable change. If a message combines the correction with other updates, a webhook without that receipt can still receive those updates.
+
 ## Headers
 
 The signature follows [Standard Webhooks](https://www.standardwebhooks.com/).

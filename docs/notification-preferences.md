@@ -118,7 +118,10 @@ alerts:
     delays: [primary]
 ```
 
-`primary` means the configured Telegram chat or Home Assistant phone. `email` means native SMTP delivery in Docker. `webhook` means every configured webhook URL. A category omitted from `channels` uses all configured channels. `disabled_categories` overrides channel choices.
+`primary` means the configured ntfy destination, Telegram chat, or Home Assistant phone.
+In Docker, configured ntfy becomes primary; Telegram can still provide commands and answers.
+`email` means native SMTP delivery in Docker. `webhook` means every configured webhook URL.
+A category omitted from `channels` uses all configured channels. `disabled_categories` overrides channel choices.
 
 Channel lists must contain at least one of `primary`, `email`, or `webhook`. Use `disabled_categories` to suppress a category entirely. Unknown categories and channels are rejected. Reliability and command feedback continue through all configured channels.
 

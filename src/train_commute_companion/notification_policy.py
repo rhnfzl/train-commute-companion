@@ -69,14 +69,20 @@ CHANNELS: frozenset[NotificationChannel] = frozenset(get_args(NotificationChanne
 
 
 def channels_for(
-    settings: AlertSettings, kind: EventKind, *, look_ahead: bool = False
+    settings: AlertSettings,
+    kind: EventKind,
+    *,
+    look_ahead: bool = False,
+    primary_enabled: bool = True,
 ) -> frozenset[NotificationChannel]:
     category = "planned_works" if look_ahead and kind is EventKind.RESTORED else category_for(kind)
     if category is None:
-        return CHANNELS
-    if category in settings.disabled_categories:
-        return frozenset()
-    return settings.channels.get(category, CHANNELS)
+        selected = CHANNELS
+    elif category in settings.disabled_categories:
+        selected = frozenset()
+    else:
+        selected = settings.channels.get(category, CHANNELS)
+    return selected if primary_enabled else selected - {"primary"}
 
 
 def channel_enabled(

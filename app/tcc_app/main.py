@@ -38,6 +38,7 @@ from .bot import Bot
 from .commands import answer
 from .email_settings import CopyPort, CopyPorts, email_settings
 from .follow import Follower
+from .ntfy import NTFY_DESTINATION_PREFIX, NtfyNotifier, NtfyProof, NtfySettings, ntfy_settings
 from .telegram import TelegramApi, TelegramNotifier
 from .travel_actions import TravelActions, agent_tokens
 from .travel_language import LanguageSettings, TravelLanguage, language_settings
@@ -104,13 +105,19 @@ class Settings:
     mcp_remote_bind: str = "127.0.0.1"
     mcp_remote_hosts: tuple[str, ...] = ()
     travel_language: LanguageSettings | None = None
+    ntfy: NtfySettings | None = None
 
     @staticmethod
     def from_env(env: Mapping[str, str]) -> "Settings":
         """Errors name the variable, never its value."""
         ns_key = _required(env, "NS_API_KEY")
-        bot_token = _required(env, "TELEGRAM_BOT_TOKEN")
+        ntfy = ntfy_settings(env)
+        bot_token = _optional(env, "TELEGRAM_BOT_TOKEN") or ""
+        if not bot_token and ntfy is None:
+            raise ValueError("TELEGRAM_BOT_TOKEN is not set; configure Telegram or ntfy phone push")
         chat_id = _chat_id(env)
+        if chat_id is not None and not bot_token:
+            raise ValueError("TELEGRAM_CHAT_ID requires TELEGRAM_BOT_TOKEN")
         lookahead_at = _lookahead_at(env)
         health_token = _optional(env, "TCC_HEALTH_TOKEN")
         try:
@@ -155,6 +162,7 @@ class Settings:
             remote_bind,
             remote_hosts,
             language_settings(env),
+            ntfy,
         )
 
 
@@ -226,16 +234,33 @@ def _health_token(settings: Settings) -> str:
 class App:
     settings: Settings
     rt: Runtime
-    notifier: TelegramNotifier
-    bot: Bot
+    notifier: TelegramNotifier | NtfyNotifier
+    bot: Bot | None
     follower: Follower
     webhooks: CopyPort | None = None
     phase: ProcessPhase = ProcessPhase.NEW
+    ntfy_proof: NtfyProof | None = None
+    travel_actions: TravelActions | None = None
+
+    @property
+    def confirmed(self) -> bool:
+        if self.ntfy_proof is not None:
+            return self.ntfy_proof.confirmed
+        return self.bot is not None and self.bot.confirmed
 
 
 def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncClient) -> App:
-    api = TelegramApi(s.bot_token, client)
-    notifier = TelegramNotifier(api, s.chat_id, clock.now)
+    api = TelegramApi(s.bot_token, client) if s.bot_token else None
+    telegram = TelegramNotifier(api, s.chat_id, clock.now) if api is not None else None
+    notifier = (
+        NtfyNotifier(
+            s.ntfy, client, clock.now, send_allowed=lambda event: rt.primary_send_allowed(event)
+        )
+        if s.ntfy is not None
+        else telegram
+    )
+    if notifier is None:
+        raise ValueError("configure Telegram or ntfy phone push")
     webhooks: CopyPort | None = None
     webhook_test = None
     if s.webhook_urls:  # the one client serves NS, Telegram and the webhooks
@@ -256,6 +281,14 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         webhooks=webhooks,
         primary_destination=lambda: notifier.destination_id,
         weather=WeatherProvider(client, clock.now, s.knmi_key),
+        primary_destination_scope=lambda destination: destination.startswith(
+            NTFY_DESTINATION_PREFIX
+        ),
+        park_primary_pin=lambda destination: (
+            destination.startswith("telegram:")
+            if s.ntfy is not None
+            else destination.startswith(NTFY_DESTINATION_PREFIX)
+        ),
     )
     follower = Follower(rt)
     preferences = TravelPreferences(s.state_dir / "travel-preferences.json", rt.now)
@@ -272,28 +305,39 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         preferences,
         language_identity=language_identity,
     )
-    bot = Bot(
-        api,
-        rt,
-        s.chat_id,
-        s.state_dir / "telegram.json",
-        follower,
-        webhook_test,
-        notifier.bind_chat,
-        travel_actions=actions,
-        travel_language=TravelLanguage(language, client) if language is not None else None,
+    bot = (
+        Bot(
+            api,
+            rt,
+            s.chat_id,
+            s.state_dir / "telegram.json",
+            follower,
+            webhook_test,
+            telegram.bind_chat if telegram is not None else None,
+            travel_actions=actions,
+            travel_language=TravelLanguage(language, client) if language is not None else None,
+        )
+        if api is not None
+        else None
     )
-    return App(s, rt, notifier, bot, follower, webhooks)
+    proof = (
+        NtfyProof(notifier, s.state_dir / "ntfy-proof.json", clock.now)
+        if isinstance(notifier, NtfyNotifier)
+        else None
+    )
+    return App(s, rt, notifier, bot, follower, webhooks, ntfy_proof=proof, travel_actions=actions)
 
 
 def mcp_answer(app: App) -> Callable[[object], dict[str, Any]]:
     """The read-out gets a view and the confirmed flag, never the runtime or the settings."""
-    return lambda req: answer(app.rt.view(), app.bot.confirmed, req)
+    return lambda req: answer(app.rt.view(), app.confirmed, req)
 
 
 async def dispatch_mcp(app: App, request: dict[str, Any], token: str | None) -> dict[str, Any]:
     if request.get("tool") in ("get_status", "get_next_connections", "get_works_ahead"):
         return mcp_answer(app)(request)
+    if app.bot is None:
+        return {"status": "denied", "text": "Connect Telegram to manage travel plans."}
     return await app.bot.travel_actions.dispatch(request, token, app.bot.prompt_travel_approval)
 
 
@@ -316,28 +360,30 @@ async def serve(app: App, port: int) -> int:
             health=lambda: health_report(
                 app.rt.view(),
                 not runtime.done(),
-                app.bot.confirmed,
+                app.confirmed,
                 app.webhooks.failing if app.webhooks else None,
             ),
             owntracks=owntracks.handler(app.follower) if secret else None,
             secret=secret,
             health_token=app.settings.health_token,
-            today=lambda: (app.rt.view(), app.bot.confirmed),
+            today=lambda: (app.rt.view(), app.confirmed),
+            delivery=app.ntfy_proof,
         )
         if app.settings.mcp_socket is not None:
             readout = await start_readout(
                 app.settings.mcp_socket,
                 mcp_answer(app),
-                actions=dispatch if app.settings.mcp_agents else None,
+                actions=dispatch if app.settings.mcp_agents and app.bot is not None else None,
             )
-        if app.settings.mcp_remote_port is not None:
+        actions = app.travel_actions
+        if app.settings.mcp_remote_port is not None and actions is not None:
             from .mcp_remote import serve_remote
 
             try:
                 await remote.enter_async_context(
                     serve_remote(
                         dispatch,
-                        lambda token: app.bot.travel_actions.agent(token) is not None,
+                        lambda token: actions.agent(token) is not None,
                         host=app.settings.mcp_remote_bind,
                         port=app.settings.mcp_remote_port,
                         allowed_hosts=app.settings.mcp_remote_hosts,
@@ -348,9 +394,11 @@ async def serve(app: App, port: int) -> int:
                     "Remote MCP did not start (%s); local monitoring continues.",
                     type(error).__name__,
                 )
-        bot = asyncio.create_task(app.bot.run(), name="telegram")
+        workers = {runtime}
+        if app.bot is not None:
+            workers.add(asyncio.create_task(app.bot.run(), name="telegram"))
         app.phase = ProcessPhase.RUNNING
-        done, _ = await asyncio.wait((runtime, bot), return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait(workers, return_when=asyncio.FIRST_COMPLETED)
         for t in done:
             if not t.cancelled() and (e := t.exception()) is not None:
                 log.error("%s stopped", t.get_name(), exc_info=e)
@@ -382,12 +430,21 @@ async def _clean_up(
         if srv is not None:
             srv.close()
     # Server.close leaves open connection handlers running: every task begun here goes,
-    # except a Telegram save, whose worker thread outlives a cancel (bot.close drains it)
-    rest = asyncio.all_tasks() - before - {asyncio.current_task()} - app.bot.writes
+    # except notification saves, whose worker threads outlive cancellation and must be drained
+    rest = (
+        asyncio.all_tasks()
+        - before
+        - {asyncio.current_task()}
+        - (app.bot.writes if app.bot else set())
+        - (app.ntfy_proof.writes if app.ntfy_proof else set())
+    )
     for t in rest:
         t.cancel()
     await asyncio.gather(*rest, return_exceptions=True)
-    await app.bot.close()
+    if app.bot is not None:
+        await app.bot.close()
+    if app.ntfy_proof is not None:
+        await app.ntfy_proof.close()
     await app.follower.close()
     for srv in (server, readout):
         if srv is not None:

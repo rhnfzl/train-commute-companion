@@ -124,7 +124,7 @@ def test_render_status_two_occurrences_and_global_lines():
               "Office A: moved", "Works ahead: Office A outbound: Tue 27 Oct",
               "Planned-works check: last ok Sun 25 Oct 06:00",
               "Planned-works check: not run yet",
-              "Delivery not confirmed yet: send /test."):  # fmt: skip
+              "Delivery not confirmed yet. Complete your phone delivery test."):  # fmt: skip
         assert g in lines
     assert lines[-1] == "Data: NS"
 
@@ -274,7 +274,7 @@ def test_unhealthy_states_show_the_same_warnings_as_status():  # Review Focus 3
     assert text == render_status(v, False)
     for w in ("State cannot be saved; retrying.", "Your NS key was rejected.",
               "2 alerts not delivered yet.", "  NS data: not fresh since 08:10",
-              "Delivery not confirmed yet: send /test."):  # fmt: skip
+              "Delivery not confirmed yet. Complete your phone delivery test."):  # fmt: skip
         assert w in text.splitlines()
 
 
@@ -352,7 +352,7 @@ def test_every_tool_carries_the_warnings():  # Review Focus 3
     for req in (NEXT, WORKS):
         lines = answer(v, False, req)["text"].splitlines()
         for w in ("Your NS key was rejected.", "State cannot be saved; retrying.",
-                  "2 alerts not delivered yet.", "Delivery not confirmed yet: send /test."):  # fmt: skip
+                  "2 alerts not delivered yet.", "Delivery not confirmed yet. Complete your phone delivery test."):  # fmt: skip
             assert w in lines
         assert lines[-1] == "Data: NS"
 
@@ -367,7 +367,7 @@ def test_every_tool_shows_every_warning_status_shows():  # Review Focus 3, codex
     warnings = [
         "  NS data: not fresh since 07:10", "  NS data: fresh, last poll failed",
         "State cannot be saved; retrying.", moved.text,
-        "Planned-works check: last ok Sun 25 Oct 04:00", "Delivery not confirmed yet: send /test.",
+        "Planned-works check: last ok Sun 25 Oct 04:00", "Delivery not confirmed yet. Complete your phone delivery test.",
     ]  # fmt: skip
     status = render_status(v, False).splitlines()
     for req in ({"tool": "get_status", "profile": "p1"}, NEXT, {**NEXT, "direction": "return"},

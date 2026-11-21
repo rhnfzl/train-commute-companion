@@ -12,6 +12,8 @@ from train_commute_companion.lookahead_probe import (
     ProbeResult,
     adopt_key,
     bundle_key,
+    bundle_names,
+    cancel_key,
     evaluate,
     probe_dates,
     probe_queries,
@@ -102,7 +104,14 @@ async def probe_direction(
 
 
 def apply_run(
-    st: PersistedState, queue: CopyQueue, p: Profile, d: Direction, run: ProbedRun
+    st: PersistedState,
+    queue: CopyQueue,
+    p: Profile,
+    d: Direction,
+    run: ProbedRun,
+    *,
+    track_adoptions: bool = False,
+    pending_receipts: Mapping[str, frozenset[str]] | None = None,
 ) -> PersistedState | None:
     """`st` (the state now, at write time) with the run, its owed copies in `queue` following its
     messages; None when it is discarded (rule 21), and then those copies are left as they were."""
@@ -116,11 +125,28 @@ def apply_run(
     )
     ledger = replace(stored, started_revision=run.revision, started_baseline=run.baseline)
     current = st.baselines.get(dk, BaselineHistory())
+    if pending_receipts:
+        receipts = dict(stored.adoption_receipts)
+        # A failed receipt write still proves delivery. Only current versions can be withdrawn.
+        for version in current.versions:
+            receipt_key = cancel_key(version.version)
+            if accepted := pending_receipts.get(receipt_key):
+                receipts[receipt_key] = receipts.get(receipt_key, frozenset()) | accepted
+        ledger = replace(ledger, adoption_receipts=receipts)
     all_bases = {
         (x.id, y): st.baselines.get(direction_key(x.id, y), BaselineHistory())
         for x in cfg.profiles
         for y in Direction
         if (x.id, y) != (p.id, d)
+    }
+    # A queued adoption or an already-attempted copy can still report a late acceptance.
+    started = (*stored.pending, *(c.obligation for c in queue.copies.values() if c.first_try))
+    awaiting = {
+        correction
+        for o in started
+        if o.look_ahead is not None
+        and o.look_ahead[:2] == (p.id, d)
+        and (correction := adoption_correction(o)) is not None
     }
     out = run_lookahead(
         p,
@@ -136,6 +162,8 @@ def apply_run(
         skipped=_skipped_dates(st, p, d),
         probe_finished=run.probe_finished,
         replaced=lambda sd: travel_replaces(st, p, d, commute_day_for(p, d, sd)),
+        awaiting_adoption=awaiting,
+        track_adoptions=track_adoptions,
     )
     if out is None:
         log.info("look-ahead for %s discarded: configuration or baseline changed", dk)
@@ -181,13 +209,17 @@ def _carry_copies(
     for old, new in carried_ids(stored, new_ledger).items():
         if old not in was or new not in pending:
             continue
-        n = replace(pending[new], webhook_copied=True)
+        prior = was[old]
         c = next((c for c in queue.copies.values() if c.obligation.id == old), None)
+        pending[new] = n = replace(
+            pending[new],
+            target_ids=prior.target_ids,
+            primary_target_pending=prior.primary_target_pending,
+            primary_suppressed=prior.primary_suppressed,
+            webhook_copied=c is not None or prior.webhook_copied or old in queue.copied,
+        )
         if c is not None:  # the same copy: its webhook-id, receipts and tries stay
             queue.rewrite(c, n)
-            pending[new] = n
-        elif was[old].webhook_copied or old in queue.copied:  # it ended: no second one
-            pending[new] = n
     return pending
 
 
@@ -246,8 +278,43 @@ def _copies_through(
     rewritten = _rewrite_withdrawn(queue, p, d, was, stored, current, new_hist)
     owed = {c.obligation.id for c in queue.copies.values()}
     carry = {i: f for i, f in stored.facts.items() if i in owed}
+    facts = {**carry, **rewritten, **new_ledger.facts}
+    live_corrections = {cancel_key(v.version) for v in new_hist.versions}
+    live_corrections.update(f.key for fs in facts.values() for f in fs if f.cancels)
     return replace(
         new_ledger,
         pending=tuple(pending.values()),
-        facts={**carry, **rewritten, **new_ledger.facts},
+        facts=facts,
+        adoption_receipts={
+            key: destinations
+            for key, destinations in new_ledger.adoption_receipts.items()
+            if key in live_corrections
+        },
     )
+
+
+def adoption_correction(o: Obligation) -> str | None:
+    version = o.baseline_version
+    if o.look_ahead is None or version is None or not bundle_names(o.fact_key, adopt_key(version)):
+        return None
+    return cancel_key(version)
+
+
+def lookahead_received(
+    ledgers: dict[str, LookAheadLedger],
+    received: Sequence[tuple[Obligation, str]],
+    *,
+    track_adoptions: bool,
+) -> dict[str, LookAheadLedger]:
+    for o, destination in received:
+        correction = adoption_correction(o)
+        if o.look_ahead is None or correction is None:
+            continue
+        pid, direction, _ = o.look_ahead
+        key = direction_key(pid, direction)
+        ledger = ledgers.get(key)
+        if ledger is not None and (track_adoptions or correction in ledger.adoption_receipts):
+            receipts = ledger.adoption_receipts
+            destinations = receipts.get(correction, frozenset()) | {destination}
+            ledgers[key] = replace(ledger, adoption_receipts={**receipts, correction: destinations})
+    return ledgers

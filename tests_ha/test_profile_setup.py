@@ -138,6 +138,8 @@ async def test_check_in_fields_are_optional_without_a_forced_default(hass, monke
     assert flow["step_id"] == "profile_details"
     switch = next(k for k in flow["data_schema"].schema if str(k) == "leave_by")
     assert switch.default() is True
+    ntfy = next(k for k in flow["data_schema"].schema if str(k) == "ntfy_enabled")
+    assert ntfy.default() is True
     switch = next(k for k in flow["data_schema"].schema if str(k) == "weather_allowance")
     assert switch.default() is True
     flow = await details(hass, flow, leave_by=False, weather_allowance=False)
@@ -438,6 +440,7 @@ async def test_options_profile_edit_preserves_advanced_settings(
             count_selector(invalid)
     assert shown(flow)["live_today"] is True
     assert shown(flow)["telegram_status_pin"] is True
+    assert shown(flow)["ntfy_enabled"] is True
     flow = await hass.config_entries.options.async_configure(
         flow["flow_id"],
         {
@@ -450,6 +453,7 @@ async def test_options_profile_edit_preserves_advanced_settings(
             "timetable_horizon_count": 10.0,
             "live_today": live_today,
             "telegram_status_pin": telegram_status_pin,
+            "ntfy_enabled": False,
         },
     )
     assert flow["type"] is FlowResultType.ABORT and flow["reason"] == "profile_saved"
@@ -466,6 +470,7 @@ async def test_options_profile_edit_preserves_advanced_settings(
         "custom_timetable_horizon": True,
         "timetable_horizon_unit": "calendar_days",
         "timetable_horizon_count": 10,
+        "ntfy_enabled": False,
         **({"live_today": False} if not live_today else {}),
         **({"telegram_status_pin": False} if not telegram_status_pin else {}),
     }

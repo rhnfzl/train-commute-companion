@@ -19,6 +19,8 @@ def test_defaults_roundtrip_and_old_stored_settings():
     settings = replace(AlertSettings(), disabled_categories=frozenset({"delays", "crowding"}))
     assert loads(AlertSettings, dumps(settings)) == settings
     assert decode(AlertSettings, {}).disabled_categories == frozenset()
+    assert decode(AlertSettings, {}).ntfy_enabled is True
+    assert loads(AlertSettings, dumps(AlertSettings(ntfy_enabled=False))).ntfy_enabled is False
 
 
 @pytest.mark.parametrize(

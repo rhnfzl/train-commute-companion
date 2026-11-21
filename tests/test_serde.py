@@ -25,7 +25,8 @@ def test_ledger_facts_stay_plain_lists_on_disk():
     stored += '"started_revision": 0}'
     led = loads(LookAheadLedger, stored)
     assert led.facts["o"] == (LookAheadFact("adopt:2", "moved", False, True),)
-    assert led.facts["o"][0].warning and dumps(led) == stored
+    assert led.facts["o"][0].warning
+    assert json.loads(dumps(led)) == {"adoption_receipts": {}, **json.loads(stored)}
 
 
 @pytest.mark.parametrize("bad", [["k", "t", False], ["k", "t", "no", False], "k"])

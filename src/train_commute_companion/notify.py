@@ -57,10 +57,14 @@ class NotificationPaused(Exception):
     """The user paused delivery; keep a relevant alert without recording a failed attempt."""
 
 
+class NotificationSuppressed(Exception):
+    """The recipient opted out while delivery was in progress."""
+
+
 class Notifier(Protocol):
     async def send(self, event: AlertEvent) -> bool:
         """True when the message got through. False or an exception is a failed attempt, which
-        the runtime retries. NotificationPaused defers without a failed attempt."""
+        the runtime retries. NotificationPaused defers. NotificationSuppressed drops the alert."""
         ...
 
 

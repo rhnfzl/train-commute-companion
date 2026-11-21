@@ -132,7 +132,7 @@ def render(view: RuntimeView, confirmed: bool, *, paused: bool = False) -> str:
 </header>
 <section aria-labelledby="journeys-heading">
 <h2 id="journeys-heading">Journeys and service health</h2>
-<p>Companion: {service}. Telegram delivery: {delivery}.</p>
+<p>Companion: {service}. Phone delivery: {delivery}.</p>
 <pre>{status}</pre>
 </section>
 <section aria-labelledby="freshness-heading">
