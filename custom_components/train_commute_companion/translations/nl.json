@@ -338,6 +338,9 @@
   "config_subentries": {
     "profile": {
       "entry_type": "Woon-werkprofiel",
+      "initiate_flow": {
+        "user": "Woon-werkprofiel toevoegen"
+      },
       "step": {
         "profile": {
           "title": "Je woon-werkreis",

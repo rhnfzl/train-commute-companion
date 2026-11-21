@@ -28,6 +28,7 @@ async def test_home_assistant_loads_dutch_setup_and_options(hass):
     config = await async_get_translations(hass, "nl", "config", {DOMAIN})
     options = await async_get_translations(hass, "nl", "options", {DOMAIN})
     selector = await async_get_translations(hass, "nl", "selector", {DOMAIN})
+    subentries = await async_get_translations(hass, "nl", "config_subentries", {DOMAIN})
     prefix = f"component.{DOMAIN}"
     assert config[f"{prefix}.config.step.user.data.api_key"] == "NS API-sleutel"
     assert config[f"{prefix}.config.step.profile.data.home_station"] == "Station bij huis"
@@ -36,6 +37,9 @@ async def test_home_assistant_loads_dutch_setup_and_options(hass):
         == "Profielen toevoegen of wijzigen"
     )
     assert selector[f"{prefix}.selector.loud_style.options.critical"].startswith("Kritiek:")
+    assert subentries[f"{prefix}.config_subentries.profile.initiate_flow.user"] == (
+        "Woon-werkprofiel toevoegen"
+    )
 
 
 def test_dutch_forms_cover_english_fields_and_preserve_placeholders():
@@ -54,7 +58,7 @@ def test_dutch_forms_cover_english_fields_and_preserve_placeholders():
             assert translated.strip()
             assert placeholders(source) == placeholders(translated)
 
-    for section in ("config", "options", "selector"):
+    for section in ("config", "options", "selector", "config_subentries"):
         check(english[section], dutch[section])
 
 

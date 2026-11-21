@@ -338,6 +338,9 @@
   "config_subentries": {
     "profile": {
       "entry_type": "Commute profile",
+      "initiate_flow": {
+        "user": "Add a commute profile"
+      },
       "step": {
         "profile": {
           "title": "Your commute",
