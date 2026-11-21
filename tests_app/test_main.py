@@ -243,9 +243,9 @@ async def test_build_passes_the_lookahead_time(tmp_path, tg):
     calls = []
     real = app.rt.lookahead_once
 
-    async def spy():
+    async def spy(*, since=None):
         calls.append(clock.now())
-        await real()
+        await real(since=since)
 
     app.rt.lookahead_once = spy
     task = asyncio.create_task(app.rt.run_forever())

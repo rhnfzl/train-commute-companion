@@ -136,6 +136,9 @@
           "other_station_radius_m": "Afstand tot een ander station in meters",
           "other_station_dwell_min": "Minuten op een ander station voordat dit meetelt",
           "ask_to_remember_station": "Aanbieden om een nieuw instapstation te onthouden",
+          "custom_timetable_horizon": "Aangepaste periode voor dienstregelingcontrole",
+          "timetable_horizon_unit": "Eenheid voor controleperiode",
+          "timetable_horizon_count": "Aantal dagen of reisdagen",
           "leave_by": "Vertrek uiterlijk tonen",
           "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen",
           "weather_allowance": "Extra reistijd bij weersverwachting voorstellen"
@@ -150,6 +153,9 @@
           "other_station_radius_m": "Hoe dicht je telefoon bij een station moet zijn. Standaard 500.",
           "other_station_dwell_min": "0 betekent dat één locatiebepaling genoeg is. Standaard 0.",
           "ask_to_remember_station": "Nadat je Ja zegt bij een nieuw station, vraagt TCC één keer of het dit station moet onthouden.",
+          "custom_timetable_horizon": "Standaard aan. Zet uit om maximaal drie reisdagen binnen tien kalenderdagen te controleren.",
+          "timetable_horizon_unit": "Tel kalenderdagen vanaf morgen of tel alleen komende reisdagen met een vaste reis.",
+          "timetable_horizon_count": "Voer een geheel getal van 1 tot en met 14 in. De standaardwaarde is zeven.",
           "leave_by": "Toon wanneer je uiterlijk moet vertrekken in de check-in, het vertrekadvies en de statussensor. Gebruikt je reistijd naar het perron. Standaard aan.",
           "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer.",
           "weather_allowance": "Stel extra minuten voor bij regen, mist, sneeuw of mogelijke gladheid in de verwachting bij het vertrekstation. Alleen advies, wijzigt geen treinen of timers. Vereist weer en vertrek uiterlijk. Standaard aan."
@@ -365,6 +371,9 @@
           "other_station_radius_m": "Afstand tot een ander station in meters",
           "other_station_dwell_min": "Minuten op een ander station voordat dit meetelt",
           "ask_to_remember_station": "Aanbieden om een nieuw instapstation te onthouden",
+          "custom_timetable_horizon": "Aangepaste periode voor dienstregelingcontrole",
+          "timetable_horizon_unit": "Eenheid voor controleperiode",
+          "timetable_horizon_count": "Aantal dagen of reisdagen",
           "leave_by": "Vertrek uiterlijk tonen",
           "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen",
           "weather_allowance": "Extra reistijd bij weersverwachting voorstellen"
@@ -379,6 +388,9 @@
           "other_station_radius_m": "Hoe dicht je telefoon bij een station moet zijn. Standaard 500.",
           "other_station_dwell_min": "0 betekent dat één locatiebepaling genoeg is. Standaard 0.",
           "ask_to_remember_station": "Nadat je Ja zegt bij een nieuw station, vraagt TCC één keer of het dit station moet onthouden.",
+          "custom_timetable_horizon": "Standaard aan. Zet uit om maximaal drie reisdagen binnen tien kalenderdagen te controleren.",
+          "timetable_horizon_unit": "Tel kalenderdagen vanaf morgen of tel alleen komende reisdagen met een vaste reis.",
+          "timetable_horizon_count": "Voer een geheel getal van 1 tot en met 14 in. De standaardwaarde is zeven.",
           "leave_by": "Toon wanneer je uiterlijk moet vertrekken in de check-in, het vertrekadvies en de statussensor. Gebruikt je reistijd naar het perron. Standaard aan.",
           "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer.",
           "weather_allowance": "Stel extra minuten voor bij regen, mist, sneeuw of mogelijke gladheid in de verwachting bij het vertrekstation. Alleen advies, wijzigt geen treinen of timers. Vereist weer en vertrek uiterlijk. Standaard aan."
@@ -596,6 +608,12 @@
         "add": "Een vakantieperiode toevoegen",
         "replace": "Vakantieperiodes door deze periode vervangen",
         "clear": "Alle vakantieperiodes verwijderen"
+      }
+    },
+    "timetable_horizon_unit": {
+      "options": {
+        "calendar_days": "Kalenderdagen",
+        "commute_dates": "Komende reisdagen"
       }
     },
     "notification_destinations": {

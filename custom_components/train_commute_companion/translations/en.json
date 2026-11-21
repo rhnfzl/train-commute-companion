@@ -127,6 +127,9 @@
           "channel_routine": "Routine and compensation reminder destinations",
           "edit_weekday_times": "Set different departure times by weekday",
           "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
+          "custom_timetable_horizon": "Custom timetable lookahead",
+          "timetable_horizon_unit": "Timetable lookahead unit",
+          "timetable_horizon_count": "Timetable lookahead count",
           "leave_by": "Show leave-by time",
           "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
           "delay_min": "First delay alert in minutes",
@@ -143,6 +146,9 @@
         "data_description": {
           "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
           "delay_step_min": "Default 3. Whole minutes from 1 to 1440, measured from the last stated delay in either direction. Recovery to 1 minute or less still counts.",
+          "custom_timetable_horizon": "On by default. Turn off to use up to three commute dates within ten calendar days.",
+          "timetable_horizon_unit": "Count calendar days from tomorrow or count only upcoming dates with a fixed journey.",
+          "timetable_horizon_count": "Enter a whole number from 1 to 14. The default is seven.",
           "leave_by": "Show when to leave in check-in and pre-trip advice, and in the status sensor. Uses your travel buffer. Enabled by default.",
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
           "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently.",
@@ -356,6 +362,9 @@
           "channel_routine": "Routine and compensation reminder destinations",
           "edit_weekday_times": "Set different departure times by weekday",
           "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
+          "custom_timetable_horizon": "Custom timetable lookahead",
+          "timetable_horizon_unit": "Timetable lookahead unit",
+          "timetable_horizon_count": "Timetable lookahead count",
           "leave_by": "Show leave-by time",
           "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
           "delay_min": "First delay alert in minutes",
@@ -372,6 +381,9 @@
         "data_description": {
           "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
           "delay_step_min": "Default 3. Whole minutes from 1 to 1440, measured from the last stated delay in either direction. Recovery to 1 minute or less still counts.",
+          "custom_timetable_horizon": "On by default. Turn off to use up to three commute dates within ten calendar days.",
+          "timetable_horizon_unit": "Count calendar days from tomorrow or count only upcoming dates with a fixed journey.",
+          "timetable_horizon_count": "Enter a whole number from 1 to 14. The default is seven.",
           "leave_by": "Show when to leave in check-in and pre-trip advice, and in the status sensor. Uses your travel buffer. Enabled by default.",
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
           "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently.",
@@ -596,6 +608,12 @@
         "add": "Add a holiday range",
         "replace": "Replace holiday ranges with this range",
         "clear": "Remove all holiday ranges"
+      }
+    },
+    "timetable_horizon_unit": {
+      "options": {
+        "calendar_days": "Calendar days",
+        "commute_dates": "Upcoming commute dates"
       }
     },
     "notification_destinations": {

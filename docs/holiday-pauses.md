@@ -23,6 +23,6 @@ A pause overrides `extra_dates`. Dutch public-holiday skipping and individual-da
 
 When a profile edit adds a pause, an unlocked journey is removed. A journey already locked to a train keeps its safety monitoring. Use the existing “not travelling” action to stop that journey too.
 
-The next planned-works check skips paused journeys and selects later travel dates within its normal ten-day horizon. This does not extend that horizon.
+The next planned-works check skips paused journeys. Calendar-day mode keeps its set end date. Commute-date mode continues to later travel dates, up to its search limit. See [Timetable lookahead](profile-editor.md#timetable-lookahead).
 
 The same profile file works in Home Assistant and Docker. Check edits with `tcc check-profile profiles.yaml`, then let the running companion reload the file.
