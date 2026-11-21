@@ -11,6 +11,22 @@ def tap(chat, reply, text):
     return chat.button(data)
 
 
+def test_guided_monthly_commute_can_end_after_a_trip_count():
+    from tcc_app.travel_chat import TravelChat
+
+    chat = TravelChat(Plans())
+    tap(chat, chat.command("/plan"), "New plan")
+    chat.text("Rotterdam Centraal")
+    chat.text("Utrecht Centraal")
+    tap(chat, chat.text("2026-11-24"), "Monthly")
+    tap(chat, chat.text("1 Mon"), "After N trips")
+    assert "couldn't use" in chat.text("0").text
+    tap(chat, chat.text("3"), "No skips")
+    assert chat.draft["plan"]["monthly"] == {"ordinal": 1, "weekday": 1}
+    assert chat.draft["plan"]["end_after"] == 3
+    assert "end_date" not in chat.draft["plan"]
+
+
 def test_guided_temporary_commute_reviews_scope_and_offers_undo():
     from tcc_app.travel_chat import TravelChat
 

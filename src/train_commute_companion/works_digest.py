@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from enum import StrEnum
 
-from train_commute_companion.calendar import TZ, is_commute_day, resolve_local, to_utc
+from train_commute_companion.calendar import TZ, resolve_local, to_utc
 from train_commute_companion.lookahead_probe import (
     ProbeResult,
     evaluate,
@@ -154,9 +154,7 @@ async def check_week(
     pending = []
     for offset in range(1, 8):
         day = today + timedelta(days=offset)
-        commute = is_commute_day(
-            day, profile.days, profile.extra_dates, profile.skip_public_holidays
-        )
+        commute = profile.commutes_on(day)
         for direction in Direction:
             sd = service_date(profile, direction, day)
             status = "unknown: check did not finish" if commute else "not scheduled"
