@@ -19,6 +19,7 @@ from train_commute_companion.advice import (
     still_advised,
     usual_arrival,
 )
+from train_commute_companion.arrival import planning_query
 from train_commute_companion.budget import POLL_DEADLINE, POLL_EVERY_S, RequestGate
 from train_commute_companion.calendar import TZ, Clock, hhmm, resolve_local, to_utc
 from train_commute_companion.choice import ChoiceTarget, choice_target, named_connections
@@ -62,6 +63,7 @@ from train_commute_companion.lifecycle import (
     SetPrompt,
     UserAction,
     apply_action,
+    arrival_follow_query,
     boarding_origin,
     guess,
     is_resolved,
@@ -412,6 +414,7 @@ class Runtime:
         primary_destination_scope: Callable[[str], bool] = lambda destination: False,
         park_primary_pin: Callable[[str], bool] = lambda destination: False,
         legacy_adoption_destination: Callable[[], str | None] = lambda: LEGACY_PRIMARY,
+        profile_setup: bool = False,
     ) -> None:
         # Omitted only for legacy clients and replay rigs. Shells supply actual recipient IDs.
         self._primary_destination = primary_destination or (lambda: LEGACY_PRIMARY)
@@ -422,6 +425,7 @@ class Runtime:
         self._in_flight_opted_out = False
         self._target_pins: dict[str, Obligation] = {}
         self._path = profile_path
+        self._profile_setup = profile_setup
         self._queue = CopyQueue(
             webhooks,
             clock.now,
@@ -1603,20 +1607,22 @@ class Runtime:
         got = await self._gate.all_trips(queries_needed(s, ctx), True, end, deadline)
         error = got if isinstance(got, str) else None
         answers = () if isinstance(got, str) else got
-        advice_error: PollFailure | None = None
-        if (
-            error is None
-            and not (s.selected_recovery is not None and s.selected_recovery.status == "active")
-            and not quiet_watch(s, ctx)  # Q9: advice waits, so its search is not spent
-            and s.boarding_station is None  # advice compares trains from the usual station
-            and (usual := origin_answer(answers, ctx, s)) is not None
+        earlier_error: PollFailure | None = None
+        if error is None and not (
+            s.selected_recovery is not None and s.selected_recovery.status == "active"
         ):
-            # 7.6: an earlier catchable train is before the time the poll asked from; a failed
-            # search leaves advice to the poll's own answers and never fails the poll
-            q = advice_query(s, ctx, usual, usual_arrival(s, ctx, usual))
+            q = arrival_follow_query(s, ctx, answers)
+            if (
+                q is None
+                and not quiet_watch(s, ctx)
+                and s.boarding_station is None
+                and (usual := origin_answer(answers, ctx, s)) is not None
+            ):
+                q = advice_query(s, ctx, usual, usual_arrival(s, ctx, usual))
+            # An optional earlier search cannot erase observations from the main poll.
             extra = None if q is None else await self._gate.trips(q, True, end, deadline)
             if isinstance(extra, str):
-                advice_error = extra
+                earlier_error = extra
             elif extra is not None:
                 answers = (*answers, extra)
         now = self._clock.now()
@@ -1624,12 +1630,12 @@ class Runtime:
         ctx = None if s is None else self._ctx(s, now)
         if s is None or ctx is None:
             return
-        if advice_error == "auth":
-            # 7.11: a rejected key on the advice search is reported like any other, loudly;
+        if earlier_error == "auth":
+            # 7.11: a rejected key on the earlier search is reported like any other, loudly;
             # the main answers still count as observations
             error = "auth"
-        elif advice_error is not None:
-            log.warning("advice search for %s failed (%s)", k, advice_error)
+        elif earlier_error is not None:
+            log.warning("earlier-train search for %s failed (%s)", k, earlier_error)
         self._track_key_rejection(error, k, now)
         current = request.phase_for(s) is ResultPhase.CURRENT
         if not current and s.route_revision != request.route_revision:
@@ -2144,6 +2150,8 @@ class Runtime:
         direction: Direction | None = None,
         answers: tuple[ProviderAnswer, ...] | None = None,
         station: str | None = None,
+        *,
+        train: TrainId | None = None,
     ) -> Refused | None:
         """A train named by its clock time (shells): the core finds the occurrence, the station
         and the connection, with one live request under the shared budget (rule 14). A refusal
@@ -2166,7 +2174,7 @@ class Runtime:
         )
         gone = no_journey(display_name(named.name if named else profile_id))
         target = choice_target(
-            cands, departure, train_number, service_date, now, self._writer.st, gone
+            cands, departure, train_number, service_date, now, self._writer.st, gone, train=train
         )
         if isinstance(target, Refused):
             return target
@@ -2181,7 +2189,7 @@ class Runtime:
             if isinstance(fetched, Refused):
                 return fetched
             answers = fetched
-        ranked = named_connections(answers[0], target, departure, train_number)
+        ranked = named_connections(answers[0], target, departure, train_number, train=train)
         if isinstance(ranked, Refused):
             return ranked
         # rule 21: a reload during the request may have removed or archived the occurrence
@@ -2240,19 +2248,23 @@ class Runtime:
         if request.phase_for(now_occ) is ResultPhase.STALE:
             return Refused("your journey changed while NS answered; try again", RefusalKind.RETRY)
         found = now_occ
-        if answer == "other":
+        if answer == "other" or (q.stage == "pick" and not q.trains):
+            # A saved clock-only button needs a fresh offer with train identities.
             refused = self._offer_trains(found, q.station, q.name, got)
             await self._deliver()
             return refused
-        if q.stage == "pick":
-            at, number = time(int(answer[1:3]), int(answer[3:5])), None
-        else:
-            train = present(q.train)
-            at, number = train.planned_departure.astimezone(TZ).time(), train.train_number
+        train = q.trains.get(answer) if q.stage == "pick" else q.train
+        if train is None:
+            return Refused("this question has expired")
         refused = await self.choose_at(
-            pid, at, train_number=number, service_date=day, direction=d, answers=(got,),
+            pid,
+            train.planned_departure.astimezone(TZ).time(),
+            service_date=day,
+            direction=d,
+            answers=(got,),
             station=q.station,
-        )  # fmt: skip
+            train=train,
+        )
         if refused is not None:
             return refused  # the question stays open
         if self._open_prompt(prompt_id) is not None:
@@ -2300,7 +2312,7 @@ class Runtime:
         if ctx is None:
             return Refused("this question has expired")
         p, d = ctx.profile, ctx.direction
-        q = Query.for_profile(p, station, p.destination(d), self._clock.now())
+        q = planning_query(ctx, station, self._clock.now(), required=p.journey(d).transfers)
         deadline = to_utc(self._clock.now()) + POLL_DEADLINE
         got = await self._gate.trips(q, True, ctx.schedule.window_end, deadline)
         self._track_key_rejection(got if isinstance(got, str) else None, k, self._clock.now())
@@ -2435,7 +2447,7 @@ class Runtime:
             if event.zone in self._provider.positions and other_station_candidate(s, ctx, event):
                 origin = present(event.zone)  # what leaves from the station the phone is at
             got = await self._gate.trips(
-                Query.for_profile(p, origin, p.destination(d), now), True, None
+                planning_query(ctx, origin, now, required=p.journey(d).transfers), True, None
             )
             qs = location_queries(s, ctx, event)  # the locked trains, from where they leave
             more = await self._gate.all_trips(qs, True, None) if qs else ()
@@ -2511,7 +2523,18 @@ class Runtime:
                 return Refused(
                     "Another profile reload replaced this request. Try again.", RefusalKind.RETRY
                 )
-            self._refuse(f"cannot read {self._path.name} ({e})", now)
+            if isinstance(e, FileNotFoundError) and self._profile_setup and self.config is None:
+                await self._fetch_stations()
+                if not self._reload.current(request):
+                    return Refused(
+                        "Another profile reload replaced this request. Try again.",
+                        RefusalKind.RETRY,
+                    )
+                self._reload.refusal = None
+                self._reload.phase = ReloadPhase.READY
+                self._reload.pending = PendingEditPhase.NONE
+            else:
+                self._refuse(f"cannot read {self._path.name} ({e})", now)
         else:
             if not self._reload.current(request):
                 return Refused(
@@ -2692,6 +2715,13 @@ class Runtime:
         refuses or the request fails."""
         got = await self._listing(self._provider.stations, "stations")
         return None if isinstance(got, str) else got
+
+    async def preview_setup(self, outbound: Query, return_: Query) -> tuple[ProviderAnswer, ...]:
+        """Use the same request budget as the running companion for a setup preview."""
+        now = self._clock.now()
+        got = await self._gate.all_trips((outbound, return_), False, None)
+        self._track_key_rejection(got if isinstance(got, str) else None, "setup", now)
+        return () if isinstance(got, str) else got
 
     async def _lookahead_direction(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
         start = self._clock.now()

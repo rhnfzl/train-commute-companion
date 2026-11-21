@@ -8,6 +8,12 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import NamedTuple
 
+from train_commute_companion.arrival import (
+    ArrivalChoice,
+    arrival_status,
+    current_planning_query,
+    planning_query,
+)
 from train_commute_companion.calendar import TZ, hhmm, resolve_local, to_utc
 from train_commute_companion.classify import (
     classify_leg,
@@ -182,6 +188,25 @@ def catch_from_state(s: OccurrenceState, buffer_min: int, now: datetime) -> Catc
     return catch_from(now, buffer_min, s.tap_at if s.travelling else None, s.at_station)
 
 
+def _arrival_choice(
+    ctx: Ctx, prefix: Sequence[LegProgress] = (), before: TrainId | None = None
+) -> ArrivalChoice | None:
+    sch = ctx.schedule
+    deadline = sch.arrival_deadline
+    if deadline is None:
+        return None
+    return ArrivalChoice(
+        deadline,
+        None if prefix else to_utc(sch.first_departure),
+        None if prefix else to_utc(present(sch.last_departure)),
+        0 if prefix else sch.prefer_direct_min,
+        ctx.profile.journey(ctx.direction).transfers,
+        tuple(x.alight_stop for x in prefix),
+        None if before is None else to_utc(before.planned_departure),
+        stay_capped=sch.stay_capped,
+    )
+
+
 def next_stated_delay(
     last_min: int | None, reported_min: int | None, delay_min: int = 3, delay_step_min: int = 3
 ) -> int | None:
@@ -192,8 +217,10 @@ def next_stated_delay(
     said = last_min or 0
     if not said:
         return reported_min if reported_min >= delay_min else last_min
-    if reported_min <= ON_TIME_MAX_MIN and reported_min < said and (
-        said > ON_TIME_MAX_MIN or said >= delay_min
+    if (
+        reported_min <= ON_TIME_MAX_MIN
+        and reported_min < said
+        and (said > ON_TIME_MAX_MIN or said >= delay_min)
     ):
         return 0
     return reported_min if abs(reported_min - said) >= delay_step_min else last_min
@@ -234,8 +261,7 @@ def _stated_delays(
     was = [None if keys.get(x) is None else int(keys[x]) for x in slots]
     live = [d.minutes for d in f.delays]
     told = [
-        next_stated_delay(w, n, delay_min, delay_step_min)
-        for w, n in zip(was, live, strict=True)
+        next_stated_delay(w, n, delay_min, delay_step_min) for w, n in zip(was, live, strict=True)
     ]
     if e.kind is EventKind.DELAYED and (e.severity is Severity.LOUD or f.past_latest_arrival):
         # The arrival limit protects the traveller regardless of delay preferences.
@@ -251,9 +277,7 @@ def _stated_delays(
         facts=replace(
             f,
             delays=(),
-            told=tuple(
-                ToldDelay(x, str(t), w) for x, t, w in zip(slots, said, was, strict=True)
-            ),
+            told=tuple(ToldDelay(x, str(t), w) for x, t, w in zip(slots, said, was, strict=True)),
         ),
     )
     return _recovery(e, f, before, said, delay_min) if e.kind is EventKind.DELAYED else e
@@ -316,6 +340,7 @@ QUIET_DELAY_MIN = 5
 QUIET_PASS = frozenset({
     EventKind.CANCELLED, EventKind.TRANSFER_BROKEN, EventKind.CUT_SHORT,
     EventKind.ROUTE_CHANGED, EventKind.PLATFORM_CHANGE, EventKind.NO_CONNECTION,
+    EventKind.ARRIVAL_TARGET,
     EventKind.RESTORED, EventKind.STOPPED_FOLLOWING, EventKind.MISSED_FIRST_TRAIN,
     EventKind.MISSED_TRANSFER, EventKind.NEXT_CONNECTION, EventKind.AT_STATION,
     EventKind.STATION_ASK, EventKind.STATION_REMEMBER,
@@ -404,21 +429,30 @@ def find_next_good(
     earliest: bool = False,
     span: tuple[datetime, datetime] | None = None,
     respect_plan: bool = True,
+    *,
+    only: tuple[TrainId, ...] | None = None,
 ) -> Connection | None:
     """The next good connection from `station` (default the origin), not starting on `after`,
     not leaving before `not_before` and planned inside `span` (`departure_span`). These only
     leave the ranking: identity is judged on the whole answer (6.1). A window day and an other
     boarding station (`earliest`) take the earliest good one; elsewhere the usual route wins."""
+    if ctx.schedule.pick == "arrive_by" and ctx.schedule.arrive_by is None:
+        return None
     at = station or boarding_origin(s, ctx)
     floor = None if not_before is None else to_utc(not_before)
     lo, hi = span or (None, None)
+    lock = s.lock
+    prefix = lock.legs[:n_before] if lock else ()
     c, _ = choose_replacement(
         answer,
         usual_remaining=None if earliest else _usual_route(s, ctx, at),
+        arrival=_arrival_choice(ctx, prefix),
+        earliest=earliest,
         candidates=[
             c
             for c in answer.connections
             if (after is None or c.legs[0].train != after)
+            and (only is None or tuple(x.train for x in c.legs) == only)
             and (floor is None or _departure(c) >= floor)
             and (lo is None or hi is None or lo <= to_utc(c.legs[0].train.planned_departure) < hi)
             and _on_travel_date(c, ctx, first=kept is None)
@@ -499,10 +533,21 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
         return unchanged
     p, d = ctx.profile, ctx.direction
     q = answer.query
-    if (q.origin, q.destination) != (boarding_origin(s, ctx), p.destination(d)):
+    if (q.origin, q.destination) != (
+        boarding_origin(s, ctx),
+        p.destination(d),
+    ) or not current_planning_query(ctx, q):
         return unchanged
     if _pins_train(ctx):
         return unchanged if s.released else _lock_exact(s, ctx, answer)
+    if ctx.schedule.pick == "arrive_by":
+        if ctx.schedule.arrive_by is None:
+            return unchanged
+        if s.selected_recovery is not None and s.selected_recovery.status == "active":
+            return unchanged
+        if (s.released or s.boarding_station is not None) and not s.travelling:
+            return unchanged
+        return _lock_earliest(s, ctx, answer)
     if s.released or s.boarding_station or ctx.schedule.pick == "on_leave":
         # the user was never seen near the train let go, follows none until leaving, or stands
         # at an other station: the next train they can catch, never the usual one
@@ -613,8 +658,10 @@ def _locked_tail(
     out = [*events, *(e for e in left if skip is None or e.train != skip)]
     t = _follow(locked, ctx, pool, (answer.query,))
     return keep_stated(
-        t.state, quiet_events(t.state, ctx, (*out, *t.events)),
-        ctx.profile.alerts.delay_min, ctx.profile.alerts.delay_step_min,
+        t.state,
+        quiet_events(t.state, ctx, (*out, *t.events)),
+        ctx.profile.alerts.delay_min,
+        ctx.profile.alerts.delay_step_min,
     )
 
 
@@ -628,11 +675,22 @@ def _lock_earliest(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Tran
     capped = sch.stay_capped
     c = find_next_good(s, ctx, answer, not_before=floor)
     if c is None or (not s.travelling and not capped and _departure(c) > to_utc(last)):
-        if s.missing_sent:
+        target = sch.arrive_by
+        if s.missing_sent and target is None:
             return Transition(s, ())
         start = hhmm(sch.first_departure)
-        text = f"no train found from {start} to {hhmm(last)}, check the NS app."
-        event = make_event(ctx, EventKind.NO_CONNECTION, Severity.LOUD, text)
+        text = (
+            f"no train you can catch was found for arrival by {hhmm(target)}, check the NS app."
+            if target is not None
+            else f"no train found from {start} to {hhmm(last)}, check the NS app."
+        )
+        event = make_event(
+            ctx,
+            EventKind.NO_CONNECTION if target is None else EventKind.ARRIVAL_TARGET,
+            Severity.LOUD,
+            text,
+            stated=AlertFacts(arrival_deadline=sch.arrival_deadline),
+        )
         return Transition(replace(s, missing_sent=True), (event,))
     new = journey_of(c, LockSource.AUTO, Commitment.INTENDED, answer.fetched_at)
     locked = present(write_lock(s, new, expect=None, now=ctx.now.astimezone(UTC)))
@@ -802,6 +860,12 @@ def _choose(s: OccurrenceState, ctx: Ctx, action: Choose) -> Transition:
     if action.station is not None:
         s = _confirm_station(s, action.station)
     pool = merged_pool(action.answers)
+    if (
+        action.station is not None
+        and ctx.schedule.arrival_deadline is not None
+        and find_next_good(s, ctx, pool, only=tuple(x.train for x in c.legs)) is None
+    ):
+        return _refuse(before, ctx, "this train no longer meets your arrival plan")
     source = _ridden_source(s, c.legs[0].train, ctx.now)
     # the kept prefix comes from the journey the choice continues, never from another one
     base = s.lock if source is None else source
@@ -950,13 +1014,17 @@ def queries_needed(s: OccurrenceState, ctx: Ctx) -> list[Query]:
     p, d = ctx.profile, ctx.direction
     dest = p.destination(d)
     out: list[Query] = []
-    seen: set[tuple[str, datetime]] = set()
+    seen: set[Query] = set()
 
-    def add(station: str, at: datetime) -> None:
-        key = (station, to_utc(at))  # local equality would merge the two 02:30s of the DST fold
-        if key not in seen:
-            seen.add(key)
-            out.append(Query.for_profile(p, station, dest, at))
+    def add(station: str, at: datetime, *, plan: bool = False) -> None:
+        q = (
+            planning_query(ctx, station, at, required=p.journey(d).transfers)
+            if plan
+            else Query.for_profile(p, station, dest, at)
+        )
+        if q not in seen:
+            seen.add(q)
+            out.append(q)
 
     window = ctx.schedule.mode == "window"
     origin = boarding_origin(s, ctx)
@@ -971,15 +1039,17 @@ def queries_needed(s: OccurrenceState, ctx: Ctx) -> list[Query]:
         # minimum stay ends, and a user at an other station, ask from now too
         early = window and s.travelling or s.boarding_station is not None
         start = ctx.now if early else max(ctx.schedule.first_departure, ctx.now, key=to_utc)
-        add(origin, start)
+        add(origin, start, plan=window)
     elif s.lock is None and window:  # the earliest still catchable: NS omits trains before
-        add(origin, max(ctx.schedule.first_departure, ctx.now, key=to_utc))
+        add(origin, max(ctx.schedule.first_departure, ctx.now, key=to_utc), plan=True)
     elif s.lock is None:  # the usual at its effective departure, also when past (6.3)
         add(origin, ctx.schedule.first_departure)
     else:
         k = first_open(s.lock)
         if k < len(s.lock.legs):
-            add(s.lock.legs[k].board_station, s.lock.legs[k].train.planned_departure)
+            first = s.lock.legs[k]
+            dep = first.train.planned_departure
+            add(first.board_station, dep)
     quiet = quiet_watch(s, ctx)
     for j in (*((s.lock,) if s.lock else ()), *s.retained):
         k = first_open(j)
@@ -994,10 +1064,56 @@ def queries_needed(s: OccurrenceState, ctx: Ctx) -> list[Query]:
             late = _late_onward(x, nxt)
             if late is not None:  # a delay broke the change: search after the expected arrival
                 add(x.alight_stop, late)
-    for h in s.cancellation_history:
-        if _restorable(s, ctx, h):
-            add(h.board_station, h.train.planned_departure)
+    if ctx.schedule.arrival_deadline is None:
+        for h in s.cancellation_history:
+            if _restorable(s, ctx, h):
+                add(h.board_station, h.train.planned_departure)
     return out
+
+
+def _arrival_resume_index(legs: Sequence[LegProgress], now: datetime) -> int | None:
+    return next(
+        (i for i, leg in enumerate(legs) if leg.state in MAY_HAVE_LEFT and not may_be_on(leg, now)),
+        None,
+    )
+
+
+def arrival_follow_query(
+    s: OccurrenceState, ctx: Ctx, answers: Sequence[ProviderAnswer]
+) -> Query | None:
+    """Look farther back for a replacement while an earlier train can still be caught."""
+    if s.lock is None or ctx.schedule.arrival_deadline is None or ctx.schedule.stay_capped:
+        return None
+    i = _arrival_resume_index(s.lock.legs, ctx.now)
+    if i is None:
+        return None
+    first = s.lock.legs[i]
+    now = to_utc(ctx.now)
+    if not i:
+        now = _good_kw(s, ctx, first.board_station, None, 0)["catch"].not_before
+    dep = first.train.planned_departure
+    if now >= to_utc(dep):
+        return None
+    # Use the same observations and break checks as the real follow step.
+    trial = _follow(s, ctx, merged_pool(answers), tuple(a.query for a in answers))
+    if not any(
+        e.kind
+        in (
+            EventKind.ARRIVAL_TARGET,
+            EventKind.CANCELLED,
+            EventKind.CUT_SHORT,
+            EventKind.TRANSFER_BROKEN,
+            EventKind.ROUTE_CHANGED,
+        )
+        for e in trial.events
+    ):
+        return None
+    return planning_query(
+        ctx,
+        first.board_station,
+        dep,
+        required=ctx.profile.journey(ctx.direction).transfers[i:],
+    )
 
 
 def merged_pool(answers: Sequence[ProviderAnswer], query: Query | None = None) -> Pool:
@@ -1009,9 +1125,9 @@ def merged_pool(answers: Sequence[ProviderAnswer], query: Query | None = None) -
     return Pool(query or answers[0].query, (*conns, *frags), newest.fetched_at, tuple(answers))
 
 
-def observe(pool: Pool, x: LegProgress, delay_min: int = 3) -> tuple[
-    ClassifiedLeg | None, Observation, datetime | None
-]:
+def observe(
+    pool: Pool, x: LegProgress, delay_min: int = 3
+) -> tuple[ClassifiedLeg | None, Observation, datetime | None]:
     """The leg's classification, its observation over the whole poll, and when the answer it
     was read from was fetched."""
     leg, ob = find_leg(pool, x.train, x.board_station)
@@ -1093,6 +1209,8 @@ def _move_stop(x: LegProgress, end: str, stop: str) -> LegProgress:
 
 def _restore(s: OccurrenceState, ctx: Ctx, pool: Pool) -> Transition | None:
     """Rule 8: a reinstated train moves back only for legs not boarded and only if good."""
+    if ctx.schedule.arrival_deadline is not None:
+        return None  # a later reinstatement does not undo a successful earlier move
     for h in s.cancellation_history:
         if not _restorable(s, ctx, h):
             continue
@@ -1201,40 +1319,99 @@ def _relock(
     lock = present(s.lock)
     p, d = ctx.profile, ctx.direction
     kind, sev, text, train = cut.cause
-    if j and kept is None:
-        note = f"{text}; the change from your current train is not in NS data, check the NS app."
-        return Transition(_progress(s, legs), (make_event(ctx, kind, sev, note, train),))
-    usual = _usual_route(s, ctx, station)
+    target = ctx.schedule.arrive_by
+    if (
+        target is not None
+        and s.selected_recovery is not None
+        and s.selected_recovery.status == "active"
+    ):
+        return Transition(_progress(s, legs), (make_event(ctx, kind, sev, f"{text}.", train),))
     # an older answer's running copy of the train being replaced is no replacement for it
     cands = [
-        c for c in pool.connections
+        c
+        for c in pool.connections
         if (history is None or c.legs[0].train != history.train)
         and _on_travel_date(c, ctx, first=j == 0)
     ]
-    eligible = (
-        [c for c in cands if _within_travel_limits(c, ctx, pool, first=j == 0)]
-        if p.travel_plan
-        else cands
-    )
-    c, how = choose_replacement(
-        pool, usual_remaining=usual, candidates=eligible, **_good_kw(s, ctx, station, kept, j)
-    )
-    if p.travel_plan and (_pins_train(ctx) or c is None):
-        alternative = c
-        if alternative is None:
-            alternative, _ = choose_replacement(
-                pool, usual_remaining=None, candidates=cands, **_good_kw(s, ctx, station, kept, j)
-            )
-        if alternative is not None:
-            arrival = alternative.legs[-1].alight.arrival
-            arrives = f", arrives {hhmm(arrival.value)}" if arrival and arrival.value else ""
+    if p.travel_plan:
+        if j and kept is None:
             note = (
-                f"{text}. Next option: {hhmm(_departure(alternative))}{arrives}. "
-                "Choose it to follow it."
+                f"{text}; the change from your current train is not in NS data, check the NS app."
             )
-        else:
-            note = f"{text}. No replacement found, check the NS app."
-        return Transition(_progress(s, legs), (make_event(ctx, kind, sev, note, train),))
+            return Transition(_progress(s, legs), (make_event(ctx, kind, sev, note, train),))
+        eligible = [c for c in cands if _within_travel_limits(c, ctx, pool, first=j == 0)]
+        usual = _usual_route(s, ctx, station)
+        c, how = choose_replacement(
+            pool, usual_remaining=usual, candidates=eligible, **_good_kw(s, ctx, station, kept, j)
+        )
+        if _pins_train(ctx) or c is None:
+            alternative = c
+            if alternative is None:
+                alternative, _ = choose_replacement(
+                    pool,
+                    usual_remaining=None,
+                    candidates=cands,
+                    **_good_kw(s, ctx, station, kept, j),
+                )
+            if alternative is not None:
+                arrival = alternative.legs[-1].alight.arrival
+                arrives = f", arrives {hhmm(arrival.value)}" if arrival and arrival.value else ""
+                note = (
+                    f"{text}. Next option: {hhmm(_departure(alternative))}{arrives}. "
+                    "Choose it to follow it."
+                )
+            else:
+                note = f"{text}. No replacement found, check the NS app."
+            return Transition(_progress(s, legs), (make_event(ctx, kind, sev, note, train),))
+    else:
+        c, how = None, "none"
+        replace_whole = (
+            target is not None
+            and j > 0
+            and not any(may_be_on(x, ctx.now) or x.state is LegState.DONE for x in legs[:j])
+        )
+        if replace_whole:
+            origin = boarding_origin(s, ctx)
+            c, how = choose_replacement(
+                pool,
+                usual_remaining=None,
+                candidates=cands,
+                arrival=_arrival_choice(ctx, before=lock.legs[0].train),
+                **_good_kw(s, ctx, origin, None, 0),
+            )
+            if c is not None:
+                j, station, kept = 0, origin, None
+        usual = _usual_route(s, ctx, station)
+        if not replace_whole:
+            if j and kept is None:
+                note = f"{text}; the change from your current train is not in NS data, check the NS app."
+                return Transition(_progress(s, legs), (make_event(ctx, kind, sev, note, train),))
+            before = lock.legs[0].train if not j else None
+            c, how = choose_replacement(
+                pool,
+                usual_remaining=usual,
+                candidates=cands,
+                arrival=_arrival_choice(ctx, legs[:j], before),
+                **_good_kw(s, ctx, station, kept, j),
+            )
+        if c is None and target is not None:
+            which = "onward" if j and not replace_whole else "earlier"
+            none = (
+                f"{text}. No {which} train you can catch was found for arrival by {hhmm(target)}."
+            )
+            event = make_event(
+                ctx,
+                kind,
+                sev,
+                none,
+                train,
+                stated=AlertFacts(
+                    arrival_deadline=ctx.schedule.arrival_deadline
+                    if kind is EventKind.ARRIVAL_TARGET
+                    else None
+                ),
+            )
+            return Transition(_progress(s, legs), (event,))
     if c is None and cut.over_cap is not None:
         return _follow_over_cap(s, ctx, cut, cut.over_cap)
     if c is None and cut.leave_by:
@@ -1243,7 +1420,9 @@ def _relock(
     if c is None:
         events = [make_event(ctx, kind, sev, f"{text}.", train)]
         if any(
-            q.origin == station and (cut.since is None or to_utc(q.at) >= to_utc(cut.since))
+            not q.search_for_arrival
+            and q.origin == station
+            and (cut.since is None or to_utc(q.at) >= to_utc(cut.since))
             for q in asked
         ):
             nothing = "no connection found, check the NS app."
@@ -1262,7 +1441,11 @@ def _relock(
     leave = (
         leave_by_text(c.legs[0], buffer) if j == 0 and not s.travelling and not s.at_station else ""
     )
-    if cut.at_station:
+    if target is not None:
+        which = "onward train" if j else "earlier train"
+        clause = f" Take the {which} at {hhmm(_departure(c))} from {station}"
+        clause += ("." + leave if leave else "") + crowd + "."
+    elif cut.at_station:
         clause = f" Next: {status_text(c.legs, late_now)}."
     elif cut.leave_by:  # the crowd note stays last: the ledger strips and re-appends it there
         clause = f" Next you can catch: {hhmm(_departure(c))}{route}"
@@ -1271,13 +1454,20 @@ def _relock(
         clause = f" Next good connection: {hhmm(_departure(c))}{route}"
         clause += ("." + leave if leave else "") + crowd + "."
     written = _write(s, _journey(lock, legs[:j], c.legs, cut.source))
-    if history is not None and history.train not in {y.train for y in s.cancellation_history}:
+    if (
+        target is None
+        and history is not None
+        and history.train not in {y.train for y in s.cancellation_history}
+    ):
         written = replace(written, cancellation_history=(*s.cancellation_history, history))
     stated = AlertFacts(
         delays=(LiveDelay("", late),),
         named=named,
         next_clause=clause,
         crowd_note=crowd,
+        arrival_deadline=ctx.schedule.arrival_deadline
+        if kind is EventKind.ARRIVAL_TARGET
+        else None,
     )
     return Transition(
         written, (make_event(ctx, kind, sev, f"{text}.{clause}", train, key_facts, stated),)
@@ -1486,7 +1676,12 @@ def _observed_ends(
 
 
 def _check_cut_short(
-    w: _Watch, legs: Sequence[LegProgress], i: int, before: LegProgress, cl: ClassifiedLeg
+    w: _Watch,
+    legs: list[LegProgress],
+    i: int,
+    before: LegProgress,
+    cl: ClassifiedLeg,
+    ncl: ClassifiedLeg | None,
 ) -> _Proposal | None:
     """`before` is the leg as it was before this answer's endpoint was applied to `legs[i]`."""
     x = legs[i]
@@ -1502,6 +1697,15 @@ def _check_cut_short(
         text = f"back to normal: your {_name(x)} train reaches {end} again"
         cause = Cause(EventKind.RESTORED, Severity.SILENT, text, x.train)
     if nxt is not None and end == dest:  # extended to the destination again
+        arrival = _arrival_choice(w.ctx, legs[:i])
+        if arrival is not None and not any(
+            st.code == dest and served(st) and arrival.accepts_arrival(st)
+            for st in cl.leg.stops[1:]
+        ):
+            kept = _move_stop(before, end, before.alight_stop)
+            onward = _onward(w.ctx.profile, kept, cl, ncl)
+            legs[i] = replace(kept, onward_from=onward or kept.onward_from)
+            return None
         new = _journey(w.lock, legs[: i + 1], (), LockSource.RESTORE)
         note = make_event(w.ctx, cause.kind, cause.severity, f"{cause.text}.", cause.train)
         return _Proposal(Transition(_write(w.s, new), (note,)))
@@ -1590,7 +1794,11 @@ def _check_route_change(
     kept = w.obs[k - 1] if k else None
     # 6.3: follow the new route only within the cap and if good, else relock
     checkable = not k or kept is not None
-    if checkable and check_good(rc, w.pool, **_good_kw(w.s, ctx, x.board_station, kept, k)).ok:
+    if (
+        ctx.schedule.arrival_deadline is None
+        and checkable
+        and check_good(rc, w.pool, **_good_kw(w.s, ctx, x.board_station, kept, k)).ok
+    ):
         new = _journey(w.lock, legs[:k], rc.legs, LockSource.RELOCK)
         note = make_event(ctx, cause.kind, cause.severity, f"{text}, following it.", x.train)
         return _Proposal(Transition(_write(w.s, new), (note,)))
@@ -1615,6 +1823,59 @@ def _planned_route_change(open_legs: Sequence[LegProgress], pool: Pool) -> Conne
 
 def _uncertain_change(nxt: LegProgress, *seen: Observation) -> bool:
     return nxt.state is not LegState.DONE and Observation.UNCERTAIN in seen
+
+
+def _arrival_failure(w: _Watch, legs: Sequence[LegProgress]) -> Transition | None:
+    target, deadline = w.ctx.schedule.arrive_by, w.ctx.schedule.arrival_deadline
+    if target is None or deadline is None or w.lock.source is LockSource.CHOOSE:
+        return None
+    s, ctx = w.s, w.ctx
+    if s.selected_recovery is not None and s.selected_recovery.status == "active":
+        return None
+    last = w.obs[-1]
+    if last is None or last.kind not in _RUNNING_LEG_KINDS or legs[-1].state is LegState.DONE:
+        return None
+    stop = next((st for st in last.leg.stops[1:] if st.code == legs[-1].alight_stop), None)
+    if stop is None:
+        return None
+    reported = (
+        stop.arrival.value
+        if stop.arrival and stop.arrival.provenance is Provenance.REPORTED
+        else None
+    )
+    status = arrival_status(deadline, stop.planned_arrival, reported)
+    if status == "on_target":
+        return None
+    train = legs[0].train
+    text = (
+        f"your train no longer meets your {hhmm(target)} arrival target"
+        if status == "late"
+        else f"NS has no confirmed arrival time for your {hhmm(target)} target"
+    )
+    i = _arrival_resume_index(legs, ctx.now)
+    if i is None:
+        event = make_event(
+            ctx,
+            EventKind.ARRIVAL_TARGET,
+            Severity.LOUD,
+            f"{text}.",
+            train,
+            stated=AlertFacts(arrival_deadline=deadline),
+        )
+        return Transition(_progress(s, legs), (event,))
+    return _relock(
+        s,
+        ctx,
+        w.pool,
+        w.asked,
+        Relock(
+            legs=legs,
+            first_replaced=i,
+            station=legs[i].board_station,
+            kept=w.obs[i - 1] if i else None,
+            cause=Cause(EventKind.ARRIVAL_TARGET, Severity.LOUD, text, train),
+        ),
+    )
 
 
 def _follow(
@@ -1665,7 +1926,7 @@ def _follow(
             if usable and before.state in MAY_HAVE_LEFT and (crowd := _crowd(ctx, before, cl)):
                 events.append(crowd)
             legs[i] = _observed_ends(ctx.profile, before, nxt, cl, ncl)
-            proposal = _check_cut_short(w, legs, i, before, cl)
+            proposal = _check_cut_short(w, legs, i, before, cl, ncl)
         if proposal is None:
             found, proposal = _check_transfer(w, legs, i, cl, ncl)
             events += found
@@ -1685,6 +1946,8 @@ def _follow(
         if relock:
             return _moved(proposal.transition, events)
         events += proposal.transition.events
+    if relock and (arrival := _arrival_failure(w, legs)) is not None:
+        return _moved(arrival, events)
     return Transition(_progress(s, legs), tuple(events))
 
 
@@ -1886,8 +2149,10 @@ def on_poll(s: OccurrenceState, ctx: Ctx, poll: PollAnswers) -> Transition:
     if unproven_station(start):
         quiet = tuple(held(e) for e in quiet)
     return keep_stated(
-        bumped(start, t.state), quiet,
-        ctx.profile.alerts.delay_min, ctx.profile.alerts.delay_step_min,
+        bumped(start, t.state),
+        quiet,
+        ctx.profile.alerts.delay_min,
+        ctx.profile.alerts.delay_step_min,
     )
 
 
@@ -2027,6 +2292,8 @@ def on_location(
         return unchanged
     if to_utc(ctx.now) - to_utc(event.at) > STALE_LOCATION:
         return unchanged
+    if answer is not None and not current_planning_query(ctx, answer.query):
+        answer = None
     start = s
     prev = s.zone_reports.get(event.zone)
     seen = (*((answer,) if answer is not None else ()), *watched)
@@ -2060,8 +2327,10 @@ def on_location(
     # rule 21: a lock, catchability or missed-leg change raises the generation; a repeat
     # report that changes none of them keeps polls in flight
     return keep_stated(
-        bumped(start, t.state), t.events,
-        ctx.profile.alerts.delay_min, ctx.profile.alerts.delay_step_min,
+        bumped(start, t.state),
+        t.events,
+        ctx.profile.alerts.delay_min,
+        ctx.profile.alerts.delay_step_min,
     )
 
 
@@ -2226,11 +2495,13 @@ def _prompt(
     choices: tuple[tuple[str, str], ...],
     name: str,
     station: str | None = None,
+    *,
+    trains: Mapping[str, TrainId] | None = None,
 ) -> Transition:
     """A new question about `station` (default the one `s` boards at), replacing any open one."""
     station = station or present(s.boarding_station)
     pid = prompt_id(s.key, station, stage, ctx.now)
-    prompt = StationPrompt(pid, station, stage, None, choices, ctx.now, name)
+    prompt = StationPrompt(pid, station, stage, None, choices, ctx.now, name, trains or {})
     facts = AlertFacts(prompt_id=pid, choices=choices)
     e = make_event(ctx, kind, Severity.SILENT, text, None, pid, facts)
     return Transition(replace(s, prompt=prompt), (e,))
@@ -2240,6 +2511,12 @@ def remember_prompt(s: OccurrenceState, ctx: Ctx, name: str) -> Transition:
     """After Yes at a new station: offer to remember it. No answer remembers nothing."""
     text = f"remember {name} as a boarding station for your {ctx.direction.value} trips?"
     return _prompt(s, ctx, EventKind.STATION_REMEMBER, "remember", text, REMEMBER_CHOICES, name)
+
+
+def _station_train_label(train: TrainId) -> str:
+    t = train.planned_departure.astimezone(TZ)
+    repeated = t.utcoffset() != t.replace(fold=1 - t.fold).utcoffset()
+    return f"{t:%H:%M %Z}" if repeated else f"{t:%H:%M}"
 
 
 def pick_prompt(
@@ -2262,12 +2539,16 @@ def pick_prompt(
         text = "no connection found, check the NS app."
         e = make_event(ctx, EventKind.NO_CONNECTION, Severity.SILENT, text)
         return Transition(replace(s, prompt=None), (e,))
-    choices = tuple(
-        (f"t{t:%H%M}", f"{t:%H:%M}")
-        for t in (c.legs[0].train.planned_departure.astimezone(TZ) for c in found)
-    )
+    trains = {}
+    for c in found:
+        train = c.legs[0].train
+        t = train.planned_departure.astimezone(TZ)
+        trains[f"t{t:%H%M}" + ("b" if t.fold else "")] = train
+    choices = tuple((answer, _station_train_label(train)) for answer, train in trains.items())
     text = f"which train from {name}?"
-    return _prompt(s, ctx, EventKind.STATION_ASK, "pick", text, choices, name, station)
+    return _prompt(
+        s, ctx, EventKind.STATION_ASK, "pick", text, choices, name, station, trains=trains
+    )
 
 
 def _at_other_station(
@@ -2308,12 +2589,17 @@ def _at_other_station(
         return Transition(s, ())  # the next report asks NS again
     span = departure_span(s, ctx)
     c = find_next_good(
-        replace(s, at_station=True), ctx, answer, station=zone, earliest=True, span=span
+        replace(s, at_station=True),
+        ctx,
+        answer,
+        station=zone,
+        earliest=ctx.schedule.arrive_by is None,
+        span=span,
     )
     if c is None:
         return Transition(s, ())  # no train inside the window there: nothing asked or followed
     first_leg, dest = c.legs[0], c.legs[-1].alight.name
-    when, name = hhmm(first_leg.train.planned_departure), first_leg.board.name
+    when, name = _station_train_label(first_leg.train), first_leg.board.name
     if known and ev.in_station:
         # a first fix already inside the station circle: committed as a later one would be
         here = _drop_guesses(
@@ -2359,9 +2645,18 @@ def _left_origin(
         # a leave after the usual train left is often a late phone fix; the station decides
         return Transition(s, ())
     s = replace(s, travelling=True, tap_at=event.at)  # catchability: event time + buffer
-    if answer is None or _pins_train(ctx) or (lock is not None and lock.source is not LockSource.AUTO):
+    if (
+        answer is None
+        or _pins_train(ctx)
+        or (lock is not None and lock.source is not LockSource.AUTO)
+    ):
         return Transition(s, ())  # a chosen, station or later lock is kept
-    c = find_next_good(s, ctx, answer)
+    only = (
+        tuple(x.train for x in lock.legs)
+        if lock is not None and ctx.schedule.arrival_deadline is not None
+        else None
+    )
+    c = find_next_good(s, ctx, answer, only=only)
     if c is None:
         return Transition(s, ())
     deadline = (to_utc(event.at) + ERRAND_TIMEOUT).astimezone(TZ)
@@ -2380,8 +2675,17 @@ def _at_first_station(s: OccurrenceState, ctx: Ctx, pool: Pool | None) -> Transi
     if s.boarding_station is not None:  # confirmed at the other station
         s = _drop_guesses(s)
     new = None if lock is None else replace(lock, commitment=Commitment.COMMITTED)
-    if pool is not None and not _pins_train(ctx) and (lock is None or lock.source in _STATION_REPLACES):
-        c = find_next_good(s, ctx, pool)
+    if (
+        pool is not None
+        and not _pins_train(ctx)
+        and (lock is None or lock.source in _STATION_REPLACES)
+    ):
+        only = (
+            tuple(x.train for x in lock.legs)
+            if lock is not None and ctx.schedule.arrival_deadline is not None
+            else None
+        )
+        c = find_next_good(s, ctx, pool, only=only)
         if c is not None and (
             lock is None or [x.train for x in c.legs] != [x.train for x in lock.legs]
         ):

@@ -10,6 +10,10 @@ This deployment uses the existing single-traveller app. It does not add shared-r
 
 The names `alice` and `bob` below are example service labels. They do not identify actual people.
 
+Use the [Docker installer](docker.md#install-and-set-up-in-telegram) and enter the number of travellers. It creates a private folder, Compose project and data volume for each person. Each traveller needs a personal NS key and a separate bot.
+
+Run the log command printed for each traveller to open their claim link. Use `/setup` in the claimed private chat. The installer binds status endpoints to loopback, starting at port 8080 and using the next port for each traveller.
+
 ## Prepare each companion
 
 You need Docker with Compose, on amd64 or arm64 (a Raspberry Pi with a 64-bit OS works too). You need no clone and no build. Make a folder and download the compose file, the settings template and the example profile into it:

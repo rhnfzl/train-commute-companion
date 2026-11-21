@@ -36,6 +36,7 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
 - **Pauses for holidays.** Set an inclusive date range and monitoring resumes afterward. [Holiday pauses](docs/holiday-pauses.md).
 - **Uses weekday departure times.** Set different first trains within one profile while preserving already-followed journeys. [Schedules](docs/weekday-schedules.md).
 - **Follows any train in a time window.** No usual train needed, with an optional minimum stay and settings per day. [Schedules](docs/weekday-schedules.md#window-mode).
+- **Plans around when you need to arrive.** Set an arrival target, include your walk, and choose how much earlier you would leave for a direct train. [Arrive by](docs/weekday-schedules.md#arrive-by-a-set-time).
 - **Notices another boarding station.** With location on, it follows a known station by itself and asks once at a new one. [Other boarding station](docs/other-boarding-station.md).
 - **Shows train context.** Optional NS composition, listed capacity and candidate vehicle coordinates include source limits. [Train context](docs/train-context.md).
 - **Shows commute weather.** Station forecasts and tips need no key. Weather can suggest extra minutes in leave-by text. Official KNMI warnings need your own key. [Weather](docs/weather.md).

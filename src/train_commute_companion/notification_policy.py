@@ -23,6 +23,7 @@ _GROUPS: dict[NotificationCategory, frozenset[EventKind]] = {
             EventKind.ROUTE_CHANGED,
             EventKind.MISSED_FIRST_TRAIN,
             EventKind.NO_CONNECTION,
+            EventKind.ARRIVAL_TARGET,
             EventKind.RESTORED,
             EventKind.STATION_ASK,  # the user asked for these questions: never routine
             EventKind.STATION_REMEMBER,

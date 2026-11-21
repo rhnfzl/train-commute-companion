@@ -1,5 +1,5 @@
 import copy
-from datetime import date
+from datetime import date, time
 from pathlib import Path
 
 import pytest
@@ -13,7 +13,7 @@ from custom_components.train_commute_companion.profile_editor import (
     read_document,
     save_document,
 )
-from train_commute_companion.model import Stations
+from train_commute_companion.model import Direction, Stations
 from train_commute_companion.profile import parse_profiles
 
 KNOWN = frozenset({"AAA", "UT", "RTD", "BBB"})
@@ -62,6 +62,41 @@ def test_ntfy_switch_roundtrips_and_preserves_other_alert_settings(tmp_path):
         assert profiles[0].alerts.ntfy_enabled is value
         assert profiles[0].alerts.leave_by is False
         doc = document(tmp_path, text)
+
+
+def test_arrival_choice_and_switch_round_trip_with_weekday_overrides(tmp_path):
+    values = {
+        **VALUES,
+        "outbound_mode": "window",
+        "outbound_window_start": "07:00",
+        "outbound_window_end": "08:45",
+        "outbound_pick": "arrive_by",
+        "outbound_arrive_by": "09:00",
+        "outbound_walk_after_min": 12.0,
+        "outbound_prefer_direct_min": 0.0,
+        "outbound_by_weekday": {"mon": {"arrive_by": "09:15", "walk_after_min": 8}},
+        "arrive_by": False,
+    }
+    text = edit_profile(document(tmp_path), "p1", values, KNOWN, TODAY)
+    text = edit_profile(document(tmp_path, text), "p1", {**values, "arrive_by": True}, KNOWN, TODAY)
+    profiles, errors = parse_profiles(text, KNOWN)
+    assert not errors
+    profile = next(p for p in profiles if p.id == "p1")
+    assert profile.alerts.arrive_by
+    assert profile.outbound.arrive_by == time(9)
+    assert (profile.outbound.walk_after_min, profile.outbound.prefer_direct_min) == (12, 0)
+    monday = profile.journey_on(Direction.OUTBOUND, date(2026, 11, 9))
+    assert (monday.arrive_by, monday.walk_after_min, monday.prefer_direct_min) == (
+        time(9, 15),
+        8,
+        0,
+    )
+    assert profile.return_.arrive_by is None
+
+
+def test_arrival_switch_rejects_a_string(tmp_path):
+    with pytest.raises(EditorError, match="invalid_profile"):
+        edit_profile(document(tmp_path), "p1", {**VALUES, "arrive_by": "false"}, KNOWN, TODAY)
 
 
 def test_check_in_times_roundtrip_and_can_return_to_default(tmp_path):

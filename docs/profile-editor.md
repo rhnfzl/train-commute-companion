@@ -86,9 +86,13 @@ NS may not have published trips for every requested date. An incomplete custom c
 
 ## Window mode and settings by day
 
-The main form has a mode for each direction. Fixed follows your usual train. Window follows the earliest good train between the two window times. In window mode the first train can stay blank, and the latest time is required. The same form sets the train choice and the minimum stay. See [Schedules](weekday-schedules.md#window-mode).
+The main form has a mode for each direction. Fixed follows your usual train. Window chooses a train between the two departure times. The first train can stay blank in window mode. See [Schedules](weekday-schedules.md#window-mode).
 
-Turn on **Set a different mode, window, train choice or stay for some days** in the details form. A loop then edits one day at a time. Pick a day, change it, and save. Fields left on Same as every day, or blank, use the normal setting. A day with only normal settings is removed. Choose Done to finish.
+Select **Arrive by a set time** as the window train choice. Answer **When must you arrive?** with the time you need to reach your destination. Enter the walk from the destination station and your preference for a direct train. You can also set these fields for a weekday.
+
+**Choose trains by arrival time** is on by default in the details form. Turning it off uses the ordinary earliest-train choice and hides the target from status. The followed-train sensor exposes `arrive_by`, `station_arrival_deadline` and `arrival_target_status` while arrival-based choice is active.
+
+Turn on **Set a different mode, window, train choice or stay for some days** in the details form. A loop then edits one day at a time. Pick a day, change it, and save. Fields left on Same as every day, or blank, use the normal setting. A day with only normal settings is removed. Choose Done to finish. If a change to the default settings conflicts with a saved day override, the editor opens the day list before you can save. Choose Done to see which settings need attention.
 
 A fixed profile keeps its YAML shape. The editor writes `mode`, `pick` and `min_stay_min` only when they matter.
 
