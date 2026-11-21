@@ -16,6 +16,7 @@ from train_commute_companion import works_digest
 from train_commute_companion.advice import (
     advice_query,
     advise,
+    still_advised,
     usual_arrival,
 )
 from train_commute_companion.budget import POLL_DEADLINE, POLL_EVERY_S, RequestGate
@@ -224,13 +225,10 @@ class _LoggingNotifier:
         self,
         inner: Notifier,
         log_to: list[AlertEvent],
-        format_event: Callable[[AlertEvent], AlertEvent],
     ) -> None:
         self._inner, self._log = inner, log_to
-        self._format = format_event
 
     async def send(self, event: AlertEvent) -> bool:
-        event = self._format(event)
         try:
             ok = await self._inner.send(event)
         except NotificationPaused:
@@ -396,7 +394,7 @@ class Runtime:
         self._store = store
         self._provider = provider
         self.events_log: list[AlertEvent] = []
-        self._notifier = _LoggingNotifier(notifier, self.events_log, self._weather_event)
+        self._notifier = _LoggingNotifier(notifier, self.events_log)
         self._clock = clock
         self.known_stations = known_stations
         self._gate = RequestGate(provider, clock.now)
@@ -419,7 +417,12 @@ class Runtime:
             return self._writer.st
 
         self._ledger = LiveLedger(
-            read, read, self._memory, clock.now, lambda: self.available_channels
+            read,
+            read,
+            self._memory,
+            clock.now,
+            lambda: self.available_channels,
+            format_event=self._weather_event,
         )
         self._held_ledger = LiveLedger(
             read,
@@ -427,6 +430,7 @@ class Runtime:
             self._memory,
             clock.now,
             lambda: self.available_channels,
+            format_event=self._weather_event,
         )
         # an edit waiting for the station list retries it under the shared budget
         self._require_stations = require_stations
@@ -658,25 +662,31 @@ class Runtime:
         state = self._writer.st.occurrences[okey(o.key)]
         profile = self._profile_for(state)
         assert profile is not None and self._weather is not None
-        for answer in self._memory.boards.get(okey(o.key), ()):
-            for connection in answer.connections:
-                first = connection.legs[0]
-                if first.train != event.train or first.board.code not in self._provider.positions:
-                    continue
-                obs = first.board.departure
-                expected = (
-                    obs.value if obs is not None and obs.provenance is Provenance.REPORTED else None
-                )
-                buffer = profile.journey(o.key.direction).buffer_min
-                base = leave_by(first.train.planned_departure, expected, buffer)
-                weather = self._weather.snapshot(
-                    first.board.code,
-                    self._provider.positions[first.board.code],
-                    expected or first.train.planned_departure,
-                    self.now(),
-                )
-                return base, weather_allowance(base, buffer, weather, self.now()), (weather,)
-        return None, None, ()
+        now = self.now()
+        ctx = self._ctx(state, now)
+        answers = self._memory.boards.get(okey(o.key), ())
+        origin = None if ctx is None else origin_answer(answers, ctx, state)
+        if origin is None or ctx is None or event.train is None:
+            return None, None, ()
+        connection = still_advised(
+            state, ctx, origin, event.train, usual_arrival(state, ctx, origin)
+        )
+        if connection is None:
+            return None, None, ()
+        first = connection.legs[0]
+        if first.board.code not in self._provider.positions:
+            return None, None, ()
+        obs = first.board.departure
+        expected = obs.value if obs is not None and obs.provenance is Provenance.REPORTED else None
+        buffer = profile.journey(o.key.direction).buffer_min
+        base = leave_by(first.train.planned_departure, expected, buffer)
+        weather = self._weather.snapshot(
+            first.board.code,
+            self._provider.positions[first.board.code],
+            expected or first.train.planned_departure,
+            now,
+        )
+        return base, weather_allowance(base, buffer, weather, now), (weather,)
 
     def _refresh_weather_soon(self) -> None:
         if self._weather is not None and self._lifecycle.phase not in (

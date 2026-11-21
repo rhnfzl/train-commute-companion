@@ -51,4 +51,5 @@ def weather_allowance(
     else:
         return None
     extra = minutes[band]
-    return WeatherAllowance(extra, hazard, to_utc(base) - timedelta(minutes=extra))
+    suggested = to_utc(base) - timedelta(minutes=extra)
+    return None if suggested < to_utc(now) else WeatherAllowance(extra, hazard, suggested)

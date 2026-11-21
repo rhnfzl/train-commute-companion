@@ -61,6 +61,8 @@ The suggestion uses only a fresh cached departure-station forecast, within 30 mi
 Missing, stale or malformed forecasts add no time. Arrival-station weather never adds time before departure.
 No suggestion appears after reaching the station, while travelling, or during an active selected recovery.
 An earlier-train suggestion uses that train's forecast and its conservative leave-by time.
+If the suggested time has passed, the ordinary leave-by time remains visible without an extra-minute suggestion.
+Phone, email and webhook deliveries use the same formatter at send time.
 Held messages use current settings, trains and cached forecasts when sent.
 
 **Suggest extra time for weather** in Home Assistant controls this default-on setting:

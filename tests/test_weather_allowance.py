@@ -3,6 +3,7 @@ from datetime import UTC, datetime, time, timedelta
 
 import httpx
 import pytest
+import runtime_seam as seam
 from builders import make_connection, make_leg
 from lifecycle_fixtures import L1, L1X, L2, LATER
 from runtime_rig import PROFILE, at, late_usual_world
@@ -13,14 +14,16 @@ from train_commute_companion.model import AlertSettings, EventKind
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.weather import WeatherHour, WeatherProvider, WeatherView
 from train_commute_companion.revisions import occurrence_ctx
+from train_commute_companion.runtime import Runtime
 from train_commute_companion.serde import decode, encode
 from train_commute_companion.weather_allowance import weather_allowance
+from train_commute_companion.webhook_send import WebhookPoster
 
 
 def weather(when=None, *, temp=8, rain=0, snow=0, code=0):
     when = when or at("08:12")
     hour = WeatherHour(when.astimezone(UTC).replace(minute=0), temp, rain, snow, code)
-    return WeatherView("AAA", when, hour, when - timedelta(minutes=30), (), None, None)
+    return WeatherView("AAA", when, hour, when.astimezone(UTC) - timedelta(minutes=30), (), None, None)
 
 
 @pytest.mark.parametrize(
@@ -41,6 +44,7 @@ def weather(when=None, *, temp=8, rain=0, snow=0, code=0):
 def test_hazards_boundaries_and_strongest_hazard(values, hazard, minutes, buffer, band):
     view = weather(**values)
     base = at("08:12") - timedelta(minutes=buffer)
+    view = replace(view, fetched_at=base - timedelta(minutes=20))
     result = weather_allowance(base, buffer, view, view.fetched_at)
     assert result.hazard == hazard and result.extra_min == minutes[band]
     assert result.suggested_leave_by == base.astimezone(UTC) - timedelta(minutes=minutes[band])
@@ -57,7 +61,7 @@ def test_no_allowance_for_dry_frost_heat_or_below_rain_threshold(values):
 def test_freshness_and_missing_or_zero_buffer(age):
     view = weather(rain=2)
     now = view.fetched_at + timedelta(seconds=age)
-    assert (weather_allowance(at("08:02"), 10, view, now) is not None) is (0 <= age < 3600)
+    assert (weather_allowance(at("09:02"), 10, view, now) is not None) is (0 <= age < 3600)
     assert weather_allowance(at("08:12"), 0, view, now) is None
     assert weather_allowance(at("08:02"), 10, replace(view, forecast=None), now) is None
     assert weather_allowance(at("08:02"), 10, replace(view, fetched_at=None), now) is None
@@ -383,3 +387,122 @@ async def test_earlier_advice_uses_its_own_hour_and_the_return_buffer(tmp_path):
             assert rig.occ("p1|return|2026-10-27").lock.legs[0].train.train_number == "7952"
         finally:
             await rig.rt.stop_weather()
+
+
+@pytest.mark.parametrize("now,extra", [("17:12", True), ("17:15", False)])
+async def test_retry_hides_only_elapsed_weather_suggestion(tmp_path, now, extra):
+    def respond(request):
+        raw = forecast_for(at("16:54"))
+        raw["hourly"].update(precipitation=[0] * 24, snowfall=[1] * 24, weather_code=[71] * 24)
+        return httpx.Response(200, json=raw)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        rig = weather_rig(tmp_path, None)
+        rig.clock.set("16:54")
+        rig.provider.world = late_usual_world()
+        rig.notifier.fails = lambda event: event.kind is EventKind.LEAVE_NOW
+        rig.rt._weather = WeatherProvider(client, rig.clock.now)
+        await rig.rt.start()
+        try:
+            await rig.rt.weather_idle()
+            rig.clock.set(now)
+            rig.notifier.fails = lambda event: False
+            await rig.rt.watchdog_once()
+            event = next(e for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW)
+            assert ("+5 min suggested" in event.text) is extra
+            assert ("Leave by 17:12" if extra else "Leave by 17:17") in event.text
+            assert event.text.count("Leave by") == 1
+        finally:
+            await rig.rt.stop_weather()
+
+
+async def test_earlier_retry_uses_the_same_latest_advice_connection_for_weather(tmp_path):
+    def respond(request):
+        raw = forecast_for(at("16:54"))
+        raw["hourly"].update(precipitation=[0] * 24, weather_code=[0] * 24)
+        raw["hourly"]["snowfall"][16] = 1
+        return httpx.Response(200, json=raw)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        rig = weather_rig(tmp_path, None)
+        rig.clock.set("16:54")
+        rig.provider.world = late_usual_world()
+        rig.notifier.fails = lambda event: event.kind is EventKind.LEAVE_NOW
+        rig.rt._weather = WeatherProvider(client, rig.clock.now)
+        await rig.rt.start()
+        try:
+            await rig.rt.weather_idle()
+            key = "p1|return|2026-10-27"
+            answers = seam.memory(rig.rt).boards[key]
+            assert len(answers) >= 2
+            updated = []
+            for connection in answers[-1].connections:
+                first = connection.legs[0]
+                if first.train.train_number == "7922":
+                    board = replace(
+                        first.board, departure=replace(first.board.departure, value=at("17:34"))
+                    )
+                    connection = replace(
+                        connection, legs=(replace(first, stops=(board, *first.stops[1:])),)
+                    )
+                updated.append(connection)
+            seam.memory(rig.rt).boards[key] = (
+                *answers[:-1],
+                replace(
+                    answers[-1],
+                    connections=tuple(updated),
+                    fetched_at=answers[-1].fetched_at + timedelta(seconds=1),
+                ),
+            )
+            rig.clock.set("16:56")
+            rig.notifier.fails = lambda event: False
+            await rig.rt.watchdog_once()
+            event = next(e for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW)
+            assert "17:34" in event.text
+            assert "Leave by 17:17" in event.text
+            assert "+5 min suggested" not in event.text
+        finally:
+            await rig.rt.stop_weather()
+
+
+async def test_phone_and_webhook_share_weather_departure_text(tmp_path):
+    copies = []
+
+    def respond(request):
+        if request.url.host == "copy.example.test":
+            import json
+
+            copies.append(json.loads(request.content))
+            return httpx.Response(200)
+        raw = forecast_for(at("07:20"))
+        raw["hourly"].update(precipitation=[0] * 24, snowfall=[1] * 24, weather_code=[71] * 24)
+        return httpx.Response(200, json=raw)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        rig = weather_rig(tmp_path, None)
+        rig.clock.set("07:20")
+        rig.rt = Runtime(
+            profile_path=rig.path,
+            store=rig.store,
+            provider=rig.provider,
+            notifier=rig.notifier,
+            clock=rig.clock,
+            require_stations=False,
+            weather=WeatherProvider(client, rig.clock.now),
+            webhooks=WebhookPoster(
+                client, ("https://copy.example.test/hook",), "test-webhook-secret", rig.clock.now
+            ),
+        )
+        await rig.rt.start()
+        try:
+            await rig.rt.weather_idle()
+            rig.clock.set("07:50")
+            await rig.rt.poll_once()
+            await rig.rt.webhooks_idle()
+            phone = next(e for e in rig.rt.events_log if e.kind is EventKind.ALL_GOOD)
+            copy = next(e for e in copies if e["kind"] == "all_good")
+            assert "Leave by 07:57 (+5 min suggested" in phone.text
+            assert copy["text"] == phone.text
+        finally:
+            await rig.rt.stop_weather()
+            await seam.stop_webhooks(rig.rt)
