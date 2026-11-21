@@ -49,6 +49,7 @@ def profile_token(profile: Profile) -> str:
         "after_trip_note",
         "alert_history",
         "calendar_feed",
+        "location_leave_now",
     ):
         data["alerts"].pop(key)
     if profile.repeat is None:

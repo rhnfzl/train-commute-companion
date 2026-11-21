@@ -24,7 +24,12 @@ class WeatherAllowance:
 
 
 def weather_allowance(
-    base: datetime, buffer_min: int, weather: WeatherView, now: datetime
+    base: datetime,
+    buffer_min: int,
+    weather: WeatherView,
+    now: datetime,
+    *,
+    elapsed_grace: timedelta = timedelta(),
 ) -> WeatherAllowance | None:
     """The strongest forecast hazard wins. This table is a planning heuristic, not calibration."""
     hour = weather.forecast
@@ -52,4 +57,8 @@ def weather_allowance(
         return None
     extra = minutes[band]
     suggested = to_utc(base) - timedelta(minutes=extra)
-    return None if suggested < to_utc(now) else WeatherAllowance(extra, hazard, suggested)
+    return (
+        None
+        if suggested + elapsed_grace < to_utc(now)
+        else WeatherAllowance(extra, hazard, suggested)
+    )

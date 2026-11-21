@@ -172,6 +172,7 @@ def edit_profile(
         "weather",
         "leave_by",
         "weather_allowance",
+        "location_leave_now",
         "live_today",
         "telegram_status_pin",
         "ntfy_enabled",

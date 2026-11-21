@@ -284,6 +284,9 @@ async def test_home_vouches_before_and_twelve_minutes_after_departure(hass):  # 
     h = await setup_tcc(hass, VIA_UT, now="08:00")
     set_person(hass, *HOME)  # at rest at home: the phone sends no fixes
     await start_tracker(h)
+    await drive(h, "08:04")
+    assert [t for t in texts(h) if "Leave now" in t] == ["Office A: Leave now for the 08:12 train."]
+    assert await spied(h) == []
     await drive(h, "08:10")
     assert await spied(h) == [("home", "still")]  # 5 min before the 08:12
     await drive(h, "08:16")

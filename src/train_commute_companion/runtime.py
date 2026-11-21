@@ -98,7 +98,7 @@ from train_commute_companion.lifecycle import (
 )
 from train_commute_companion.lifecycle_end import arrival_evidence, may_archive, on_tick
 from train_commute_companion.lifecycle_lock import unfinished_leg
-from train_commute_companion.location import LocationEvent
+from train_commute_companion.location import DEPARTURE_REMINDER_WINDOW, LocationEvent
 from train_commute_companion.lookahead import forget_pending, rebase_on_edit, reset_on_edit
 from train_commute_companion.lookahead_probe import service_date
 from train_commute_companion.lookahead_run import (
@@ -176,6 +176,7 @@ from train_commute_companion.revisions import (
     effective_profile,
     find_profile,
     frozen,
+    inherited_location,
     occurrence_ctx,
     profile_for,
     routing_profile,
@@ -204,6 +205,7 @@ from train_commute_companion.state import (
     OccurrenceState,
     PollFailure,
     PollRecord,
+    is_sent,
     mark_sent,
     mark_sent_live,
 )
@@ -531,6 +533,7 @@ class Runtime:
             lambda: self.available_channels,
             format_event=self._weather_event,
             primary_enabled=self._primary_enabled,
+            departure_weather=self._station_weather,
         )
         self._held_ledger = LiveLedger(
             read,
@@ -540,6 +543,7 @@ class Runtime:
             lambda: self.available_channels,
             format_event=self._weather_event,
             primary_enabled=self._primary_enabled,
+            departure_weather=self._station_weather,
         )
         # an edit waiting for the station list retries it under the shared budget
         self._require_stations = require_stations
@@ -781,6 +785,12 @@ class Runtime:
             *(((last.alight, arrival),) if arrival is not None else ()),
         )
 
+    def _station_weather(self, station: str, when: datetime, now: datetime) -> WeatherView | None:
+        point = self._provider.positions.get(station)
+        if self._weather is None or point is None:
+            return None
+        return self._weather.snapshot(station, point, when, now)
+
     def _weather_views(
         self,
         o: OccurrenceView,
@@ -791,9 +801,9 @@ class Runtime:
         if self._weather is None or profile is None or not profile.alerts.weather:
             return ()
         return tuple(
-            self._weather.snapshot(station, self._provider.positions[station], when, now)
+            weather
             for station, when in self._weather_points(o)
-            if station in self._provider.positions
+            if (weather := self._station_weather(station, when, now)) is not None
         )
 
     def _with_weather(
@@ -2134,6 +2144,9 @@ class Runtime:
             events = list(t.events)
             if not is_resolved(t.state):
                 events += self._health_events(k, t.state, ctx, now)
+                reminder = self._ledger.departure_reminder(t.state)
+                if reminder is not None and not is_sent(t.state.alert_keys, reminder.key):
+                    events.append(reminder)
             if t.state != s or events:
                 changes[k] = (t.state, events)
         before = self._writer.st
@@ -2701,6 +2714,42 @@ class Runtime:
         events = apply_action(t, ctx, choice).events
         return next((Refused(e.text) for e in events if e.kind is EventKind.CHOOSE_REFUSED), None)
 
+    async def confirm_departure_presence(
+        self, pid: str, event: LocationEvent, source: LocationSettings, epoch: int
+    ) -> bool:
+        """A stationary tracker vouches for the reminder using the saved train board."""
+        now = self._clock.now()
+        if (
+            event.zone is None
+            or event.kind != "still"
+            or epoch != self._loc_epoch.get(pid, 0)
+            or not timedelta() <= to_utc(now) - to_utc(event.at) < DEPARTURE_REMINDER_WINDOW
+        ):
+            return False
+        changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
+        confirmed = False
+        for key, s in self._writer.st.occurrences.items():
+            if s.key.profile_id != pid:
+                continue
+            profile = self._profile_for(s)
+            if (
+                profile is None
+                or profile.location != source
+                or event.zone != place_zone(profile, profile.origin(s.key.direction))
+            ):
+                continue
+            candidate = replace(s, zone_reports={**s.zone_reports, event.zone: event.at})
+            reminder = self._ledger.departure_reminder(candidate)
+            if reminder is None:
+                continue
+            confirmed = True
+            if not is_sent(s.alert_keys, reminder.key):
+                changes[key] = candidate, (reminder,)
+        if changes:
+            self._apply(changes, kind=Change.TICK)
+            await self._deliver()
+        return confirmed
+
     async def report_location(
         self,
         profile_id: str,
@@ -2917,19 +2966,29 @@ class Runtime:
 
     def _apply_config(self, new: Config, now: datetime) -> None:
         self._recovery.invalidate()
-        old, today = self._writer.st.config, now.astimezone(TZ).date()
+        state = self._writer.st
+        old, today = state.config, now.astimezone(TZ).date()
         was = {p.id: p.location for p in (old.profiles if old else ())}
         now_loc = {p.id: p.location for p in new.profiles}
+        next_state = replace(state, config=new)
+        for plan in state.travel_plans.values():
+            was[plan.id] = inherited_location(state, plan.profile).location
+            now_loc[plan.id] = inherited_location(next_state, plan.profile).location
         for pid in was.keys() | now_loc.keys():
             if was.get(pid) != now_loc.get(pid):
                 self._loc_epoch[pid] = self._loc_epoch.get(pid, 0) + 1
         snaps = {**self._writer.st.config_snapshots, new.revision: new}
         occs = {}
-        for k, s in self._writer.st.occurrences.items():
+        for k, s in state.occurrences.items():
             # its schedule, read before the history is re-seeded below
             s = frozen(self._writer.st, s)
             route = find_profile(snaps.get(s.route_revision) or old, s.key.profile_id)
             if route is not None and route.travel_plan:
+                prior = inherited_location(state, route)
+                changed = inherited_location(next_state, route)
+                if prior.location != changed.location:
+                    s = self._clear_origin_presence(s, prior, changed)
+                    s = replace(s, generation=s.generation + 1)
                 occs[k] = s
                 continue
             p = find_profile(new, s.key.profile_id)
@@ -2946,6 +3005,9 @@ class Runtime:
                 self._memory.forget(k)  # what was seen of the old route is no evidence for it
                 continue
             moved = replace(s, route_revision=rev, settings_revision=new.revision)
+            if route is not None and p is not None and was.get(p.id) != p.location:
+                prior = self._profile_for(s) or route
+                moved = self._clear_origin_presence(moved, prior, p)
             if effective_profile(snaps, new, moved) != self._profile_for(s):
                 moved = replace(moved, generation=s.generation + 1)  # in-flight results are stale
             occs[k] = moved
@@ -2955,6 +3017,16 @@ class Runtime:
             baselines=baselines, lookahead=ledgers,
             brief_days={pid: day for pid, day in self._writer.st.brief_days.items() if pid in now_loc},
         ))  # fmt: skip
+
+    @staticmethod
+    def _clear_origin_presence(s: OccurrenceState, old: Profile, new: Profile) -> OccurrenceState:
+        direction = s.key.direction
+        origin_zones = {place_zone(p, p.origin(direction)) for p in (old, new)}
+        return replace(
+            s,
+            zone_reports={k: v for k, v in s.zone_reports.items() if k not in origin_zones},
+            wifi_reports={k: v for k, v in s.wifi_reports.items() if k not in origin_zones},
+        )
 
     async def reload_if_changed(self) -> None:
         """The file watch: reload when the file's mtime changes (or it disappears)."""

@@ -303,6 +303,7 @@ def parse_plan(
                 alert_history=False,
                 quick_trip=True,
                 daily_brief=True,
+                location_leave_now=True,
             ),
             p.accessibility,
             p.transfer_min,
@@ -328,6 +329,7 @@ def parse_plan(
             weekly_recap=all(p.alerts.weekly_recap for p in matching),
             after_trip_note=all(p.alerts.after_trip_note for p in matching),
             alert_history=all(p.alerts.alert_history for p in matching),
+            location_leave_now=all(p.alerts.location_leave_now for p in matching),
         )
     outbound = _journey(d.get("outbound"), "Outbound", base.outbound if base else None)
     has_return = d.get("return") is not None

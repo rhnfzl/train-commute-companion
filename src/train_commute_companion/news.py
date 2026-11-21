@@ -356,7 +356,8 @@ def all_good(s: OccurrenceState, poll: PollAnswers, ctx: Ctx) -> AlertEvent | No
 def forget_ended(keys: dict[str, str], events: Sequence[AlertEvent]) -> None:
     emitted = {e.key for e in events}
     for fact in live_facts(keys):
-        if fact not in emitted:
+        # A departure reminder is once per occurrence, including after a restart.
+        if fact not in emitted and not fact.startswith(f"{EventKind.DEPARTURE_REMINDER.value}:"):
             forget_fact(keys, fact)
     mark_live(keys, emitted)
 
