@@ -75,7 +75,7 @@ Then follow the first run from step 1. After each update of the checkout, build 
 
 The same actions are buttons under the alerts and the `/status` reply. A question about [another boarding station](other-boarding-station.md) shows only its own answer buttons.
 
-Every tap gets a reply that names the button and says what it did, for example "I got both: Delivery confirmed. Setup is complete." When the tap takes effect, the buttons under that message go away. A refused tap keeps them, so you can try again.
+Every tap gets a reply that names the button and says what it did, for example "I got both: Delivery confirmed. Setup is complete." When the tap takes effect, that button goes away and the others under the message stay, so "Not travelling" still works after "I'm leaving". A one-time choice, such as "I got both", an arrival confirmation or the answer to a question, takes all of its buttons with it. A refused tap keeps them, so you can try again.
 
 ## Settings
 

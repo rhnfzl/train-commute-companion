@@ -90,11 +90,14 @@ BUTTON_LABELS = {
     "s": "Not travelling",
     "c": "Take train",
 }
+# exclusive one-time choices: a used one takes its whole keyboard; any other used button goes alone
+WHOLE_KEYBOARD = frozenset({"ok", "av", "q", "ra"})
 
 
 @dataclass(frozen=True, slots=True)
 class Outcome:
-    """What a button led to. `done`: the action took effect, so its keyboard goes."""
+    """What a button led to. `done`: the action took effect, so its button (or, for a one-time
+    choice, its whole keyboard) goes."""
 
     text: str
     markup: dict[str, Any] | None = None
@@ -106,6 +109,8 @@ class ShellState:
     offset: int = 0
     bot_id: str | None = None  # the bot whose update ids `offset` counts
     confirmed_for: str | None = None  # "<bot id>:<chat id>" (rule 16 proves one target)
+    # the "I got both" nonce that proved it, saved with it; None in an older file: unknown
+    accepted_nonce: str | None = None
 
 
 def load_state(path: Path) -> ShellState | None:
@@ -116,7 +121,10 @@ def load_state(path: Path) -> ShellState | None:
             isinstance(s.offset, bool)
             or not isinstance(s.offset, int)
             or s.offset < 0
-            or not all(v is None or isinstance(v, str) for v in (s.bot_id, s.confirmed_for))
+            or not all(
+                v is None or isinstance(v, str)
+                for v in (s.bot_id, s.confirmed_for, s.accepted_nonce)
+            )
         ):
             raise ValueError("wrong types")
     except FileNotFoundError:
@@ -174,8 +182,12 @@ class Bot:
         self._cursor = UpdateCursor(CursorPhase.READY if trusted else CursorPhase.UNTRUSTED)
         if loaded is not None and trusted:
             self.state = loaded
-        else:  # another bot's or no cursor: only the confirmation (it names its bot) is kept
-            self.state = ShellState(confirmed_for=loaded.confirmed_for if loaded else None)
+        elif loaded is not None:  # another bot's cursor: only the confirmation (it names its bot)
+            self.state = ShellState(
+                confirmed_for=loaded.confirmed_for, accepted_nonce=loaded.accepted_nonce
+            )
+        else:
+            self.state = ShellState()
         self._proof: DeliveryProof | None = None
         self._arrival_drafts: dict[str, ArrivalDraft] = {}
         self._save_phase = SavePhase.READY
@@ -247,18 +259,19 @@ class Bot:
             self._spawn(ups)
             ups = [u for u in _updates(nxt) if u["update_id"] >= self.state.offset]
 
-    async def _save(self, confirmed_for: str | None = None) -> bool:
+    async def _save(self, confirmed_for: str | None = None, nonce: str | None = None) -> bool:
+        """`confirmed_for` and the `nonce` that proved it are written together or not at all."""
         # a cancelled caller leaves the write running and the lock held until its worker ends
-        task = asyncio.ensure_future(self._write(confirmed_for))
+        task = asyncio.ensure_future(self._write(confirmed_for, nonce))
         self.writes.add(task)
         task.add_done_callback(self.writes.discard)
         return await asyncio.shield(task)
 
-    async def _write(self, confirmed_for: str | None = None) -> bool:
+    async def _write(self, confirmed_for: str | None = None, nonce: str | None = None) -> bool:
         async with self._save_lock:
             snap = replace(self.state)  # the worker writes this copy, never a state being changed
             if confirmed_for is not None:
-                snap.confirmed_for = confirmed_for
+                snap.confirmed_for, snap.accepted_nonce = confirmed_for, nonce
             try:
                 await asyncio.to_thread(save_state, self._path, snap)  # off the loop (rule 12)
             except OSError as e:
@@ -267,7 +280,7 @@ class Bot:
                 self._save_phase = SavePhase.FAILED
                 return False
             if confirmed_for is not None:
-                self.state.confirmed_for = confirmed_for
+                self.state.confirmed_for, self.state.accepted_nonce = confirmed_for, nonce
             if self._save_phase is SavePhase.FAILED:
                 log.warning("Telegram state saved again")
             self._save_phase = SavePhase.READY
@@ -393,8 +406,9 @@ class Bot:
             )
 
     async def _button(self, cb: dict[str, Any]) -> None:
-        """Every tap is answered with the tapped button's label and what it led to; a tap that
-        took effect also removes its message's keyboard, so a used button cannot be tapped again."""
+        """Every tap is answered with the tapped button's label and what it led to. A tap that
+        took effect also removes the used button from its message (a one-time choice: the whole
+        keyboard); a refused or failed tap leaves the keyboard as it was."""
         try:
             await self._api.call("answerCallbackQuery", {"callback_query_id": cb.get("id")})
         except TelegramError as e:
@@ -413,18 +427,41 @@ class Bot:
         text = out.text if out.text.startswith(label + ":") else f"{label}: {out.text}"
         await self._reply(text, out.markup)
         if out.done:
-            await self._clear_keyboard(message)
+            tag = data.split("|", 1)[0] if isinstance(data, str) else ""
+            await self._retire(message, None if tag in WHOLE_KEYBOARD else data)
 
-    async def _clear_keyboard(self, message: dict[str, Any]) -> None:
-        """Logged only: a failed edit changes neither the reply nor the action."""
+    async def _retire(self, message: dict[str, Any], data: str | None) -> None:
+        """Removes the button with `data` from the message's own keyboard, keeping every other
+        button as it is; `data` None removes the whole keyboard. Logged only: a failed edit
+        changes neither the reply nor the action."""
         mid = message.get("message_id")
         if type(mid) is not int or self._cursor.closed:
-            log.info("no Telegram message to remove the used keyboard from")
+            log.info("no Telegram message to remove the used button from")
             return
+        rows: list[Any] = []
+        if data is not None:
+            # shortcut: two taps on one message before either edit lands can bring the first
+            # button back; it is reusable and a refused tap says so, so add a per-message
+            # keyboard cache only if that shows up in use
+            old = _obj(message.get("reply_markup")).get("inline_keyboard")
+            old = old if isinstance(old, list) else []
+            rows = [
+                kept
+                for row in old
+                if isinstance(row, list)
+                and (kept := [b for b in row if _obj(b).get("callback_data") != data])
+            ]
+            if rows == old:  # no keyboard, or the button is not on it: wiping it would lose others
+                log.info("the used button is not on its Telegram message's keyboard")
+                return
         try:  # handle() checked this message's chat is self._chat
             await self._api.call(
                 "editMessageReplyMarkup",
-                {"chat_id": self._chat, "message_id": mid, "reply_markup": {"inline_keyboard": []}},
+                {
+                    "chat_id": self._chat,
+                    "message_id": mid,
+                    "reply_markup": {"inline_keyboard": rows},
+                },
             )
         except TelegramError as e:
             log.info("Telegram keyboard removal failed (%s: %s)", e.code, e)
@@ -544,16 +581,18 @@ class Bot:
     async def _confirm(self, nonce: str) -> Outcome:
         proof = self._proof
         if proof is not None and proof.claim(nonce):
-            accepted = await self._save(f"{self._api.bot_id}:{self._chat}")
-            proof.saved(accepted)
-            if accepted:
+            saved = await self._save(f"{self._api.bot_id}:{self._chat}", nonce)
+            proof.saved(saved)
+            if saved:
                 return Outcome("Delivery confirmed. Setup is complete.", done=True)
             return Outcome("Delivery proof was not saved. Tap the confirmation again to retry.")
         if proof is not None and proof.matches(nonce) and proof.phase is ProofPhase.SAVING:
             return Outcome("Delivery confirmation is being saved.")  # a double tap
-        if self.confirmed and (proof is None or proof.matches(nonce)):
-            # a second tap; also after a restart, which forgets the proof but not the confirmation
-            return Outcome("Delivery is already confirmed.", done=True)
+        accepted = self.state.accepted_nonce
+        if self.confirmed and accepted is not None and DeliveryProof(accepted).matches(nonce):
+            # a second tap on the test that proved it, also after a restart or a later /test;
+            # a no-op, so its keyboard stays
+            return Outcome("Delivery is already confirmed.")
         return Outcome("That test is old; send /test again.")
 
     # --- actions ---

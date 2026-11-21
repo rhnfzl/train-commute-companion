@@ -55,7 +55,7 @@ async def app(tmp_path):
     await tg.close()
 
 
-async def start(app):
+async def offered(app):
     rig, tg, bot = app
     plan = occurrence(rig).replacement_plans[0]
     await bot.handle(tap(f"rp|{plan.proposal_id}"))
@@ -67,9 +67,53 @@ async def start(app):
     assert occurrence(rig).selected_recovery is None
     assert "planned-only times" in tg.sent[-1]["text"]
     assert "unverified accessibility" in tg.sent[-1]["text"]
-    follow = buttons(tg)[0]["callback_data"]
-    await bot.handle(tap(follow, 3))
+    return buttons(tg)[0]["callback_data"]
+
+
+async def start(app):
+    follow = await offered(app)
+    await app[2].handle(tap(follow, 3))
     return follow
+
+
+def on_status(data, markup, uid):
+    message = {"chat": {"id": CHAT}, "message_id": 9, "reply_markup": markup}
+    return {"callback_query": {"id": f"q{uid}", "data": data, "message": message}}
+
+
+def without(markup, data):
+    rows = [[b for b in row if b["callback_data"] != data] for row in markup["inline_keyboard"]]
+    return {
+        "chat_id": CHAT,
+        "message_id": 9,
+        "reply_markup": {"inline_keyboard": [r for r in rows if r]},
+    }
+
+
+async def test_follow_on_status_removes_only_its_own_button(app):
+    rig, tg, bot = app
+    follow = await offered(app)
+    markup = status_buttons(rig.rt.view())
+    tags = [b["callback_data"].split("|")[0] for row in markup["inline_keyboard"] for b in row]
+    assert "l" in tags and "s" in tags and "rp" in tags and tags.count("rf") == 1
+    await bot.handle(on_status(follow, markup, 10))
+    assert occurrence(rig).selected_recovery is not None
+    assert tg.edits == [without(markup, follow)]  # journey and other recovery buttons stay
+
+
+async def test_recovery_step_on_status_removes_only_its_own_button(app):
+    rig, tg, bot = app
+    await start(app)
+    selected = occurrence(rig).selected_recovery
+    rig.clock.t = max(rig.clock.t, selected.itinerary.steps[selected.index].departure)
+    markup = status_buttons(rig.rt.view())
+    [boarded], [stop] = recovery_progress_buttons(selected)["inline_keyboard"]
+    tags = [b["callback_data"].split("|")[0] for row in markup["inline_keyboard"] for b in row]
+    assert tags[:2] == ["l", "s"] and boarded in markup["inline_keyboard"][-2]
+    await bot.handle(on_status(boarded["callback_data"], markup, 10))
+    assert occurrence(rig).selected_recovery.revision == selected.revision + 1
+    expected = without(markup, boarded["callback_data"])
+    assert tg.edits == [expected] and [stop] in expected["reply_markup"]["inline_keyboard"]
 
 
 async def test_bus_walk_metro_manual_journey_duplicate_and_stale_callbacks(app):

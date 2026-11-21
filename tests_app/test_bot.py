@@ -225,19 +225,20 @@ async def test_target_error_is_replied(app):
 
 async def test_buttons_answer_first_then_act(app):
     app.rig.clock.set("08:00")
-    await app.bot.handle(tap("l|p1|outbound|2026-10-27", 1))
+    markup = status_buttons(app.rt.view())
+    await app.bot.handle(tap("l|p1|outbound|2026-10-27", 1, markup=markup))
     assert app.rig.occ(OUT).tap_at == app.rt.now()
-    await app.bot.handle(tap("c|p1|outbound|2026-10-27|08:44|1236", 2))
+    await app.bot.handle(tap("c|p1|outbound|2026-10-27|08:44|1236", 2, markup=markup))
     assert only_occurrence(app.rt).lock.legs[0].train.planned_departure == at("08:44")
-    await app.bot.handle(tap("s|p1|outbound|2026-10-27", 3))
+    await app.bot.handle(tap("s|p1|outbound|2026-10-27", 3, markup=markup))
     assert app.rig.occ(OUT).not_travelling and app.rig.occ(RET) is None
-    await app.bot.handle(tap("l|p1|nowhere|2026-10-27", 4))  # unparseable: still answered
+    await app.bot.handle(tap("l|p1|nowhere|2026-10-27", 4, markup=markup))  # still answered
     used = ["answerCallbackQuery", "sendMessage", "editMessageReplyMarkup"]
     assert app.tg.calls == used * 3 + ["answerCallbackQuery", "sendMessage"]
     assert app.tg.answered == ["q1", "q2", "q3", "q4"]
     assert app.texts() == [
         "I'm leaving: Marked as leaving now.",
-        "Take train: Locked the 08:44 for Office A.",
+        "Take 08:44: Locked the 08:44 for Office A.",
         "Not travelling: alerts for that journey stop.",
         "I'm leaving: That button is no longer valid.",
     ]
@@ -291,18 +292,58 @@ async def test_a_group_is_not_told_to_become_the_chat_id(app, caplog):
     assert "set TELEGRAM_CHAT_ID" not in caplog.text and "not a private chat" in caplog.text
 
 
-# --- every tap names its button; a used keyboard goes ---
+# --- every tap names its button; a used button goes, a one-time choice takes its keyboard ---
 
 CLEARED = {"chat_id": CHAT, "message_id": 1, "reply_markup": {"inline_keyboard": []}}
 
 
-async def test_used_alert_button_is_named_and_its_keyboard_removed(app):
+def without(markup: dict[str, Any], data: str) -> dict[str, Any]:
+    """The edit that removes only the button with `data`, dropping its row once empty."""
+    rows = [[b for b in row if b["callback_data"] != data] for row in markup["inline_keyboard"]]
+    return {
+        "chat_id": CHAT,
+        "message_id": 1,
+        "reply_markup": {"inline_keyboard": [r for r in rows if r]},
+    }
+
+
+async def test_used_alert_button_goes_and_its_sibling_stays(app):
     app.rig.clock.set("08:00")
-    markup = status_buttons(app.rt.view())
-    await app.bot.handle(tap("l|p1|outbound|2026-10-27", markup=markup))
+    leaving, skip = (f"{tag}|p1|outbound|2026-10-27" for tag in ("l", "s"))
+    markup = {"inline_keyboard": [[{"text": "I'm leaving", "callback_data": leaving},
+                                   {"text": "Not travelling", "callback_data": skip}]]}  # fmt: skip
+    await app.bot.handle(tap(leaving, markup=markup))
     assert app.rig.occ(OUT).tap_at == app.rt.now()
     assert app.texts() == ["I'm leaving: Marked as leaving now."]
-    assert app.tg.edits == [CLEARED]
+    kept = {"inline_keyboard": [[{"text": "Not travelling", "callback_data": skip}]]}
+    assert app.tg.edits == [{"chat_id": CHAT, "message_id": 1, "reply_markup": kept}]
+    await app.bot.handle(tap(skip, 2, markup=kept))  # the plan changed: the sibling still works
+    assert app.rig.occ(OUT).not_travelling and app.tg.edits[-1] == CLEARED
+
+
+@pytest.mark.parametrize("tag", ["l", "s", "c"])
+async def test_used_status_button_goes_and_every_other_stays(app, tag):
+    app.rig.clock.set("08:00")
+    markup = status_buttons(app.rt.view())
+    assert markup is not None
+    [row] = markup["inline_keyboard"]
+    assert [b["callback_data"].split("|")[0] for b in row] == ["l", "s", "c"]
+    data = next(b["callback_data"] for b in row if b["callback_data"].startswith(tag + "|"))
+    await app.bot.handle(tap(data, markup=markup))
+    assert app.tg.edits == [without(markup, data)]  # one row of three keeps the other two
+
+
+async def test_a_used_button_missing_from_its_keyboard_keeps_the_keyboard(app, caplog):
+    caplog.set_level(logging.INFO)
+    app.rig.clock.set("08:00")
+    other = {"inline_keyboard": [[{"text": "Other", "callback_data": "s|p1|return|2026-10-27"}]]}
+    await app.bot.handle(tap("l|p1|outbound|2026-10-27", markup=other))
+    await app.bot.handle(tap("l|p1|outbound|2026-10-27", 2))  # no keyboard to rebuild from
+    assert app.texts() == ["I'm leaving: Marked as leaving now."] * 2
+    assert (
+        "editMessageReplyMarkup" not in app.tg.calls
+        and "not on its Telegram message" in caplog.text
+    )
 
 
 async def test_refused_button_keeps_its_keyboard(app):
@@ -327,7 +368,7 @@ async def test_a_failed_keyboard_removal_is_only_logged(app, caplog, failure):
     caplog.set_level(logging.INFO)
     app.rig.clock.set("08:00")
     app.tg.fail = lambda method: failure if method == "editMessageReplyMarkup" else None
-    await app.bot.handle(tap("l|p1|outbound|2026-10-27"))
+    await app.bot.handle(tap("l|p1|outbound|2026-10-27", markup=status_buttons(app.rt.view())))
     assert app.rig.occ(OUT).tap_at == app.rt.now()
     assert app.texts() == ["I'm leaving: Marked as leaving now."]
     assert app.tg.calls[-1] == "editMessageReplyMarkup" and app.tg.edits == []
@@ -370,7 +411,7 @@ async def test_confirmed_delivery_button_after_a_restart(app):
     app.bot = app.new_bot()
     await app.bot.handle(tap(data, 3, markup=markup))
     assert app.texts()[-1] == "I got both: Delivery is already confirmed."
-    assert app.tg.edits == [CLEARED, CLEARED]
+    assert app.tg.edits == [CLEARED]  # the repeat changes nothing, so its keyboard stays
 
 
 async def test_an_unsaved_delivery_proof_keeps_its_button_for_a_retry(app, monkeypatch):
@@ -400,13 +441,73 @@ async def test_second_tap_on_a_confirmed_delivery_button(app):
     await app.bot.handle(tap("ok|0000", 2, markup=markup))  # an old test: the keyboard stays
     assert app.tg.edits == []
     await app.bot.handle(tap(data, 3, markup=markup))
-    await app.bot.handle(tap(data, 4, markup=markup))  # the removal failed or raced the tap
+    await app.bot.handle(tap(data, 4, markup=markup))  # a no-op: the keyboard stays
     assert app.texts()[2:] == [
         "I got both: That test is old; send /test again.",
         "I got both: Delivery confirmed. Setup is complete.",
         "I got both: Delivery is already confirmed.",
     ]
-    assert app.bot.confirmed and app.tg.edits == [CLEARED, CLEARED]
+    assert app.bot.confirmed and app.tg.edits == [CLEARED]
+
+
+async def delivery_test(app: App, uid: int) -> tuple[str, dict[str, Any]]:
+    await app.bot.handle(app.msg("/test", uid))
+    markup = app.tg.sent[-1]["reply_markup"]
+    return markup["inline_keyboard"][0][0]["callback_data"], markup
+
+
+async def restart(app: App) -> None:
+    await app.bot.close()
+    app.bot = app.new_bot()
+
+
+async def test_the_accepted_delivery_test_is_saved_and_others_stay_old(app):
+    a, a_keys = await delivery_test(app, 1)
+    b, b_keys = await delivery_test(app, 2)
+    await app.bot.handle(tap(b, 3, markup=b_keys))
+    assert app.bot.confirmed and load_state(app.path).accepted_nonce == b.split("|")[1]
+    old, again = (
+        "I got both: That test is old; send /test again.",
+        "I got both: Delivery is already confirmed.",
+    )
+    for uid in (4, 6):  # before and after a restart
+        edits = len(app.tg.edits)
+        await app.bot.handle(tap(a, uid, markup=a_keys))  # superseded: old, its keyboard stays
+        assert app.texts()[-1] == old and len(app.tg.edits) == edits
+        await app.bot.handle(tap(b, uid + 1, markup=b_keys))
+        assert app.texts()[-1] == again and len(app.tg.edits) == edits
+        await restart(app)
+    await app.bot._commit_and_dispatch(
+        [app.msg("/help", 20, kind="edited_message")]
+    )  # a cursor save
+    assert load_state(app.path) == ShellState(21, None, "123:1000001", b.split("|")[1])
+    c, c_keys = await delivery_test(app, 21)  # sent, never tapped
+    await app.bot.handle(tap(b, 22, markup=b_keys))
+    assert app.texts()[-1] == again
+    await restart(app)
+    edits = len(app.tg.edits)
+    await app.bot.handle(tap(c, 23, markup=c_keys))  # unconfirmed and forgotten by the restart
+    await app.bot.handle(tap(b, 24, markup=b_keys))
+    assert app.texts()[-2:] == [old, again] and len(app.tg.edits) == edits
+    d, d_keys = await delivery_test(app, 25)
+    await app.bot.handle(tap(d, 26, markup=d_keys))  # a newer proof supersedes the saved one
+    assert app.texts()[-1] == "I got both: Delivery confirmed. Setup is complete."
+    await restart(app)
+    await app.bot.handle(tap(b, 27, markup=b_keys))
+    await app.bot.handle(tap(d, 28, markup=d_keys))
+    assert app.texts()[-2:] == [old, again]
+
+
+async def test_an_older_state_file_without_the_accepted_test_still_loads(app):
+    app.path.write_text('{"offset": 4, "bot_id": "123", "confirmed_for": "123:1000001"}')
+    app.bot = app.new_bot()
+    assert app.bot.confirmed and app.bot.state.accepted_nonce is None
+    await app.bot.handle(tap("ok|0a1b2c3d", 1, markup={"inline_keyboard": [[]]}))
+    assert app.texts() == ["I got both: That test is old; send /test again."] and app.tg.edits == []
+    data, markup = await delivery_test(app, 2)
+    await app.bot.handle(tap(data, 3, markup=markup))
+    assert app.texts()[-1] == "I got both: Delivery confirmed. Setup is complete."
+    assert load_state(app.path) == ShellState(4, "123", "123:1000001", data.split("|")[1])
 
 
 # --- delivery test (rule 16) ---
@@ -649,7 +750,7 @@ async def test_untrusted_cursor_discards_the_backlog(app, tmp_path, state, caplo
     if state == "corrupt":
         app.path.write_text("{not json")
     elif state == "another bot":
-        save_state(app.path, ShellState(3, "456", "456:1000001"))
+        save_state(app.path, ShellState(3, "456", "456:1000001", "0a1b2c3d"))
     bot = app.new_bot()
     tg, now = app.tg, app.rig.clock.now()
     for update in (
@@ -671,6 +772,7 @@ async def test_untrusted_cursor_discards_the_backlog(app, tmp_path, state, caplo
     assert s is not None and (s.offset, s.bot_id) == (11, "123")
     if state == "another bot":
         assert s.confirmed_for == "456:1000001" and not bot.confirmed
+        assert s.accepted_nonce == "0a1b2c3d"  # it names that bot's chat, so it travels with it
 
 
 def unwritable(monkeypatch) -> None:
@@ -771,7 +873,8 @@ async def test_overlapping_state_saves_keep_the_newest(app, monkeypatch):
     gate.set()
     await asyncio.gather(first, tap_task)
     assert released == [True] and peak[0] == 1
-    assert load_state(app.path) == ShellState(8, None, "123:1000001")
+    nonce = button["callback_data"].split("|")[1]
+    assert load_state(app.path) == ShellState(8, None, "123:1000001", nonce)
 
 
 async def test_a_cancelled_save_still_blocks_the_next_one(app, monkeypatch):
