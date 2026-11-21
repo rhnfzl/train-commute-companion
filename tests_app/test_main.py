@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -6,11 +7,13 @@ import threading
 from datetime import time
 from pathlib import Path
 
+import httpx
 import pytest
 import runtime_seam as seam
 from app_rig import (
     CHAT,
     CODES,
+    ONE_PROFILE,
     SECRET,
     TOKEN,
     URL,
@@ -24,18 +27,147 @@ from app_rig import (
 )
 from builders import ONE_TRANSFER
 from runtime_rig import Provider, StationsProvider, at
+from tcc_app import main as main_mod
 from tcc_app.bot import load_state
 from tcc_app.main import PORT, App, Settings, main, serve, setup_logging
 from tcc_app.web import ask_readout, health_report, mcp_socket_path, start_readout
 from webhook_receiver import Receiver
 
 from train_commute_companion.calendar import SystemClock
-from train_commute_companion.model import EventKind, Leaving, WebhookCopy
+from train_commute_companion.model import EventKind, Leaving, Severity, WebhookCopy
 from train_commute_companion.providers.ns import NsProvider
 from train_commute_companion.store import JsonFileStore
 from train_commute_companion.webhook_send import WebhookPoster
 
 ENV = {"NS_API_KEY": "k", "TELEGRAM_BOT_TOKEN": TOKEN}
+GENERATED = "test-generated-health-token-0001"
+
+
+def token_settings(tmp_path, **env):
+    return Settings.from_env({**ENV, "TCC_STATE_DIR": str(tmp_path), **env})
+
+
+def test_health_token_is_private_printed_once_and_reused(tmp_path, monkeypatch, caplog):
+    calls = []
+    monkeypatch.setattr(
+        main_mod.secrets, "token_urlsafe", lambda size: calls.append(size) or GENERATED
+    )
+    settings = token_settings(tmp_path / "data")
+    with caplog.at_level(logging.INFO, logger="tcc_app.main"):
+        assert main_mod._health_token(settings) == GENERATED
+        assert main_mod._health_token(settings) == GENERATED
+    path = settings.state_dir / "health-token"
+    assert path.read_text() == GENERATED
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert calls == [32]
+    assert caplog.text.count(GENERATED) == 1
+
+
+def test_explicit_health_token_needs_no_token_file(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="tcc_app.main")
+    settings = token_settings(tmp_path / "unused", TCC_HEALTH_TOKEN=GENERATED)
+    assert main_mod._health_token(settings) == GENERATED
+    assert not settings.state_dir.exists() and GENERATED not in caplog.text
+
+
+@pytest.mark.parametrize("content", [b"", b"short", b"test-health-token-0001\n", b"\xff"])
+def test_malformed_health_token_refuses_without_replacing_or_logging(tmp_path, content, caplog):
+    caplog.set_level(logging.INFO, logger="tcc_app.main")
+    path = tmp_path / "health-token"
+    path.write_bytes(content)
+    path.chmod(0o600)
+    with pytest.raises(ValueError, match="health-token"):
+        main_mod._health_token(token_settings(tmp_path))
+    assert path.read_bytes() == content and not caplog.records
+
+
+@pytest.mark.parametrize("kind", ["public", "directory", "symlink", "dangling", "fifo", "hardlink"])
+def test_unsafe_health_token_state_refuses(tmp_path, kind, caplog):
+    caplog.set_level(logging.INFO, logger="tcc_app.main")
+    path, target = tmp_path / "health-token", tmp_path / "target"
+    if kind in {"symlink", "dangling"}:
+        if kind == "symlink":
+            target.write_text(GENERATED)
+            target.chmod(0o600)
+        path.symlink_to(target)
+    elif kind == "directory":
+        path.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(path, 0o600)
+    elif kind == "hardlink":
+        target.write_text(GENERATED)
+        target.chmod(0o600)
+        os.link(target, path)
+    else:
+        path.write_text(GENERATED)
+        path.chmod(0o644)
+    with pytest.raises(ValueError, match="health-token") as error:
+        main_mod._health_token(token_settings(tmp_path))
+    assert GENERATED not in str(error.value) and not caplog.records
+    if kind == "symlink":
+        assert target.read_text() == GENERATED
+    if kind == "dangling":
+        assert path.is_symlink() and not target.exists()
+
+
+@pytest.mark.parametrize("operation", ["link", "fsync"])
+def test_health_token_storage_failure_never_prints_or_leaves_a_token(
+    tmp_path, monkeypatch, caplog, operation
+):
+    caplog.set_level(logging.INFO, logger="tcc_app.main")
+    monkeypatch.setattr(main_mod.secrets, "token_urlsafe", lambda size: GENERATED)
+
+    def fail(*args):
+        raise OSError(GENERATED)  # even an OS error must not expose token contents
+
+    monkeypatch.setattr(main_mod.os, operation, fail)
+    with pytest.raises(ValueError, match="health-token") as error:
+        main_mod._health_token(token_settings(tmp_path))
+    assert GENERATED not in str(error.value) and GENERATED not in caplog.text
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_failed_token_storage_refuses_before_serving(tmp_path, caplog):
+    blocked = tmp_path / "not-a-directory"
+    blocked.touch()
+    assert await asyncio.wait_for(main_mod._run(token_settings(blocked)), 1) == 1
+    assert "health-token" in caplog.text and "refusing to start" in caplog.text
+
+
+async def test_generated_token_enables_today_and_keeps_health_private(tmp_path, monkeypatch):
+    from test_today import request
+
+    monkeypatch.setattr(main_mod.secrets, "token_urlsafe", lambda size: GENERATED)
+    profiles = tmp_path / "profiles.yaml"
+    profiles.write_text(ONE_PROFILE)
+    settings = token_settings(tmp_path, TCC_PROFILES=str(profiles))
+    clock = TickClock(at("07:50"))
+
+    async def check(app, port):
+        assert app.settings.health_token == GENERATED
+        port = free_port()
+        task = asyncio.create_task(serve(app, port))
+        try:
+            await until(lambda: app.rt.started)
+            status, _, body = await request(port, "/health")
+            assert status == 503 and json.loads(body) == {"ok": False}
+            _, _, body = await request(port, "/health", "Bearer " + GENERATED)
+            assert "key_rejected" in json.loads(body)
+            assert (await request(port))[0] == 401
+            assert (await request(port, authorization="Bearer " + GENERATED))[0] == 200
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        return 0
+
+    # _run uses the real startup wiring; no network calls leave the process.
+    monkeypatch.setattr(main_mod, "serve", check)
+    monkeypatch.setattr(main_mod, "SystemClock", lambda: clock)
+    monkeypatch.setattr(
+        main_mod, "NsProvider", lambda *args: StationsProvider(Provider(clock, []), CODES)
+    )
+    monkeypatch.setattr(main_mod.Bot, "run", lambda self: asyncio.Event().wait())
+    assert await main_mod._run(settings) == 0
 
 
 async def refused(port: int) -> bool:
@@ -127,6 +259,7 @@ def test_main_refuses_without_key(monkeypatch, capsys):
 
 @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
 def test_a_stop_signal_ends_main_with_0(tmp_path, monkeypatch, signum):  # what a docker stop sends
+    monkeypatch.setattr(main_mod.secrets, "token_urlsafe", lambda size: GENERATED)
     for k, v in {**ENV, "TCC_STATE_DIR": str(tmp_path), "TCC_PROFILES": "p.yaml"}.items():
         monkeypatch.setenv(k, v)
     served = []
@@ -146,6 +279,62 @@ def test_setup_logging_keeps_httpx_quiet():
     setup_logging()
     assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
     assert logging.getLogger("httpcore").getEffectiveLevel() >= logging.WARNING
+
+
+@pytest.mark.parametrize("chat_id", [None, CHAT])
+@pytest.mark.parametrize("status", [401, 403])
+async def test_ns_startup_auth_error_is_clear_without_claim_and_logged_once_per_outage(
+    tmp_path, tg, caplog, chat_id, status
+):
+    clock = TickClock(at("07:50"))
+    requests = []
+    rejected = True
+
+    def ns(request):
+        requests.append(request.url.path)
+        if rejected:
+            return httpx.Response(status)
+        return httpx.Response(200, json={"payload": [{"code": "AAA"}, {"code": "UT"}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(ns)) as client:
+        provider = NsProvider("test-ns-key", client, clock.now)
+        app = make_app(tmp_path, tg, clock, provider, chat_id=chat_id)
+        assert not app.bot.confirmed
+        await app.rt.start()
+        assert requests == ["/reisinformatie-api/api/v2/stations"]
+        assert app.rt.key_rejected
+        warnings = [r for r in caplog.records if "NS key was rejected" in r.getMessage()]
+        assert len(warnings) == 1 and warnings[0].levelno == logging.ERROR
+        message = warnings[0].getMessage()
+        assert "primary key of the NS-App product" in message
+        assert (
+            "https://github.com/rhnfzl/train-commute-companion/blob/main/docs/ns-api-key.md"
+            in message
+        )
+        assert "test-ns-key" not in message
+        events = [*app.rt.events_log, *(o.event for o in app.rt.state.obligations)]
+        event = next(e for e in events if e.kind is EventKind.KEY_REJECTED)
+        assert event.severity is Severity.LOUD and "NS-App" in event.text
+        await app.rt.stations()
+        assert len(requests) == 1  # the existing 2-minute auth backoff
+        clock.jump(2)
+        await app.rt.stations()
+        assert len(requests) == 1  # station lists also yield one poll interval to live traffic
+        clock.jump(2)
+        await app.rt.stations()
+        assert len(requests) == 2
+        clock.jump(5)
+        await app.rt.stations()
+        assert len(requests) == 2  # the next auth backoff is 5 minutes
+        assert sum("NS key was rejected" in r.getMessage() for r in caplog.records) == 1
+        rejected = False
+        clock.jump(2)
+        await app.rt.stations()
+        assert len(requests) == 3 and not app.rt.key_rejected
+        rejected = True
+        clock.jump(2)
+        await app.rt.stations()
+        assert sum("NS key was rejected" in r.getMessage() for r in caplog.records) == 2
 
 
 async def test_watchdog_runs_while_station_list_hangs(tmp_path, tg):  # plan-1 DEFER 8

@@ -28,6 +28,20 @@ def test_mcp_relay_gets_the_state_directory_and_no_secret():
     assert set(services["mcp"]["environment"]) == {"TCC_STATE_DIR"}
 
 
+def test_single_companion_env_template_has_required_placeholders_and_private_defaults():
+    template = (ROOT / "examples/.env.example").read_text()
+    assignments = dict(
+        line.split("=", 1) for line in template.splitlines() if line and not line.startswith("#")
+    )
+    assert assignments["NS_API_KEY"].startswith("replace-with-")
+    assert assignments["TELEGRAM_BOT_TOKEN"].startswith("replace-with-")
+    assert assignments["TELEGRAM_CHAT_ID"] == ""
+    assert assignments["TCC_HEALTH_TOKEN"] == ""
+    assert assignments["OWNTRACKS_SECRET"] == ""
+    assert "NS-App" in template and "private chat" in template
+    assert "auto" in template.lower() and "/data/health-token" in template
+
+
 def test_documented_setup_builds_from_examples_and_recreates_on_env_changes():
     compose = yaml.safe_load((ROOT / "examples/docker-compose.yml").read_text())["services"]
     assert "build" not in compose["tcc"]  # a failed pull must not fall back to a missing Dockerfile

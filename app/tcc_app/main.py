@@ -5,9 +5,12 @@ import asyncio
 import functools
 import logging
 import os
+import secrets
 import signal
+import stat
+import tempfile
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time
 from enum import StrEnum
 from pathlib import Path
@@ -142,6 +145,40 @@ class ProcessPhase(StrEnum):
     FAILED = "failed"
 
 
+def _health_token(settings: Settings) -> str:
+    if settings.health_token is not None:
+        return settings.health_token
+    path = settings.state_dir / "health-token"
+    try:
+        settings.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            token = secrets.token_urlsafe(32)
+            with tempfile.NamedTemporaryFile(mode="w", dir=settings.state_dir) as stream:
+                stream.write(token)
+                stream.flush()
+                os.fsync(stream.fileno())
+                # Publish the complete private file without replacing another owner's token.
+                os.link(stream.name, path)
+            log.info("Generated TCC_HEALTH_TOKEN: %s (saved privately in %s)", token, path)
+            return token
+        with os.fdopen(fd, encoding="ascii") as stored:
+            info = os.fstat(stored.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_nlink != 1:
+                raise ValueError("unsafe token file")
+            token = stored.read(257)
+            if len(token) > 256:
+                raise ValueError("oversized token file")
+            check_token(token)
+            return token
+    except (OSError, ValueError):
+        raise ValueError(
+            "cannot load or create private health-token in TCC_STATE_DIR; "
+            "check storage, file contents and owner-only permissions"
+        ) from None
+
+
 @dataclass
 class App:
     settings: Settings
@@ -269,6 +306,11 @@ def setup_logging() -> None:
 
 
 async def _run(s: Settings) -> int:
+    try:
+        s = replace(s, health_token=_health_token(s))
+    except ValueError as error:
+        log.error("%s; refusing to start", error)
+        return 1
     me = present(asyncio.current_task())  # a coroutine run by asyncio.run is always in a task
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):

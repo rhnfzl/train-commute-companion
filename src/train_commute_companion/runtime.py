@@ -1055,8 +1055,15 @@ class Runtime:
 
     def _track_key_rejection(self, error: PollFailure | None, who: str, now: datetime) -> None:
         """`key_rejected` once per outage and again when each window opens while it lasts."""
+        rejected = self.key_rejected
         if self._auth.observe(error, who):
-            self._app_warning(EventKind.KEY_REJECTED, "your NS key was rejected.", now, who)
+            message = (
+                "your NS key was rejected. Use the primary key of the NS-App product. "
+                "See https://github.com/rhnfzl/train-commute-companion/blob/main/docs/ns-api-key.md"
+            )
+            if not rejected:
+                log.error("%s", message)
+            self._app_warning(EventKind.KEY_REJECTED, message, now, who)
 
     # --- polling ---
 
