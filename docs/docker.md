@@ -17,6 +17,31 @@ Each companion needs its own private phone destination, location endpoint, and s
 - Your own NS API key. None is bundled. [Get an NS API key](ns-api-key.md) shows how.
 - Your own [ntfy topic and access token](ntfy.md), or a Telegram bot token from BotFather.
 
+## Install and set up in Telegram
+
+The installer asks for each traveller's own NS key and bot token. It starts private Docker projects with the Compose file and image from the same release. Docker Buildx resolves the published image digest so both services use the same image.
+
+Set `version` to the number of a [release](https://github.com/rhnfzl/train-commute-companion/releases) that includes the installer. Use the release number without the `v`.
+
+~~~sh
+version=X.Y.Z
+installer=$(mktemp)
+curl -fsSL -o "$installer" "https://raw.githubusercontent.com/rhnfzl/train-commute-companion/v$version/scripts/install.sh" && bash "$installer" "$version"
+~~~
+
+By default, the installer creates `train-commute-companion` in the current directory. Pass an empty destination folder as the second argument to choose another location.
+
+1. Run the log command printed for your traveller.
+2. Open the private claim link or scan the terminal QR. Press **Start** in Telegram.
+3. Send `/setup`. Choose your stations, commute days, and departure times. **Make this mine** previews a weekday sample for your stations.
+4. Review the next commute's trains, platforms and changes. Adjust check-in lead times and delay thresholds if needed. Tap **Save commute**.
+5. Confirm one loud and one silent test alert with **I got both**. Send `/test` to request another pair.
+
+The wizard creates `/data/profiles.yaml` inside the Docker data volume when that file is absent. It previews train-only trips within an hour of each requested departure. The profile starts on the date shown. If NS cannot supply both trips, change the times or try again.
+
+Use manual setup for a night shift or an existing profiles file. Keep the generated `.env` files and logs private.
+Send `/cancel_setup` to close the wizard and discard the draft.
+
 ## First run
 
 For phone alerts without Telegram or Home Assistant, follow [ntfy phone push](ntfy.md) after downloading the files below.
