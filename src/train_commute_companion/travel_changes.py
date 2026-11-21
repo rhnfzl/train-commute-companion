@@ -314,6 +314,36 @@ def _conflicts(st: PersistedState, plan: TravelPlan, now: datetime) -> tuple[Con
     return tuple(result)
 
 
+def new_regular_conflict(
+    before: PersistedState, after: PersistedState, now: datetime
+) -> str | None:
+    """Detect a newly unresolved flexible trip conflict when the regular schedule changes."""
+    if before.config == after.config or after.config is None:
+        return None
+    regular = {profile.id for profile in after.config.profiles}
+    for plan in after.travel_plans.values():
+        candidates = [
+            conflict
+            for conflict in _conflicts(after, plan, now)
+            if conflict.profile_id in regular and conflict.profile_id not in plan.replaces
+        ]
+        if not candidates:
+            continue
+        previous = {conflict.profile_id: conflict for conflict in _conflicts(before, plan, now)}
+        for conflict in candidates:
+            prior = previous.get(conflict.profile_id)
+            if (
+                prior is None
+                or (prior.keep and not conflict.keep)
+                or set(conflict.dates) - set(prior.dates)
+            ):
+                return (
+                    f"{plan.profile.name} conflicts with the updated {conflict.name} schedule. "
+                    "Resolve the overlap before applying the schedule change."
+                )
+    return None
+
+
 def _safe_to_replace(s: OccurrenceState, now: datetime) -> bool:
     if is_resolved(s):
         return True

@@ -446,6 +446,7 @@ def find_next_good(
     respect_plan: bool = True,
     *,
     only: tuple[TrainId, ...] | None = None,
+    preview: bool = False,
 ) -> Connection | None:
     """The next good connection from `station` (default the origin), not starting on `after`,
     not leaving before `not_before` and planned inside `span` (`departure_span`). These only
@@ -458,6 +459,12 @@ def find_next_good(
     lo, hi = span or (None, None)
     lock = s.lock
     prefix = lock.legs[:n_before] if lock else ()
+    exact = preview and _pins_train(ctx)
+    candidates = answer.connections
+    if exact:
+        candidates = _exact_candidates(ctx, answer)
+        if len({c.legs[0].train for c in candidates}) != 1:
+            return None
     c, _ = choose_replacement(
         answer,
         usual_remaining=None if earliest else _usual_route(s, ctx, at),
@@ -465,20 +472,27 @@ def find_next_good(
         earliest=earliest,
         candidates=[
             c
-            for c in answer.connections
+            for c in candidates
             if (after is None or c.legs[0].train != after)
             and (only is None or tuple(x.train for x in c.legs) == only)
             and (floor is None or _departure(c) >= floor)
             and (lo is None or hi is None or lo <= to_utc(c.legs[0].train.planned_departure) < hi)
             and _on_travel_date(c, ctx, first=kept is None)
-            and (not respect_plan or within_travel_limits(c, ctx, answer, first=kept is None))
+            and (
+                not respect_plan
+                or within_travel_limits(c, ctx, answer, first=kept is None, allow_planned=preview)
+            )
         ],
+        allow_planned=preview,
+        known_first=exact,
         **_good_kw(s, ctx, at, kept, n_before),
     )
     return c
 
 
-def within_travel_limits(c: Connection, ctx: Ctx, answer: ProviderAnswer, *, first: bool) -> bool:
+def within_travel_limits(
+    c: Connection, ctx: Ctx, answer: ProviderAnswer, *, first: bool, allow_planned: bool = False
+) -> bool:
     if not ctx.profile.travel_plan:
         return True
     sch = ctx.schedule
@@ -491,9 +505,8 @@ def within_travel_limits(c: Connection, ctx: Ctx, answer: ProviderAnswer, *, fir
         return True
     limit = resolve_local(sch.key.service_date, j.arrive_by, edge="end")
     arrival = current.legs[-1].alight.arrival
-    return (
-        arrival is not None and arrival.value is not None and to_utc(arrival.value) <= to_utc(limit)
-    )
+    at = None if arrival is None else arrival.value or (arrival.planned if allow_planned else None)
+    return at is not None and to_utc(at) <= to_utc(limit)
 
 
 def _on_travel_date(c: Connection, ctx: Ctx, *, first: bool) -> bool:
@@ -581,10 +594,9 @@ def auto_lock(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transitio
     return _lock_without_usual(s, ctx, answer)
 
 
-def _lock_exact(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transition:
+def _exact_candidates(ctx: Ctx, answer: ProviderAnswer) -> tuple[Connection, ...]:
     journey = ctx.profile.journey(ctx.direction)
-    departure = to_utc(ctx.schedule.first_departure)
-    candidates = [
+    return tuple(
         c
         for c in answer.connections
         if c.origin == answer.query.origin
@@ -593,7 +605,13 @@ def _lock_exact(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transit
         and c.legs[0].train.planned_departure.astimezone(TZ).replace(tzinfo=None)
         == ctx.schedule.first_departure.replace(tzinfo=None)
         and (not journey.exact_train or c.legs[0].train.train_number == journey.exact_train)
-    ]
+    )
+
+
+def _lock_exact(s: OccurrenceState, ctx: Ctx, answer: ProviderAnswer) -> Transition:
+    journey = ctx.profile.journey(ctx.direction)
+    departure = to_utc(ctx.schedule.first_departure)
+    candidates = _exact_candidates(ctx, answer)
     trains = {c.legs[0].train for c in candidates}
     if len(trains) == 1:
         chosen = min(

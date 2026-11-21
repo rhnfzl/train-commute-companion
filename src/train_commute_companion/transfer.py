@@ -56,6 +56,8 @@ def check_transfer(
     outgoing: ClassifiedLeg,
     station: str,
     profile_min: Mapping[str, int],
+    *,
+    allow_planned: bool = False,
 ) -> TransferCheck:
     inc, out = incoming.leg, outgoing.leg
     stop = _served_stop_at(incoming, station)
@@ -92,7 +94,7 @@ def check_transfer(
 
     if Observation.SEEN is not incoming.observation or Observation.SEEN is not outgoing.observation:
         return risk("leg not reliably seen")
-    if margin is None or not (is_reported(arr_obs) and is_reported(dep_obs)):
+    if margin is None or not (allow_planned or is_reported(arr_obs) and is_reported(dep_obs)):
         return risk("planned or missing time")
     if margin < minimum + AT_RISK_SLACK_MIN:
         return risk("margin below minimum plus 2")

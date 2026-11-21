@@ -228,6 +228,7 @@ async def deliver(
     *,
     audience_written: bool = True,
     on_accepted: Callable[[AlertEvent], None] = lambda event: None,
+    send: Callable[[AlertEvent], Awaitable[bool]] | None = None,
 ) -> tuple[Obligation | None, bool]:
     """One watchdog attempt: the obligation to keep (None: finished) and whether it was sent."""
     verdict = primary_delivery_verdict(o, ledger, now, destination, audience_written)
@@ -239,7 +240,7 @@ async def deliver(
         event = ledger.current(o, destination)
         if event is None:
             return None, False
-        if await notifier.send(event):
+        if await (send or notifier.send)(event):
             on_accepted(event)
             return None, True
     except NotificationPaused:

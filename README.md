@@ -36,6 +36,7 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
 - **Shows crowd forecasts.** NS forecasts appear with your trains and alternatives; changed forecasts can send silent updates. [Crowd forecasts](docs/crowd-forecasts.md).
 - **Changes plans and alerts.** Resume a skipped journey and control quiet or paused notifications in [Home Assistant](docs/home-assistant.md).
 - **Checks any station pair.** See up to three upcoming train options in [Telegram](docs/docker.md#quick-trip-checks) or [Home Assistant](docs/home-assistant.md#quick-trip-checks).
+- **Keeps regular commutes and flexible trips together.** A connected MCP agent can list both and preview departures for a saved trip. Trip changes can ask for approval in Telegram. [MCP setup](docs/mcp.md).
 - **Pauses for holidays.** Set an inclusive date range and monitoring resumes afterward. [Holiday pauses](docs/holiday-pauses.md).
 - **Uses weekday departure times.** Set different first trains within one profile while preserving already-followed journeys. [Schedules](docs/weekday-schedules.md).
 - **Follows any train in a time window.** No usual train needed, with an optional minimum stay and settings per day. [Schedules](docs/weekday-schedules.md#window-mode).
@@ -52,6 +53,7 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
 | --- | --- | --- |
 | Home Assistant (HACS) | Alerts on your phone through the companion app, sensors and buttons | [docs/home-assistant.md](docs/home-assistant.md) |
 | Docker | Alerts and guided travel plans in a private Telegram chat (amd64 and arm64) | [docs/docker.md](docs/docker.md) |
+| Docker with Home Assistant | One Docker schedule with Home Assistant sensors, commute controls and phone location for connected profiles | [Shared schedule setup](docs/shared-schedule.md) |
 | ntfy | One-way phone push without Home Assistant or Telegram; your own private topic and access token | [docs/ntfy.md](docs/ntfy.md) |
 | Household | A separate Docker companion and private bot for each traveller | [docs/household.md](docs/household.md) |
 | Webhooks | Each alert as signed JSON to your own URL, from Docker or Home Assistant | [docs/webhooks.md](docs/webhooks.md) |

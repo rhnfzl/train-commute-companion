@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import signal
+import ssl
 import stat
 import tempfile
 from collections.abc import Callable, Mapping
@@ -25,6 +26,7 @@ import httpx
 from train_commute_companion.calendar import Clock, SystemClock
 from train_commute_companion.calendar_export import calendar_feed
 from train_commute_companion.email import EmailPoster, EmailSettings
+from train_commute_companion.home_assistant_bridge import dispatch as dispatch_home_assistant
 from train_commute_companion.model import present
 from train_commute_companion.providers.base import Provider
 from train_commute_companion.providers.ns import NsProvider
@@ -36,9 +38,10 @@ from train_commute_companion.webhook_send import WebhookPoster, send_webhook_tes
 
 from . import owntracks
 from .bot import Bot
-from .commands import answer
+from .commands import answer, regular_schedules, travel_connections_tool
 from .email_settings import CopyPort, CopyPorts, email_settings
 from .follow import Follower
+from .ha_delivery import HaDelivery, HaDeliverySettings, delivery_settings
 from .ntfy import NTFY_DESTINATION_PREFIX, NtfyNotifier, NtfyProof, NtfySettings, ntfy_settings
 from .telegram import TelegramApi, TelegramNotifier
 from .travel_actions import TravelActions, agent_tokens
@@ -49,6 +52,13 @@ from .web import health_report, mcp_socket_path, start_readout, start_web, state
 log = logging.getLogger(__name__)
 
 PORT = 8080
+
+
+@dataclass(frozen=True, slots=True)
+class HaListenerSettings:
+    port: int
+    certificate: Path
+    key: Path
 
 
 def _required(env: Mapping[str, str], name: str) -> str:
@@ -108,6 +118,9 @@ class Settings:
     travel_language: LanguageSettings | None = None
     ntfy: NtfySettings | None = None
     calendar_token: str | None = field(default=None, repr=False)
+    home_assistant_token: str | None = field(default=None, repr=False)
+    home_assistant_delivery: HaDeliverySettings | None = None
+    home_assistant_listener: HaListenerSettings | None = None
 
     @staticmethod
     def from_env(env: Mapping[str, str]) -> "Settings":
@@ -137,7 +150,19 @@ class Settings:
             webhook_token = _optional(env, "TCC_WEBHOOK_TOKEN") or ""
         owntracks_secret = _optional(env, "OWNTRACKS_SECRET")
         agents = agent_tokens(env.get("TCC_MCP_AGENTS", ""))
+        ha_token = _optional(env, "TCC_HOME_ASSISTANT_TOKEN")
+        if ha_token is not None and not re.fullmatch(r"[0-9a-f]{64}", ha_token):
+            raise ValueError("TCC_HOME_ASSISTANT_TOKEN must contain 64 lowercase hex characters")
+        if ha_token is not None and ha_token in (
+            health_token,
+            calendar_token,
+            owntracks_secret,
+            webhook_token,
+            *agents.values(),
+        ):
+            raise ValueError("TCC_HOME_ASSISTANT_TOKEN must be a separate credential")
         remote_port, remote_bind, remote_hosts = _remote_mcp_settings(env, agents)
+        ha_listener = _ha_listener_settings(env, ha_token, remote_port)
         for name, value, check in (
             ("OWNTRACKS_SECRET", owntracks_secret, check_token),
             ("TCC_HEALTH_TOKEN", health_token, check_token),
@@ -171,7 +196,28 @@ class Settings:
             language_settings(env),
             ntfy,
             calendar_token,
+            ha_token,
+            delivery_settings(env, ha_token),
+            ha_listener,
         )
+
+
+def _ha_listener_settings(
+    env: Mapping[str, str], token: str | None, mcp_port: int | None
+) -> HaListenerSettings | None:
+    port = _optional(env, "TCC_HOME_ASSISTANT_PORT")
+    certificate = _optional(env, "TCC_HOME_ASSISTANT_TLS_CERT")
+    key = _optional(env, "TCC_HOME_ASSISTANT_TLS_KEY")
+    if not (port or certificate or key or token):
+        return None
+    if port is None or not re.fullmatch(r"[0-9]{1,5}", port):
+        raise ValueError("TCC_HOME_ASSISTANT_PORT must be a separate port from 1 to 65535")
+    number = int(port)
+    if not 1 <= number <= 65535 or number in (PORT, mcp_port):
+        raise ValueError("TCC_HOME_ASSISTANT_PORT must be a separate port from 1 to 65535")
+    if not token or not certificate or not key:
+        raise ValueError("Home Assistant needs a bridge token, TLS certificate, and TLS key")
+    return HaListenerSettings(number, Path(certificate), Path(key))
 
 
 def _remote_mcp_settings(
@@ -257,7 +303,14 @@ class App:
         return self.bot is not None and self.bot.confirmed
 
 
-def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncClient) -> App:
+def build(
+    s: Settings,
+    *,
+    clock: Clock,
+    provider: Provider,
+    client: httpx.AsyncClient,
+    ha_client: httpx.AsyncClient | None = None,
+) -> App:
     api = TelegramApi(s.bot_token, client) if s.bot_token else None
     telegram = TelegramNotifier(api, s.chat_id, clock.now) if api is not None else None
     notifier = (
@@ -280,6 +333,13 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         webhooks = CopyPorts(webhooks, email) if webhooks is not None else email
     setup_path = (
         s.profiles if api is not None and s.profiles == s.state_dir / "profiles.yaml" else None
+    )
+    ha_delivery = (
+        HaDelivery(
+            s.home_assistant_delivery, present(s.home_assistant_token), ha_client or client, notifier
+        )
+        if s.home_assistant_delivery is not None
+        else None
     )
     rt = Runtime(
         profile_path=s.profiles,
@@ -309,6 +369,7 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
             else destination.startswith(NTFY_DESTINATION_PREFIX)
         ),
         profile_setup=setup_path is not None,
+        routed_delivery=ha_delivery,
     )
     follower = Follower(rt)
     preferences = TravelPreferences(s.state_dir / "travel-preferences.json", rt.now)
@@ -355,7 +416,25 @@ def mcp_answer(app: App) -> Callable[[object], dict[str, Any]]:
 
 
 async def dispatch_mcp(app: App, request: dict[str, Any], token: str | None) -> dict[str, Any]:
-    if request.get("tool") in ("get_status", "get_next_connections", "get_works_ahead"):
+    tool = request.get("tool")
+    actions = app.travel_actions
+    if (
+        tool in ("list_travel_plans", "get_next_connections")
+        and actions is not None
+        and actions.agent(token) is not None
+    ):
+        if tool == "list_travel_plans":
+            return {**app.rt.list_travel_plans(), "profiles": regular_schedules(app.rt.config)}
+        if tool == "get_next_connections":
+            profile = request.get("profile")
+            if (
+                request.get("date") is not None
+                or request.get("plan_id") is not None
+                or isinstance(profile, str)
+                and profile in app.rt.state.travel_plans
+            ):
+                return await travel_connections_tool(app.rt, request)
+    if tool in ("get_status", "get_next_connections", "get_works_ahead"):
         return mcp_answer(app)(request)
     if app.bot is None:
         return {"status": "denied", "text": "Connect Telegram to manage travel plans."}
@@ -372,6 +451,7 @@ async def serve(app: App, port: int) -> int:
     runtime = asyncio.create_task(app.rt.run_forever(), name="runtime")
     server: asyncio.Server | None = None
     readout: asyncio.Server | None = None
+    ha_server: asyncio.Server | None = None
     remote = AsyncExitStack()
     dispatch = functools.partial(dispatch_mcp, app)
     try:
@@ -393,11 +473,22 @@ async def serve(app: App, port: int) -> int:
             calendar=lambda: calendar_feed(app.rt.state, app.rt.now()),
             delivery=app.ntfy_proof,
         )
+        if (listener := app.settings.home_assistant_listener) is not None:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.load_cert_chain(listener.certificate, listener.key)
+            ha_server = await start_web(
+                listener.port,
+                health=lambda: (404, {"ok": False}),
+                home_assistant_token=app.settings.home_assistant_token,
+                home_assistant=functools.partial(dispatch_home_assistant, app.rt),
+                ssl_context=context,
+            )
         if app.settings.mcp_socket is not None:
             readout = await start_readout(
                 app.settings.mcp_socket,
                 mcp_answer(app),
-                actions=dispatch if app.settings.mcp_agents and app.bot is not None else None,
+                actions=dispatch if app.settings.mcp_agents else None,
             )
         actions = app.travel_actions
         if app.settings.mcp_remote_port is not None and actions is not None:
@@ -435,7 +526,7 @@ async def serve(app: App, port: int) -> int:
             try:
                 await remote.aclose()
             finally:
-                await _clean_up(app, before, server, readout)
+                await _clean_up(app, before, server, readout, ha_server)
         except BaseException:
             app.phase = ProcessPhase.FAILED
             raise
@@ -448,9 +539,10 @@ async def _clean_up(
     before: set[asyncio.Task[object]],
     server: asyncio.Server | None,
     readout: asyncio.Server | None,
+    ha_server: asyncio.Server | None = None,
 ) -> None:
     app.notifier.retire()
-    for srv in (server, readout):
+    for srv in (server, readout, ha_server):
         if srv is not None:
             srv.close()
     # Server.close leaves open connection handlers running: every task begun here goes,
@@ -470,7 +562,7 @@ async def _clean_up(
     if app.ntfy_proof is not None:
         await app.ntfy_proof.close()
     await app.follower.close()
-    for srv in (server, readout):
+    for srv in (server, readout, ha_server):
         if srv is not None:
             await srv.wait_closed()
     sock = app.settings.mcp_socket
@@ -497,9 +589,23 @@ async def _run(s: Settings) -> int:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, me.cancel)
-    async with httpx.AsyncClient() as client:  # one client for NS, Telegram and webhooks
+    async with AsyncExitStack() as stack:
+        client = await stack.enter_async_context(httpx.AsyncClient())
+        ha_client = None
+        if s.home_assistant_delivery is not None:
+            ca = s.home_assistant_delivery.ca_file
+            trust = ssl.create_default_context(cafile=str(ca) if ca is not None else None)
+            ha_client = await stack.enter_async_context(
+                httpx.AsyncClient(verify=trust, timeout=30, trust_env=False)
+            )
         clock = SystemClock()
-        app = build(s, clock=clock, provider=NsProvider(s.ns_key, client, clock.now), client=client)
+        app = build(
+            s,
+            clock=clock,
+            provider=NsProvider(s.ns_key, client, clock.now),
+            client=client,
+            ha_client=ha_client,
+        )
         try:
             return await serve(app, PORT)
         except asyncio.CancelledError:

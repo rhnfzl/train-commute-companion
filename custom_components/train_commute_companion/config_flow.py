@@ -48,6 +48,10 @@ from .const import (
     CONF_NOTIFICATIONS_QUIET_ENTITY,
     CONF_NOTIFY,
     CONF_PROFILES_PATH,
+    CONF_REMOTE_CA,
+    CONF_REMOTE_PROFILE_SYNC,
+    CONF_REMOTE_TOKEN,
+    CONF_REMOTE_URL,
     CONF_WEBHOOK_SECRET,
     CONF_WEBHOOK_TOKEN,
     CONF_WEBHOOK_URLS,
@@ -62,6 +66,7 @@ from .profile_editor import EditorError
 from .profile_flow import ProfileEditorFlow
 from .profile_subentries import PROFILE_SUBENTRY, ProfileSubentryFlow
 from .recovery_flow import RecoveryFlow
+from .remote import RemoteRuntime, invoke, open_remote
 from .validate import check_path, file_problem, validate_file
 
 MOBILE_PREFIX = "mobile_app_"
@@ -78,6 +83,16 @@ WEBHOOKS_SCHEMA = vol.Schema(
         vol.Optional(CONF_WEBHOOK_TOKEN): TextSelector(
             TextSelectorConfig(type=TextSelectorType.PASSWORD)
         ),
+    }
+)
+REMOTE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_REMOTE_URL): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
+        vol.Optional(CONF_REMOTE_TOKEN): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.PASSWORD)
+        ),
+        vol.Optional(CONF_REMOTE_CA): TextSelector(),
+        vol.Optional(CONF_REMOTE_PROFILE_SYNC, default=False): BooleanSelector(),
     }
 )
 
@@ -216,7 +231,11 @@ class TccConfigFlow(ProfileEditorFlow[ConfigFlowResult], _TestPushMixin, ConfigF
     def async_get_supported_subentry_types(
         cls, config_entry: ConfigEntry
     ) -> dict[str, type[ConfigSubentryFlow]]:
-        return {PROFILE_SUBENTRY: ProfileSubentryFlow}
+        return (
+            {}
+            if config_entry.options.get(CONF_REMOTE_URL)
+            else {PROFILE_SUBENTRY: ProfileSubentryFlow}
+        )
 
     def __init__(self) -> None:
         self._key = ""
@@ -433,7 +452,9 @@ class TccOptionsFlow(
 
     async def _preview_trips(self, query: Query) -> ProviderAnswer | PollFailure | None:
         entry = self.config_entry
-        if hasattr(entry, "runtime_data"):
+        if hasattr(entry, "runtime_data") and not isinstance(
+            entry.runtime_data.host, RemoteRuntime
+        ):
             try:
                 return await entry.runtime_data.host.run(lambda rt: rt.preview_trip(query))
             except host_mod.RuntimeNotRunning:
@@ -484,23 +505,66 @@ class TccOptionsFlow(
         self._path = opts.get(CONF_PROFILES_PATH, "")
         self._service = opts[CONF_NOTIFY]
         self._style = opts.get(CONF_LOUD_STYLE, DEFAULT_LOUD_STYLE)
+        menu = (
+            ["settings", "recovery", "arrival"]
+            if opts.get(CONF_REMOTE_URL)
+            else ["profiles", "validate", "settings", "webhooks", "weather", "recovery", "arrival"]
+        )
         return self.async_show_menu(
             step_id="init",
-            menu_options=[
-                "profiles",
-                "validate",
-                "settings",
-                "webhooks",
-                "weather",
-                "recovery",
-                "arrival",
-            ],
+            menu_options=[*menu, "runtime_connection"],
+        )
+
+    async def async_step_runtime_connection(
+        self, user_input: Mapping[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        saved = dict(self.config_entry.options)
+        fields = {CONF_REMOTE_URL, CONF_REMOTE_TOKEN, CONF_REMOTE_CA, CONF_REMOTE_PROFILE_SYNC}
+        values = {key: saved[key] for key in fields if key in saved and key != CONF_REMOTE_TOKEN}
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            origin = user_input.get(CONF_REMOTE_URL, "").strip().rstrip("/")
+            if not origin:
+                return self.async_create_entry(
+                    data={k: v for k, v in saved.items() if k not in fields}
+                )
+            values = {
+                CONF_REMOTE_URL: origin,
+                CONF_REMOTE_TOKEN: user_input.get(CONF_REMOTE_TOKEN, "").strip(),
+                CONF_REMOTE_CA: user_input.get(CONF_REMOTE_CA, "").strip(),
+                CONF_REMOTE_PROFILE_SYNC: user_input.get(CONF_REMOTE_PROFILE_SYNC, False),
+            }
+            if origin == saved.get(CONF_REMOTE_URL) and not values.get(CONF_REMOTE_TOKEN):
+                values[CONF_REMOTE_TOKEN] = saved.get(CONF_REMOTE_TOKEN, "")
+            client: RemoteRuntime | None = None
+            try:
+                async with asyncio.timeout(HOST_TIMEOUT_S):
+                    client = await open_remote(self.hass, values)
+                    await invoke(client, Runtime.view)
+            except (ValueError, OSError):
+                errors["base"] = "remote_settings_invalid"
+            except (host_mod.RuntimeNotRunning, TimeoutError):
+                errors["base"] = "remote_unreachable"
+            else:
+                if dict(self.config_entry.options) == saved:
+                    return self.async_create_entry(data={**saved, **values})
+                errors["base"] = "settings_changed"
+            finally:
+                if client is not None:
+                    await client.stop()
+        values.pop(CONF_REMOTE_TOKEN, None)
+        return self.async_show_form(
+            step_id="runtime_connection",
+            data_schema=self.add_suggested_values_to_schema(REMOTE_SCHEMA, values),
+            errors=errors,
         )
 
     async def async_step_weather(
         self,
         user_input: Mapping[str, Any] | None = None,
     ) -> ConfigFlowResult:
+        if self.config_entry.options.get(CONF_REMOTE_URL):
+            return self.async_abort(reason="managed_by_docker")
         if user_input is not None:
             return self.async_create_entry(
                 data={
@@ -524,6 +588,8 @@ class TccOptionsFlow(
     async def async_step_profiles(
         self, user_input: Mapping[str, Any] | None = None
     ) -> ConfigFlowResult:
+        if self.config_entry.options.get(CONF_REMOTE_URL):
+            return self.async_abort(reason="managed_by_docker")
         if self._document is None:
             default_path = self.hass.config.path(DOMAIN, "profiles.yaml")
             create = self._path == default_path and not await self.hass.async_add_executor_job(
@@ -531,7 +597,9 @@ class TccOptionsFlow(
             )
             entry = self.config_entry
             catalogue = None
-            if hasattr(entry, "runtime_data"):
+            if hasattr(entry, "runtime_data") and not isinstance(
+                entry.runtime_data.host, RemoteRuntime
+            ):
 
                 async def profile_stations(rt: Runtime) -> frozenset[str] | None:
                     return rt.known_stations or await rt.stations()
@@ -552,6 +620,8 @@ class TccOptionsFlow(
         return await super().async_step_profiles(user_input)
 
     async def _profile_ready(self) -> ConfigFlowResult:
+        if self.config_entry.options.get(CONF_REMOTE_URL):
+            return self.async_abort(reason="managed_by_docker")
         try:
             await self._save_profile()
         except EditorError as err:
@@ -561,7 +631,9 @@ class TccOptionsFlow(
     async def _known_stations(self) -> tuple[frozenset[str] | None, str | None]:
         """The station list and, when it could not be had, the report line saying why."""
         entry = self.config_entry
-        if hasattr(entry, "runtime_data"):
+        if hasattr(entry, "runtime_data") and not isinstance(
+            entry.runtime_data.host, RemoteRuntime
+        ):
             try:
                 async with asyncio.timeout(HOST_TIMEOUT_S):
                     return await entry.runtime_data.host.run(lambda rt: rt.known_stations), None
@@ -577,6 +649,8 @@ class TccOptionsFlow(
     async def async_step_validate(
         self, user_input: Mapping[str, Any] | None = None
     ) -> ConfigFlowResult:
+        if self.config_entry.options.get(CONF_REMOTE_URL):
+            return self.async_abort(reason="managed_by_docker")
         if user_input is not None:
             return self.async_abort(reason="validated")  # nothing saved, so no reload
         known, why = await self._known_stations()
@@ -592,9 +666,11 @@ class TccOptionsFlow(
     def _settings_form(self, errors: dict[str, str], report: str = "") -> ConfigFlowResult:
         if not notify_services(self.hass):
             return self.async_abort(reason="no_mobile_app")
-        schema = vol.Schema({vol.Required(CONF_PROFILES_PATH, default=self._path): str}).extend(
-            notify_schema(self.hass, self._service, self._style).schema
-        )
+        schema = notify_schema(self.hass, self._service, self._style)
+        if not self.config_entry.options.get(CONF_REMOTE_URL):
+            schema = vol.Schema({vol.Required(CONF_PROFILES_PATH, default=self._path): str}).extend(
+                schema.schema
+            )
         schema = schema.extend(
             {
                 vol.Optional(key): EntitySelector(
@@ -630,7 +706,7 @@ class TccOptionsFlow(
             return self._settings_form({})
         candidate = _SettingsCandidate(
             deepcopy(dict(self.config_entry.options)),
-            user_input[CONF_PROFILES_PATH],
+            user_input.get(CONF_PROFILES_PATH, self._path),
             user_input[CONF_NOTIFY],
             user_input[CONF_LOUD_STYLE],
             notifier_mod.mobile_target(self.hass, user_input[CONF_NOTIFY]),
@@ -643,18 +719,22 @@ class TccOptionsFlow(
         self._settings_candidate = candidate
         self._path, self._service, self._style = candidate.path, candidate.service, candidate.style
         version = self._settings_check.begin(candidate)
-        bad = await check_path(self.hass, candidate.path)
+        bad = (
+            None
+            if candidate.base_options.get(CONF_REMOTE_URL)
+            else await check_path(self.hass, candidate.path)
+        )
         if bad == "file_missing" and candidate.path == candidate.base_options.get(
             CONF_PROFILES_PATH
         ):
             bad = None
         # only a new path is checked for problems: a broken file at the saved path must not
         # block a phone change, and the runtime already reports it
-        report = (
-            ""
-            if bad or candidate.path == candidate.base_options.get(CONF_PROFILES_PATH)
-            else await self.hass.async_add_executor_job(file_problem, candidate.path)
-        )
+        report = ""
+        if not (bad or candidate.base_options.get(CONF_REMOTE_URL)) and (
+            candidate.path != candidate.base_options.get(CONF_PROFILES_PATH)
+        ):
+            report = await self.hass.async_add_executor_job(file_problem, candidate.path)
         if not self._settings_current(candidate):
             return self._stale_settings()
         if bad is not None:
@@ -691,6 +771,8 @@ class TccOptionsFlow(
     async def async_step_webhooks(
         self, user_input: Mapping[str, Any] | None = None
     ) -> ConfigFlowResult:
+        if self.config_entry.options.get(CONF_REMOTE_URL):
+            return self.async_abort(reason="managed_by_docker")
         opts = self.config_entry.options
         options_snapshot = dict(opts)
         saved = (

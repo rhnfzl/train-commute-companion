@@ -383,10 +383,13 @@ class LiveLedger:
         departure_weather: Callable[[str, datetime, datetime], WeatherView | None] = (
             lambda station, when, now: None
         ),
+        primary_enabled_for: Callable[[Obligation, AlertSettings], bool] | None = None,
     ) -> None:
         self._available_channels = available_channels
         self._format_event = format_event
-        self._primary_enabled = primary_enabled
+        self._primary_enabled = primary_enabled_for or (
+            lambda _, settings: primary_enabled(settings)
+        )
         self._departure_weather = departure_weather
         self._written, self._judged, self._memory, self._now = written, judged, memory, now
 
@@ -546,7 +549,7 @@ class LiveLedger:
             settings,
             o.event.kind,
             look_ahead=o.look_ahead is not None,
-            primary_enabled=not suppressed and self._primary_enabled(settings),
+            primary_enabled=not suppressed and self._primary_enabled(o, settings),
         )
 
     def channel_enabled(self, o: Obligation, channel: NotificationChannel) -> bool:

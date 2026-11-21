@@ -90,6 +90,7 @@ from train_commute_companion.lifecycle import (
     apply_action,
     arrival_follow_query,
     boarding_origin,
+    find_next_good,
     guess,
     is_resolved,
     location_queries,
@@ -141,6 +142,7 @@ from train_commute_companion.model import (
     Config,
     Connection,
     Ctx,
+    DatedSchedule,
     Direction,
     DirectionState,
     EventKind,
@@ -178,11 +180,13 @@ from train_commute_companion.notify import (
     NotificationPaused,
     NotificationSuppressed,
     Notifier,
+    RoutedDelivery,
     WebhookPort,
     destination_id,
 )
 from train_commute_companion.partner_eta import partner_text
-from train_commute_companion.profile import load_config
+from train_commute_companion.profile import load_config, parse_profiles
+from train_commute_companion.profile_schedule import update_schedule
 from train_commute_companion.providers.base import (
     ActiveDisruptions,
     PlannedWorks,
@@ -225,7 +229,7 @@ from train_commute_companion.runtime_state import (
     RuntimePhase,
     route_decision,
 )
-from train_commute_companion.schedule import schedules_active
+from train_commute_companion.schedule import dated_schedule, schedules_active
 from train_commute_companion.state import (
     BaselineHistory,
     Commitment,
@@ -249,6 +253,7 @@ from train_commute_companion.timetable_receipts import (
 )
 from train_commute_companion.travel_changes import (
     active_travel_schedules,
+    new_regular_conflict,
     request_hash,
     valid_request_id,
 )
@@ -281,6 +286,7 @@ WATCHDOG_EVERY_S = 30
 FILE_EVERY_S = 10
 LOOKAHEAD_AT = time(6, 0)
 LOOKAHEAD_TRIP_INTERVAL = timedelta(seconds=2)
+TRAVEL_PREVIEW_DAYS = 30
 _APP = "app"  # profile name on application warnings, which belong to no profile
 _HISTORY_AGE = timedelta(days=30)
 _HISTORY_LIMIT = 100
@@ -516,6 +522,7 @@ class Runtime:
         profile_setup: bool = False,
         send_partner_eta: Callable[[str, str, Callable[[], bool]], Awaitable[None]] | None = None,
         excluded_profiles: Callable[[], frozenset[str]] = frozenset,
+        routed_delivery: RoutedDelivery | None = None,
     ) -> None:
         # Omitted only for legacy clients and replay rigs. Shells supply actual recipient IDs.
         self._primary_destination = primary_destination or (lambda: LEGACY_PRIMARY)
@@ -527,6 +534,7 @@ class Runtime:
         self._primary_in_flight: Obligation | None = None
         self._in_flight_opted_out = False
         self._arrival_recipient = arrival_recipient or primary_destination or (lambda: None)
+        self._routed_delivery = routed_delivery
         self._target_pins: dict[str, Obligation] = {}
         self._navigation_answers: dict[str, tuple[ProviderAnswer, ...]] = {}
         self._path = profile_path
@@ -584,7 +592,7 @@ class Runtime:
         self._wake_refresh = RefreshTask(self.wake_once, coalesce=False)
         self._wake_attempts: dict[WakeSampleKey, datetime] = {}
         self._wake_evidence: dict[WakeSampleKey, WakeEvidence] = {}
-        self._wake_recipient: str | None = None
+        self._wake_recipients: dict[WakeSampleKey, str] = {}
         self._sending = asyncio.Lock()
 
         def read() -> PersistedState:
@@ -597,7 +605,7 @@ class Runtime:
             clock.now,
             lambda: self.available_channels,
             format_event=self._delivery_event,
-            primary_enabled=self._primary_enabled,
+            primary_enabled_for=self._primary_enabled_for,
             departure_weather=self._station_weather,
         )
         self._held_ledger = LiveLedger(
@@ -607,7 +615,7 @@ class Runtime:
             clock.now,
             lambda: self.available_channels,
             format_event=self._delivery_event,
-            primary_enabled=self._primary_enabled,
+            primary_enabled_for=self._primary_enabled_for,
             departure_weather=self._station_weather,
         )
         # an edit waiting for the station list retries it under the shared budget
@@ -707,6 +715,90 @@ class Runtime:
                 {**plan_dict(p), "text": plan_text(p)} for p in self.state.travel_plans.values()
             ]
         }
+
+    async def preview_travel_connection(
+        self, plan_id: str, direction: Direction, day: date | None
+    ) -> tuple[date, DatedSchedule, str, ProviderAnswer | None, Connection | None] | Refused:
+        state, now = self.state, self.now()
+        plan = state.travel_plans.get(plan_id)
+        if plan is None:
+            return Refused("Saved travel plan not found. Use list_travel_plans for its ID.")
+        if direction is Direction.RETURN and not plan.has_return:
+            return Refused("This travel plan has no return journey.")
+        profile = inherited_preferences(state, plan.profile)
+        journey = profile.journey(direction)
+        local_today = now.astimezone(TZ).date()
+        first = local_today - timedelta(days=journey.day_offset)
+        last = first + timedelta(days=TRAVEL_PREVIEW_DAYS)
+        if day is not None:
+            if not first <= day <= last:
+                return Refused(
+                    f"Travel lookahead covers today through {TRAVEL_PREVIEW_DAYS} days ahead."
+                )
+            if not plan.runs(day):
+                return Refused("This travel plan does not run on the requested date.")
+            dates: Iterable[date] = (day,)
+        else:
+            dates = plan.dates(first, last)
+        upcoming = ((date_, dated_schedule(profile, direction, date_, None)) for date_ in dates)
+        selected = next(((d, s) for d, s in upcoming if to_utc(s.window_end) > to_utc(now)), None)
+        if selected is None:
+            return Refused("This travel plan has no upcoming journey in the requested period.")
+        day, schedule = selected
+        ctx = Ctx(profile, direction, schedule, None, now)
+        start = schedule.first_departure
+        if journey.exact_train is None:
+            start = max(start, now, key=to_utc)
+        deadline = (
+            resolve_local(schedule.key.service_date, journey.arrive_by, edge="end")
+            if journey.arrive_by is not None
+            else None
+        )
+        query = Query.for_profile(
+            profile,
+            profile.origin(direction),
+            profile.destination(direction),
+            deadline or start,
+            search_for_arrival=deadline is not None,
+        )
+        key = okey(schedule.key)
+        occurrence = state.occurrences.get(key)
+        cached = self._memory.boards.get(key, ())
+        cached_answer = max(
+            (
+                a
+                for a in cached
+                if occurrence is not None
+                and occurrence.route_revision == -plan.revision
+                and a.query == query
+                and timedelta() <= to_utc(now) - to_utc(a.fetched_at) < FRESH_FOR
+            ),
+            key=lambda a: to_utc(a.fetched_at),
+            default=None,
+        )
+        source = "cache" if cached_answer is not None else "ns"
+        answer: ProviderAnswer | PollFailure
+        if cached_answer is not None:
+            answer = cached_answer
+        else:
+            answer = await self._gate.trips(
+                query, live=False, window_end=None, deadline=to_utc(now) + timedelta(seconds=15)
+            )
+            if self.state.travel_plans.get(plan_id) != plan:
+                return Refused(
+                    "The travel plan changed during the lookup. Try again.", RefusalKind.RETRY
+                )
+        if isinstance(answer, str):
+            return day, schedule, source, None, None
+        fresh = replace(ctx, now=self.now())
+        connection = find_next_good(
+            fresh_state(schedule.key, -plan.revision, None),
+            fresh,
+            answer,
+            earliest=True,
+            preview=True,
+        )
+        return day, schedule, source, answer, connection
 
     def travel_change_receipt(self, request_id: str) -> dict[str, Any] | None:
         receipt = self.state.travel_receipts.get(request_id)
@@ -935,7 +1027,10 @@ class Runtime:
     def _navigation_event(
         self, state: OccurrenceState, ctx: Ctx, *, train: TrainId | None = None
     ) -> AlertEvent | None:
-        if self._primary_destination() in (None, LEGACY_PRIMARY):
+        if self._destination(ctx.profile.id, EventKind.STATION_NAVIGATION) in (
+            None,
+            LEGACY_PRIMARY,
+        ):
             return None
         station, maps = self._navigation(state, ctx.now)
         if maps is None:
@@ -1319,18 +1414,50 @@ class Runtime:
 
     # --- the serialised writer: state, ledger and obligations in one save (rule 5, 22) ---
 
-    def _primary_is_scoped(self) -> bool:
-        destination = self._primary_destination()
-        return destination is not None and self._primary_destination_scope(destination)
+    def _route(self, profile_id: str, kind: EventKind | None = None) -> RoutedDelivery | None:
+        route = self._routed_delivery
+        return route if route is not None and route.routes(profile_id, kind) else None
 
-    def _primary_enabled(self, settings: AlertSettings) -> bool:
-        return settings.ntfy_enabled or not self._primary_is_scoped()
+    async def _refresh_destinations(self) -> None:
+        if self._routed_delivery is not None:
+            await self._routed_delivery.refresh()
+
+    def _destination(self, profile_id: str, kind: EventKind | None = None) -> str | None:
+        route = self._route(profile_id, kind)
+        return self._primary_destination() if route is None else route.destination
+
+    def _arrival_for(self, profile_id: str) -> str | None:
+        route = self._route(profile_id, EventKind.ARRIVAL_PROMPT)
+        return self._arrival_recipient() if route is None else route.destination
+
+    def _wake_for(self, profile_id: str) -> str | None:
+        route = self._route(profile_id, EventKind.WAKE_ALARM)
+        return self._wake_destination() if route is None else route.wake_destination
+
+    async def _send_to(self, event: AlertEvent, destination: str | None) -> bool:
+        route = self._route(event.profile_id, event.kind)
+        if route is None:
+            return await self._notifier.send(event)
+        return await route.send_to(event, destination)
+
+    def _primary_enabled(
+        self, settings: AlertSettings, profile_id: str, kind: EventKind | None = None
+    ) -> bool:
+        destination = self._destination(profile_id, kind)
+        return (
+            settings.ntfy_enabled
+            or destination is None
+            or not self._primary_destination_scope(destination)
+        )
+
+    def _primary_enabled_for(self, o: Obligation, settings: AlertSettings) -> bool:
+        return self._primary_enabled(settings, o.event.profile_id, o.event.kind)
 
     def _suppress_primary(self, st: PersistedState, old: PersistedState) -> PersistedState:
         disabled = {
             p.id
             for p in (() if st.config is None else st.config.profiles)
-            if not p.alerts.ntfy_enabled
+            if not p.alerts.ntfy_enabled and self._route(p.id) is None
         }
         blocked = {
             o.id
@@ -1349,6 +1476,8 @@ class Runtime:
             return st
 
         def suppress(o: Obligation) -> Obligation:
+            if self._route(o.event.profile_id, o.event.kind) is not None:
+                return o
             targets = o.target_ids or frozenset()
             if any(
                 not self._primary_destination_scope(d)
@@ -1378,7 +1507,7 @@ class Runtime:
     def _latch_optout(self, st: PersistedState) -> None:
         if self._primary_in_flight is not None:
             profile = find_profile(st.config, self._primary_in_flight.event.profile_id)
-            if profile is not None and not self._primary_enabled(profile.alerts):
+            if profile is not None and not self._primary_enabled(profile.alerts, profile.id):
                 self._in_flight_opted_out = True
 
     def primary_send_allowed(self, event: AlertEvent) -> bool:
@@ -1387,7 +1516,7 @@ class Runtime:
             return True
         st = self._writer.st
         profile = find_profile(st.config, event.profile_id)
-        if profile is None or not self._primary_enabled(profile.alerts):
+        if profile is None or not self._primary_enabled(profile.alerts, profile.id, event.kind):
             return False
         active = self._primary_in_flight
         if active is None:
@@ -1478,7 +1607,7 @@ class Runtime:
             events = tuple(e for e in events if e.kind not in ORIGINAL_ROUTINE)
         profile = self._profile_for(s)
         if profile is not None and profile.alerts.checked_alternatives:
-            events = self._replacement_check_in(profile.alerts, events)
+            events = self._replacement_check_in(profile, events)
         keys = dict(s.alert_keys)
         if polled:
             forget_ended(keys, events)
@@ -1512,7 +1641,7 @@ class Runtime:
         return replace(s, alert_keys=keys), obligations
 
     def _replacement_check_in(
-        self, settings: AlertSettings, events: Sequence[AlertEvent]
+        self, profile: Profile, events: Sequence[AlertEvent]
     ) -> Sequence[AlertEvent]:
         for warning in events:
             facts = alert_facts(warning)
@@ -1525,7 +1654,8 @@ class Runtime:
                 not in JOURNEY_WARNINGS | {EventKind.MISSED_FIRST_TRAIN, EventKind.MISSED_TRANSFER}
             ):
                 continue
-            primary = self._primary_enabled(settings)
+            settings = profile.alerts
+            primary = self._primary_enabled(settings, profile.id, warning.kind)
             warned = channels_for(settings, warning.kind, primary_enabled=primary)
             updated = []
             for event in events:
@@ -1644,7 +1774,7 @@ class Runtime:
     def _arrival_question(
         self, record: JourneyRecord, profile: Profile, at: datetime, now: datetime
     ) -> tuple[JourneyRecord, Obligation | None]:
-        target = self._arrival_recipient()
+        target = self._arrival_for(profile.id)
         expires = to_utc(at) + timedelta(hours=2)
         if (
             target is None
@@ -1849,6 +1979,7 @@ class Runtime:
         poll, watchdog and file watch all deliver, and two passes would send one alert twice.
         The webhook copies go after, in a task of their own: a slow receiver never holds up a
         phone send or the loop that delivers (an alert's advice can expire)."""
+        await self._refresh_destinations()
         async with self._sending:
             await self._deliver_pass()
         self._queue.post_soon()
@@ -1955,7 +2086,7 @@ class Runtime:
                 ),
             )
         selected = ledger.selected_channels(o)
-        primary = self._primary_destination()
+        primary = self._destination(o.event.profile_id, o.event.kind)
         facts = alert_facts(o.event)
         source_targets = facts.disruption_targets
         event = o.event
@@ -2031,11 +2162,12 @@ class Runtime:
                     history.clear()
                     copies = False
                 # a fresh clock per message: a slow send must not leave the next one judged early
-                destination = self._primary_destination()
+                destination = self._destination(o.event.profile_id, o.event.kind)
                 now = self._clock.now()
                 r: Obligation | None
                 if (
                     not o.primary_suppressed
+                    and self._route(o.event.profile_id, o.event.kind) is None
                     and any(self._park_primary_pin(d) for d in (o.target_ids or ()))
                     and revalidate(o, v, now) is not DeliveryVerdict.DROP
                 ):
@@ -2063,7 +2195,7 @@ class Runtime:
                                 pending,
                                 self._held_ledger if held else self._ledger,
                                 self.now(),
-                                self._primary_destination(),
+                                self._destination(pending.event.profile_id, pending.event.kind),
                                 self._writer.audience_written(pending),
                             )
                             is DeliveryVerdict.SEND
@@ -2084,7 +2216,8 @@ class Runtime:
                         if self._waits(o):
                             continue
                         v = self._held_ledger if held else self._ledger
-                        now, destination = self.now(), self._primary_destination()
+                        now = self.now()
+                        destination = self._destination(o.event.profile_id, o.event.kind)
 
                     def remember(
                         event: AlertEvent,
@@ -2108,6 +2241,7 @@ class Runtime:
                             destination,
                             audience_written=self._writer.audience_written(o),
                             on_accepted=remember,
+                            send=partial(self._send_to, destination=destination),
                         )
                     finally:
                         self._primary_in_flight = None
@@ -2155,7 +2289,7 @@ class Runtime:
             self._record_delivery(finished, kept, told, copies, accepted=accepted, history=history)
 
     async def _deliver_arrival_question(self, o: Obligation, ledger: LiveLedger) -> None:
-        target = self._arrival_recipient()
+        target = self._arrival_for(o.event.profile_id)
         verdict = primary_delivery_verdict(
             o, ledger, self._clock.now(), target, self._writer.audience_written(o)
         )
@@ -2167,7 +2301,7 @@ class Runtime:
         if event is None:
             self._record_delivery({o.id}, {}, ())
             return
-        # Telegram cannot deduplicate a send after a lost response. Reserve the only attempt
+        # The phone cannot deduplicate a send after a lost response. Reserve the only attempt
         # before contacting the phone, so a restart cannot send a second question.
         st = self._writer.st
         if not self._writer.commit_strict(
@@ -2175,7 +2309,7 @@ class Runtime:
         ):
             return
         try:
-            sent = await self._notifier.send(event)
+            sent = await self._send_to(event, target)
         except NotificationPaused:
             # The adapter did not start a send. It is safe to make the question pending again.
             st = self._writer.st
@@ -2271,11 +2405,13 @@ class Runtime:
                 obligations.extend(owed)
         return replace(st, occurrences=occurrences, obligations=tuple(obligations))
 
-    def _disruption_audience(self, settings: AlertSettings) -> frozenset[str]:
+    def _disruption_audience(self, profile: Profile) -> frozenset[str]:
+        settings = profile.alerts
+        kind = EventKind.DISRUPTION
         selected = channels_for(
-            settings, EventKind.DISRUPTION, primary_enabled=self._primary_enabled(settings)
+            settings, kind, primary_enabled=self._primary_enabled(settings, profile.id, kind)
         )
-        primary = self._primary_destination()
+        primary = self._destination(profile.id, kind)
         return frozenset(
             () if "primary" not in selected else (primary or PENDING_PRIMARY,)
         ) | frozenset(
@@ -2353,6 +2489,7 @@ class Runtime:
         self._writer.propose(replace(st, occurrences=occs, config_snapshots=snaps))
 
     async def poll_once(self) -> None:
+        await self._refresh_destinations()
         self._create_occurrences(self._clock.now())
         await self._poll_occurrences()
         await self._deliver()
@@ -2495,7 +2632,7 @@ class Runtime:
                 context,
                 feed,
                 self._memory.boards.get(key, ()),
-                audience=self._disruption_audience(context.profile.alerts),
+                audience=self._disruption_audience(context.profile),
             )
             changes[key] = (transition.state, transition.events)
         self._apply(changes)
@@ -2768,6 +2905,7 @@ class Runtime:
         return out
 
     async def watchdog_once(self) -> None:
+        await self._refresh_destinations()
         now = self._clock.now()
         self._writer.retry()  # the waiting changes, written again (rule 22)
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
@@ -2794,33 +2932,36 @@ class Runtime:
         ):
             self._writer.commit(self._writer.st, Change.TICK)
         self._commute_recaps(now)
-        if self._wake_destination() is not None and wake_slots(self._writer.st, now):
+        if any(
+            self._wake_for(slot.key[0]) is not None for slot in wake_slots(self._writer.st, now)
+        ):
             self._wake_refresh.request()
         await self._deliver()
 
     async def wake_once(self) -> None:
+        await self._refresh_destinations()
         st = self._writer.st
-        recipient = self._wake_destination()
-        if recipient != self._wake_recipient:
-            self._wake_evidence.clear()
-            self._wake_attempts.clear()
-            self._wake_recipient = recipient
-        if recipient is None or self._writer.waiting:
+        if self._writer.waiting:
             return
         now = self._clock.now()
         slots = [
-            slot
+            (slot, recipient)
             for slot in wake_slots(st, now)
             if slot.context.profile.id not in self._excluded_profiles()
             and "primary" in channels_for(slot.context.profile.alerts, EventKind.WAKE_ALARM)
+            and (recipient := self._wake_for(slot.key[0])) is not None
         ]
-        keys = {slot.sample_key for slot in slots}
+        recipients = {slot.sample_key: recipient for slot, recipient in slots}
+        keys = {
+            k for k, recipient in recipients.items() if self._wake_recipients.get(k) == recipient
+        }
+        self._wake_recipients = recipients
         self._wake_attempts = {k: v for k, v in self._wake_attempts.items() if k in keys}
         self._wake_evidence = {k: v for k, v in self._wake_evidence.items() if k in keys}
-        for slot in slots:
+        for slot, recipient in slots:
             key = slot.sample_key
             current = partial(self._wake_current, recipient, key)
-            if not await self._can_wake(current):
+            if not await self._can_wake(key.profile_id, current):
                 continue
             now = self._clock.now()
             last = self._wake_attempts.get(key)
@@ -2829,7 +2970,7 @@ class Runtime:
                 observed = await self._probe_wake(slot, now, current)
                 if not current():
                     self._wake_evidence.pop(key, None)
-                    return
+                    continue
                 sample = (
                     None
                     if observed is None
@@ -2845,12 +2986,17 @@ class Runtime:
             if sample is None or not sample.ready(self._clock.now()):
                 continue
             async with self._sending:
-                if not (await self._can_wake(current) and sample.ready(self._clock.now())):
+                if not (
+                    await self._can_wake(key.profile_id, current)
+                    and sample.ready(self._clock.now())
+                ):
                     continue
-                await self._send_wake(slot, sample.candidate)
+                await self._send_wake(slot, sample.candidate, recipient)
 
-    async def _can_wake(self, current: Callable[[], bool]) -> bool:
-        return current() and (self._wake_ready is None or await self._wake_ready()) and current()
+    async def _can_wake(self, profile_id: str, current: Callable[[], bool]) -> bool:
+        route = self._route(profile_id, EventKind.WAKE_ALARM)
+        ready = self._wake_ready if route is None else route.wake_ready
+        return current() and (ready is None or await ready()) and current()
 
     def _wake_current(
         self,
@@ -2860,7 +3006,7 @@ class Runtime:
         st = self._writer.st
         now = self._clock.now()
         return (
-            self._wake_destination() == recipient
+            self._wake_for(key.profile_id) == recipient
             and key.profile_id not in self._excluded_profiles()
             and not self._writer.waiting
             and not self._ledger.in_quiet_hours(key.profile_id, now)
@@ -2881,7 +3027,7 @@ class Runtime:
         if (
             isinstance(usual, str)
             or usual_problem(ctx, usual) is None
-            or not await self._can_wake(current)
+            or not await self._can_wake(key.profile_id, current)
         ):
             return None
         start = max(
@@ -2905,7 +3051,7 @@ class Runtime:
             else WakeEvidence(candidate, min(usual.fetched_at, earlier.fetched_at, key=to_utc))
         )
 
-    async def _send_wake(self, slot: WakeSlot, candidate: WakeCandidate) -> None:
+    async def _send_wake(self, slot: WakeSlot, candidate: WakeCandidate, recipient: str) -> None:
         pid, day = slot.key
         st = self._writer.st
         # Reserve the one critical alert before delivery. A lost receipt cannot ring twice.
@@ -2919,7 +3065,7 @@ class Runtime:
         )
         event = make_event(ctx, EventKind.WAKE_ALARM, Severity.LOUD, body, candidate.trains[0])
         try:
-            await self._notifier.send(event)
+            await self._send_to(event, recipient)
         except NotificationPaused:
 
             def rollback(current: PersistedState) -> PersistedState:
@@ -3019,6 +3165,7 @@ class Runtime:
     async def answer_arrival_prompt(
         self, prompt_id: str, answer: str, recipient: str
     ) -> JourneyRecord | Refused:
+        await self._refresh_destinations()
         st = self._writer.st
         for k, record in st.journey_records.items():
             prompt = record.prompt
@@ -3032,7 +3179,7 @@ class Runtime:
                 or profile is None
                 or not arrival_prompt_enabled(profile.alerts)
                 or prompt.recipient != recipient
-                or self._arrival_recipient() != recipient
+                or self._arrival_for(record.key.profile_id) != recipient
                 or to_utc(self._clock.now()) >= to_utc(prompt.expires_at)
             ):
                 break
@@ -3701,6 +3848,43 @@ class Runtime:
             return  # the same file retried while its write fails (rule 22): told once
         self._reload.announced = reason
         self._app_warning(EventKind.PROFILE_REFUSED, f"profile change refused: {reason}.", now)
+
+    async def sync_profile(
+        self,
+        profile_id: str,
+        extra_dates: tuple[date, ...],
+        outbound_buffer_min: int,
+        return_buffer_min: int,
+    ) -> Refused | None:
+        """Accept dated household inputs without replacing the saved route or travel plans."""
+
+        def valid(text: str) -> bool:
+            profiles, errors = parse_profiles(
+                text, self.known_stations, available_channels=self.available_channels
+            )
+            if errors:
+                return False
+            state = self.state
+            revision = state.config.revision if state.config is not None else 0
+            candidate = replace(state, config=Config(revision, tuple(profiles)))
+            if reason := new_regular_conflict(state, candidate, self.now()):
+                raise ValueError(reason)
+            return True
+
+        try:
+            updated = update_schedule(
+                self._path,
+                profile_id,
+                extra_dates,
+                outbound_buffer_min,
+                return_buffer_min,
+                validate=valid,
+            )
+        except (OSError, UnicodeError):
+            return Refused("The schedule could not be written. Check storage and try again.")
+        except ValueError as error:
+            return Refused(str(error))
+        return await self.reload(just_saved=updated)
 
     async def reload(self, *, just_saved: str | None = None) -> Refused | None:
         request = self._reload.begin()
@@ -4390,6 +4574,7 @@ class Runtime:
         now = self._clock.now()
         self._lifecycle.begin(now, asyncio.current_task())
         try:
+            await self._refresh_destinations()
             await self._load_and_reconcile(now)
             self._lifecycle.reconciled()
             self._apply({})

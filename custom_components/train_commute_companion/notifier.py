@@ -358,6 +358,7 @@ class HaNotifier:
         enabled_entity: str | None = None,
         quiet_entity: str | None = None,
         profile_allowed: Callable[[str], bool] | None = None,
+        timetable_actions: bool = True,
     ) -> None:
         self.hass = hass
         self._receipt_target = mobile_target(hass, service)
@@ -369,6 +370,7 @@ class HaNotifier:
         self.enabled_entity = enabled_entity
         self.quiet_entity = quiet_entity
         self._profile_allowed = profile_allowed
+        self._timetable_actions = timetable_actions
         self._fired: set[tuple[str, Direction | None, str, Severity, Any]] = set()
         # this notifier's work on hass.loop (sends and relay fallbacks), cancelled on unload
         self._tasks: set[asyncio.Task[None]] = set()
@@ -578,7 +580,11 @@ class HaNotifier:
             return False
         severity = Severity.SILENT if self.quiet else event.severity
         payload = notify_payload(severity, event.text, self.loud_style)
-        actions: list[dict[str, Any]] = list(answer_actions(event))
+        actions: list[dict[str, Any]] = [
+            action
+            for action in answer_actions(event)
+            if self._timetable_actions or not action["action"].startswith(TIMETABLE_PREFIX)
+        ]
         if maps := alert_facts(event).navigation:
             actions.extend(
                 {"action": "URI", "title": label, "uri": url}

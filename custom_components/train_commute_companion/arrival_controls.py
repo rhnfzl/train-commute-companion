@@ -18,7 +18,8 @@ from train_commute_companion.serde import encode
 from .const import DOMAIN
 from .data import TccData
 from .notifier import ARRIVAL_PREFIX, HaNotifier
-from .services import MOBILE_ACTION, _call_runtime, _refresh_or_refuse, resolve_profile
+from .remote import invoke
+from .services import MOBILE_ACTION, _await_action, _refresh_or_refuse, resolve_profile
 
 
 def aware_timestamp(value: object) -> datetime:
@@ -53,10 +54,7 @@ CONFIRM_ARRIVAL = vol.Schema(
 
 
 async def records(data: TccData) -> tuple[JourneyRecord, ...]:
-    async def read(runtime: Runtime) -> tuple[JourneyRecord, ...]:
-        return runtime.arrival_records()
-
-    return await _call_runtime(data, read)
+    return await _await_action(invoke(data.host, Runtime.arrival_records))
 
 
 async def confirm_arrival(
@@ -69,16 +67,17 @@ async def confirm_arrival(
     action_id: str,
     original_planned_arrival: datetime | None = None,
 ) -> JourneyRecord:
-    result = await _call_runtime(
-        data,
-        lambda rt: rt.confirm_arrival(
-            key,
-            destination,
-            arrived_at,
+    result = await _await_action(
+        invoke(
+            data.host,
+            Runtime.confirm_arrival,
+            key=key,
+            destination=destination,
+            arrived_at=arrived_at,
             expected_revision=expected_revision,
             action_id=action_id,
             original_planned_arrival=original_planned_arrival,
-        ),
+        )
     )
     await _refresh_or_refuse(data, result if isinstance(result, Refused) else None)
     if isinstance(result, Refused):
@@ -129,11 +128,14 @@ def listen_for_arrival(data: TccData, notifier: HaNotifier) -> None:
         recipient = notifier.action_recipient(event)
         if recipient is None:
             return
-        result = await _call_runtime(
-            data,
-            lambda rt: rt.answer_arrival_prompt(
-                action.removeprefix(ARRIVAL_PREFIX), "yes", recipient
-            ),
+        result = await _await_action(
+            invoke(
+                data.host,
+                Runtime.answer_arrival_prompt,
+                prompt_id=action.removeprefix(ARRIVAL_PREFIX),
+                answer="yes",
+                recipient=recipient,
+            )
         )
         if isinstance(result, JourneyRecord):
             await data.coordinator.async_request_refresh()

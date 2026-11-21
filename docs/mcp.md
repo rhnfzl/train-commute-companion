@@ -65,7 +65,8 @@ docker compose -f /path/to/docker-compose.yml run --rm --no-deps -T -e TCC_MCP_A
 
 This is the command for the MCP client to start. With the Claude Desktop example above, put `"-e", "TCC_MCP_AGENT_TOKEN"` just before `"mcp"`. Set the variable in your client configuration or its launch environment. The relay gets only this agent's token and the state directory.
 
-- `list_travel_plans()` lists saved travel plans.
+- `list_travel_plans()` returns the regular commute profiles in `profiles` and the flexible trips in `plans`. Both come from the companion that the agent connects to.
+- `get_next_connections(plan_id, direction, date)` checks departures for an approved flexible trip. Use the outbound trip date for either direction. The return uses its saved day offset. Leave out the date to check the next scheduled trip within 30 days. The result includes when the NS data was fetched and whether it came from a recent check or a new request.
 - `change_travel_plan(change, request_id)` proposes a create, edit, cancel or undo.
 - `get_travel_change(request_id)` checks a plan or preference change.
 - `list_travel_preferences()` lists confirmed travel preferences.

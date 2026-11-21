@@ -5,21 +5,22 @@ from datetime import timedelta
 import httpx
 import httpx2
 import pytest
-from app_rig import CHAT, TickClock, free_port, make_app, msg, until
+from app_rig import CHAT, CODES, TickClock, free_port, make_app, msg, until
 from app_rig import TOKEN as BOT_TOKEN
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
-from runtime_rig import DAY, at
-from tcc_app.main import ProcessPhase, Settings, mcp_answer, serve
+from runtime_rig import DAY, Provider, StationsProvider, at
+from tcc_app.main import ProcessPhase, Settings, dispatch_mcp, mcp_answer, serve
+from tcc_app.mcp_remote import serve_remote
 from tcc_app.mcp_server import build as mcp_build
 from tcc_app.travel_language import LanguageSettings
 from tcc_app.web import start_readout
 from test_travel_actions import TOKEN, Plans
 
+from train_commute_companion.providers.base import ProviderError
+
 
 async def test_mcp_change_applies_only_after_private_telegram_approval(tmp_path, tg, sock):
-    from tcc_app.main import dispatch_mcp
-
     app = make_app(tmp_path, tg, TickClock(at("06:00")), mcp_agents={"desktop": TOKEN})
     fake = Plans()
     app.bot.travel_actions.rt = fake
@@ -90,12 +91,81 @@ async def test_app_starts_and_stops_the_configured_remote_listener(tmp_path, tg)
             Client(streamable_http_client(url, http_client=http)) as mcp,
         ):
             reply = await mcp.call_tool("list_travel_plans", {})
-            assert reply.structured_content == {"plans": []}
+            assert reply.structured_content["plans"] == []
+            assert [p["profile_id"] for p in reply.structured_content["profiles"]] == ["p1"]
     finally:
         service.cancel()
         with pytest.raises(asyncio.CancelledError):
             await service
     assert app.phase is ProcessPhase.STOPPED
+
+
+async def test_remote_previews_one_off_plan_and_distinguishes_no_match_from_provider_failure(
+    tmp_path, tg
+):
+    when = (DAY + timedelta(days=4)).isoformat()
+    clock = TickClock(at("06:00"))
+    provider = Provider(clock, [])
+    app = make_app(
+        tmp_path,
+        tg,
+        clock,
+        StationsProvider(provider, CODES),
+        mcp_agents={"desktop": TOKEN},
+    )
+    await app.rt.start()
+    try:
+        change = {
+            "action": "create",
+            "plan": {
+                "origin": "AAA",
+                "destination": "UT",
+                "start_date": when,
+                "outbound": {"mode": "exact", "departure": "08:12"},
+            },
+        }
+        review = app.rt.preview_travel_plan(change)
+        saved = app.rt.save_travel_plan(change, review["review_token"], "remote-future-trip")
+        args = {"plan_id": saved["plan_id"], "direction": "outbound", "date": when}
+        async with serve_remote(
+            lambda request, token: dispatch_mcp(app, request, token),
+            lambda token: app.travel_actions.agent(token) is not None,
+            host="127.0.0.1",
+            port=0,
+            allowed_hosts=("127.0.0.1:*",),
+        ) as port:
+            url = f"http://127.0.0.1:{port}/mcp"
+            async with httpx.AsyncClient() as unregistered:
+                rejected = await unregistered.post(
+                    url,
+                    json={
+                        "method": "tools/call",
+                        "params": {"name": "get_next_connections", "arguments": args},
+                    },
+                )
+                assert rejected.status_code == 401
+                assert not provider.calls
+            async with (
+                httpx2.AsyncClient(headers={"Authorization": f"Bearer {TOKEN}"}) as http,
+                Client(streamable_http_client(url, http_client=http)) as mcp,
+            ):
+                missing = await mcp.call_tool("get_next_connections", args)
+                assert missing.structured_content["status"] == "no_match"
+                assert missing.structured_content["fetched_at"] == clock.now().isoformat()
+                assert len(provider.calls) == 1
+                provider.error = lambda query: ProviderError("offline")
+                unavailable = await mcp.call_tool("get_next_connections", args)
+                assert unavailable.structured_content["status"] == "unavailable"
+                assert unavailable.structured_content["fetched_at"] is None
+                assert len(provider.calls) == 2
+                no_return = await mcp.call_tool(
+                    "get_next_connections", {**args, "direction": "return"}
+                )
+                assert no_return.is_error
+                assert len(provider.calls) == 2
+    finally:
+        await app.bot.close()
+        await app.follower.close()
 
 
 async def test_private_telegram_can_plan_through_a_configured_language_service(tmp_path, tg):

@@ -27,11 +27,12 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from train_commute_companion.calendar import TZ
 from train_commute_companion.model import NotificationChannel, Profile, Stations
 from train_commute_companion.providers.base import ProviderAnswer, Query
+from train_commute_companion.runtime import Runtime
 from train_commute_companion.state import PollFailure
 
-from .const import CONF_PROFILES_PATH, CONF_WEBHOOK_URLS, DOMAIN
+from .const import CONF_PROFILES_PATH, CONF_REMOTE_URL, CONF_WEBHOOK_URLS, DOMAIN
 from .data import TccConfigEntry
-from .host import RuntimeNotRunning
+from .host import RuntimeHost, RuntimeNotRunning
 from .profile_editor import EditorError, read_document, save_document, validate_text
 from .profile_flow import ProfileEditorFlow
 
@@ -130,6 +131,9 @@ def _remove_from_yaml(
 @callback
 def async_setup_profile_subentries(entry: TccConfigEntry, profiles_path: str) -> None:
     data = entry.runtime_data
+    host = data.host
+    if not isinstance(host, RuntimeHost):
+        return
     hass = data.coordinator.hass
     removal = asyncio.Lock()
     observed = set(profile_subentries(entry))
@@ -142,9 +146,9 @@ def async_setup_profile_subentries(entry: TccConfigEntry, profiles_path: str) ->
             if not excluded:
                 return
             try:
-                if await data.host.run(lambda rt: rt.reload()) is not None:
+                if await host.run(lambda rt: rt.reload()) is not None:
                     return
-                known = await data.host.run(lambda rt: rt.known_stations)
+                known = await host.run(lambda rt: rt.known_stations)
             except RuntimeNotRunning:
                 return
             if known:
@@ -221,12 +225,18 @@ class ProfileSubentryFlow(ProfileEditorFlow[SubentryFlowResult], ConfigSubentryF
 
     async def _open(self) -> SubentryFlowResult:
         parent = self._parent
+        if parent.options.get(CONF_REMOTE_URL):
+            return self.async_abort(reason="managed_by_docker")
         runtime = getattr(parent, "runtime_data", None)
-        if runtime is None:
+        if runtime is None or not isinstance(runtime.host, RuntimeHost):
             return self.async_abort(reason="not_loaded")
+
+        async def stations(rt: Runtime) -> frozenset[str] | None:
+            return rt.known_stations or await rt.stations()
+
         try:
             async with asyncio.timeout(10):
-                known = await runtime.host.run(lambda rt: rt.known_stations or rt.stations())
+                known = await runtime.host.run(stations)
         except (TimeoutError, RuntimeNotRunning):
             known = None
         if not known:
@@ -264,7 +274,7 @@ class ProfileSubentryFlow(ProfileEditorFlow[SubentryFlowResult], ConfigSubentryF
 
     async def _preview_trips(self, query: Query) -> ProviderAnswer | PollFailure | None:
         parent = self._parent
-        if hasattr(parent, "runtime_data"):
+        if hasattr(parent, "runtime_data") and isinstance(parent.runtime_data.host, RuntimeHost):
             try:
                 return await parent.runtime_data.host.run(lambda rt: rt.preview_trip(query))
             except RuntimeNotRunning:
@@ -279,6 +289,8 @@ class ProfileSubentryFlow(ProfileEditorFlow[SubentryFlowResult], ConfigSubentryF
         )
 
     async def _profile_ready(self) -> SubentryFlowResult:
+        if self._parent.options.get(CONF_REMOTE_URL):
+            return self.async_abort(reason="managed_by_docker")
         try:
             await self._save_profile()
         except EditorError as err:

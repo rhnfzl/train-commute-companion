@@ -5,9 +5,11 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import date, time
 from functools import partial
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 import voluptuous as vol
+import yaml
 from homeassistant.core import Event, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
@@ -18,9 +20,11 @@ from train_commute_companion.model import Direction
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.tasks import DetachedCall
 
-from .const import DOMAIN
+from .const import CONF_PROFILES_PATH, CONF_REMOTE_PROFILE_SYNC, DOMAIN
 from .data import TccData
-from .host import RuntimeNotRunning
+from .host import RuntimeHost, RuntimeNotRunning
+from .remote import RemoteRuntime, RemoteUnavailable, invoke
+from .validate import check_path
 
 # a choice holds one live request under the core's 90 s deadline
 RUN_TIMEOUT_S = 120
@@ -55,6 +59,22 @@ FORGET_STATION_SCHEMA = vol.Schema(
 )
 
 
+def _buffer(value: object) -> int:
+    if type(value) is not int or value < 0:
+        raise vol.Invalid("must be a nonnegative whole number")
+    return value
+
+
+SCHEDULE_FIELDS = vol.Schema(
+    {
+        vol.Required("extra_dates"): [cv.date],
+        vol.Required("outbound_buffer_min"): _buffer,
+        vol.Required("return_buffer_min"): _buffer,
+    }
+)
+SYNC_SCHEDULE_SCHEMA = SCHEDULE_FIELDS.extend({vol.Required("profile"): cv.string})
+
+
 def resolve_profile(hass: HomeAssistant, profile: str) -> tuple[TccData, str, str]:
     """The loaded entry and the profile by id, then by name. Directions, not the file's profiles:
     a removed profile that still runs stays actionable (rule 10)."""
@@ -73,9 +93,15 @@ def resolve_profile(hass: HomeAssistant, profile: str) -> tuple[TccData, str, st
 
 
 async def _call_runtime[T](data: TccData, fn: Callable[[Runtime], Awaitable[T]]) -> T:
+    if not isinstance(data.host, RuntimeHost):
+        raise ServiceValidationError("This action requires a runtime managed by Home Assistant.")
+    return await _await_action(data.host.run(fn))
+
+
+async def _await_action[T](action: Awaitable[T]) -> T:
     """The runtime call is its own task: a timeout or a cancelled caller leaves it to finish (a
     cancelled delivery pass after a send would repeat that alert). `RuntimeHost.stop` ends it."""
-    task = asyncio.ensure_future(data.host.run(fn))
+    task = asyncio.ensure_future(action)
     _running.add(task)
     task.add_done_callback(_running.discard)
     call = DetachedCall(
@@ -90,6 +116,8 @@ async def _call_runtime[T](data: TccData, fn: Callable[[Runtime], Awaitable[T]])
             return await call.wait(None)
     except TimeoutError:
         raise HomeAssistantError("the companion is not answering; try again") from None
+    except RemoteUnavailable as err:
+        raise HomeAssistantError(str(err)) from None
     except RuntimeNotRunning:
         raise HomeAssistantError("the companion is not running; try again") from None
 
@@ -103,11 +131,12 @@ async def do_choose(
     service_date: date | None = None,
     direction: Direction | None = None,
 ) -> None:
-    refused = await _call_runtime(
-        data,
-        lambda rt: rt.choose_at(
-            profile_id,
-            departure,
+    refused = await _await_action(
+        invoke(
+            data.host,
+            Runtime.choose_at,
+            profile_id=profile_id,
+            departure=departure,
             train_number=train_number,
             service_date=service_date,
             direction=direction,
@@ -139,7 +168,15 @@ async def do_leaving(
     service_date: date | None = None,
     direction: Direction | None = None,
 ) -> None:
-    refused = await _call_runtime(data, lambda rt: rt.leaving(profile_id, service_date, direction))
+    refused = await _await_action(
+        invoke(
+            data.host,
+            Runtime.leaving,
+            profile_id=profile_id,
+            service_date=service_date,
+            direction=direction,
+        )
+    )
     await _refresh_or_refuse(data, refused, name)
 
 
@@ -152,8 +189,15 @@ async def do_not_travelling(
     direction: Direction | None = None,
     whole_day: bool = False,
 ) -> None:
-    refused = await _call_runtime(
-        data, lambda rt: rt.not_travelling(profile_id, service_date, direction, whole_day=whole_day)
+    refused = await _await_action(
+        invoke(
+            data.host,
+            Runtime.not_travelling,
+            profile_id=profile_id,
+            service_date=service_date,
+            direction=direction,
+            whole_day=whole_day,
+        )
     )
     await _refresh_or_refuse(data, refused, name)
 
@@ -167,8 +211,15 @@ async def do_travelling(
     direction: Direction | None = None,
     whole_day: bool = False,
 ) -> None:
-    refused = await _call_runtime(
-        data, lambda rt: rt.travelling(profile_id, service_date, direction, whole_day=whole_day)
+    refused = await _await_action(
+        invoke(
+            data.host,
+            Runtime.travelling,
+            profile_id=profile_id,
+            service_date=service_date,
+            direction=direction,
+            whole_day=whole_day,
+        )
     )
     await _refresh_or_refuse(data, refused, name)
 
@@ -222,7 +273,14 @@ async def _handle_travelling(call: ServiceCall) -> None:
 
 async def do_answer_prompt(data: TccData, prompt_id: str, answer: str) -> None:
     """A button on a question about an other boarding station; the id finds the journey."""
-    refused = await _call_runtime(data, lambda rt: rt.answer_prompt(prompt_id, answer))
+    refused = await _await_action(
+        invoke(
+            data.host,
+            Runtime.answer_prompt,
+            prompt_id=prompt_id,
+            answer=answer,
+        )
+    )
     await _refresh_or_refuse(data, refused)
 
 
@@ -237,12 +295,14 @@ def loaded(hass: HomeAssistant) -> TccData:
 async def _handle_check_trip(call: ServiceCall) -> ServiceResponse:
     data = loaded(call.hass)
     origin, destination = call.data["origin"], call.data["destination"]
-    result = await _call_runtime(data, lambda rt: rt.check_trip(origin, destination))
+    result = await _await_action(
+        invoke(data.host, Runtime.check_trip, origin=origin, destination=destination)
+    )
     if isinstance(result, Refused):
         if result.kind is RefusalKind.RETRY:
             raise HomeAssistantError(result.text)
         raise ServiceValidationError(result.text)
-    return result
+    return cast(ServiceResponse, result)
 
 
 async def _handle_answer_prompt(call: ServiceCall) -> None:
@@ -254,7 +314,15 @@ async def _handle_forget_station(call: ServiceCall) -> None:
     d = call.data
     data, pid, _ = resolve_profile(call.hass, d["profile"])
     station, direction = d["station"].strip().upper(), d["direction"]
-    refused = await _call_runtime(data, lambda rt: rt.forget_station(pid, direction, station))
+    refused = await _await_action(
+        invoke(
+            data.host,
+            Runtime.forget_station,
+            profile_id=pid,
+            direction=direction,
+            station=station,
+        )
+    )
     await _refresh_or_refuse(data, refused)
 
 
@@ -275,21 +343,80 @@ async def _on_mobile_action(hass: HomeAssistant, event: Event) -> None:
 
 
 async def _handle_reload_profiles(call: ServiceCall) -> None:
-    entries = call.hass.config_entries.async_loaded_entries(DOMAIN)
-    if not entries:
-        raise ServiceValidationError("Train Commute Companion is not loaded")
-    data: TccData = entries[0].runtime_data
-    refused = await _call_runtime(data, lambda rt: rt.reload())
+    data = loaded(call.hass)
+    if isinstance(data.host, RuntimeHost):
+        refused = await _call_runtime(data, lambda rt: rt.reload())
+        await _refresh_or_refuse(data, refused)
+        return
+    options = data.coordinator.config_entry.options
+    if not options.get(CONF_REMOTE_PROFILE_SYNC):
+        raise ServiceValidationError(
+            "Enable schedule synchronization or edit profiles on the Docker companion."
+        )
+    path = options.get(CONF_PROFILES_PATH, call.hass.config.path(DOMAIN, "profiles.yaml"))
+    if await check_path(call.hass, path) is not None:
+        raise ServiceValidationError("Home Assistant cannot read the local profiles file.")
+    shared_ids = {p.id for p in data.coordinator.data.profiles}
+    schedules = await call.hass.async_add_executor_job(_read_schedules, Path(path), shared_ids)
+    for pid, values in schedules.items():
+        await _sync_schedule(data, pid, values)
+
+
+def _read_schedules(path: Path, shared_ids: set[str]) -> dict[str, dict[str, Any]]:
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
+        schedules = {
+            p["id"]: SCHEDULE_FIELDS(
+                {
+                    "extra_dates": p.get("extra_dates", []),
+                    "outbound_buffer_min": p["outbound"]["buffer_min"],
+                    "return_buffer_min": p["return"]["buffer_min"],
+                }
+            )
+            for p in raw["profiles"]
+            if p["id"] in shared_ids
+        }
+    except (
+        OSError,
+        UnicodeError,
+        yaml.YAMLError,
+        TypeError,
+        KeyError,
+        AttributeError,
+        vol.Invalid,
+    ):
+        raise ServiceValidationError("The local profiles file has an invalid schedule.") from None
+    if not schedules:
+        raise ServiceValidationError("No local profile ID matches a Docker profile.")
+    return schedules
+
+
+async def _sync_schedule(data: TccData, pid: str, values: dict[str, Any]) -> None:
+    if not isinstance(data.host, RemoteRuntime):
+        raise ServiceValidationError(
+            "Schedule synchronization requires a connected Docker runtime."
+        )
+    refused = await _await_action(
+        invoke(
+            data.host,
+            Runtime.sync_profile,
+            profile_id=pid,
+            extra_dates=tuple(values["extra_dates"]),
+            outbound_buffer_min=values["outbound_buffer_min"],
+            return_buffer_min=values["return_buffer_min"],
+        )
+    )
     await _refresh_or_refuse(data, refused)
+
+
+async def _handle_sync_schedule(call: ServiceCall) -> None:
+    data, pid, _ = resolve_profile(call.hass, call.data["profile"])
+    await _sync_schedule(data, pid, dict(call.data))
 
 
 async def _handle_clear_commute_history(call: ServiceCall) -> None:
     data = loaded(call.hass)
-
-    async def clear(runtime: Runtime) -> bool:
-        return runtime.clear_commute_history()
-
-    if not await _call_runtime(data, clear):
+    if not await _await_action(invoke(data.host, Runtime.clear_commute_history)):
         raise HomeAssistantError("Local commute history could not be cleared. Try again.")
     await data.coordinator.async_request_refresh()
 
@@ -316,6 +443,9 @@ def async_setup_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(DOMAIN, "travelling", _handle_travelling, NOT_TRAVELLING_SCHEMA)
     hass.services.async_register(DOMAIN, "reload_profiles", _handle_reload_profiles, vol.Schema({}))
+    async_register_admin_service(
+        hass, DOMAIN, "sync_schedule", _handle_sync_schedule, SYNC_SCHEDULE_SCHEMA
+    )
     hass.services.async_register(
         DOMAIN, "answer_prompt", _handle_answer_prompt, ANSWER_PROMPT_SCHEMA
     )
