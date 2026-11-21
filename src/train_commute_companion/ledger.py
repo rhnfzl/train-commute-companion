@@ -354,23 +354,35 @@ class LiveLedger:
         )
 
     def notification_enabled(self, o: Obligation) -> bool:
+        facts = alert_facts(o.event)
+        settings = self._alerts(o)
+        # Older held alerts cannot distinguish an arrival warning from a routine delay.
+        protects_arrival = facts.past_latest_arrival is True or (
+            facts.past_latest_arrival is None
+            and facts.held
+            and o.event.kind is EventKind.DELAYED
+            and o.event.direction is Direction.OUTBOUND
+            and settings.latest_acceptable_arrival is not None
+        )
         if (
-            o.event.kind is EventKind.DELAYED
+            o.event.kind in (EventKind.DELAYED, EventKind.NEARLY_ON_TIME)
             and o.event.severity is Severity.SILENT
-            and not alert_facts(o.event).past_latest_arrival
-        ):
-            told = alert_facts(o.event).told
-            settings = self._alerts(o)
-            if told and (
-                max(int(t.said) for t in told) < settings.delay_min
-                or not any(
-                    next_stated_delay(
-                        t.previous_min, int(t.said), settings.delay_min, settings.delay_step_min
-                    ) != t.previous_min
-                    for t in told
+            and not protects_arrival
+            and facts.told
+            # Older recovery alerts have no previous delay to recheck.
+            and not (
+                o.event.kind is EventKind.NEARLY_ON_TIME
+                and all(t.previous_min is None for t in facts.told)
+            )
+            and not any(
+                next_stated_delay(
+                    t.previous_min, int(t.said), settings.delay_min, settings.delay_step_min
                 )
-            ):
-                return False
+                != t.previous_min
+                for t in facts.told
+            )
+        ):
+            return False
         state = None if o.occurrence is None else self._occurrence(o.occurrence)
         if (
             state is not None

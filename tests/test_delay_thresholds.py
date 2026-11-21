@@ -17,6 +17,7 @@ from train_commute_companion.lifecycle import delayed_event, keep_stated, next_s
 from train_commute_companion.model import (
     AlertSettings,
     Config,
+    Direction,
     EventKind,
     LegKind,
     LegState,
@@ -121,7 +122,8 @@ def test_cancellation_and_arrival_limit_bypass_thresholds(now):
     assert any(e.kind is EventKind.CANCELLED and e.severity is Severity.LOUD for e in events)
 
 
-def test_arrival_limit_remains_protected_when_uncertain_boarding_makes_it_silent():
+@pytest.mark.parametrize("legacy", [False, True])
+def test_arrival_limit_remains_protected_when_uncertain_boarding_makes_it_silent(legacy):
     c = context(10, step=10, limit=time(9, 24))
     g = leg(1)
     s = occ(journey([g]))
@@ -129,7 +131,12 @@ def test_arrival_limit_remains_protected_when_uncertain_boarding_makes_it_silent
     assert event.severity is Severity.LOUD
     transition = keep_stated(s, (held(event),), delay_min=10, delay_step_min=10)
     assert len(transition.events) == 1
-    event = loads(type(event), dumps(transition.events[0]))
+    raw = json.loads(dumps(transition.events[0]))
+    if legacy:
+        raw["facts"].pop("past_latest_arrival")
+        for told in raw["facts"]["told"]:
+            told.pop("previous_min")
+    event = decode(type(event), raw)
     assert event.kind is EventKind.DELAYED and event.severity is Severity.SILENT
     config = Config(1, (c.profile,))
     stored = PersistedState(config, {1: config}, {}, {}, {}, (), False)
@@ -143,6 +150,35 @@ def test_serialization_preserves_settings_and_loads_old_defaults():
     settings = replace(AlertSettings(), delay_min=10, delay_step_min=5)
     assert loads(AlertSettings, dumps(settings)) == settings
     assert decode(ToldDelay, {"slot": "delay", "said": "7"}).previous_min is None
+
+
+@pytest.mark.parametrize(
+    "legacy,deadline,direction,sends",
+    [
+        (True, True, Direction.OUTBOUND, True),
+        (True, False, Direction.OUTBOUND, False),
+        (False, True, Direction.OUTBOUND, False),
+        (True, True, Direction.RETURN, False),
+    ],
+)
+def test_legacy_arrival_protection_does_not_bypass_known_routine_delays(
+    legacy, deadline, direction, sends
+):
+    c = context(3, limit=time(9, 50) if deadline else None)
+    s = occ(journey([leg()]))
+    event = next(
+        e for e in poll(s, c, ans("AAA", conn(leg(7)))).events if e.kind is EventKind.DELAYED
+    )
+    event = replace(held(event), direction=direction)
+    raw = json.loads(dumps(event))
+    if legacy:
+        raw["facts"].pop("past_latest_arrival")
+    event = decode(type(event), raw)
+    profile = replace(c.profile, alerts=replace(c.profile.alerts, delay_min=10))
+    config = Config(1, (profile,))
+    stored = PersistedState(config, {1: config}, {}, {}, {}, (), False)
+    ledger = LiveLedger(lambda: stored, lambda: stored, PollMemory(), lambda: at("08:00"))
+    assert ledger.notification_enabled(replace(ob(EventKind.DELAYED), event=event)) is sends
     delay = ToldDelay("delay", "13", 10)
     assert loads(ToldDelay, dumps(delay)) == delay
 
@@ -240,7 +276,6 @@ async def test_held_delay_drops_after_a_profile_edit_and_restart(tmp_path):
     "initial,updated,minutes,previous",
     [
         (3, 10, 7, None),
-        (3, 10, 7, 4),
         (10, 10, 13, 10),
     ],
 )
@@ -268,4 +303,72 @@ def test_held_delay_rechecks_current_minimum_and_step(initial, updated, minutes,
     assert revalidate(obligation, ledger, at("08:00")) == "drop"
     assert ledger.notification_enabled(
         replace(obligation, event=replace(event, severity=Severity.LOUD))
+    )
+
+
+@pytest.mark.parametrize(
+    "minutes,kind", [(7, EventKind.NEARLY_ON_TIME), (1, EventKind.BACK_TO_NORMAL)]
+)
+def test_held_recovery_rechecks_step_but_keeps_on_time_recovery(minutes, kind):
+    c = context()
+    s = occ(journey([leg()]))
+    s = poll(s, c, ans("AAA", conn(leg(10)))).state
+    event = next(e for e in poll(s, c, ans("AAA", conn(leg(minutes)))).events if e.kind is kind)
+    profile = replace(c.profile, alerts=replace(c.profile.alerts, quiet_hours=(time(7), time(10))))
+    config = Config(1, (profile,))
+    stored = PersistedState(config, {1: config}, {}, {}, {}, (), False)
+    ledger = LiveLedger(lambda: stored, lambda: stored, PollMemory(), lambda: at("08:00"))
+    obligation = replace(ob(kind), event=event, occurrence=None)
+    assert revalidate(obligation, ledger, at("08:00")) == "hold"
+    profile = replace(profile, alerts=replace(profile.alerts, delay_step_min=10))
+    stored = replace(stored, config=Config(2, (profile,)))
+    assert revalidate(obligation, ledger, at("08:00")) == (
+        "hold" if kind is EventKind.BACK_TO_NORMAL else "drop"
+    )
+
+
+def test_held_repeat_below_first_alert_minimum_uses_the_repeat_step():
+    c = context()
+    s = occ(journey([leg()]))
+    for minutes in (10, 7, 4, 7):
+        transition = poll(s, c, ans("AAA", conn(leg(minutes))))
+        s = transition.state
+    event = next(e for e in transition.events if e.kind is EventKind.DELAYED)
+    profile = replace(c.profile, alerts=replace(c.profile.alerts, quiet_hours=(time(7), time(10))))
+    config = Config(1, (profile,))
+    stored = PersistedState(config, {1: config}, {}, {}, {}, (), False)
+    ledger = LiveLedger(lambda: stored, lambda: stored, PollMemory(), lambda: at("08:00"))
+    obligation = replace(ob(EventKind.DELAYED), event=event, occurrence=None)
+    assert revalidate(obligation, ledger, at("08:00")) == "hold"
+    profile = replace(profile, alerts=replace(profile.alerts, delay_step_min=5))
+    stored = replace(stored, config=Config(2, (profile,)))
+    assert revalidate(obligation, ledger, at("08:00")) == "drop"
+
+
+@pytest.mark.parametrize("history", ["current", "legacy", "partial"])
+def test_pending_recovery_without_previous_delay_survives_upgrade(history):
+    c = context(3)
+    s = occ(journey([leg()]))
+    s = poll(s, c, ans("AAA", conn(leg(6)))).state
+    event = next(
+        e for e in poll(s, c, ans("AAA", conn(leg(2)))).events if e.kind is EventKind.NEARLY_ON_TIME
+    )
+    raw = json.loads(dumps(event))
+    if history == "legacy":
+        raw["facts"].pop("past_latest_arrival")
+        for told in raw["facts"]["told"]:
+            told.pop("previous_min")
+    elif history == "partial":
+        raw["facts"]["told"][0]["previous_min"] = None
+    event = decode(type(event), raw)
+    profile = replace(c.profile, alerts=replace(c.profile.alerts, quiet_hours=(time(7), time(10))))
+    config = Config(1, (profile,))
+    stored = PersistedState(config, {1: config}, {}, {}, {}, (), False)
+    ledger = LiveLedger(lambda: stored, lambda: stored, PollMemory(), lambda: at("08:00"))
+    obligation = replace(ob(EventKind.NEARLY_ON_TIME), event=event, occurrence=None)
+    assert revalidate(obligation, ledger, at("08:00")) == "hold"
+    profile = replace(profile, alerts=replace(profile.alerts, delay_step_min=10))
+    stored = replace(stored, config=Config(2, (profile,)))
+    assert revalidate(obligation, ledger, at("08:00")) == (
+        "hold" if history == "legacy" else "drop"
     )

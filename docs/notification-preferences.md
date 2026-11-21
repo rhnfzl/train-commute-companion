@@ -22,6 +22,12 @@ These settings do not suppress cancellations, cut-short journeys, broken or at-r
 
 Delivery checks the current thresholds before retrying held delay alerts or auxiliary copies. Raising a threshold can drop a pending delay update. Accepted messages cannot be recalled. Existing stored profiles without either setting retain the three-minute defaults after restart.
 
+Repeat updates below the first-alert threshold still use the repeat step. Held recovery updates also use the current step, except recovery to 1 minute or less.
+
+Older held alerts do not record whether they protect an arrival deadline. When a deadline is configured, these alerts retain protection. This can also retain an older routine delay alert below the new threshold. Newly created alerts record the distinction.
+
+Older pending recovery alerts also lack the previous delay. They remain eligible because the repeat step cannot be checked. Current alerts record that delay and use the current step.
+
 ## Disable categories
 
 ```yaml

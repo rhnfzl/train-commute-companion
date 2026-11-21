@@ -302,8 +302,8 @@ class AlertFacts:
     choices: tuple[tuple[str, str], ...] = ()
     # silent by a rule, not by its kind (a guess at an other station): never escalated
     held: bool = False
-    # Keep arrival-limit protection when an uncertain boarding estimate makes the event silent.
-    past_latest_arrival: bool = False
+    # None marks stored alerts written before arrival-limit protection was recorded.
+    past_latest_arrival: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
