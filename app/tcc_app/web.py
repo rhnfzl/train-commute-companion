@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import traceback
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -29,6 +29,8 @@ READ_TIMEOUT_S = 10.0
 MCP_REQUEST_MAX = 4096
 MCP_REPLY_MAX = 1_048_576
 MCP_TIMEOUT_S = 5.0
+MCP_ACTION_TIMEOUT_S = 20.0
+MCP_ACTION_MAX = 32 * 1024
 TODAY_HEADERS = (
     "Cache-Control: no-store\r\n"
     "Referrer-Policy: no-referrer\r\n"
@@ -278,15 +280,16 @@ def mcp_socket_path(env: Mapping[str, str]) -> Path:
 
 
 async def start_readout(
-    path: Path, answer: Callable[[object], dict[str, Any]]
+    path: Path,
+    answer: Callable[[object], dict[str, Any]],
+    *,
+    actions: Callable[[dict[str, Any], str | None], Awaitable[dict[str, Any]]] | None = None,
 ) -> asyncio.Server | None:
-    """One JSON line in, one JSON line out, then closed. `answer` is all the handler holds, so
-    it can read the view but never act. None, after one warning, when the socket cannot be
-    bound: the app keeps polling and alerting without MCP."""
+    """Relay one JSON request. Existing calls without credentials use the read-only view."""
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            async with asyncio.timeout(MCP_TIMEOUT_S):
+            async with asyncio.timeout(MCP_TIMEOUT_S) as deadline:
                 line = await reader.readline()
                 if not line.endswith(b"\n"):
                     return  # gone client, or an oversized line ended by the limit
@@ -295,8 +298,15 @@ async def start_readout(
                 except ValueError:
                     request = None
                 try:
-                    # view and format in one step: no await between, so no runtime coroutine runs in between
-                    data = json.dumps(answer(request)).encode()
+                    if actions is not None and isinstance(request, dict) and "token" in request:
+                        token = request.pop("token")
+                        deadline.reschedule(
+                            asyncio.get_running_loop().time() + MCP_ACTION_TIMEOUT_S
+                        )
+                        response = await actions(request, token if isinstance(token, str) else None)
+                    else:
+                        response = answer(request)
+                    data = json.dumps(response).encode()
                 # any failure gets the fixed reply; the log has the class and the frames, never
                 # the text (it may carry view data)
                 except Exception as e:  # noqa: BLE001
@@ -317,7 +327,8 @@ async def start_readout(
 
     server = None
     try:
-        server = await asyncio.start_unix_server(handle, path, limit=MCP_REQUEST_MAX)
+        limit = MCP_ACTION_MAX if actions is not None else MCP_REQUEST_MAX
+        server = await asyncio.start_unix_server(handle, path, limit=limit)
         os.chmod(path, 0o600)
     except OSError as e:
         if server is not None:
@@ -329,7 +340,8 @@ async def start_readout(
 
 async def ask_readout(path: Path, request: Mapping[str, Any]) -> dict[str, Any]:
     """The client side: raises OSError, TimeoutError or ValueError on failure."""
-    async with asyncio.timeout(MCP_TIMEOUT_S):
+    timeout = MCP_ACTION_TIMEOUT_S + 1 if "token" in request else MCP_TIMEOUT_S
+    async with asyncio.timeout(timeout):
         reader, writer = await asyncio.open_unix_connection(path, limit=MCP_REPLY_MAX)
         try:
             writer.write(json.dumps(request).encode() + b"\n")

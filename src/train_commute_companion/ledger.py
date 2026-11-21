@@ -67,7 +67,15 @@ from train_commute_companion.notification_policy import (
 )
 from train_commute_companion.providers.base import ProviderAnswer
 from train_commute_companion.recovery_state import ORIGINAL_ROUTINE
-from train_commute_companion.revisions import find_profile, occurrence_ctx, profile_for, same_route
+from train_commute_companion.revisions import (
+    commute_day_for,
+    find_profile,
+    occurrence_ctx,
+    profile_for,
+    routing_profile,
+    same_route,
+    travel_replaces,
+)
 from train_commute_companion.state import (
     BaselineHistory,
     LegProgress,
@@ -343,7 +351,7 @@ class LiveLedger:
         return self._state.occurrences.get(okey(key))
 
     def _alerts(self, o: Obligation) -> AlertSettings:
-        p = find_profile(self._state.config, o.event.profile_id)
+        p = routing_profile(self._state, o.event.profile_id, o.route_revision)
         return AlertSettings() if p is None else p.alerts
 
     def selected_channels(self, o: Obligation) -> frozenset[NotificationChannel]:
@@ -400,7 +408,7 @@ class LiveLedger:
             and o.event.kind in ORIGINAL_ROUTINE
         ):
             return False
-        p = find_profile(self._state.config, o.event.profile_id)
+        p = routing_profile(self._state, o.event.profile_id, o.route_revision)
         return p is None or enabled(p.alerts, o.event.kind, look_ahead=o.look_ahead is not None)
 
     def destination_allowed(self, o: Obligation, destination: str) -> bool:
@@ -420,7 +428,7 @@ class LiveLedger:
         if o.event.kind is EventKind.COMPENSATION_REMINDER:
             facts = alert_facts(o.event)
             record = self._state.journey_records.get(facts.arrival_record)
-            profile = find_profile(self._state.config, o.event.profile_id)
+            profile = routing_profile(self._state, o.event.profile_id, o.route_revision)
             return (
                 profile is not None
                 and profile.alerts.compensation_reminder
@@ -457,10 +465,12 @@ class LiveLedger:
         return True
 
     def _look_ahead_route_holds(self, o: Obligation, key: tuple[str, Direction, date]) -> bool:
-        pid, d, _ = key
+        pid, d, day = key
         then = find_profile(self._state.config_snapshots.get(o.route_revision), pid)
         now = find_profile(self._state.config, pid)
         if now is None or (then is not None and not same_route(then, now)):
+            return False
+        if travel_replaces(self._state, now, d, commute_day_for(now, d, day)):
             return False
         if then is None and self._state.config and o.route_revision != self._state.config.revision:
             return False
@@ -534,7 +544,7 @@ class LiveLedger:
             facts = alert_facts(e)
             notice = s.disruptions.get(facts.disruption_id)
             context = self._ctx(s)
-            current = find_profile(self._state.config, s.key.profile_id)
+            current = routing_profile(self._state, s.key.profile_id, s.route_revision)
             return (
                 notice is not None
                 and notice.relevant
@@ -635,7 +645,7 @@ class LiveLedger:
         return a is not None and b is not None and same_route(a, b)
 
     def in_quiet_hours(self, profile_id: str, now: datetime) -> bool:
-        p = find_profile(self._state.config, profile_id)
+        p = routing_profile(self._state, profile_id)
         return p is not None and _in_quiet(p.alerts.quiet_hours, now)
 
     def current(self, o: Obligation) -> AlertEvent:

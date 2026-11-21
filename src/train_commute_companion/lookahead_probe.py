@@ -1,7 +1,7 @@
 """Look-ahead probing: the stored keys, signatures, what to ask NS and how one day's answers read
 (7.10, 7.12 rules 18, 19, 21). Pure."""
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
@@ -353,6 +353,7 @@ def probe_dates(
     *,
     direction: Direction | None = None,
     histories: Mapping[Direction, BaselineHistory] | None = None,
+    replaced: Callable[[Direction, date], bool] | None = None,
 ) -> list[date]:
     """The next 3 commute days whose every query date is within 10 days of today. `bases`
     gives leg day offsets (a leg after midnight is queried with its own date)."""
@@ -373,7 +374,10 @@ def probe_dates(
         if not is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays):
             continue
         directions = Direction if direction is None else (direction,)
-        if all(p.paused_on(service_date(p, d, day)) for d in directions):
+        if all(
+            p.paused_on(service_date(p, d, day)) or (replaced is not None and replaced(d, day))
+            for d in directions
+        ):
             continue
         latest = max(
             service_date(p, d, day)

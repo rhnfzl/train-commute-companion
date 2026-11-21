@@ -19,7 +19,7 @@ from train_commute_companion.lookahead_probe import (
 )
 from train_commute_companion.model import Direction, Obligation, Profile, direction_key, present
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer, Query
-from train_commute_companion.revisions import baseline_on
+from train_commute_companion.revisions import baseline_on, travel_replaces
 from train_commute_companion.state import (
     BaselineHistory,
     LookAheadFact,
@@ -40,6 +40,7 @@ class ProbedRun:
     revision: int
     baseline: int | None
     results: tuple[ProbeResult, ...]
+    travel_revision: int = 0
 
 
 async def probe_direction(
@@ -56,7 +57,10 @@ async def probe_direction(
     hist = st.baselines.get(direction_key(p.id, d), BaselineHistory())
     histories = {x: st.baselines.get(direction_key(p.id, x), BaselineHistory()) for x in Direction}
     results: list[ProbeResult] = []
-    for day in probe_dates(p, today, direction=d, histories=histories):
+    for day in probe_dates(
+        p, today, direction=d, histories=histories,
+        replaced=lambda direction, day: travel_replaces(st, p, direction, day),
+    ):
         if p.journey_on(d, day).mode == "window":
             continue  # no usual train to probe, seed or adopt on a window day
         base = baseline_on(hist, p, d, service_date(p, d, day))
@@ -64,7 +68,7 @@ async def probe_direction(
         if isinstance(got, str):
             return None
         results += evaluate(p, d, day, got, works, base)
-    return ProbedRun(start, config.revision, hist.latest, tuple(results))
+    return ProbedRun(start, config.revision, hist.latest, tuple(results), st.travel_revision)
 
 
 def apply_run(
@@ -73,7 +77,7 @@ def apply_run(
     """`st` (the state now, at write time) with the run, its owed copies in `queue` following its
     messages; None when it is discarded (rule 21), and then those copies are left as they were."""
     cfg = st.config
-    if cfg is None:
+    if cfg is None or st.travel_revision != run.travel_revision:
         return None
     dk = direction_key(p.id, d)
     # write time: the ledger as stored now with this run's start stamps (rule 21)
