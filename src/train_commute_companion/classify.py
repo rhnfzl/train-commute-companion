@@ -21,8 +21,6 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.providers.base import Pool, ProviderAnswer
 
-DELAYED_AT_MIN = 3
-
 log = logging.getLogger(__name__)
 
 
@@ -48,7 +46,7 @@ def expected_departure(conn: Connection) -> datetime:
     return (t or conn.legs[0].train.planned_departure).astimezone(UTC)
 
 
-def classify_leg(leg: Leg, alight_station: str) -> ClassifiedLeg:
+def classify_leg(leg: Leg, alight_station: str, delay_min: int = 3) -> ClassifiedLeg:
     """Kind comes from the stops between boarding and `alight_station`, never from one flag.
     A train that does not call at `alight_station` (absent, passed or cancelled there) is cut
     short at its last served stop, or cancelled when it serves none; never ok."""
@@ -71,7 +69,7 @@ def classify_leg(leg: Leg, alight_station: str) -> ClassifiedLeg:
         dep, arr = 0, None
     elif kind is LegKind.CUT_SHORT:
         arr = None
-    elif (dep or 0) >= DELAYED_AT_MIN or (arr or 0) >= DELAYED_AT_MIN:
+    elif (dep or 0) >= delay_min or (arr or 0) >= delay_min:
         kind = LegKind.DELAYED
     return ClassifiedLeg(leg, kind, Observation.SEEN, dep, arr, last_served)
 
@@ -184,12 +182,12 @@ class _Run(NamedTuple):
 
 
 def current_run(
-    answers: Sequence[ProviderAnswer], train: TrainId, board: str, alight: str
+    answers: Sequence[ProviderAnswer], train: TrainId, board: str, alight: str, delay_min: int = 3
 ) -> tuple[datetime, ClassifiedLeg] | None:
     """The current copy of `train` boarding at `board` over one poll's answers, and the
     fetch time of the answer that showed its arrival (rule 6 times acceptance by it)."""
     runs = [
-        _Run(a.fetched_at, a.fetched_at.astimezone(UTC), classify_leg(g, alight))
+        _Run(a.fetched_at, a.fetched_at.astimezone(UTC), classify_leg(g, alight, delay_min))
         for a in _newest_first(answers)
         for c in a.connections
         for g in c.legs
@@ -223,7 +221,7 @@ def current_run(
 
     def merged(win: ClassifiedLeg, copies: Iterable[_Run]) -> ClassifiedLeg:
         g = merge_arrivals(win.leg, (r.cl.leg for r in copies))
-        return classify_leg(replace(g, stops=(board_stop, *g.stops[1:])), alight)
+        return classify_leg(replace(g, stops=(board_stop, *g.stops[1:])), alight, delay_min)
 
     bad = [r for r in at_top if stopped(r.cl)]
     if bad:

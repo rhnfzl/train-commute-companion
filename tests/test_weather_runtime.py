@@ -73,6 +73,21 @@ def test_weather_switch_is_default_on_and_accepts_only_booleans(value):
         assert not errors and profiles[0].alerts.weather is (value is not False)
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_weather_and_delay_thresholds_keep_their_own_values(enabled):
+    text = PROFILE.replace(
+        '    name: "NAME"',
+        '    name: "NAME"\n    alerts: {weather: '
+        + str(enabled).lower()
+        + ", delay_min: 10, delay_step_min: 5}",
+    )
+    profiles, errors = parse_profiles(text, None)
+    assert not errors
+    assert profiles[0].alerts.weather is enabled
+    assert profiles[0].alerts.delay_min == 10
+    assert profiles[0].alerts.delay_step_min == 5
+
+
 async def test_weather_disabled_does_no_profile_network_work_and_shows_no_weather(tmp_path):
     async def unexpected(request):
         pytest.fail("disabled weather made a network request")

@@ -124,6 +124,8 @@
           "edit_weekday_times": "Andere vertrektijden per weekdag instellen",
           "compensation_reminder": "Herinner me aan geld terug van NS na een bevestigde vertraging",
           "quiet_repeat_misses": "Stille melding bij gemiste treinen na de eerste van de dag",
+          "delay_min": "Eerste vertragingsmelding vanaf dit aantal minuten",
+          "delay_step_min": "Verandering in minuten voor een volgende vertragingsmelding",
           "edit_day_overrides": "Voor sommige dagen een andere reiswijze, tijdvak, treinkeuze of verblijfsduur instellen",
           "outbound_other_stations": "Andere instapstations voor de heenreis",
           "return_other_stations": "Andere instapstations voor de terugreis",
@@ -133,6 +135,8 @@
           "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen"
         },
         "data_description": {
+          "delay_min": "Standaard 3. Hele minuten van 1 tot 1440. Vóór het actieve moment geldt minimaal 5. Meldingen over uitval, aansluitingen en je uiterste aankomsttijd blijven aan.",
+          "delay_step_min": "Standaard 3. Hele minuten van 1 tot 1440, gemeten vanaf de laatst gemelde vertraging, bij meer of minder vertraging. Herstel tot 1 minuut of minder telt altijd mee.",
           "compensation_reminder": "Optionele vergelijking met het opgeslagen reisplan nadat je zelf je aankomst bevestigt. Gebruikt de meldingsinstellingen voor routineberichten. Dit bepaalt niet of je recht hebt op geld terug.",
           "quiet_repeat_misses": "Als je thuis of op het werk blijft terwijl meerdere treinen vertrekken, maakt alleen de eerste melding over een gemiste trein geluid. De volgende meldingen komen stil binnen.",
           "outbound_other_stations": "TCC volgt automatisch een trein vanaf deze stations als je telefoon daar is en er nog geen trein wordt gevolgd.",
@@ -341,6 +345,8 @@
           "edit_weekday_times": "Andere vertrektijden per weekdag instellen",
           "compensation_reminder": "Herinner me aan geld terug van NS na een bevestigde vertraging",
           "quiet_repeat_misses": "Stille melding bij gemiste treinen na de eerste van de dag",
+          "delay_min": "Eerste vertragingsmelding vanaf dit aantal minuten",
+          "delay_step_min": "Verandering in minuten voor een volgende vertragingsmelding",
           "edit_day_overrides": "Voor sommige dagen een andere reiswijze, tijdvak, treinkeuze of verblijfsduur instellen",
           "outbound_other_stations": "Andere instapstations voor de heenreis",
           "return_other_stations": "Andere instapstations voor de terugreis",
@@ -350,6 +356,8 @@
           "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen"
         },
         "data_description": {
+          "delay_min": "Standaard 3. Hele minuten van 1 tot 1440. Vóór het actieve moment geldt minimaal 5. Meldingen over uitval, aansluitingen en je uiterste aankomsttijd blijven aan.",
+          "delay_step_min": "Standaard 3. Hele minuten van 1 tot 1440, gemeten vanaf de laatst gemelde vertraging, bij meer of minder vertraging. Herstel tot 1 minuut of minder telt altijd mee.",
           "compensation_reminder": "Optionele vergelijking met het opgeslagen reisplan nadat je zelf je aankomst bevestigt. Gebruikt de meldingsinstellingen voor routineberichten. Dit bepaalt niet of je recht hebt op geld terug.",
           "quiet_repeat_misses": "Als je thuis of op het werk blijft terwijl meerdere treinen vertrekken, maakt alleen de eerste melding over een gemiste trein geluid. De volgende meldingen komen stil binnen.",
           "outbound_other_stations": "TCC volgt automatisch een trein vanaf deze stations als je telefoon daar is en er nog geen trein wordt gevolgd.",

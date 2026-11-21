@@ -498,7 +498,7 @@ def occurrence_view(
     def observed(x: LegProgress) -> tuple[ClassifiedLeg | None, Observation]:
         if pool is None:
             return None, Observation.MISSING
-        cl, ob, _ = observe(pool, x)
+        cl, ob, _ = observe(pool, x, ctx.profile.alerts.delay_min)
         return cl, ob
 
     def legs(xs: Sequence[LegProgress]) -> tuple[LegView, ...]:

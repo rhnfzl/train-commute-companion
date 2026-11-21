@@ -112,6 +112,14 @@ def edit_profile(
             **copy.deepcopy(profile.get("alerts", {})),
             "disabled_categories": values["disabled_categories"],
         }
+    for key in ("delay_min", "delay_step_min"):
+        if key in values:
+            value = values[key]
+            if isinstance(value, float) and value.is_integer():
+                value = int(value)
+            alerts = copy.deepcopy(profile.get("alerts", {}))
+            if value != 3 or key in alerts:
+                profile["alerts"] = {**alerts, key: value}
     for key in ("compensation_reminder", "quiet_repeat_misses", "weather"):
         if key not in values:
             continue
