@@ -296,9 +296,11 @@ async def _handle_clear_commute_history(call: ServiceCall) -> None:
 
 def async_setup_services(hass: HomeAssistant) -> None:
     from .arrival_controls import async_setup_arrival_services
+    from .dashboard import async_setup_dashboard_service
     from .recovery_controls import async_setup_recovery_services
 
     async_setup_arrival_services(hass)
+    async_setup_dashboard_service(hass)
     async_setup_recovery_services(hass)
     hass.services.async_register(DOMAIN, "choose", _handle_choose, CHOOSE_SCHEMA)
     hass.services.async_register(

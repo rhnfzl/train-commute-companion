@@ -857,6 +857,20 @@
     }
   },
   "services": {
+    "dashboard_card": {
+      "name": "Woon-werkkaart maken",
+      "description": "Maak een dashboardkaart voor één profiel en reisrichting.",
+      "fields": {
+        "profile": {
+          "name": "Profiel",
+          "description": "De naam of ID van je reisprofiel."
+        },
+        "direction": {
+          "name": "Reisrichting",
+          "description": "Kies de heenreis of terugreis."
+        }
+      }
+    },
     "clear_commute_history": {
       "name": "Woon-werkstatistieken wissen",
       "description": "Verwijder alle lokale woon-werkstatistieken en berichten die nog niet verstuurd zijn.",

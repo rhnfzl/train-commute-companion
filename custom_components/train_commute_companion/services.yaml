@@ -136,3 +136,12 @@ forget_station:
           options: [outbound, return]
           translation_key: direction
     station: {required: true, selector: {text: {}}}
+dashboard_card:
+  fields:
+    profile: {required: true, selector: {text: {}}}
+    direction:
+      default: outbound
+      selector:
+        select:
+          options: [outbound, return]
+          translation_key: direction
