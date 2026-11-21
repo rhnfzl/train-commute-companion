@@ -12,6 +12,7 @@ from itertools import pairwise
 from typing import Literal
 
 from train_commute_companion.calendar import TZ, hhmm
+from train_commute_companion.catalogue import MessageLanguage, message
 from train_commute_companion.location import STALE_LOCATION
 from train_commute_companion.model import Connection, Provenance, Stop, TimeObs
 from train_commute_companion.serde import encode
@@ -318,25 +319,35 @@ def payload(itinerary: RecoveryItinerary) -> dict[str, object]:
     }
 
 
-def render(itinerary: RecoveryItinerary) -> str:
+def render(itinerary: RecoveryItinerary, language: MessageLanguage = "en") -> str:
     """Plain proposed directions. A timetable alone never confirms boarding or arrival."""
-    header = "Proposed recovery itinerary (not followed)"
+    header = message("recovery.proposal", language)
     if not itinerary.reported_times:
-        header += " (unconfirmed: planned times)"
-    lines = [header + ".", "Accessibility and assistance availability are not verified."]
+        header += message("recovery.planned_only", language)
+    lines = [header + ".", message("recovery.accessibility", language)]
     changes = {change.outgoing_step: change for change in itinerary.transfers}
     for index, step in enumerate(itinerary.steps):
         if index in changes:
             change = changes[index]
             lines.append(
-                f"Change vehicle: {int(change.walking.total_seconds() // 60)} min walking, "
-                f"{int(change.waiting.total_seconds() // 60)} min waiting."
+                message(
+                    "recovery.change",
+                    language,
+                    walk=int(change.walking.total_seconds() // 60),
+                    wait=int(change.waiting.total_seconds() // 60),
+                )
             )
         service = " ".join(
             part for part in (step.operator, step.mode.title(), step.service_reference) if part
         )
         lines.append(
-            f"{hhmm(step.departure)}-{hhmm(step.arrival)} {service}: "
-            f"{step.origin.name} to {step.destination.name}."
+            message(
+                "recovery.step",
+                language,
+                times=f"{hhmm(step.departure)}-{hhmm(step.arrival)}",
+                service=service,
+                origin=step.origin.name,
+                destination=step.destination.name,
+            )
         )
     return "\n".join(lines)

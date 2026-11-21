@@ -4,7 +4,7 @@ from datetime import date, time, timedelta
 import pytest
 from app_rig import DAY, directions, leg_view, occ, view
 from builders import make_connection, make_leg
-from runtime_rig import at
+from runtime_rig import PROFILE, at
 from tcc_app.commands import (
     NO_WORKS,
     REFUSAL_HIDDEN,
@@ -28,6 +28,7 @@ from train_commute_companion.model import (
     Provenance,
     TrainId,
 )
+from train_commute_companion.profile import parse_profiles
 from train_commute_companion.view import (
     DirectionInfo,
     Moved,
@@ -56,6 +57,30 @@ def test_shared_status_shows_the_arrival_target_and_late_current_train():
     assert "Arrival target 09:00. Reach the destination station by 08:50." in text
     assert "The current train does not meet the arrival target in NS data." in text
     assert answer(v, True, {"tool": "get_status", "profile": "p1"})["text"] == text
+
+
+def test_shared_status_renders_a_dutch_profile():
+    profiles, errors = parse_profiles(
+        PROFILE.replace('name: "NAME"', 'name: "office_a"\n    alerts: {language: nl}'), None
+    )
+    assert not errors
+    v = view(
+        occ(
+            legs=(),
+            transfers=(),
+            arrive_by=at("09:00"),
+            station_arrival_deadline=at("08:50"),
+            arrival_target_status="late",
+        ),
+        profiles=(profiles[0],),
+    )
+    assert render_status(v, True).splitlines() == [
+        "Office A heenreis di 27 okt: volgt trein",
+        "  Gewenste aankomst 09:00. Bereik het eindstation uiterlijk om 08:50.",
+        "  Volgens NS haalt de huidige trein de gewenste aankomsttijd niet.",
+        "  NS-gegevens: actueel",
+        "Gegevens: NS",
+    ]
 
 
 @pytest.mark.parametrize("args, want", [

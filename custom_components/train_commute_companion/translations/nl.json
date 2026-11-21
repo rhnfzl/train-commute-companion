@@ -162,6 +162,7 @@
           "custom_timetable_horizon": "Aangepaste periode voor dienstregelingcontrole",
           "timetable_horizon_unit": "Eenheid voor controleperiode",
           "timetable_horizon_count": "Aantal dagen of reisdagen",
+          "language": "Taal van berichten",
           "leave_by": "Vertrek uiterlijk tonen",
           "checked_alternatives": "Voorgestelde treinen controleren",
           "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen",
@@ -208,6 +209,7 @@
           "custom_timetable_horizon": "Standaard aan. Zet uit om maximaal drie reisdagen binnen tien kalenderdagen te controleren.",
           "timetable_horizon_unit": "Tel kalenderdagen vanaf morgen of tel alleen komende reisdagen met een vaste reis.",
           "timetable_horizon_count": "Voer een geheel getal van 1 tot en met 14 in. De standaardwaarde is zeven.",
+          "language": "Kies Nederlands of Engels voor berichten over deze reis.",
           "leave_by": "Toon wanneer je uiterlijk moet vertrekken in de check-in, het vertrekadvies en de statussensor. Gebruikt je reistijd naar het perron. Standaard aan.",
           "checked_alternatives": "Vraag NS opnieuw om een voorgestelde trein te controleren voordat je een melding krijgt. Standaard aan.",
           "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer.",
@@ -466,6 +468,7 @@
             "custom_timetable_horizon": "Aangepaste periode voor dienstregelingcontrole",
             "timetable_horizon_unit": "Eenheid voor controleperiode",
             "timetable_horizon_count": "Aantal dagen of reisdagen",
+            "language": "Taal van berichten",
             "leave_by": "Vertrek uiterlijk tonen",
             "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen",
             "weather_allowance": "Extra reistijd bij weersverwachting voorstellen",
@@ -508,6 +511,7 @@
             "custom_timetable_horizon": "Standaard aan. Zet uit om maximaal drie reisdagen binnen tien kalenderdagen te controleren.",
             "timetable_horizon_unit": "Tel kalenderdagen vanaf morgen of tel alleen komende reisdagen met een vaste reis.",
             "timetable_horizon_count": "Voer een geheel getal van 1 tot en met 14 in. De standaardwaarde is zeven.",
+            "language": "Kies Nederlands of Engels voor berichten over deze reis.",
             "leave_by": "Toon wanneer je uiterlijk moet vertrekken in de check-in, het vertrekadvies en de statussensor. Gebruikt je reistijd naar het perron. Standaard aan.",
             "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer.",
             "weather_allowance": "Stel extra minuten voor bij regen, mist, sneeuw of mogelijke gladheid in de verwachting bij het vertrekstation. Alleen advies, wijzigt geen treinen of timers. Vereist weer en vertrek uiterlijk. Standaard aan.",
@@ -770,6 +774,7 @@
           "custom_timetable_horizon": "Aangepaste periode voor dienstregelingcontrole",
           "timetable_horizon_unit": "Eenheid voor controleperiode",
           "timetable_horizon_count": "Aantal dagen of reisdagen",
+          "language": "Taal van berichten",
           "leave_by": "Vertrek uiterlijk tonen",
           "checked_alternatives": "Voorgestelde treinen controleren",
           "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen",
@@ -816,6 +821,7 @@
           "custom_timetable_horizon": "Standaard aan. Zet uit om maximaal drie reisdagen binnen tien kalenderdagen te controleren.",
           "timetable_horizon_unit": "Tel kalenderdagen vanaf morgen of tel alleen komende reisdagen met een vaste reis.",
           "timetable_horizon_count": "Voer een geheel getal van 1 tot en met 14 in. De standaardwaarde is zeven.",
+          "language": "Kies Nederlands of Engels voor berichten over deze reis.",
           "leave_by": "Toon wanneer je uiterlijk moet vertrekken in de check-in, het vertrekadvies en de statussensor. Gebruikt je reistijd naar het perron. Standaard aan.",
           "checked_alternatives": "Vraag NS opnieuw om een voorgestelde trein te controleren voordat je een melding krijgt. Standaard aan.",
           "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer.",
@@ -1043,6 +1049,12 @@
         "default": "Zoals elke dag",
         "fixed": "Vast: mijn gebruikelijke trein volgen",
         "window": "Tijdvak: een trein tussen twee tijden volgen"
+      }
+    },
+    "message_language": {
+      "options": {
+        "en": "Engels",
+        "nl": "Nederlands"
       }
     },
     "journey_pick": {

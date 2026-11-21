@@ -167,6 +167,9 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
     for obligation in obligations:
         obligation["brief_directions"] = []
         obligation["brief_rows"] = []
+        if (facts := obligation["event"].get("facts")) is not None:
+            facts["language"] = "en"
+            facts["leave_note"] = ""
     for cfg in (raw["state"]["config"], *raw["state"]["config_snapshots"].values()):
         for profile in cfg["profiles"]:
             profile["travel_plan"] = False
@@ -216,6 +219,7 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
             profile["alerts"]["checked_alternatives"] = True
             profile["alerts"]["partner_eta"] = False
             profile["alerts"]["partner_phone"] = None
+            profile["alerts"]["language"] = "en"
             if profile["location"] is not None:  # Q12 defaults
                 profile["location"] |= {"wifi": {}, "activity_entity": None}
                 profile["location"] |= {  # 0.3.0 other boarding station defaults

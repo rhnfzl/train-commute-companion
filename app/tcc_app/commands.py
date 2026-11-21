@@ -9,6 +9,12 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from train_commute_companion.calendar import TZ, hhmm
+from train_commute_companion.catalogue import (
+    MessageLanguage,
+    common_language,
+    message,
+    message_date,
+)
 from train_commute_companion.health import BoardHealth
 from train_commute_companion.messages import crowd_text
 from train_commute_companion.model import (
@@ -58,7 +64,15 @@ def _key(s: str) -> str:
 
 
 def _day(d: date) -> str:
-    return f"{d:%a} {d.day} {d:%b}"
+    return message_date(d, "en")
+
+
+def shared_language(view: RuntimeView) -> MessageLanguage:
+    return common_language(p.alerts.language for p in view.profiles)
+
+
+def profile_language(view: RuntimeView, profile_id: str) -> MessageLanguage:
+    return next((p.alerts.language for p in view.profiles if p.id == profile_id), "en")
 
 
 def _match_profile_token(
@@ -71,7 +85,11 @@ def _match_profile_token(
 
 
 def _named_profile(
-    profiles: Collection[tuple[str, str]], args: Sequence[str], named: str, names: str
+    profiles: Collection[tuple[str, str]],
+    args: Sequence[str],
+    named: str,
+    names: str,
+    language: MessageLanguage,
 ) -> tuple[tuple[str, str], Sequence[str]]:
     """The profile `p=...` names and the arguments without the words of its name."""
     at = args.index(named)
@@ -80,10 +98,10 @@ def _named_profile(
         profile = _match_profile_token(profiles, " ".join([named[2:], *args[at + 1 : end]]))
         if profile is not None:
             return profile, [a for j, a in enumerate(args) if not at < j < end]
-    raise ValueError(f"No profile {named[2:]}. One of: {names}.")
+    raise ValueError(message("command.profile_missing", language, name=named[2:], names=names))
 
 
-def _time_or_date(token: str) -> time | date | None:
+def _time_or_date(token: str, language: MessageLanguage) -> time | date | None:
     """None when the token has neither shape; shaped but impossible (25:99) is a refusal."""
     try:
         if _TIME.fullmatch(token):
@@ -91,24 +109,26 @@ def _time_or_date(token: str) -> time | date | None:
         if _DATE.fullmatch(token):
             return date.fromisoformat(token)
     except ValueError as e:
-        raise ValueError(f"I did not understand {token}.") from e
+        raise ValueError(message("command.unknown_input", language, input=token)) from e
     return None
 
 
 def parse_target(view: RuntimeView, args: Sequence[str]) -> Target:
     """The command's target; a ValueError whose message is the reply when it names none."""
     profiles = dict.fromkeys((d.profile_id, d.profile_name) for d in view.directions)
+    language = shared_language(view)
     names = ", ".join(n for _, n in profiles)
     profile: tuple[str, str] | None = None
     named = next((a for a in args if a.startswith("p=")), None)
     if named is not None:
-        profile, args = _named_profile(profiles, args, named, names)
+        profile, args = _named_profile(profiles, args, named, names, language)
+        language = profile_language(view, profile[0])
     direction = service_date = departure = train = None
     whole_day = False
     for i, token in enumerate(args):
         if token == named:
             continue
-        when = _time_or_date(token)
+        when = _time_or_date(token, language)
         if isinstance(when, time):
             departure = when
         elif isinstance(when, date):
@@ -119,48 +139,57 @@ def parse_target(view: RuntimeView, args: Sequence[str]) -> Target:
             whole_day = True
         elif (p := _match_profile_token(profiles, token)) is not None and profile is None:
             profile = p
+            language = profile_language(view, p[0])
         elif token.isdigit():
             train = token
         elif i == 0 and named is None:  # a lone unknown first word is taken as a profile
-            raise ValueError(f"No profile {token}. One of: {names}.")
+            raise ValueError(message("command.profile_missing", language, name=token, names=names))
         else:
-            raise ValueError(f"I did not understand {token}.")
+            raise ValueError(message("command.unknown_input", language, input=token))
     if profile is None:
         if len(profiles) != 1:
-            raise ValueError(f"Which profile? One of: {names}.")
+            raise ValueError(message("command.profile_which", language, names=names))
         profile = next(iter(profiles))
     return Target(profile[0], profile[1], direction, service_date, departure, train, whole_day)
 
 
-def _leg_line(x: LegView, prefix: str = "  ", *, for_pin: bool = False) -> str:
-    state = "on time per NS" if x.state is LegKind.OK else x.state  # never read as proven (rule 20)
-    line = f"{prefix}{hhmm(x.departure or x.planned_departure)} {x.board} to {x.alight}: {state}"
+def _leg_line(
+    x: LegView, language: MessageLanguage, prefix: str = "  ", *, for_pin: bool = False
+) -> str:
+    line = prefix + message(
+        "leg.line",
+        language,
+        time=hhmm(x.departure or x.planned_departure),
+        board=x.board,
+        alight=x.alight,
+        state=message(f"leg.{x.state.value}", language),
+    )
     if x.departure_delay_min:
         line += f", +{x.departure_delay_min} min"
     if x.departure_platform:
-        line += f", platform {x.departure_platform}"
+        line += message("leg.platform", language, track=x.departure_platform)
     if for_pin:
-        line += f", train {x.train_number}"
+        line += message("leg.number", language, number=x.train_number)
         if x.arrival is not None:
-            line += f", reported arrival {hhmm(x.arrival)}"
+            line += message("leg.reported_arrival", language, time=hhmm(x.arrival))
         elif x.planned_arrival is not None:
-            line += f", planned arrival {hhmm(x.planned_arrival)}"
+            line += message("leg.planned_arrival", language, time=hhmm(x.planned_arrival))
         if x.arrival_delay_min:
             line += f" (+{x.arrival_delay_min} min)"
         if x.arrival_platform:
-            line += f", arrival platform {x.arrival_platform}"
+            line += message("leg.arrival_platform", language, track=x.arrival_platform)
     if x.crowd_forecast is not None:
-        line += f", crowd forecast: {x.crowd_forecast} per NS"
+        line += message("leg.crowd", language, level=x.crowd_forecast)
     if x.exit_side is not None:
-        line += f", exit side: {x.exit_side} per NS"
+        line += message("leg.exit_side", language, side=x.exit_side)
     for label, notes in (("boarding", x.boarding_notes), ("alighting", x.alighting_notes)):
         if notes:
-            line += f", {label} notes per NS: " + "; ".join(notes)
+            line += message(f"leg.{label}_notes", language, notes="; ".join(notes))
     if x.state in (LegKind.OK, LegKind.DELAYED):
         if x.departure is None:
-            line += ", no reported departure time"
+            line += message("leg.no_departure", language)
         if x.arrival is None:
-            line += ", no reported arrival time"
+            line += message("leg.no_arrival", language)
     return line
 
 
@@ -170,56 +199,77 @@ def _next_time(c: Connection) -> datetime:
     return reported or b.planned_departure or c.legs[0].train.planned_departure
 
 
-def _occurrence(o: OccurrenceView, *, for_pin: bool = False) -> list[str]:
+def _occurrence(
+    o: OccurrenceView, *, for_pin: bool = False, language: MessageLanguage = "en"
+) -> list[str]:
     k = o.key
     recovering = o.selected_recovery is not None and o.selected_recovery.status == "active"
-    state = "recovery active" if recovering else o.direction_state.value
-    head = f"{display_name(o.profile_name)} {k.direction.value} {_day(k.service_date)}: {state}"
+    state = message(
+        "journey.recovering" if recovering else f"journey.{o.direction_state.value}", language
+    )
+    direction = message(f"direction.{k.direction.value}", language)
+    head = f"{display_name(o.profile_name)} {direction} {message_date(k.service_date, language)}: {state}"
     if o.not_travelling:
-        head += " (not travelling)"
+        head += message("journey.not_travelling", language)
     if o.route_changed:
-        head += " (route changed)"
+        head += message("journey.route_changed", language)
     out = [head]
     if o.arrive_by is not None and o.station_arrival_deadline is not None:
-        out.append(
-            f"  Arrival target {hhmm(o.arrive_by)}. Reach the destination station by "
-            f"{hhmm(o.station_arrival_deadline)}."
+        target = message(
+            "arrival.target",
+            language,
+            target=hhmm(o.arrive_by),
+            deadline=hhmm(o.station_arrival_deadline),
         )
-        arrival_message = {
-            "late": "The current train does not meet the arrival target in NS data.",
-            "unknown": "The arrival target cannot be checked from current train data.",
-            "no_train": "No train you can catch was found for this arrival target.",
-        }.get(o.arrival_target_status or "")
-        if arrival_message:
-            out.append(f"  {arrival_message}")
-    if o.leave_by_text is not None:
-        out.append(f"  {o.leave_by_text}.")
+        out.append(f"  {target}")
+        if o.arrival_target_status in ("late", "unknown", "no_train"):
+            out.append("  " + message(f"arrival.{o.arrival_target_status}", language))
+    if (leave := o.format_leave_by(language)) is not None:
+        out.append(f"  {leave}.")
     if recovering:
-        out.append(f"  Original train monitoring state: {o.direction_state.value}.")
-        out.append("  Original train legs (separate from selected recovery):")
-    out.extend(_leg_line(x, for_pin=for_pin) for x in o.legs)
+        state = message(f"journey.{o.direction_state.value}", language)
+        out.append(message("recovery.original_state", language, state=state))
+        out.append(message("recovery.original_legs", language))
+    out.extend(_leg_line(x, language, for_pin=for_pin) for x in o.legs)
     for t in o.transfers:
-        label = "original train change" if recovering else "change"
-        line = f"  {label} at {t.station}: {t.state.value}"
+        label = message("transfer.original_change" if recovering else "transfer.change", language)
+        line = "  " + message(
+            "transfer.line",
+            language,
+            label=label,
+            station=t.station,
+            state=message(f"transfer.{t.state.value}", language),
+        )
         if t.margin_min is not None:
-            line += f" ({t.margin_min} min, needs {t.minimum})"
+            line += message("transfer.margin", language, margin=t.margin_min, minimum=t.minimum)
         out.append(line)
     for journey in o.retained:
         if recovering:
-            out.append("  Original retained train warnings:")
+            out.append(message("recovery.original_retained", language))
         out.extend(
-            _leg_line(x, f"  if you are on the {hhmm(x.planned_departure)}: ", for_pin=for_pin)
+            _leg_line(
+                x,
+                language,
+                message("status.retained_leg", language, time=hhmm(x.planned_departure)),
+                for_pin=for_pin,
+            )
             for x in journey
         )
     if o.next_good is not None and not recovering:
         leg = o.next_good.legs[0]
-        number = f", train {leg.train.train_number}" if for_pin else ""
+        number = message("leg.number", language, number=leg.train.train_number) if for_pin else ""
         track = leg.board.actual_track or leg.board.planned_track
         if for_pin and track:
-            number += f", platform {track}"
+            number += message("leg.platform", language, track=track)
         out.append(
-            f"  next good connection: {hhmm(_next_time(o.next_good))} from {leg.board.code}{number}"
-            + crowd_text(o.next_good.legs)
+            message(
+                "status.next_connection",
+                language,
+                time=hhmm(_next_time(o.next_good)),
+                station=leg.board.code,
+                details=number,
+            )
+            + crowd_text(o.next_good.legs, language)
         )
     if (
         not recovering
@@ -228,85 +278,99 @@ def _occurrence(o: OccurrenceView, *, for_pin: bool = False) -> list[str]:
         and not o.advice.withdrawn
     ):
         train = o.advice.advised_train
-        number = f", train {train.train_number}" if for_pin else ""
-        out.append(f"  earlier train advised: the {hhmm(train.planned_departure)}{number}")
+        number = message("leg.number", language, number=train.train_number) if for_pin else ""
+        out.append(
+            message(
+                "status.earlier_train",
+                language,
+                time=hhmm(train.planned_departure),
+                details=number,
+            )
+        )
     for plan in o.replacement_plans:
-        checked = "" if for_pin else f" checked {hhmm(plan.checked_at)}"
-        out.append(f"  NS replacement plan{checked}; starting position not confirmed:")
-        out.extend("  " + line for line in render_recovery(plan.itinerary).splitlines())
+        checked = (
+            "" if for_pin else message("recovery.checked", language, time=hhmm(plan.checked_at))
+        )
+        out.append(message("recovery.plan", language, checked=checked))
+        out.extend("  " + line for line in render_recovery(plan.itinerary, language).splitlines())
     if o.recovery_offer is not None:
         out.extend(
             "  " + line
-            for line in render_recovery_offer(o.recovery_offer, for_pin=for_pin).splitlines()
+            for line in render_recovery_offer(
+                o.recovery_offer, language, for_pin=for_pin
+            ).splitlines()
         )
     if o.selected_recovery is not None:
         out.extend(
             "  " + line
-            for line in render_selected_recovery(o.selected_recovery, for_pin=for_pin).splitlines()
+            for line in render_selected_recovery(
+                o.selected_recovery, language, for_pin=for_pin
+            ).splitlines()
         )
     if not for_pin and o.train_context is not None:
         if recovering:
-            out.append("  Original train vehicle context (not the selected recovery):")
+            out.append(message("recovery.original_vehicle", language))
         out.extend("  " + line for line in render_snapshot(o.train_context).splitlines())
     if not for_pin:
-        out.extend("  " + weather_text(w) for w in o.weather)
+        out.extend("  " + weather_text(w, language) for w in o.weather)
     for disruption in o.disruptions:
-        out.append(
-            f"  NS disruption context: {disruption.title} Possible route impact; check your journey."
-        )
-    if warning := _disruption_warning(o):
+        out.append(message("status.disruption", language, title=disruption.title))
+    if warning := _disruption_warning(o, language):
         out.append(warning)
-    out.append(_health_line(o.health, for_pin=for_pin))
+    out.append(_health_line(o.health, for_pin=for_pin, language=language))
     return out
 
 
-def _disruption_warning(occurrence: OccurrenceView) -> str | None:
+def _disruption_warning(occurrence: OccurrenceView, language: MessageLanguage = "en") -> str | None:
     if (
         occurrence.disruptions_checked_at is not None
         and occurrence.disruptions_coverage != "complete"
     ):
-        return "  NS active-disruption data: unavailable; previous context may be stale."
+        return message("status.disruptions_unknown", language)
     return None
 
 
-def _health_line(h: BoardHealth, *, for_pin: bool = False) -> str:
+def _health_line(h: BoardHealth, *, for_pin: bool = False, language: MessageLanguage = "en") -> str:
     if h.fresh:
-        return (
-            "  NS data: fresh, last poll failed" if h.consecutive_failures else "  NS data: fresh"
-        )
+        key = "status.health_poll_failed" if h.consecutive_failures else "status.health_ok"
+        return message(key, language)
     return (
-        f"  NS data: not fresh since {hhmm(h.last_ok_at)}"
+        message("status.health_stale_since", language, time=hhmm(h.last_ok_at))
         if h.last_ok_at and not for_pin
-        else "  NS data: not fresh"
+        else message("status.health_stale", language)
     )
 
 
 def _warnings(view: RuntimeView, *, for_pin: bool = False) -> list[str]:
+    language = shared_language(view)
     lines = []
     if view.refusal:
-        lines.append(f"Profile file refused: {view.refusal}")
+        lines.append(message("status.profile_refused", language, reason=view.refusal))
     if view.key_rejected:
-        lines.append("Your NS key was rejected.")
+        lines.append(message("status.key_rejected", language))
     if not view.store_ok:
-        lines.append("State cannot be saved; retrying.")
+        lines.append(message("status.store_failed", language))
     if view.undelivered and not for_pin:
-        lines.append(f"{view.undelivered} alerts not delivered yet.")
+        lines.append(message("status.pending_alerts", language, count=view.undelivered))
     return lines
 
 
 def warning_lines(view: RuntimeView, confirmed: bool) -> list[str]:
     """Every warning `/status` shows for this view, in its wording, so no MCP tool reads as all
     good while `/status` does not."""
-    health = [_health_line(o.health) for o in view.occurrences if not o.resolved]
+    language = shared_language(view)
+    health = [_health_line(o.health, language=language) for o in view.occurrences if not o.resolved]
     return [
-        *dict.fromkeys(x for x in health if x != "  NS data: fresh"),
+        *dict.fromkeys(x for x in health if x != message("status.health_ok", language)),
         *dict.fromkeys(
-            w for o in view.occurrences if not o.resolved and (w := _disruption_warning(o))
+            w
+            for o in view.occurrences
+            if not o.resolved and (w := _disruption_warning(o, language))
         ),
         *_warnings(view),
         *(m.text for m in view.moved),
         *_check_lines(view),
-        *([] if confirmed else ["Delivery not confirmed yet. Complete your phone delivery test."]),
+        *([] if confirmed else [message("status.delivery_unconfirmed", language)]),
     ]
 
 
@@ -320,42 +384,65 @@ def works_lines(view: RuntimeView) -> list[str]:
 
 def _works_ahead(view: RuntimeView) -> list[str]:
     names = {d.profile_id: d.profile_name for d in view.directions}
+    language = shared_language(view)
     lines = []
     for key, days in view.works.items():
         pid, d = split_direction_key(key)
         if days:
-            dates = ", ".join(_day(w.service_date) for w in days)
-            lines.append(f"Works ahead: {display_name(names.get(pid, pid))} {d}: {dates}")
+            dates = ", ".join(message_date(w.service_date, language) for w in days)
+            lines.append(
+                message(
+                    "status.works_ahead",
+                    language,
+                    name=display_name(names.get(pid, pid)),
+                    direction=message(f"direction.{d}", language),
+                    dates=dates,
+                )
+            )
     return lines
 
 
 def _check_lines(view: RuntimeView, *, for_pin: bool = False) -> list[str]:
     lines = []
+    language = shared_language(view)
     for ok in view.lookahead_last_ok.values():
         if ok is None:
-            lines.append("Planned-works check: not run yet")
+            lines.append(message("status.works_not_run", language))
         elif _stale(view, ok):
             lines.append(
-                "Planned-works check: not fresh"
+                message("status.works_stale", language)
                 if for_pin
-                else f"Planned-works check: last ok {_day(ok.astimezone(TZ).date())} {hhmm(ok)}"
+                else message(
+                    "status.works_last_ok",
+                    language,
+                    date=message_date(ok.astimezone(TZ).date(), language),
+                    time=hhmm(ok),
+                )
             )
     return lines
 
 
 def render_status(view: RuntimeView, confirmed: bool, *, for_pin: bool = False) -> str:
     pending = [o for o in view.occurrences if not o.resolved]
-    lines = [x for o in pending for x in _occurrence(o, for_pin=for_pin)]
+    language = shared_language(view)
+    languages = {p.id: p.alerts.language for p in view.profiles}
+    lines = [
+        line
+        for o in pending
+        for line in _occurrence(
+            o, for_pin=for_pin, language=languages.get(o.key.profile_id, language)
+        )
+    ]
     lines += _warnings(view, for_pin=for_pin)
     lines += [m.text for m in view.moved]
     works, checks = _works_ahead(view), _check_lines(view, for_pin=for_pin)
     # State storage sorts mapping keys, so its order can change across a restart.
     lines += sorted(works) + sorted(checks) if for_pin else works + checks
     if not confirmed:
-        lines.append("Delivery not confirmed yet. Complete your phone delivery test.")
+        lines.append(message("status.delivery_unconfirmed", language))
     if not pending:
-        lines.append("No journey is being followed now.")
-    lines.append("Data: NS")
+        lines.append(message("status.empty", language))
+    lines.append(message("status.source", language))
     return "\n".join(lines)
 
 
@@ -424,6 +511,7 @@ def connections_tool(
     view: RuntimeView, confirmed: bool, profile_id: str, direction: Direction
 ) -> dict[str, Any]:
     v = view_for_profile(view, profile_id)
+    language = shared_language(v)
     occs = sorted(
         (o for o in v.occurrences if not o.resolved and o.key.direction is direction),
         key=lambda o: o.key.service_date,
@@ -442,15 +530,17 @@ def connections_tool(
             if o.selected_recovery is None
             else o.selected_recovery.fields(v.at),
             "train_context": None if o.train_context is None else snapshot_payload(o.train_context),
-            "weather": [{**encode(w), "text": weather_text(w)} for w in o.weather],
+            "weather": [{**encode(w), "text": weather_text(w, language)} for w in o.weather],
             "leave_by": encode(o.leave_by),
             "weather_allowance": encode(o.weather_allowance),
         }
         for o in occs
     ]
-    lines = [x for o in occs for x in _occurrence(o)] or ["No journey is being followed now."]
+    lines = [x for o in occs for x in _occurrence(o, language=language)] or [
+        message("status.empty", language)
+    ]
     lines += [x for x in warning_lines(v, confirmed) if x not in lines]  # health shown once
-    lines.append("Data: NS")
+    lines.append(message("status.source", language))
     return {
         "profile": profile_id,
         "direction": direction.value,
@@ -461,13 +551,14 @@ def connections_tool(
 
 def works_tool(view: RuntimeView, confirmed: bool, profile_id: str) -> dict[str, Any]:
     v = view_for_profile(view, profile_id)
+    language = shared_language(v)
     lines = _works_ahead(v)
     directions = []
     for d in v.directions:
         key = direction_key(profile_id, d.direction)
         ok = v.lookahead_last_ok.get(key)
         if key not in v.lookahead_last_ok:  # a removed profile still running: never checked
-            lines.append("Planned-works check: not run yet")
+            lines.append(message("status.works_not_run", language))
         directions.append(
             {
                 "direction": d.direction.value,
@@ -480,8 +571,8 @@ def works_tool(view: RuntimeView, confirmed: bool, profile_id: str) -> dict[str,
             }
         )
     if not any(x["stale"] or x["days"] for x in directions):
-        lines.append(NO_WORKS)
-    lines += [*warning_lines(v, confirmed), "Data: NS"]
+        lines.append(message("status.no_works", language))
+    lines += [*warning_lines(v, confirmed), message("status.source", language)]
     return {"profile": profile_id, "directions": directions, "text": "\n".join(lines)}
 
 
@@ -515,10 +606,11 @@ def status_buttons(view: RuntimeView, confirmed: bool = True) -> dict[str, Any] 
         if o.resolved:
             continue
         k = o.key
+        language = profile_language(view, k.profile_id)
         day = k.service_date.isoformat()
         row = [
-            {"text": label, "callback_data": data}
-            for label, tag in (("I'm leaving", "l"), ("Not travelling", "s"))
+            {"text": message(label, language), "callback_data": data}
+            for label, tag in (("button.leaving", "l"), ("button.skip", "s"))
             if (data := callback_data(tag, k.profile_id, k.direction.value, day)) is not None
         ]
         if o.next_good is not None and not _recovery_active(o):
@@ -529,27 +621,38 @@ def status_buttons(view: RuntimeView, confirmed: bool = True) -> dict[str, Any] 
                 "c", k.profile_id, k.direction.value, day, hm, num
             ) or callback_data("c", k.profile_id, k.direction.value, day, hm)
             if data is not None:
-                row.append({"text": f"Take {hhmm(_next_time(o.next_good))}", "callback_data": data})
+                row.append(
+                    {
+                        "text": message(
+                            "button.take", language, time=hhmm(_next_time(o.next_good))
+                        ),
+                        "callback_data": data,
+                    }
+                )
         if row:
             rows.append(row)
         if confirmed and not o.not_travelling:
             if o.navigation:
                 rows.append(map_buttons(o.navigation))
             if o.selected_recovery is not None and o.selected_recovery.status == "active":
-                rows.extend(recovery_progress_buttons(o.selected_recovery)["inline_keyboard"])
+                rows.extend(
+                    recovery_progress_buttons(o.selected_recovery, language)["inline_keyboard"]
+                )
             else:
                 for plan in o.replacement_plans:
                     if plan.selectable and re.fullmatch(r"[0-9a-f]{32}", plan.proposal_id):
                         rows.append(
                             [
                                 {
-                                    "text": "Review recovery starting place",
+                                    "text": message("recovery.review_origin", language),
                                     "callback_data": f"rp|{plan.proposal_id}",
                                 }
                             ]
                         )
                 if o.recovery_offer is not None:
-                    rows.extend(recovery_offer_buttons(o.recovery_offer)["inline_keyboard"])
+                    rows.extend(
+                        recovery_offer_buttons(o.recovery_offer, language)["inline_keyboard"]
+                    )
     return {"inline_keyboard": rows} if rows else None
 
 
@@ -564,42 +667,53 @@ def _recovery_active(occurrence: OccurrenceView) -> bool:
     return selected is not None and selected.status == "active"
 
 
-def recovery_origin_prompt(plan: RecoveryPlanView) -> tuple[str, dict[str, Any]]:
-    rows, lines = [], ["Confirm your exact physical starting place. No recovery is selected yet."]
+def recovery_origin_prompt(
+    plan: RecoveryPlanView, language: MessageLanguage = "en"
+) -> tuple[str, dict[str, Any]]:
+    rows, lines = [], [message("recovery.origin_prompt", language)]
     for i in recovery_origins(plan):
         place = plan.itinerary.steps[i].origin
-        lines.append(
-            f"{place.name}: {place.latitude:.6f}, {place.longitude:.6f} (physical ID {place.physical_id})"
-        )
+        identifier = message("recovery.physical_id", language, id=place.physical_id)
+        lines.append(f"{place.name}: {place.latitude:.6f}, {place.longitude:.6f} ({identifier})")
         rows.append(
-            [{"text": f"I am at {place.name}", "callback_data": f"ra|{plan.proposal_id}|{i}"}]
+            [
+                {
+                    "text": message("recovery.at", language, place=place.name),
+                    "callback_data": f"ra|{plan.proposal_id}|{i}",
+                }
+            ]
         )
     if not rows:
-        lines.append("No unambiguous physical starting place is available. Check the NS planner.")
+        lines.append(message("recovery.no_origin", language))
     return "\n".join(lines), {"inline_keyboard": rows}
 
 
-def render_recovery_offer(offer: RecoveryOffer, *, for_pin: bool = False) -> str:
+def render_recovery_offer(
+    offer: RecoveryOffer, language: MessageLanguage = "en", *, for_pin: bool = False
+) -> str:
     header = (
-        "Refreshed recovery offer."
+        message("recovery.refreshed", language)
         if for_pin
-        else f"Refreshed recovery offer checked {hhmm(offer.checked_at)}."
+        else message("recovery.refreshed_at", language, time=hhmm(offer.checked_at))
     )
-    return (
-        header
-        + "\n"
-        + render_recovery(offer.itinerary)
-        + "\nFollow accepts any planned-only times shown above and unverified accessibility and assistance."
-        + "\nOnly your explicit boarding and arrival confirmations change progress."
+    return "\n".join(
+        (
+            header,
+            render_recovery(offer.itinerary, language),
+            message("recovery.follow_accepts", language),
+            message("recovery.progress_limits", language),
+        )
     )
 
 
-def recovery_offer_buttons(offer: RecoveryOffer) -> dict[str, Any]:
+def recovery_offer_buttons(
+    offer: RecoveryOffer, language: MessageLanguage = "en"
+) -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [
                 {
-                    "text": "Follow this recovery (accept limits above)",
+                    "text": message("recovery.follow", language),
                     "callback_data": f"rf|{offer.id}",
                 }
             ]
@@ -607,8 +721,11 @@ def recovery_offer_buttons(offer: RecoveryOffer) -> dict[str, Any]:
     }
 
 
-def render_selected_recovery(selected: SelectedRecovery, *, for_pin: bool = False) -> str:
-    lines = [f"Recovery {selected.status}. Progress uses only your explicit confirmations."]
+def render_selected_recovery(
+    selected: SelectedRecovery, language: MessageLanguage = "en", *, for_pin: bool = False
+) -> str:
+    status = message(f"recovery.{selected.status}", language)
+    lines = [message("recovery.progress", language, status=status)]
     last = next(
         (action for action in reversed(selected.confirmations) if action.place is not None), None
     )
@@ -616,33 +733,49 @@ def render_selected_recovery(selected: SelectedRecovery, *, for_pin: bool = Fals
         (last.place, last.at) if last is not None else (selected.origin.place, selected.origin.at)
     )
     assert place is not None
-    lines.append(f"Last confirmed place: {place.name} at {hhmm(at)}.")
+    lines.append(message("recovery.last_place", language, place=place.name, time=hhmm(at)))
     if selected.next_action is not None:
         step = selected.itinerary.steps[selected.index]
         times = f" {hhmm(step.departure)}-{hhmm(step.arrival)}" if for_pin else ""
         lines.append(
-            f"Current step:{times} {step.mode} {step.operator or ''} {step.service_reference or ''}: {step.origin.name} to {step.destination.name}."
+            message(
+                "recovery.current_step",
+                language,
+                times=times,
+                mode=step.mode,
+                operator=step.operator or "",
+                service=step.service_reference or "",
+                origin=step.origin.name,
+                destination=step.destination.name,
+            )
         )
-        lines.append(f"Next confirmation: {selected.next_action.replace('_', ' ')}.")
+        action = message(f"recovery.{selected.next_action}", language)
+        lines.append(message("recovery.next", language, action=action))
     if selected.monitoring_error:
-        lines.append(
-            "Recovery data refresh failed. Previous times may be stale; manual confirmations remain available."
-        )
+        lines.append(message("recovery.refresh_failed", language))
     if selected.review_required:
-        lines.append("NS changed the recovery route. Review the planner before continuing.")
-    lines.append("Accessibility and assistance availability are not verified.")
+        lines.append(message("recovery.review", language))
+    lines.append(message("recovery.accessibility", language))
     return "\n".join(lines)
 
 
-def recovery_progress_buttons(selected: SelectedRecovery) -> dict[str, Any]:
+def recovery_progress_buttons(
+    selected: SelectedRecovery, language: MessageLanguage = "en"
+) -> dict[str, Any]:
     rows = []
     action = selected.next_action
     if action is not None:
         step = selected.itinerary.steps[selected.index]
         label = (
-            f"I boarded {step.operator or ''} {step.mode} {step.service_reference or ''}".strip()
+            message(
+                "recovery.i_boarded",
+                language,
+                operator=step.operator or "",
+                mode=step.mode,
+                service=step.service_reference or "",
+            ).strip()
             if action == "boarded"
-            else f"I reached {step.destination.name}"
+            else message("recovery.i_arrived", language, place=step.destination.name)
         )
         code = {"boarded": "b", "arrived": "a", "walk_arrived": "w"}[action]
         data = callback_data("rc", selected.id, str(selected.revision), str(selected.index), code)
@@ -650,7 +783,7 @@ def recovery_progress_buttons(selected: SelectedRecovery) -> dict[str, Any]:
             rows.append([{"text": label, "callback_data": data}])
         stop = callback_data("rc", selected.id, str(selected.revision), str(selected.index), "s")
         if stop is not None:
-            rows.append([{"text": "Stop recovery", "callback_data": stop}])
+            rows.append([{"text": message("recovery.stop", language), "callback_data": stop}])
     return {"inline_keyboard": rows}
 
 

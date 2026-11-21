@@ -311,6 +311,7 @@ def parse_plan(
                 wake_at=None,
                 partner_eta=False,
                 partner_phone=None,
+                language="en",
             ),
             p.accessibility,
             p.transfer_min,
@@ -341,6 +342,9 @@ def parse_plan(
             arrival_prompt=all(p.alerts.arrival_prompt for p in matching),
             navigate=all(p.alerts.navigate for p in matching),
             compensation_details=all(p.alerts.compensation_details for p in matching),
+            language=alerts.language
+            if all(p.alerts.language == alerts.language for p in matching)
+            else "en",
         )
     outbound = _journey(d.get("outbound"), "Outbound", base.outbound if base else None)
     has_return = d.get("return") is not None

@@ -17,6 +17,7 @@ from train_commute_companion.advice import (
 )
 from train_commute_companion.arrival import arrival_status
 from train_commute_companion.calendar import TZ, hhmm, to_utc
+from train_commute_companion.catalogue import MessageLanguage, message
 from train_commute_companion.checked_alternatives import option_clause
 from train_commute_companion.classify import current_connection, current_run, find_leg
 from train_commute_companion.compensation import reminder_text
@@ -53,6 +54,7 @@ from train_commute_companion.messages import crowd_text, leave_by
 from train_commute_companion.model import (
     DELAY_NEWS,
     AlertEvent,
+    AlertFacts,
     AlertSettings,
     Alternative,
     Ctx,
@@ -256,7 +258,9 @@ def states_current(e: AlertEvent, keys: Mapping[str, str]) -> bool:
     return all(keys.get(t.slot) == t.said for t in alert_facts(e).told)
 
 
-def leg_now(answers: Sequence[ProviderAnswer], x: LegProgress) -> tuple[str, str]:
+def leg_now(
+    answers: Sequence[ProviderAnswer], x: LegProgress, language: MessageLanguage = "en"
+) -> tuple[str, str]:
     """A locked leg as the latest answers show it: departure (expected, else planned) and
     its platform, for a message naming it."""
     leg = find_leg(merged_pool(answers), x.train, x.board_station)[0] if answers else None
@@ -267,11 +271,14 @@ def leg_now(answers: Sequence[ProviderAnswer], x: LegProgress) -> tuple[str, str
     dep = None if g is None else g.departure
     t = dep.value if dep is not None and dep.value is not None else x.train.planned_departure
     track = None if g is None else g.actual_track or g.planned_track
-    return hhmm(t), f" (platform {track})" if track else ""
+    return hhmm(t), message("relock.platform", language, track=track) if track else ""
 
 
 def _crowd_now(
-    answers: Sequence[ProviderAnswer], watched: Sequence[LegProgress], now: datetime
+    answers: Sequence[ProviderAnswer],
+    watched: Sequence[LegProgress],
+    now: datetime,
+    language: MessageLanguage = "en",
 ) -> str:
     legs = []
     for x in watched:
@@ -290,7 +297,7 @@ def _crowd_now(
         if run is None:
             return ""
         legs.append(run[1].leg)
-    return crowd_text(legs)
+    return crowd_text(legs, language)
 
 
 def _broken(s: OccurrenceState, t: TrainId | None) -> bool:
@@ -299,12 +306,15 @@ def _broken(s: OccurrenceState, t: TrainId | None) -> bool:
 
 
 def _named_crowd_now(
-    answers: Sequence[ProviderAnswer], named: tuple[str, ...], now: datetime
+    answers: Sequence[ProviderAnswer],
+    named: tuple[str, ...],
+    now: datetime,
+    language: MessageLanguage = "en",
 ) -> str:
     for answer in sorted(answers, key=lambda a: to_utc(a.fetched_at), reverse=True):
         for connection in answer.connections:
             if tuple(train_ident(g.train) for g in connection.legs) == named:
-                return _crowd_now(answers, [progress_of(g) for g in connection.legs], now)
+                return _crowd_now(answers, [progress_of(g) for g in connection.legs], now, language)
     return ""
 
 
@@ -315,13 +325,21 @@ def _with_crowd_note(event: AlertEvent, note: str, leave_note: str | None = None
     head = event.text.removesuffix(facts.twin_note).removesuffix(facts.next_clause)
     clause = facts.next_clause.removesuffix(".").removesuffix(facts.crowd_note)
     if leave_note is not None:
-        # Refresh only our rendered departure sentence, keeping route and station details.
-        clause = re.sub(r"\. Leave by [0-9]{2}:[0-9]{2}$", "", clause) + leave_note
+        clause = (
+            clause.removesuffix(facts.leave_note)
+            if facts.leave_note
+            else re.sub(r"\. Leave by [0-9]{2}:[0-9]{2}$", "", clause)
+        ) + leave_note
     clause += note + "."
     return replace(
         event,
         text=head + clause + facts.twin_note,
-        facts=replace(facts, next_clause=clause, crowd_note=note),
+        facts=replace(
+            facts,
+            next_clause=clause,
+            crowd_note=note,
+            leave_note=facts.leave_note if leave_note is None else leave_note,
+        ),
     )
 
 
@@ -333,6 +351,10 @@ def _current_body(
     answers: tuple[ProviderAnswer, ...],
 ) -> str | None:
     if e.kind is EventKind.ALL_GOOD:  # with the platform the latest answers give (7.9)
+        language = alert_facts(e).language
+        ctx = replace(
+            ctx, profile=replace(ctx.profile, alerts=replace(ctx.profile.alerts, language=language))
+        )
         g = all_good(
             replace(s, all_good_evaluated=False), PollAnswers(answers, (), s.generation), ctx
         )
@@ -400,7 +422,9 @@ class LiveLedger:
                 )
         return current_text(self._state, o, now, observations)
 
-    def departure_reminder(self, s: OccurrenceState) -> AlertEvent | None:
+    def departure_reminder(
+        self, s: OccurrenceState, language: MessageLanguage | None = None
+    ) -> AlertEvent | None:
         ctx = self._ctx(s)
         p = routing_profile(self._state, s.key.profile_id, s.route_revision)
         if (
@@ -485,11 +509,24 @@ class LiveLedger:
             due = allowance.suggested_leave_by
         if not timedelta() <= now - due < DEPARTURE_REMINDER_WINDOW:
             return None
-        text = f"Leave now for the {hhmm(departure.value)} train."
+        if language is None:
+            language = p.alerts.language
+        text = message("departure.now", language, time=hhmm(departure.value))
         if allowance is not None:
-            hazard = "possible ice" if allowance.hazard == "ice" else allowance.hazard
-            text += f" Allow {allowance.extra_min} extra minutes for forecast {hazard}."
-        event = make_event(ctx, EventKind.DEPARTURE_REMINDER, Severity.SILENT, text, key_facts="")
+            text += message(
+                "departure.extra",
+                language,
+                minutes=allowance.extra_min,
+                hazard=message(f"weather.{allowance.hazard}", language),
+            )
+        event = make_event(
+            ctx,
+            EventKind.DEPARTURE_REMINDER,
+            Severity.SILENT,
+            text,
+            key_facts="",
+            stated=AlertFacts(language=language),
+        )
         return replace(event, train=first.train)
 
     def _alerts(self, o: Obligation) -> AlertSettings:
@@ -927,7 +964,8 @@ class LiveLedger:
             )
             and not event.kind.value.startswith("recovery_")
         ):
-            event = replace(event, text="Original train monitoring: " + event.text)
+            label = message("recovery.original_monitoring", alert_facts(event).language)
+            event = replace(event, text=label + event.text)
         return self._format_event(o, event, state)
 
     def pending_alternative(self, o: Obligation) -> tuple[AlertEvent, OccurrenceState] | None:
@@ -958,7 +996,11 @@ class LiveLedger:
             facts = alert_facts(o.event)
             record = self._state.journey_records.get(facts.arrival_record)
             if record is not None and record.revision == facts.arrival_revision:
-                text = reminder_text(record, include_details=self._alerts(o).compensation_details)
+                text = reminder_text(
+                    record,
+                    include_details=self._alerts(o).compensation_details,
+                    language=facts.language,
+                )
                 return replace(o.event, text=text)
         if o.look_ahead is not None:
             pid, direction, day = o.look_ahead
@@ -984,7 +1026,7 @@ class LiveLedger:
                     return None
             p = find_profile(self._state.config, pid)
             if live and p is not None and len(live) < len(self._stored_facts(o)):
-                kind, text = render_message(p, day, live)
+                kind, text = render_message(p, day, live, alert_facts(o.event).language)
                 event = replace(o.event, kind=kind, text=text, profile_name=p.name)
                 if for_copy:
                     key = f"lookahead|{pid}|{direction.value}|{day.isoformat()}|{bundle_key(live)}"
@@ -992,10 +1034,11 @@ class LiveLedger:
                 return event
         if o.event.kind is EventKind.DEPARTURE_REMINDER:
             state = None if o.occurrence is None else self._occurrence(o.occurrence)
-            current = None if state is None else self.departure_reminder(state)
+            facts = alert_facts(o.event)
+            current = None if state is None else self.departure_reminder(state, facts.language)
             if current is None or current.train != o.event.train:
                 return None
-            return replace(o.event, text=current.text + alert_facts(o.event).twin_note)
+            return replace(o.event, text=current.text + facts.twin_note)
         e = self._regenerated(o, self._relocked(o, o.event))
         p = find_profile(self._state.config, e.profile_id)
         if p is None or p.name == e.profile_name:
@@ -1018,7 +1061,7 @@ class LiveLedger:
                 for x in j.legs
                 if x.train == e.train
             ]
-            note = _crowd_now(answers, watched[:1], self._now())
+            note = _crowd_now(answers, watched[:1], self._now(), facts.language)
             text = (
                 e.text.removesuffix(facts.twin_note)
                 .removesuffix(".")
@@ -1047,11 +1090,17 @@ class LiveLedger:
                 if ctx.profile.alerts.leave_by
                 else None
             )
-            body = leave_now_text(c, ctx.now.tzinfo, buffer)
+            body = leave_now_text(c, ctx.now.tzinfo, buffer, facts.language)
             return replace(
                 e, text=f"{display_name(e.profile_name)}: {body}{facts.twin_note}", facts=facts
             )
         if e.kind is EventKind.NEXT_CONNECTION:
+            ctx = replace(
+                ctx,
+                profile=replace(
+                    ctx.profile, alerts=replace(ctx.profile.alerts, language=facts.language)
+                ),
+            )
             pool = merged_pool(answers)
             for j in (*((s.lock,) if s.lock else ()), *s.retained):
                 i = next((i for i, x in enumerate(j.legs) if x.train == e.train), None)
@@ -1073,7 +1122,11 @@ class LiveLedger:
         )
 
     def _leave_note(
-        self, s: OccurrenceState, answers: Sequence[ProviderAnswer], first: LegProgress
+        self,
+        s: OccurrenceState,
+        answers: Sequence[ProviderAnswer],
+        first: LegProgress,
+        language: MessageLanguage,
     ) -> str:
         ctx = self._ctx(s)
         if (
@@ -1090,7 +1143,7 @@ class LiveLedger:
         leave = leave_by(
             first.train.planned_departure, expected, ctx.profile.journey(ctx.direction).buffer_min
         )
-        return f". Leave by {hhmm(leave)}"
+        return ". " + message("leave_by", language, time=hhmm(leave))
 
     def _relocked(self, o: Obligation, e: AlertEvent) -> AlertEvent:
         """Rule 5(a): name the current replacement and refresh its departure advice.
@@ -1099,9 +1152,10 @@ class LiveLedger:
         if e.kind not in _NAMES_LOCK or e.train is None or s is None:
             return e
         f = alert_facts(e)
+        language = f.language
         answers = self._memory.boards.get(okey(s.key), ())
         if f.on:
-            return _with_crowd_note(e, _named_crowd_now(answers, f.named, self._now()))
+            return _with_crowd_note(e, _named_crowd_now(answers, f.named, self._now(), language))
         if s.lock is None:
             return e
         live = [x for x in s.lock.legs if x.state not in (LegState.CANCELLED, LegState.RELOCKED)]
@@ -1116,9 +1170,9 @@ class LiveLedger:
                 or named[0].state in (LegState.PENDING, LegState.BOARDING)
             )
         ):
-            note = _crowd_now(answers, live[-len(f.named) :], self._now())
+            note = _crowd_now(answers, named, self._now(), language)
             leave_note = (
-                self._leave_note(s, answers, live[0])
+                self._leave_note(s, answers, live[0], language)
                 if f.named[0] == train_ident(live[0].train)
                 else None
             )
@@ -1139,18 +1193,21 @@ class LiveLedger:
         answers = self._memory.boards.get(okey(s.key), ())
         ahead = [x for x in live if x.state in (LegState.PENDING, LegState.BOARDING)]
         left = [x for x in live if x not in ahead]
+        leave_note = ""
         if not left:
-            nxt = "Next good connection: {}{}".format(*leg_now(answers, ahead[0]))
-            nxt += self._leave_note(s, answers, ahead[0]) + "."
+            when, platform = leg_now(answers, ahead[0], language)
+            nxt = message("relock.next_good", language, time=when, route=platform).lstrip()
+            leave_note = self._leave_note(s, answers, ahead[0], language)
+            nxt += leave_note + "."
         else:
             now = hhmm(left[-1].train.planned_departure)
             onward = "".join(
-                f", then the {t} from {x.board_station}{pl}"
+                message("relock.then", language, time=t, station=x.board_station, platform=pl)
                 for x in ahead
-                for t, pl in (leg_now(answers, x),)
+                for t, pl in (leg_now(answers, x, language),)
             )
-            nxt = f"Now following your {now} train{onward}."
-        note = _crowd_now(answers, live, self._now())
+            nxt = message("relock.following", language, time=now, onward=onward)
+        note = _crowd_now(answers, live, self._now(), language)
         nxt = nxt.removesuffix(".") + note + "."
         alternative = None
         if ahead:
@@ -1167,6 +1224,7 @@ class LiveLedger:
             facts=replace(
                 f,
                 next_clause=" " + nxt,
+                leave_note=leave_note,
                 named=tuple(train_ident(x.train) for x in live),
                 crowd_note=note,
                 alternative=alternative,

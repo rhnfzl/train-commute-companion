@@ -61,6 +61,12 @@ The details form includes a default-on weather switch. Configure > Weather accep
 
 The editor preserves advanced location settings, advice thresholds, extra dates, overnight return offsets and unused transfer minimums. Other profiles stay unchanged.
 
+## Message language
+
+Use **Message language** in the profile details to choose English or Dutch. In YAML, set `alerts.language` to `en` or `nl`. English is the default.
+
+The setting applies to alerts and journey status for that profile. Today and Telegram use Dutch for shared text when all displayed profiles use Dutch. The companion preserves station names and messages from NS and KNMI.
+
 ## Check-in and leave-by times
 
 Each direction has **Check-in, minutes before your train** (`active_lead_min`). This ends quiet early watch and allows the existing check-in message.

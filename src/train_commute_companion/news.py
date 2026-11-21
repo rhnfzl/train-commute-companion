@@ -19,6 +19,7 @@ from train_commute_companion.lifecycle import (
 from train_commute_companion.messages import all_good_text
 from train_commute_companion.model import (
     AlertEvent,
+    AlertFacts,
     ClassifiedLeg,
     Connection,
     Ctx,
@@ -348,8 +349,16 @@ def all_good(s: OccurrenceState, poll: PollAnswers, ctx: Ctx) -> AlertEvent | No
     ):
         return None
     buffer = ctx.profile.journey(ctx.direction).buffer_min if ctx.profile.alerts.leave_by else None
+    language = ctx.profile.alerts.language
+    canonical = all_good_text(legs, buffer)
     return make_event(
-        ctx, EventKind.ALL_GOOD, Severity.SILENT, all_good_text(legs, buffer), legs[0].train
+        ctx,
+        EventKind.ALL_GOOD,
+        Severity.SILENT,
+        canonical if language == "en" else all_good_text(legs, buffer, language),
+        legs[0].train,
+        key_facts=canonical,
+        stated=AlertFacts(language=language),
     )
 
 

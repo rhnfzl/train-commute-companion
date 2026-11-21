@@ -68,6 +68,30 @@ def test_profiles_do_not_share_delay_thresholds():
     assert EventKind.DELAYED not in [e.kind for e in poll(s, context(10), a).events]
 
 
+def test_dutch_delay_and_recovery_keep_the_english_delivery_keys():
+    c = context(3)
+    nl = replace(c, profile=replace(c.profile, alerts=replace(c.profile.alerts, language="nl")))
+    s = occ(journey([leg()]))
+    late = ans("AAA", conn(leg(7)))
+    caught_up = ans("AAA", conn(leg(1)))
+    translations = []
+    for language_context in (c, nl):
+        delayed = poll(s, language_context, late)
+        normal = poll(delayed.state, language_context, caught_up)
+        translations.append(
+            tuple(
+                e
+                for e in (*delayed.events, *normal.events)
+                if e.kind in (EventKind.DELAYED, EventKind.BACK_TO_NORMAL)
+            )
+        )
+    en, dutch = translations
+    assert [e.key for e in en] == [e.key for e in dutch]
+    assert [e.kind for e in dutch] == [EventKind.DELAYED, EventKind.BACK_TO_NORMAL]
+    assert "je trein van 08:12 AAA naar RTD heeft 7 min vertraging" in dutch[0].text
+    assert "rijdt weer op tijd volgens NS" in dutch[1].text
+
+
 @pytest.mark.parametrize(
     "now,minimum,minutes,sends",
     [

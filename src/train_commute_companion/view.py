@@ -12,6 +12,7 @@ from typing import Literal
 
 from train_commute_companion.arrival import ArrivalStatus, arrival_status
 from train_commute_companion.calendar import TZ, hhmm, to_utc
+from train_commute_companion.catalogue import MessageLanguage, message, message_weekday
 from train_commute_companion.classify import pair_transfer
 from train_commute_companion.disruptions import disruptions_fresh
 from train_commute_companion.health import FRESH_FOR, BoardHealth, board_health
@@ -221,17 +222,21 @@ class OccurrenceView:
     station_arrival_deadline: datetime | None = None
     arrival_target_status: ArrivalStatus | Literal["no_train"] | None = None
     navigation: tuple[str, str] | None = None
+    language: MessageLanguage = "en"
 
     @property
     def leave_by_text(self) -> str | None:
+        return self.format_leave_by(self.language)
+
+    def format_leave_by(self, language: MessageLanguage) -> str | None:
         if self.leave_by is None or (
             self.selected_recovery is not None and self.selected_recovery.status == "active"
         ):
             return None
         return (
-            self.weather_allowance.text
+            self.weather_allowance.format(language)
             if self.weather_allowance
-            else f"Leave by {hhmm(self.leave_by)}"
+            else message("leave_by", language, time=hhmm(self.leave_by))
         )
 
 
@@ -620,6 +625,7 @@ def occurrence_view(
         disruptions_checked_at=s.disruptions_checked_at,
         disruptions_coverage=coverage,
         profile_name=ctx.profile.name,
+        language=ctx.profile.alerts.language,
         usual_departure=None if ctx.schedule.mode == "window" else ctx.schedule.first_departure,
         window=None
         if ctx.schedule.last_departure is None
@@ -679,7 +685,9 @@ def moved(
     """Directions whose newest confirmed baseline starts on another first train than the file."""
     out = []
     for p in profiles:
+        language = p.alerts.language
         for d in Direction:
+            direction = message(f"direction.{d.value}", language)
             hist = baselines.get(direction_key(p.id, d))
             confirmed = [v for v in (hist.versions if hist else ()) if v.confirmed]
             if not confirmed:
@@ -700,17 +708,26 @@ def moved(
                     mine = p.journey_on(d, commute).first_train
                     adopted = version.signature.legs[0].departure
                     if adopted != mine:
-                        fragments.append(
-                            f"{commute:%A}: NS moved your {mine:%H:%M} to {adopted:%H:%M} from {version.effective_from.isoformat()}"
+                        description = message(
+                            "lookahead.moved",
+                            language,
+                            old=f"{mine:%H:%M}",
+                            new=f"{adopted:%H:%M}",
+                            day=version.effective_from.isoformat(),
                         )
+                        fragments.append(f"{message_weekday(weekday - 1, language)}: {description}")
                 if fragments:
                     out.append(
                         Moved(
                             p.id,
                             d,
-                            f"{p.name}.{d.value}: "
-                            + "; ".join(fragments)
-                            + "; update your profile?",
+                            message(
+                                "lookahead.moved_status",
+                                language,
+                                name=p.name,
+                                direction=direction,
+                                text="; ".join(fragments),
+                            ),
                         )
                     )
                 continue
@@ -720,9 +737,19 @@ def moved(
             v = max(confirmed, key=lambda x: (x.effective_from, x.version))
             adopted, mine = v.signature.legs[0].departure, p.journey(d).first_train
             if adopted != mine:
-                text = (
-                    f"{p.name}.{d.value}: NS moved your {mine:%H:%M} to {adopted:%H:%M} "
-                    f"from {v.effective_from.isoformat()}; update your profile?"
+                description = message(
+                    "lookahead.moved",
+                    language,
+                    old=f"{mine:%H:%M}",
+                    new=f"{adopted:%H:%M}",
+                    day=v.effective_from.isoformat(),
+                )
+                text = message(
+                    "lookahead.moved_status",
+                    language,
+                    name=p.name,
+                    direction=direction,
+                    text=description,
                 )
                 out.append(Moved(p.id, d, text))
     return tuple(out)

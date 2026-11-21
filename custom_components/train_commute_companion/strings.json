@@ -153,6 +153,7 @@
           "custom_timetable_horizon": "Custom timetable lookahead",
           "timetable_horizon_unit": "Timetable lookahead unit",
           "timetable_horizon_count": "Timetable lookahead count",
+          "language": "Message language",
           "leave_by": "Show leave-by time",
           "checked_alternatives": "Check suggested trains",
           "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
@@ -197,6 +198,7 @@
           "custom_timetable_horizon": "On by default. Turn off to use up to three commute dates within ten calendar days.",
           "timetable_horizon_unit": "Count calendar days from tomorrow or count only upcoming dates with a fixed journey.",
           "timetable_horizon_count": "Enter a whole number from 1 to 14. The default is seven.",
+          "language": "Choose English or Dutch for messages about this commute.",
           "leave_by": "Show when to leave in check-in and pre-trip advice, and in the status sensor. Uses your travel buffer. Enabled by default.",
           "checked_alternatives": "Ask NS again to check a suggested train before sending an alert. Enabled by default.",
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
@@ -457,6 +459,7 @@
             "custom_timetable_horizon": "Custom timetable lookahead",
             "timetable_horizon_unit": "Timetable lookahead unit",
             "timetable_horizon_count": "Timetable lookahead count",
+            "language": "Message language",
             "leave_by": "Show leave-by time",
             "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
             "delay_min": "First delay alert in minutes",
@@ -497,6 +500,7 @@
             "custom_timetable_horizon": "On by default. Turn off to use up to three commute dates within ten calendar days.",
             "timetable_horizon_unit": "Count calendar days from tomorrow or count only upcoming dates with a fixed journey.",
             "timetable_horizon_count": "Enter a whole number from 1 to 14. The default is seven.",
+            "language": "Choose English or Dutch for messages about this commute.",
             "leave_by": "Show when to leave in check-in and pre-trip advice, and in the status sensor. Uses your travel buffer. Enabled by default.",
             "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
             "compensation_details": "Shows the original train plan and known arrival times. On by default when compensation reminders are enabled.",
@@ -761,6 +765,7 @@
           "custom_timetable_horizon": "Custom timetable lookahead",
           "timetable_horizon_unit": "Timetable lookahead unit",
           "timetable_horizon_count": "Timetable lookahead count",
+          "language": "Message language",
           "leave_by": "Show leave-by time",
           "checked_alternatives": "Check suggested trains",
           "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
@@ -805,6 +810,7 @@
           "custom_timetable_horizon": "On by default. Turn off to use up to three commute dates within ten calendar days.",
           "timetable_horizon_unit": "Count calendar days from tomorrow or count only upcoming dates with a fixed journey.",
           "timetable_horizon_count": "Enter a whole number from 1 to 14. The default is seven.",
+          "language": "Choose English or Dutch for messages about this commute.",
           "leave_by": "Show when to leave in check-in and pre-trip advice, and in the status sensor. Uses your travel buffer. Enabled by default.",
           "checked_alternatives": "Ask NS again to check a suggested train before sending an alert. Enabled by default.",
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
@@ -1043,6 +1049,12 @@
         "default": "Same as every day",
         "fixed": "Fixed: follow my usual train",
         "window": "Window: follow any train between two times"
+      }
+    },
+    "message_language": {
+      "options": {
+        "en": "English",
+        "nl": "Dutch"
       }
     },
     "journey_pick": {

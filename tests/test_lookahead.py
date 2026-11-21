@@ -101,6 +101,19 @@ def test_works_on_second_leg_only():  # spec fixture
     assert ev.text.endswith("Check replacement transport nearer the day.")
 
 
+def test_works_warning_keeps_its_identity_when_localized():
+    p = profile()
+    dutch = replace(p, alerts=replace(p.alerts, language="nl"))
+    rs = probe(TUE, cancel2=True)
+    _, en_ledger, (en,) = run(BaselineHistory(), rs, p=p)
+    _, nl_ledger, (nl,) = run(BaselineHistory(), rs, p=dutch)
+    assert nl.key == en.key and nl.severity is en.severity
+    assert nl_ledger.pending[0].id == en_ledger.pending[0].id
+    assert nl.text.startswith("Office A, dinsdag 27 okt: ")
+    assert "er rijden geen treinen voor je rit van UT naar RTD (werkzaamheden)" in nl.text
+    assert nl.text.endswith("Controleer kort voor vertrek welk vervangend vervoer er rijdt.")
+
+
 def test_works_warning_expires_at_the_dated_journey_end_after_midnight():
     # 7.12 rule 5(b): a 23:40 journey with a 00:05 transfer ends on the next calendar day
     late = {"l1": ("23:40", "23:58"), "l2": ("00:05", "00:40")}

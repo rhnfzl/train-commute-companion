@@ -4,6 +4,7 @@ from ha_rig import PROFILE, profiles_path, rebound, setup_tcc
 from homeassistant import config_entries, data_entry_flow
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.translation import async_get_translations
 from test_profile_setup import VALUES
 
 from custom_components.train_commute_companion import profile_subentries as subentries
@@ -48,7 +49,14 @@ async def test_native_subentry_add_and_edit_share_the_portable_yaml(hass):
     }
     flow = await manager.async_configure(flow["flow_id"], values)
     assert flow["step_id"] == "profile_details"
-    flow = await manager.async_configure(flow["flow_id"], {"minimum_UT": 4, "pause_action": "keep"})
+    strings = await async_get_translations(hass, "nl", "config_subentries", {DOMAIN})
+    assert (
+        strings[f"component.{DOMAIN}.config_subentries.profile.step.profile_details.data.language"]
+        == "Taal van berichten"
+    )
+    flow = await manager.async_configure(
+        flow["flow_id"], {"minimum_UT": 4, "pause_action": "keep", "language": "nl"}
+    )
     if flow.get("step_id") == "profile_preview":
         flow = await manager.async_configure(flow["flow_id"], {})
     assert flow["type"] is data_entry_flow.FlowResultType.CREATE_ENTRY
@@ -57,6 +65,7 @@ async def test_native_subentry_add_and_edit_share_the_portable_yaml(hass):
     rows = yaml.safe_load(profiles_path(hass).read_text())["profiles"]
     assert rows[-1]["id"] == subentry.unique_id
     assert rows[-1]["name"] == subentry.title
+    assert rows[-1]["alerts"]["language"] == "nl"
 
     flow = await manager.async_init(
         handler,
@@ -76,6 +85,7 @@ async def test_native_subentry_add_and_edit_share_the_portable_yaml(hass):
     rows = yaml.safe_load(profiles_path(hass).read_text())["profiles"]
     assert rows[-1]["id"] == subentry.unique_id
     assert rows[-1]["name"] == "Weekend commute"
+    assert rows[-1]["alerts"]["language"] == "nl"
 
 
 async def test_native_remove_disables_monitoring_and_updates_portable_yaml(hass):
