@@ -564,7 +564,7 @@
         "default": "Alle ingestelde ontvangers",
         "primary": "Telefoon",
         "webhook": "Webhooks",
-        "primary,webhook": "Telefoon en webhooks"
+        "primary_webhook": "Telefoon en webhooks"
       }
     },
     "profile_choice": {
@@ -575,20 +575,20 @@
     "profile_day": {
       "options": {
         "done": "Klaar",
-        "outbound:mon": "Maandag heen",
-        "outbound:tue": "Dinsdag heen",
-        "outbound:wed": "Woensdag heen",
-        "outbound:thu": "Donderdag heen",
-        "outbound:fri": "Vrijdag heen",
-        "outbound:sat": "Zaterdag heen",
-        "outbound:sun": "Zondag heen",
-        "return:mon": "Maandag terug",
-        "return:tue": "Dinsdag terug",
-        "return:wed": "Woensdag terug",
-        "return:thu": "Donderdag terug",
-        "return:fri": "Vrijdag terug",
-        "return:sat": "Zaterdag terug",
-        "return:sun": "Zondag terug"
+        "outbound_mon": "Maandag heen",
+        "outbound_tue": "Dinsdag heen",
+        "outbound_wed": "Woensdag heen",
+        "outbound_thu": "Donderdag heen",
+        "outbound_fri": "Vrijdag heen",
+        "outbound_sat": "Zaterdag heen",
+        "outbound_sun": "Zondag heen",
+        "return_mon": "Maandag terug",
+        "return_tue": "Dinsdag terug",
+        "return_wed": "Woensdag terug",
+        "return_thu": "Donderdag terug",
+        "return_fri": "Vrijdag terug",
+        "return_sat": "Zaterdag terug",
+        "return_sun": "Zondag terug"
       }
     }
   }

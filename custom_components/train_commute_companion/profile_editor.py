@@ -129,6 +129,8 @@ def edit_profile(
             if key not in values:
                 continue
             value = values[key]
+            if value == "primary_webhook":
+                value = "primary,webhook"
             if value == "default":
                 channels.pop(category, None)
             elif isinstance(value, str):

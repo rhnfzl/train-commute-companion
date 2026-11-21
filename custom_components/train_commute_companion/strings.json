@@ -564,7 +564,7 @@
         "default": "All configured destinations",
         "primary": "Phone",
         "webhook": "Webhooks",
-        "primary,webhook": "Phone and webhooks"
+        "primary_webhook": "Phone and webhooks"
       }
     },
     "profile_choice": {
@@ -575,20 +575,20 @@
     "profile_day": {
       "options": {
         "done": "Done",
-        "outbound:mon": "Monday outbound",
-        "outbound:tue": "Tuesday outbound",
-        "outbound:wed": "Wednesday outbound",
-        "outbound:thu": "Thursday outbound",
-        "outbound:fri": "Friday outbound",
-        "outbound:sat": "Saturday outbound",
-        "outbound:sun": "Sunday outbound",
-        "return:mon": "Monday return",
-        "return:tue": "Tuesday return",
-        "return:wed": "Wednesday return",
-        "return:thu": "Thursday return",
-        "return:fri": "Friday return",
-        "return:sat": "Saturday return",
-        "return:sun": "Sunday return"
+        "outbound_mon": "Monday outbound",
+        "outbound_tue": "Tuesday outbound",
+        "outbound_wed": "Wednesday outbound",
+        "outbound_thu": "Thursday outbound",
+        "outbound_fri": "Friday outbound",
+        "outbound_sat": "Saturday outbound",
+        "outbound_sun": "Sunday outbound",
+        "return_mon": "Monday return",
+        "return_tue": "Tuesday return",
+        "return_wed": "Wednesday return",
+        "return_thu": "Thursday return",
+        "return_fri": "Friday return",
+        "return_sat": "Saturday return",
+        "return_sun": "Sunday return"
       }
     }
   },

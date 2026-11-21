@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from string import Formatter
 
@@ -11,6 +12,16 @@ from test_profile_setup import VALUES, configure, guided
 from custom_components.train_commute_companion.const import DOMAIN
 
 TRANSLATIONS = Path(__file__).parents[1] / "custom_components" / DOMAIN / "translations"
+
+
+@pytest.mark.parametrize(
+    "catalog", ["strings.json", "translations/en.json", "translations/nl.json"]
+)
+def test_selector_translation_keys_meet_hassfest_contract(catalog):
+    data = json.loads((TRANSLATIONS.parent / catalog).read_text())
+    for selector in data["selector"].values():
+        for key in selector["options"]:
+            assert re.fullmatch(r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?", key), key
 
 
 async def test_home_assistant_loads_dutch_setup_and_options(hass):

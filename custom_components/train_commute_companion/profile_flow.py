@@ -513,6 +513,8 @@ class ProfileEditorFlow:
                 else "default"
             )
             selected = values.get(key, default)
+            if selected == "primary,webhook":
+                selected = "primary_webhook"
             choices: list[SelectOptionDict] = [
                 {"value": "default", "label": "All configured destinations"},
                 {"value": "primary", "label": "Phone"},
@@ -520,7 +522,7 @@ class ProfileEditorFlow:
             if "webhook" in configured:
                 choices += [
                     {"value": "webhook", "label": "Webhooks"},
-                    {"value": "primary,webhook", "label": "Phone and webhooks"},
+                    {"value": "primary_webhook", "label": "Phone and webhooks"},
                 ]
             if selected not in {choice["value"] for choice in choices}:
                 choices.append(
@@ -669,14 +671,14 @@ class ProfileEditorFlow:
             if target == "done":
                 self._profile_phase = ReviewPhase.REVIEWING
                 return await self._profile_ready()
-            direction, _, day = str(target).partition(":")
+            direction, _, day = str(target).replace(":", "_").partition("_")
             if direction not in ("outbound", "return") or day not in DAY_NAMES:
                 return self._editor_error("invalid_profile")
             self._day_target = (direction, day)
             return await self.async_step_profile_day()
         options: list[SelectOptionDict] = [{"value": "done", "label": "Done"}]
         options += [
-            {"value": f"{direction}:{day}", "label": f"{DAY_NAMES[day]} {direction}"}
+            {"value": f"{direction}_{day}", "label": f"{DAY_NAMES[day]} {direction}"}
             for direction in ("outbound", "return")
             for day in WEEKDAYS
         ]
