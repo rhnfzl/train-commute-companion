@@ -129,7 +129,8 @@
           "return_other_stations": "Andere instapstations voor de terugreis",
           "other_station_radius_m": "Afstand tot een ander station in meters",
           "other_station_dwell_min": "Minuten op een ander station voordat dit meetelt",
-          "ask_to_remember_station": "Aanbieden om een nieuw instapstation te onthouden"
+          "ask_to_remember_station": "Aanbieden om een nieuw instapstation te onthouden",
+          "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen"
         },
         "data_description": {
           "compensation_reminder": "Optionele vergelijking met het opgeslagen reisplan nadat je zelf je aankomst bevestigt. Gebruikt de meldingsinstellingen voor routineberichten. Dit bepaalt niet of je recht hebt op geld terug.",
@@ -138,7 +139,8 @@
           "return_other_stations": "TCC volgt automatisch een trein vanaf deze stations als je telefoon daar is en er nog geen trein wordt gevolgd.",
           "other_station_radius_m": "Hoe dicht je telefoon bij een station moet zijn. Standaard 500.",
           "other_station_dwell_min": "0 betekent dat één locatiebepaling genoeg is. Standaard 0.",
-          "ask_to_remember_station": "Nadat je Ja zegt bij een nieuw station, vraagt TCC één keer of het dit station moet onthouden."
+          "ask_to_remember_station": "Nadat je Ja zegt bij een nieuw station, vraagt TCC één keer of het dit station moet onthouden.",
+          "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer."
         }
       },
       "profile_error": {
@@ -223,7 +225,8 @@
           "webhooks": "Webhooks",
           "profiles": "Profielen toevoegen of wijzigen",
           "recovery": "Vervangende reizen en bevestigingen",
-          "arrival": "Aankomst bevestigen of corrigeren"
+          "arrival": "Aankomst bevestigen of corrigeren",
+          "weather": "Weer"
         }
       },
       "validate": {
@@ -343,7 +346,8 @@
           "return_other_stations": "Andere instapstations voor de terugreis",
           "other_station_radius_m": "Afstand tot een ander station in meters",
           "other_station_dwell_min": "Minuten op een ander station voordat dit meetelt",
-          "ask_to_remember_station": "Aanbieden om een nieuw instapstation te onthouden"
+          "ask_to_remember_station": "Aanbieden om een nieuw instapstation te onthouden",
+          "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen"
         },
         "data_description": {
           "compensation_reminder": "Optionele vergelijking met het opgeslagen reisplan nadat je zelf je aankomst bevestigt. Gebruikt de meldingsinstellingen voor routineberichten. Dit bepaalt niet of je recht hebt op geld terug.",
@@ -352,7 +356,8 @@
           "return_other_stations": "TCC volgt automatisch een trein vanaf deze stations als je telefoon daar is en er nog geen trein wordt gevolgd.",
           "other_station_radius_m": "Hoe dicht je telefoon bij een station moet zijn. Standaard 500.",
           "other_station_dwell_min": "0 betekent dat één locatiebepaling genoeg is. Standaard 0.",
-          "ask_to_remember_station": "Nadat je Ja zegt bij een nieuw station, vraagt TCC één keer of het dit station moet onthouden."
+          "ask_to_remember_station": "Nadat je Ja zegt bij een nieuw station, vraagt TCC één keer of het dit station moet onthouden.",
+          "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer."
         }
       },
       "profile_error": {
@@ -459,6 +464,16 @@
         "data_description": {
           "mode": "Een vaste dag gebruikt de eerste trein die je voor die weekdag hebt ingesteld, of de normale eerste trein.",
           "min_stay": "Alleen voor dagen met een tijdvak. Leeg gebruikt de normale instelling; 0 schakelt de verblijfsduur voor die dag uit."
+        }
+      },
+      "weather": {
+        "title": "Weerwaarschuwingen",
+        "description": "De weersverwachting werkt zonder sleutel. Vul je eigen geregistreerde KNMI Open Data API-sleutel in voor officiële gele, oranje en rode waarschuwingen. Vraag een geregistreerde sleutel aan via het [KNMI-ontwikkelaarsportaal]({knmi_portal}). Maak het veld leeg om de sleutel te verwijderen. Zonder werkende sleutel blijven waarschuwingen onbekend.",
+        "data": {
+          "knmi_api_key": "Je KNMI Open Data API-sleutel (optioneel)"
+        },
+        "data_description": {
+          "knmi_api_key": "Wordt alleen naar de KNMI-API gestuurd, nooit naar Open-Meteo of downloadservers."
         }
       }
     },

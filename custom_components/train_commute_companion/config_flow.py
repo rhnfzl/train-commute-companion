@@ -468,6 +468,7 @@ class TccOptionsFlow(
             )
         return self.async_show_form(
             step_id="weather",
+            description_placeholders={"knmi_portal": "https://developer.dataplatform.knmi.nl/"},
             data_schema=vol.Schema(
                 {
                     vol.Optional(

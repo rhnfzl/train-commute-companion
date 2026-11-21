@@ -468,12 +468,12 @@
       },
       "weather": {
         "title": "Weather warnings",
-        "description": "Forecasts work without a key. For official yellow, orange and red warnings, enter your own registered KNMI Open Data API key. Clear the field to remove it. Without a working key, warning coverage stays unavailable.",
+        "description": "Forecasts work without a key. For official yellow, orange and red warnings, enter your own registered KNMI Open Data API key. Request a registered key from the [KNMI developer portal]({knmi_portal}). Clear the field to remove it. Without a working key, warning coverage stays unavailable.",
         "data": {
           "knmi_api_key": "Your KNMI Open Data API key (optional)"
         },
         "data_description": {
-          "knmi_api_key": "Request a registered key at https://developer.dataplatform.knmi.nl/. Sent only to the KNMI API, never to Open-Meteo or download hosts."
+          "knmi_api_key": "Sent only to the KNMI API, never to Open-Meteo or download hosts."
         }
       }
     },

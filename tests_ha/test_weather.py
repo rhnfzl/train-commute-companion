@@ -20,6 +20,10 @@ async def test_user_can_set_clear_and_keep_their_own_warning_key(hass):
             result["flow_id"], {"next_step_id": "weather"}
         )
         assert result["step_id"] == "weather"
+        assert (
+            result["description_placeholders"]["knmi_portal"]
+            == "https://developer.dataplatform.knmi.nl/"
+        )
         result = await hass.config_entries.options.async_configure(
             result["flow_id"], {"knmi_api_key": key}
         )
