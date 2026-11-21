@@ -35,6 +35,12 @@ def _where_and_when(s: OccurrenceState, ctx: Ctx) -> tuple[str, datetime, dateti
         # an onward train continues the kept incoming leg: dated from it, not the window
         lo = to_utc(s.lock.legs[n - 1].train.planned_departure)
         return s.lock.legs[n - 1].alight_stop, lo, lo + timedelta(days=1)
+    if ctx.profile.travel_plan:
+        # An explicit choice can take a verified later train on this service date.
+        day = s.key.service_date
+        start = resolve_local(day, time(), edge="start")
+        end = resolve_local(day + timedelta(days=1), time(), edge="start")
+        return boarding_origin(s, ctx), to_utc(start), to_utc(end)
     return boarding_origin(s, ctx), *departure_span(s, ctx)
 
 

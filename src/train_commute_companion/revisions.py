@@ -24,6 +24,7 @@ from train_commute_companion.state import (
     OccurrenceState,
 )
 from train_commute_companion.store import PersistedState
+from train_commute_companion.travel_plans import plan_suppresses
 
 
 def with_settings(route: Profile, settings: Profile) -> Profile:
@@ -72,6 +73,17 @@ def effective_profile(
 
 def profile_for(st: PersistedState, s: OccurrenceState) -> Profile | None:
     return effective_profile(st.config_snapshots, st.config, s)
+
+
+def routing_profile(st: PersistedState, pid: str, revision: int | None = None) -> Profile | None:
+    regular = find_profile(st.config, pid)
+    if regular is not None:
+        return regular
+    stored = find_profile(st.config_snapshots.get(revision), pid) if revision is not None else None
+    if stored is not None and stored.travel_plan:
+        return stored
+    plan = st.travel_plans.get(pid)
+    return plan.profile if plan is not None else None
 
 
 def commute_day_for(p: Profile, d: Direction, service_day: date) -> date:
@@ -160,6 +172,15 @@ def signature_for(
     ) or baseline_on(hist, p, d, sd)
     n = len(p.journey(d).transfers) + 1
     return v.signature if v is not None and len(v.signature.legs) == n else None
+
+
+def travel_replaces(st: PersistedState, p: Profile, d: Direction, commute_day: date) -> bool:
+    if not st.travel_plans:
+        return False
+    service_day = commute_day + timedelta(days=p.journey(d).day_offset)
+    sig = signature_for(st, p, d, service_day)
+    sch = dated_schedule(p, d, commute_day, sig.legs[0].departure if sig else None)
+    return plan_suppresses(sch, p, st.travel_plans.values())
 
 
 def occurrence_ctx(st: PersistedState, s: OccurrenceState, now: datetime) -> Ctx | None:

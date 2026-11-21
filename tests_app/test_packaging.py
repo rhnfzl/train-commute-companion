@@ -79,17 +79,33 @@ def test_dockerfile_installs_the_app_extra():
     assert "import tcc_app.mcp_server" in smoke
 
 
-def test_mcp_doc_is_local_only():
+def test_mcp_doc_keeps_the_default_relay_local_and_read_only():
     doc = (ROOT / "docs/mcp.md").read_text()
+    local = doc.split("## Connect an agent", 1)[0]
     for name in ("get_status", "get_next_connections", "get_works_ahead"):
-        assert name in doc
+        assert name in local
     # the relay runs in its own container: `exec` would need the app running and die with it,
     # so the fixed "app is not running" error could never be answered
-    assert doc.count("run --rm --no-deps -T mcp") == 1
-    assert '"run", "--rm", "--no-deps", "-T", "mcp"' in doc and "exec" not in doc
-    assert "no actions" in doc.lower()
-    assert "ports:" not in doc and "0.0.0.0" not in doc and "http://" not in doc
+    assert local.count("run --rm --no-deps -T mcp") == 1
+    assert '"run", "--rm", "--no-deps", "-T", "mcp"' in local and "exec" not in local
+    assert "three read-only tools" in local
+    assert "ports:" not in local and "0.0.0.0" not in local
+    assert "Never put a network bridge or proxy in front of it" in local
+    assert "run --rm --no-deps -T -e TCC_MCP_AGENT_TOKEN mcp" in doc
     assert "mcp.md" in (ROOT / "docs/docker.md").read_text()
+
+
+def test_mcp_remote_doc_publishes_only_on_the_encrypted_private_interface():
+    compose = (ROOT / "examples/docker-compose.yml").read_text()
+    assert "TCC_MCP_REMOTE_PORT" not in compose and "8765" not in compose
+    doc = (ROOT / "docs/mcp.md").read_text().split("## Private-network access", 1)[1]
+    override = yaml.safe_load(doc.split("```yaml\n", 1)[1].split("```", 1)[0])["services"]["tcc"]
+    private_ip = "${TCC_MCP_PRIVATE_IP:?Set the encrypted private-network IP}"
+    assert override["environment"]["TCC_MCP_REMOTE_PORT"] == "8765"
+    assert override["environment"]["TCC_MCP_REMOTE_BIND"] == "0.0.0.0"
+    assert override["environment"]["TCC_MCP_REMOTE_ALLOWED_HOSTS"] == f"{private_ip}:8765"
+    assert override["ports"] == [f"{private_ip}:8765:8765"]
+    assert "encrypted private network" in doc and "Bearer <agent-token>" in doc
 
 
 def test_the_mcp_relay_service_has_no_app_healthcheck():

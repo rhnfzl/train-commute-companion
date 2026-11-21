@@ -105,8 +105,10 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
             if journey is not None:
                 journey["unproven"] = False  # 0.3.0 other-station guess default
     raw["state"]["remembered_stations"] = {}
+    raw["state"] |= {"travel_plans": {}, "travel_receipts": {}, "travel_revision": 0}
     for cfg in (raw["state"]["config"], *raw["state"]["config_snapshots"].values()):
         for profile in cfg["profiles"]:
+            profile["travel_plan"] = False
             for d in ("outbound", "return_"):
                 profile[d]["active_lead_min"] = None  # Q9 default for an older store
                 profile[d] |= {  # 0.3.0 window mode defaults
@@ -116,6 +118,8 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
                     "by_weekday": {},
                     "first_train_set": True,
                     "other_stations": [],
+                    "exact_train": None,
+                    "arrive_by": None,
                 }
             profile["alerts"]["quiet_repeat_misses"] = False  # 2026-11-18 default
             profile["alerts"]["weather"] = True

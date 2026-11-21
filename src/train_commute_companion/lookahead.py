@@ -1,7 +1,7 @@
 """Planned-works look-ahead and timetable baselines (7.10, 7.12 rules 18, 19, 21). Pure."""
 
 from collections import Counter
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 
@@ -644,6 +644,7 @@ def run_lookahead(
     bases: Mapping[tuple[str, Direction], BaselineHistory],
     skipped: Collection[date] = (),
     probe_finished: bool = True,
+    replaced: Callable[[date], bool] | None = None,
 ) -> tuple[BaselineHistory, LookAheadLedger, list[AlertEvent]] | None:
     """The direction's serialised look-ahead writer. Every fact is written to the ledger and
     stored as a pending message before any delivery. `others` are the other profiles and
@@ -673,7 +674,9 @@ def run_lookahead(
         dx: draft.history() if dx is d else bases.get((p.id, dx), BaselineHistory())
         for dx in Direction
     }
-    plan = probe_dates(p, today, direction=d, histories=histories, skipped=skipped)
+    plan = probe_dates(
+        p, today, direction=d, histories=histories, skipped=skipped, replaced=replaced
+    )
     expected_all = [
         service_date(p, d, day) for day in plan.dates if p.journey_on(d, day).mode != "window"
     ]
@@ -684,6 +687,7 @@ def run_lookahead(
             for r in results
             if r.direction is d
             and r.service_date not in skipped
+            and (replaced is None or not replaced(r.service_date))
             and (not custom or r.service_date in expected_all)
         ),
         key=lambda r: (r.service_date, r.leg_index is None, r.leg_index or 0),

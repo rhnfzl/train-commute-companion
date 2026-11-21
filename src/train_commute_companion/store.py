@@ -25,6 +25,7 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.serde import decode, encode
 from train_commute_companion.state import BaselineHistory, LookAheadLedger, OccurrenceState
+from train_commute_companion.travel_plans import PlanReceipt, TravelPlan
 
 VERSION = 2
 _V1 = 1  # read for as long as such files may exist; only VERSION is ever written
@@ -94,6 +95,9 @@ class PersistedState:
     # "<profile_id>|<direction>" -> the boarding stations the user asked TCC to remember;
     # kept here, never written to the profile file
     remembered_stations: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    travel_plans: Mapping[str, TravelPlan] = field(default_factory=dict)
+    travel_receipts: Mapping[str, PlanReceipt] = field(default_factory=dict)
+    travel_revision: int = 0
 
 
 class Store(Protocol):

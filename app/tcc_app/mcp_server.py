@@ -1,11 +1,9 @@
-"""The read-only MCP server on stdio (9 step 5, 7.12 rule 15), run inside the container by the MCP
-client: `python -m tcc_app.mcp_server`. It holds no state and reads no setting but the state
-directory; each call is relayed to the running app's private socket. stdout carries only the
-protocol, so logging goes to stderr."""
+"""MCP tools for the companion. The stdio entry point relays to the private app socket."""
 
 import logging
 import os
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -19,19 +17,21 @@ NOT_RUNNING = "The commute app is not running, or its MCP socket is missing."
 READ_ONLY = ToolAnnotations(
     read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
 )
+CHANGE = ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=True
+)
+Dispatch = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
-def build(socket: Path) -> MCPServer:
+async def _call(dispatch: Dispatch, request: dict[str, Any]) -> dict[str, Any]:
+    reply = await dispatch(request)
+    if "error" in reply:
+        raise ToolError(str(reply["error"]))
+    return reply
+
+
+def build_tools(read: Dispatch, travel: Dispatch | None = None) -> MCPServer:
     server = MCPServer("train-commute-companion")
-
-    async def relay(request: dict[str, Any]) -> dict[str, Any]:
-        try:
-            reply = await ask_readout(socket, request)
-        except (OSError, TimeoutError, ValueError):
-            raise ToolError(NOT_RUNNING) from None  # never stale data, never the error's text
-        if "error" in reply:
-            raise ToolError(str(reply["error"]))
-        return reply
 
     @server.tool(
         description="What /status shows for one profile: its journeys, warnings and health.",
@@ -39,7 +39,7 @@ def build(socket: Path) -> MCPServer:
         structured_output=True,
     )
     async def get_status(profile: str) -> dict[str, Any]:
-        return await relay({"tool": "get_status", "profile": profile})
+        return await _call(read, {"tool": "get_status", "profile": profile})
 
     @server.tool(
         description="The next connections of one profile's outbound or return journey.",
@@ -49,8 +49,8 @@ def build(socket: Path) -> MCPServer:
     async def get_next_connections(
         profile: str, direction: Literal["outbound", "return"]
     ) -> dict[str, Any]:
-        return await relay(
-            {"tool": "get_next_connections", "profile": profile, "direction": direction}
+        return await _call(
+            read, {"tool": "get_next_connections", "profile": profile, "direction": direction}
         )
 
     @server.tool(
@@ -59,14 +59,99 @@ def build(socket: Path) -> MCPServer:
         structured_output=True,
     )
     async def get_works_ahead(profile: str) -> dict[str, Any]:
-        return await relay({"tool": "get_works_ahead", "profile": profile})
+        return await _call(read, {"tool": "get_works_ahead", "profile": profile})
+
+    if travel is not None:
+        add_travel_tools(server, travel)
 
     return server
 
 
+def add_travel_tools(server: MCPServer, dispatch: Dispatch) -> None:
+    @server.tool(
+        description="List saved one-off, temporary and ongoing travel plans.",
+        annotations=READ_ONLY,
+        structured_output=True,
+    )
+    async def list_travel_plans() -> dict[str, Any]:
+        return await _call(dispatch, {"tool": "list_travel_plans"})
+
+    @server.tool(
+        description=(
+            "Manage one-off, temporary or ongoing NS travel plans. Supply change.action "
+            "'create' or 'edit' with a plan (and plan_id for edit), 'cancel' with plan_id, "
+            "or 'undo' with the undo_id from a saved change. A plan needs origin and destination "
+            "(station codes or names), start_date (YYYY-MM-DD) and outbound. Optional fields "
+            "are name, profile_id, return, weekdays (ISO numbers, Monday=1), interval_weeks, "
+            "end_date and skip_dates. Omit weekdays for a single date or end_date for ongoing "
+            "recurrence. Each journey uses mode 'exact' with departure and optional train_number, "
+            "or 'window' or 'on_leave' with earliest, latest and optional arrive_by. "
+            "You can omit the bounds for an arrival deadline or a full-day on_leave trip. "
+            "Supply change.preference_name to reuse a confirmed preference. "
+            "Times are HH:MM in the Netherlands. Set return.day_offset to 1 for a next-day return. "
+            "If the result reports a conflict, ask the traveller before resubmitting with "
+            "change.conflict_policy 'replace' or 'keep'. Ask about any missing details. Use a "
+            "fresh request_id for each new change and reuse it for retries of the same change. "
+            "A pending request needs approval in Telegram. Check it with get_travel_change."
+        ),
+        annotations=CHANGE,
+        structured_output=True,
+    )
+    async def change_travel_plan(change: dict[str, Any], request_id: str) -> dict[str, Any]:
+        return await _call(
+            dispatch, {"tool": "change_travel_plan", "change": change, "request_id": request_id}
+        )
+
+    @server.tool(
+        description="Check the result of an earlier travel plan or preference change.",
+        annotations=READ_ONLY,
+        structured_output=True,
+    )
+    async def get_travel_change(request_id: str) -> dict[str, Any]:
+        return await _call(dispatch, {"tool": "get_travel_change", "request_id": request_id})
+
+    @server.tool(
+        description="List confirmed travel preferences.",
+        annotations=READ_ONLY,
+        structured_output=True,
+    )
+    async def list_travel_preferences() -> dict[str, Any]:
+        return await _call(dispatch, {"tool": "list_travel_preferences"})
+
+    @server.tool(
+        description=(
+            "Change a travel preference when the traveller explicitly asks. Use action 'save' "
+            "with a preference containing name, origin, destination and optional arrival_by "
+            "(HH:MM) or return_on_leave (boolean), or action 'forget' with the preference name. "
+            "Use a fresh request_id for a new change and the same ID for retries. A pending "
+            "request needs approval in Telegram. Check it with get_travel_change."
+        ),
+        annotations=CHANGE,
+        structured_output=True,
+    )
+    async def change_travel_preference(change: dict[str, Any], request_id: str) -> dict[str, Any]:
+        return await _call(
+            dispatch,
+            {"tool": "change_travel_preference", "change": change, "request_id": request_id},
+        )
+
+
+def build(socket: Path, *, token: str | None = None) -> MCPServer:
+    async def relay(request: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return await ask_readout(socket, request)
+        except (OSError, TimeoutError, ValueError):
+            raise ToolError(NOT_RUNNING) from None
+
+    async def relay_travel(request: dict[str, Any]) -> dict[str, Any]:
+        return await relay({**request, "token": token})
+
+    return build_tools(relay, relay_travel if token else None)
+
+
 def main() -> None:
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
-    build(mcp_socket_path(os.environ)).run()
+    build(mcp_socket_path(os.environ), token=os.getenv("TCC_MCP_AGENT_TOKEN")).run()
 
 
 if __name__ == "__main__":

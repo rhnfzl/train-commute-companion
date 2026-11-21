@@ -24,7 +24,8 @@ def resume(
     whole_day: bool,
     now: datetime,
 ) -> PersistedState | Refused:
-    profile = find_profile(stored.config, profile_id)
+    plan = stored.travel_plans.get(profile_id)
+    profile = plan.profile if plan is not None else find_profile(stored.config, profile_id)
     if profile is None:
         return no_journey(profile_id)
     today, instant = now.astimezone(TZ).date(), to_utc(now)
@@ -46,7 +47,7 @@ def resume(
             ctx = occurrence_ctx(stored, existing, now)
             if ctx is not None and eligible(ctx):
                 contexts.append(ctx)
-    for d in Direction:
+    for d in Direction if plan is None else ():
         if direction is not None and d is not direction:
             continue
         for back in (-1, 0, 1, 2):

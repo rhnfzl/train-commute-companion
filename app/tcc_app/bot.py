@@ -56,6 +56,9 @@ from .commands import (
 )
 from .follow import FUTURE_LIMIT, Follower, stamp
 from .telegram import TelegramApi, TelegramError, split_text
+from .travel_actions import POLICY_LABELS, TravelActions
+from .travel_chat import TravelChat, TravelReply, buttons, plan_receipt
+from .travel_language import TravelLanguage
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +76,12 @@ SILENT_TEST = "Train Commute Companion: test alert, silent. This one should arri
 USAGE_CHOOSE = "Usage: /choose [profile] [outbound|return] HH:MM [train number] [YYYY-MM-DD]"
 HELP = (
     "/status: the journeys being followed now\n"
+    "/plan: set up a one-off or repeating trip\n"
+    "/plans: view, edit or cancel saved trips\n"
+    "/agents: choose which agents can change plans\n"
+    "/preferences: view saved travel preferences\n"
+    "/remember: save a travel preference\n"
+    "/forgetpref NAME: delete a travel preference\n"
     "/choose [profile] [outbound|return] HH:MM [train number] [YYYY-MM-DD]: lock that train\n"
     "/leaving [profile] [outbound|return]: I'm leaving now\n"
     "/arrived: enter and review an actual destination arrival with a full date and timezone\n"
@@ -95,9 +104,13 @@ BUTTON_LABELS = {
     "l": "I'm leaving",
     "s": "Not travelling",
     "c": "Take train",
+    "tp": "Travel plan",
+    "ta": "Travel approval",
+    "ag": "Agent access",
+    "tm": "Travel preference",
 }
 # exclusive one-time choices: a used one takes its whole keyboard; any other used button goes alone
-WHOLE_KEYBOARD = frozenset({"ok", "av", "q", "ra"})
+WHOLE_KEYBOARD = frozenset({"ok", "av", "q", "ra", "tp", "ta", "ag", "tm"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +208,9 @@ class Bot:
         follower: Follower | None = None,
         webhook_test: Callable[[], Awaitable[Sequence[WebhookTestResult]]] | None = None,
         bind_chat: Callable[[int], None] | None = None,
+        *,
+        travel_actions: TravelActions | None = None,
+        travel_language: TravelLanguage | None = None,
     ) -> None:
         self._api, self._rt, self._chat, self._path = api, rt, chat_id, state_path
         self._follower, self._webhook_test = follower, webhook_test
@@ -226,6 +242,13 @@ class Bot:
         self._claim: SetupClaim | None = None
         self._proof: DeliveryProof | None = None
         self._arrival_drafts: dict[str, ArrivalDraft] = {}
+        self.travel_actions = travel_actions or TravelActions(
+            rt, {}, state_path.with_name("travel-agent-access.json")
+        )
+        self._travel_chat = TravelChat(
+            rt, self.travel_actions.preferences, travel_language, self.travel_actions
+        )
+        self._travel_lock = asyncio.Lock()
         self._save_phase = SavePhase.READY
         self._save_lock = asyncio.Lock()  # one save at a time: no shared .tmp, the newest wins
         self._keyboard_lock = asyncio.Lock()
@@ -506,6 +529,49 @@ class Bot:
             await self._forget(args)
         elif word in ("/choose", "/leaving", "/skip"):
             await self._targeted(word, args)
+        elif word in ("/plan", "/plans", "/agents", "/preferences", "/remember", "/forgetpref"):
+            if not self.confirmed:
+                await self._reply("Confirm phone delivery with /test before managing travel plans.")
+                return
+            async with self._travel_lock:
+                if word == "/agents":
+                    reply = self._agent_access()
+                elif word in ("/plan", "/plans"):
+                    reply = self._travel_chat.command(word)
+                else:
+                    reply = self._travel_chat.memory_command(word, " ".join(args))
+                if await self._reply(reply.text, reply.markup) and word in (
+                    "/plans",
+                    "/preferences",
+                ):
+                    await self._offer_travel_memory(check=True)
+        elif self.confirmed and not text.lstrip().startswith("/"):
+            async with self._travel_lock:
+                reply_or_none = self._travel_chat.text(text)
+                if reply_or_none is None:
+                    reply_or_none = await self._travel_chat.interpret(text)
+                if reply_or_none and await self._reply(reply_or_none.text, reply_or_none.markup):
+                    await self._offer_travel_memory()
+
+    async def _offer_travel_memory(self, *, check: bool = False) -> None:
+        reply = self._travel_chat.memory_suggestion(check=check)
+        if reply is not None and await self._reply(reply.text, reply.markup):
+            self._travel_chat.suggestion_delivered()
+
+    def _agent_access(self) -> TravelReply:
+        policies = self.travel_actions.policies()
+        if not policies:
+            return TravelReply("There are no registered agents.")
+        text = "Plan change access\n" + "\n".join(
+            f"{agent}: {POLICY_LABELS[policy]}" for agent, policy in policies.items()
+        )
+        return TravelReply(text, buttons(*[[(agent, f"ag|{agent}")] for agent in policies]))
+
+    async def prompt_travel_approval(self, text: str, approval_id: str) -> bool:
+        rows = [[("Allow once", f"ta|{approval_id}|once"), ("Deny", f"ta|{approval_id}|deny")]]
+        if self.travel_actions.can_always(approval_id):
+            rows.append([("Always allow", f"ta|{approval_id}|always")])
+        return self.confirmed and await self._reply(text, buttons(*rows))
 
     async def _targeted(self, word: str, args: Sequence[str]) -> None:
         view = self._rt.view()  # outside the try: only parse_target's refusals are replies
@@ -555,6 +621,9 @@ class Bot:
         if out.done and replied:
             tag = data.split("|", 1)[0] if isinstance(data, str) else ""
             await self._retire(message, None if tag in WHOLE_KEYBOARD else data)
+            if tag in ("ta", "tp"):
+                async with self._travel_lock:
+                    await self._offer_travel_memory(check=tag == "ta" and out.markup is not None)
 
     async def _retire(self, message: dict[str, Any], data: str | None) -> None:
         # Callback snapshots can predate another tap's edit, so edits share retired controls.
@@ -601,6 +670,15 @@ class Bot:
 
     async def _dispatch(self, data: Any, action_id: Any) -> Outcome:
         parts = data.split("|") if isinstance(data, str) else []
+        if parts[:1] and parts[0] in ("tp", "ta", "ag", "tm"):
+            if not self.confirmed:
+                return Outcome("Confirm phone delivery with /test before managing travel plans.")
+            if parts[0] in ("ta", "ag"):
+                travel = self._travel_button(parts)
+            else:
+                async with self._travel_lock:
+                    travel = self._travel_button(parts)
+            return Outcome(travel.text, travel.markup, travel.done)
         if parts[:1] == ["av"] and len(parts) == 2:
             return await self._arrival_confirm(parts[1])
         if parts[:1] == ["q"] and len(parts) == 3:
@@ -625,6 +703,27 @@ class Bot:
             return await self._choose(pid, name, at, rest[1] if len(rest) == 2 else None,
                                       service_date, direction)  # fmt: skip
         return Outcome(INVALID)
+
+    def _travel_button(self, parts: list[str]) -> TravelReply:
+        tag, *args = parts
+        if tag in ("tp", "tm"):
+            return self._travel_chat.button("|".join(parts))
+        if tag == "ta" and len(args) == 2:
+            return plan_receipt(self.travel_actions.decide(args[0], args[1]))
+        if tag == "ag" and args and args[0] in self.travel_actions.policies():
+            agent = args[0]
+            if len(args) == 1:
+                return TravelReply(
+                    f"Which plan changes may {agent} make?",
+                    buttons(
+                        (("Ask", f"ag|{agent}|ask"), ("Always allow", f"ag|{agent}|always")),
+                        (("Deny", f"ag|{agent}|deny"),),
+                    ),
+                    done=True,
+                )
+            if len(args) == 2:
+                return plan_receipt(self.travel_actions.set_policy(agent, args[1]))
+        return TravelReply(INVALID)
 
     async def _arrival_review(self, args: Sequence[str]) -> None:
         if not self.confirmed:

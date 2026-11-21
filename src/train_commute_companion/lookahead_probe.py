@@ -1,7 +1,7 @@
 """Look-ahead probing: the stored keys, signatures, what to ask NS and how one day's answers read
 (7.10, 7.12 rules 18, 19, 21). Pure."""
 
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
@@ -361,8 +361,9 @@ def probe_dates(
     direction: Direction,
     histories: Mapping[Direction, BaselineHistory] | None = None,
     skipped: Collection[date] = (),
+    replaced: Callable[[date], bool] | None = None,
 ) -> ProbePlan:
-    """Count commute start dates. Pauses and individual skips use the direction's service date."""
+    """Count commute days. Pauses, skips and replacements use the direction's service date."""
     alerts = p.alerts
     legacy = not alerts.custom_timetable_horizon
     by_commute = alerts.timetable_horizon_unit == "commute_dates"
@@ -379,7 +380,7 @@ def probe_dates(
         if not is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays):
             continue
         sd = service_date(p, direction, day)
-        if p.paused_on(sd) or sd in skipped:
+        if p.paused_on(sd) or sd in skipped or (replaced is not None and replaced(sd)):
             continue
         if not legacy and p.journey_on(direction, day).mode == "window":
             continue

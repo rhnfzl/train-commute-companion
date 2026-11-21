@@ -542,8 +542,17 @@ def occurrence_view(
         x = None if s.lock is None else unfinished_leg(s.lock)
         if s.lock is None:
             next_good = find_next_good(s, ctx, pool)
+            if next_good is None and ctx.profile.travel_plan and s.missing_sent:
+                next_good = find_next_good(s, ctx, pool, respect_plan=False)
         elif x is not None:  # as `left_note` names it (7.7, rule 7)
             next_good = next_good_instead_of(s, ctx, pool, s.lock, s.lock.legs.index(x))[1]
+            if next_good is None and ctx.profile.travel_plan and holds_live(
+                s.alert_keys,
+                (EventKind.CANCELLED, EventKind.CUT_SHORT, EventKind.TRANSFER_BROKEN),
+            ):
+                next_good = next_good_instead_of(
+                    s, ctx, pool, s.lock, s.lock.legs.index(x), respect_plan=False
+                )[1]
 
     coverage = "complete" if disruptions_fresh(s, ctx.now) else "unknown"
     shown_legs = legs(lock)
@@ -677,7 +686,8 @@ def _shown_profiles(st: PersistedState) -> list[Profile]:
 def _direction_infos(st: PersistedState, profiles: Sequence[Profile]) -> tuple[DirectionInfo, ...]:
     directions = []
     for p in profiles:
-        for d in Direction:
+        travel = st.travel_plans.get(p.id)
+        for d in (Direction.OUTBOUND,) if travel is not None and not travel.has_return else Direction:
             routes = [
                 find_profile(st.config_snapshots.get(s.route_revision), p.id)
                 for s in st.occurrences.values()

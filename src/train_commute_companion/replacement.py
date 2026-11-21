@@ -61,7 +61,7 @@ class GoodKwargs(TypedDict):
     catch: Catchability
     kept_incoming: ClassifiedLeg | None
     done_transfers: int
-    max_transfers: int
+    max_transfers: int | None
     profile_min: Mapping[str, int]
 
 
@@ -92,7 +92,8 @@ def check_good(c: Connection, answer: ProviderAnswer, **kw: Unpack[GoodKwargs]) 
     if c.destination != kw["destination"]:
         return bad("does not arrive at the destination")
     total = kw["done_transfers"] + (kept is not None) + len(c.legs) - 1
-    if total > kw["max_transfers"]:
+    cap = kw["max_transfers"]
+    if cap is not None and total > cap:
         return bad("over the transfer cap")
     # judge the current copy of every train (6.2) against `c`'s own alight stops
     seen_in = evidence(answer)
