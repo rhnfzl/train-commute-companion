@@ -1,1 +1,5 @@
-{"name": "Train Commute Companion", "homeassistant": "2026.10.0"}
+{
+  "name": "Train Commute Companion",
+  "homeassistant": "2026.10.0",
+  "country": ["NL"]
+}
