@@ -170,8 +170,8 @@ def _occurrence(o: OccurrenceView) -> list[str]:
     if o.route_changed:
         head += " (route changed)"
     out = [head]
-    if o.leave_by is not None and not recovering:
-        out.append(f"  Leave by {hhmm(o.leave_by)}.")
+    if o.leave_by_text is not None:
+        out.append(f"  {o.leave_by_text}.")
     if recovering:
         out.append(f"  Original train monitoring state: {o.direction_state.value}.")
         out.append("  Original train legs (separate from selected recovery):")
@@ -399,6 +399,8 @@ def connections_tool(
             else o.selected_recovery.fields(v.at),
             "train_context": None if o.train_context is None else snapshot_payload(o.train_context),
             "weather": [{**encode(w), "text": weather_text(w)} for w in o.weather],
+            "leave_by": encode(o.leave_by),
+            "weather_allowance": encode(o.weather_allowance),
         }
         for o in occs
     ]

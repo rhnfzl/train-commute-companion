@@ -65,6 +65,8 @@ alerts:
 ```
 
 Set `leave_by: false` to hide this text and the Home Assistant status sensor's `leave_by` timestamp.
+With fresh departure-station weather, `weather_allowance` suggests extra minutes in this text. It defaults to on and changes advice only.
+Set `alerts.weather_allowance: false` to keep the usual leave-by time. See the [minute table and limits](weather.md#suggested-extra-time-before-departure).
 The HA profile details form has the same **Show leave-by time** switch. It does not change notification timing.
 Use per-direction `active_lead_min` for check-in timing. Its default is `buffer_min + 15` when omitted.
 

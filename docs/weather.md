@@ -34,8 +34,52 @@ These thresholds do not predict actual surface conditions.
 Telegram `/status`, MCP journey status and Home Assistant's status sensor attributes expose the same weather view.
 Fresh weather also accompanies routine on-time and at-station phone messages when already available.
 The initial message can precede the first weather response.
-Weather adds no separate notification and does not change train selection, schedules, departure advice or travel buffers.
+Weather adds no separate notification and does not change train selection, schedules or travel buffers.
 Selected recovery journeys use the accepted itinerary's departure and arrival endpoints and times. An endpoint without a known station coordinate has no weather context. Street or phone coordinates are never substituted.
+
+## Suggested extra time before departure
+
+Leave-by text can suggest extra time for forecast rain, fog, snow or possible ice at the departure station.
+For example: **Leave by 07:57 (+5 min suggested for forecast snow)** instead of the usual 08:02.
+The direction's configured `buffer_min` determines the extra minutes:
+
+| Travel buffer | Rain | Fog | Snow | Possible ice |
+| --- | --- | --- | --- | --- |
+| 0 minutes | 0 | 0 | 0 | 0 |
+| 1 to 10 minutes | 2 | 2 | 5 | 5 |
+| 11 to 20 minutes | 3 | 3 | 8 | 10 |
+| 21 to 45 minutes | 5 | 5 | 10 | 15 |
+
+This table is a planning heuristic, not a measured travel-time prediction or calibrated walking estimate.
+The strongest applicable hazard wins: possible ice, then snow, then rain, then fog. Minutes never add together.
+Rain uses at least 0.2 mm precipitation. Fog uses WMO codes 45 or 48.
+Snow uses any snowfall or WMO codes 71, 73, 75, 77, 85 or 86.
+Possible ice uses freezing precipitation codes 56, 57, 66 or 67, or precipitation from 0.2 mm at 1°C or below.
+Dry frost alone adds no time. Hourly forecasts cannot establish the conditions along your walk.
+
+The suggestion uses only a fresh cached departure-station forecast, within 30 minutes of that train's departure.
+Missing, stale or malformed forecasts add no time. Arrival-station weather never adds time before departure.
+No suggestion appears after reaching the station, while travelling, or during an active selected recovery.
+An earlier-train suggestion uses that train's forecast and its conservative leave-by time.
+Held messages use current settings, trains and cached forecasts when sent.
+
+**Suggest extra time for weather** in Home Assistant controls this default-on setting:
+
+```yaml
+alerts:
+  weather_allowance: false
+```
+
+Turning off `weather` or `leave_by` also hides the allowance.
+Turning off only `weather_allowance` keeps ordinary leave-by text and weather context.
+The adjustment changes advice only. It never changes buffers, check-in times, planner queries, followed trains or deadlines.
+Compensation baselines and timers also stay unchanged.
+It does not select an earlier train automatically.
+
+Status text, MCP journey text and routine messages show one adjusted leave-by statement when an allowance applies.
+The canonical `leave_by` timestamp stays unchanged.
+MCP journey fields and Home Assistant status attributes expose `weather_allowance` separately, with `extra_min`, `hazard` and `suggested_leave_by`.
+The Home Assistant `leave_by_text` attribute contains the display text. Allowance fields are null when no allowance applies.
 
 ## Official KNMI warnings need your key
 

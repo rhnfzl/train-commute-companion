@@ -19,7 +19,7 @@ from train_commute_companion.advice import (
     usual_arrival,
 )
 from train_commute_companion.budget import POLL_DEADLINE, POLL_EVERY_S, RequestGate
-from train_commute_companion.calendar import TZ, Clock, resolve_local, to_utc
+from train_commute_companion.calendar import TZ, Clock, hhmm, resolve_local, to_utc
 from train_commute_companion.choice import ChoiceTarget, choice_target, named_connections
 from train_commute_companion.classify import current_run, evidence, find_leg
 from train_commute_companion.compensation import ArrivalError, arrival_text, confirm
@@ -88,6 +88,7 @@ from train_commute_companion.messages import (
     CHECK_APP,
     RefusalKind,
     Refused,
+    leave_by,
     name_stations,
     no_journey,
 )
@@ -177,6 +178,7 @@ from train_commute_companion.travelling import resume
 from train_commute_companion.vehicle import VehicleProvider, VehicleWatch
 from train_commute_companion.vehicle_monitor import VehicleMonitor
 from train_commute_companion.view import OccurrenceView, RuntimeView, runtime_view
+from train_commute_companion.weather_allowance import WeatherAllowance, weather_allowance
 from train_commute_companion.webhook_queue import CopyQueue
 
 log = logging.getLogger(__name__)
@@ -519,11 +521,14 @@ class Runtime:
         snapshot = replace(
             snapshot,
             occurrences=tuple(
-                replace(
-                    o,
-                    recovery_offer=self._recovery.offer_for(o.key),
-                    replacement_plans=self._recovery.plans_for(o.key) or o.replacement_plans,
-                    weather=self._weather_views(o, snapshot.profiles, now),
+                self._with_weather(
+                    replace(
+                        o,
+                        recovery_offer=self._recovery.offer_for(o.key),
+                        replacement_plans=self._recovery.plans_for(o.key) or o.replacement_plans,
+                    ),
+                    snapshot.profiles,
+                    now,
                 )
                 for o in snapshot.occurrences
             ),
@@ -581,21 +586,97 @@ class Runtime:
             if station in self._provider.positions
         )
 
+    def _with_weather(
+        self, o: OccurrenceView, profiles: Sequence[Profile], now: datetime
+    ) -> OccurrenceView:
+        weather = self._weather_views(o, profiles, now)
+        allowance = None
+        if weather and o.leave_by is not None and self._allowance_ready(o):
+            state = self._writer.st.occurrences[okey(o.key)]
+            profile = self._profile_for(state)
+            if profile is not None:
+                departure = next((w for w in weather if w.station == o.legs[0].board), None)
+                if departure is not None:
+                    allowance = weather_allowance(
+                        o.leave_by, profile.journey(o.key.direction).buffer_min, departure, now
+                    )
+        return replace(o, weather=weather, weather_allowance=allowance)
+
+    def _allowance_ready(self, o: OccurrenceView) -> bool:
+        state = self._writer.st.occurrences.get(okey(o.key))
+        profile = None if state is None else self._profile_for(state)
+        return bool(
+            state is not None
+            and profile is not None
+            and profile.alerts.weather_allowance
+            and profile.alerts.weather
+            and profile.alerts.leave_by
+            and not state.at_station
+            and not state.travelling
+            and not o.not_travelling
+            and not o.resolved
+            and o.legs
+            and o.legs[0].progress in (LegState.PENDING, LegState.BOARDING)
+            and not (o.selected_recovery is not None and o.selected_recovery.status == "active")
+        )
+
     def _weather_event(self, event: AlertEvent) -> AlertEvent:
-        if self._weather is None or event.kind not in (EventKind.ALL_GOOD, EventKind.AT_STATION):
+        routine = event.kind in (EventKind.ALL_GOOD, EventKind.AT_STATION)
+        if self._weather is None or not (routine or "Leave by " in event.text):
             return event
         for o in self.view().occurrences:
             if (
                 o.key.profile_id == event.profile_id
                 and o.key.direction is event.direction
+                and o.key.service_date == event.service_date
                 and o.legs
                 and event.train is not None
-                and o.legs[0].train_number == event.train.train_number
-                and o.legs[0].planned_departure == event.train.planned_departure
             ):
-                lines = [weather_text(w) for w in o.weather if w.forecast or w.warnings]
-                return replace(event, text="\n".join((event.text, *lines)))
+                if routine and (
+                    o.legs[0].train_number != event.train.train_number
+                    or o.legs[0].planned_departure != event.train.planned_departure
+                ):
+                    return event
+                base, allowance = o.leave_by, o.weather_allowance
+                weather = o.weather
+                if event.kind is EventKind.LEAVE_NOW and self._allowance_ready(o):
+                    base, allowance, weather = self._earlier_weather(event, o)
+                text = event.text
+                if allowance is not None and base is not None:
+                    text = text.replace(f"Leave by {hhmm(base)}", allowance.text, 1)
+                lines = (
+                    [weather_text(w) for w in weather if w.forecast or w.warnings]
+                    if (routine or text != event.text)
+                    else []
+                )
+                return replace(event, text="\n".join((text, *lines)))
         return event
+
+    def _earlier_weather(
+        self, event: AlertEvent, o: OccurrenceView
+    ) -> tuple[datetime | None, WeatherAllowance | None, tuple[WeatherView, ...]]:
+        state = self._writer.st.occurrences[okey(o.key)]
+        profile = self._profile_for(state)
+        assert profile is not None and self._weather is not None
+        for answer in self._memory.boards.get(okey(o.key), ()):
+            for connection in answer.connections:
+                first = connection.legs[0]
+                if first.train != event.train or first.board.code not in self._provider.positions:
+                    continue
+                obs = first.board.departure
+                expected = (
+                    obs.value if obs is not None and obs.provenance is Provenance.REPORTED else None
+                )
+                buffer = profile.journey(o.key.direction).buffer_min
+                base = leave_by(first.train.planned_departure, expected, buffer)
+                weather = self._weather.snapshot(
+                    first.board.code,
+                    self._provider.positions[first.board.code],
+                    expected or first.train.planned_departure,
+                    self.now(),
+                )
+                return base, weather_allowance(base, buffer, weather, self.now()), (weather,)
+        return None, None, ()
 
     def _refresh_weather_soon(self) -> None:
         if self._weather is not None and self._lifecycle.phase not in (
