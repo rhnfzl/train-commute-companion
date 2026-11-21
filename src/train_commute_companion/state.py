@@ -462,3 +462,5 @@ class LookAheadLedger:
     facts: Mapping[str, tuple[LookAheadFact, ...]] = field(default_factory=dict)
     # Correction fact key -> recipients that accepted its adoption. Empty means none accepted.
     adoption_receipts: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    # Correction fact key -> ID of the original adoption obligation.
+    adoption_ids: Mapping[str, str] = field(default_factory=dict)

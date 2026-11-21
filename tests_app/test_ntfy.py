@@ -3,19 +3,23 @@ import base64
 import json
 import threading
 from dataclasses import replace
+from datetime import timedelta
 
 import httpx
 import pytest
 import runtime_seam as seam
-from app_rig import CODES, ONE_PROFILE, TickClock, free_port, make_app, until
+from app_rig import CODES, ONE_PROFILE, STRANGER, TickClock, free_port, make_app, until
 from lookahead_fixtures import DAYS, NOW, OUT, YAML, confirmed, probe
 from runtime_rig import PROFILE, USUAL, Provider, StationsProvider, at
+from tcc_app.bot import ShellState, save_state
 from tcc_app.main import Settings, build, dispatch_mcp, serve
 from tcc_app.ntfy import NtfyNotifier, NtfyProof, NtfySettings, ntfy_settings
 from tcc_app.web import health_report, start_web
 from test_web import ask
 
 from train_commute_companion.delivery import deliver
+from train_commute_companion.lookahead import render_message
+from train_commute_companion.lookahead_probe import bundle_key
 from train_commute_companion.lookahead_run import ProbedRun
 from train_commute_companion.model import (
     AlertEvent,
@@ -27,7 +31,7 @@ from train_commute_companion.model import (
     direction_key,
 )
 from train_commute_companion.providers.base import ActiveDisruption, ActiveDisruptions
-from train_commute_companion.state import BaselineHistory, LookAheadLedger
+from train_commute_companion.state import BaselineHistory, LookAheadFact, LookAheadLedger
 from train_commute_companion.store import StorageError
 
 TOPIC = "random-test-topic-0123456789abcdef0123456789"
@@ -604,18 +608,23 @@ async def test_ntfy_optout_stops_remaining_parts_after_yaml_reload(tmp_path, tg,
     assert not app.rt.state.obligations
 
 
-def adoption(rt, *, text=None):
+def adoption(rt, *, text=None, start=NOW, later=False):
     key = direction_key("p1", OUT)
     base = BaselineHistory((confirmed(),))
     shifted = [
         result
         for day in DAYS
-        for result in probe(day, base.in_force(day), l1=("08:15", "08:43"), l2=("08:49", "09:27"))
+        for result in probe(
+            day,
+            base.in_force(day),
+            l1=("08:19", "08:47") if later else ("08:15", "08:43"),
+            l2=("08:53", "09:31") if later else ("08:49", "09:27"),
+        )
     ]
     config = rt.config
     seam.seed_state(rt, baselines={key: base})
     seam.apply_lookahead_run(
-        rt, config.profiles[0], OUT, ProbedRun(NOW, config.revision, base.latest, tuple(shifted))
+        rt, config.profiles[0], OUT, ProbedRun(start, config.revision, base.latest, tuple(shifted))
     )
     ledger = rt.state.lookahead[key]
     old = next(o for o in ledger.pending if o.event.kind is EventKind.TIMETABLE_ADOPTED)
@@ -998,6 +1007,407 @@ async def test_timetable_correction_reaches_phone_after_adoption_inflight_at_wit
         await asyncio.wait_for(sending, 2)
     await seam.deliver(app.rt)
     assert any("ignore the earlier change" in message for message in messages)
+
+
+def legacy_adoption_file(app):
+    path = app.settings.state_dir / "tcc-state.json"
+    raw = json.loads(path.read_text())
+    for ledger in raw["state"]["lookahead"].values():
+        ledger.pop("adoption_ids", None)
+        ledger.pop("adoption_receipts", None)
+    path.write_text(json.dumps(raw))
+
+
+async def test_late_adoption_acceptance_does_not_prove_recreated_profile(tmp_path, tg):
+    entered, release = asyncio.Event(), asyncio.Event()
+    messages = []
+
+    async def receive(request):
+        message = json.loads(request.content)["message"]
+        if "08:15" in message and "NS moved" in message:
+            entered.set()
+            await release.wait()
+        messages.append(message)
+        if "NS moved" in message and "08:19" in message:
+            return httpx.Response(500)
+        return httpx.Response(200)
+
+    tg.handler = receive
+    clock = TickClock(NOW)
+    app = make_app(tmp_path, tg, clock, ntfy=NtfySettings(TOPIC, TOKEN))
+    app.settings.profiles.write_text(YAML)
+    await app.rt.start()
+    before, old = adoption(app.rt)
+    store = seam.store(app.rt)
+    sending = asyncio.create_task(seam.deliver(app.rt))
+    reloads = []
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        app.settings.profiles.write_text("profiles: []\n")
+        reloads.append(asyncio.create_task(app.rt.reload()))
+        await until(lambda: not store.load().config.profiles)
+        revision = store.load().config.revision
+        app.settings.profiles.write_text(YAML)
+        reloads.append(asyncio.create_task(app.rt.reload()))
+        await until(lambda: store.load().config.revision > revision)
+        clock.jump(5)
+        after, new = adoption(app.rt, start=NOW, later=True)
+        assert before.latest == after.latest
+        assert old.id != new.id
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(sending, *reloads), 2)
+    assert any("08:15" in message for message in messages)
+    clock.jump(25)
+    withdraw_adoption(app.rt, after, clock.now())
+    await seam.deliver(app.rt)
+    assert not any("ignore the earlier change" in message for message in messages)
+
+
+@pytest.mark.parametrize("continuity", ["same", "replacement", "unknown"])
+async def test_legacy_telegram_correction_requires_saved_continuity(tmp_path, tg, continuity):
+    clock = TickClock(NOW)
+    app = make_app(tmp_path, tg, clock)
+    app.settings.profiles.write_text(YAML)
+    await app.rt.start()
+    history, old = adoption(app.rt)
+    await seam.deliver(app.rt)
+    assert old.event in app.rt.events_log
+    legacy_adoption_file(app)
+    if continuity != "unknown":
+        save_state(
+            tmp_path / "telegram.json",
+            ShellState(bot_id="123", confirmed_for=f"123:{app.settings.chat_id}"),
+        )
+    settings = (
+        replace(app.settings, chat_id=STRANGER) if continuity == "replacement" else app.settings
+    )
+    clock.jump(25)
+    resumed = build(settings, clock=clock, provider=seam.provider(app.rt), client=tg.client())
+    await resumed.rt.start()
+    withdraw_adoption(resumed.rt, history, clock.now())
+    await seam.deliver(resumed.rt)
+    corrections = [x for x in tg.sent if "ignore the earlier change" in x["text"]]
+    assert [x["chat_id"] for x in corrections] == (
+        [app.settings.chat_id] if continuity == "same" else []
+    )
+
+
+async def test_queued_correction_waits_for_inflight_acceptance_to_be_saved(
+    tmp_path, tg, monkeypatch
+):
+    entered, release = asyncio.Event(), asyncio.Event()
+    messages = []
+    fail_save = False
+
+    async def receive(request):
+        nonlocal fail_save
+        message = json.loads(request.content)["message"]
+        if "NS moved" in message:
+            entered.set()
+            await release.wait()
+            fail_save = True
+        messages.append(message)
+        return httpx.Response(200)
+
+    tg.handler = receive
+    clock = TickClock(NOW)
+    app = make_app(tmp_path, tg, clock, ntfy=NtfySettings(TOPIC, TOKEN))
+    app.settings.profiles.write_text(YAML)
+    await app.rt.start()
+    history, _ = adoption(app.rt)
+    store = seam.store(app.rt)
+    save = store.save
+
+    def save_or_fail(state):
+        if fail_save:
+            raise StorageError("test disk failure after acceptance")
+        save(state)
+
+    monkeypatch.setattr(store, "save", save_or_fail)
+    sending = asyncio.create_task(seam.deliver(app.rt))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        clock.jump(5)
+        withdraw_adoption(app.rt, history, clock.now())
+        queued = next(
+            o for o in app.rt.state.obligations if "ignore the earlier change" in o.event.text
+        )
+        key = direction_key("p1", OUT)
+        ledger = app.rt.state.lookahead[key]
+        queued = replace(queued, target_ids=frozenset({app.notifier.destination_id}))
+        seam.seed_state(
+            app.rt,
+            obligations=(queued,),
+            lookahead={key: replace(ledger, pending=(queued,))},
+        )
+        seam.save_state(app.rt)
+    finally:
+        release.set()
+        await asyncio.wait_for(sending, 2)
+    await seam.deliver(app.rt)
+    assert not any("ignore the earlier change" in x for x in messages)
+    fail_save = False
+    seam.save_state(app.rt)
+    persisted = next(o for o in store.load().obligations if o.id == queued.id)
+    assert persisted.target_ids == queued.target_ids
+    resumed = build(app.settings, clock=clock, provider=seam.provider(app.rt), client=tg.client())
+    await resumed.rt.start()
+    await seam.deliver(resumed.rt)
+    assert sum("ignore the earlier change" in x for x in messages) == 1
+
+
+async def test_queued_webhook_correction_waits_for_durable_receipt(tmp_path, tg, monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+    corrections = []
+    fail_save = False
+
+    async def receive(request):
+        nonlocal fail_save
+        payload = json.loads(request.content)
+        text = payload.get("text", "")
+        if "NS moved" in text:
+            entered.set()
+            await release.wait()
+            fail_save = True
+        if "ignore the earlier change" in text:
+            corrections.append((request.url.host, request.headers["webhook-id"]))
+        return httpx.Response(200)
+
+    tg.handler = receive
+    clock = TickClock(NOW)
+    app = make_app(
+        tmp_path,
+        tg,
+        clock,
+        ntfy=NtfySettings(TOPIC, TOKEN),
+        webhook_urls=("https://copy.example.test/hook",),
+        webhook_secret="test-secret",
+    )
+    app.settings.profiles.write_text(YAML + "    alerts: {ntfy_enabled: false}\n")
+    await app.rt.start()
+    history, _ = adoption(app.rt)
+    store = seam.store(app.rt)
+    save = store.save
+
+    def save_or_fail(state):
+        if fail_save:
+            raise StorageError("test disk failure after webhook acceptance")
+        save(state)
+
+    monkeypatch.setattr(store, "save", save_or_fail)
+    await seam.deliver(app.rt)
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        clock.jump(5)
+        withdraw_adoption(app.rt, history, clock.now())
+        await seam.deliver(app.rt)
+        queued = next(
+            c
+            for c in store.load().webhook_copies
+            if "ignore the earlier change" in c.obligation.event.text
+        )
+        assert queued.target_ids and queued.first_try is None
+    finally:
+        release.set()
+        await app.rt.webhooks_idle()
+    await seam.deliver(app.rt)
+    await app.rt.webhooks_idle()
+    assert not corrections
+    assert queued.id in seam.owed_copies(app.rt)
+    fail_save = False
+    seam.save_state(app.rt)
+    persisted = next(c for c in store.load().webhook_copies if c.id == queued.id)
+    assert persisted.id == queued.id and persisted.target_ids == queued.target_ids
+    resumed = build(
+        replace(
+            app.settings, webhook_urls=(*app.settings.webhook_urls, "https://new.example.test/hook")
+        ),
+        clock=clock,
+        provider=seam.provider(app.rt),
+        client=tg.client(),
+    )
+    await resumed.rt.start()
+    await resumed.rt.webhooks_idle()
+    assert corrections == [("copy.example.test", queued.id)]
+
+
+async def test_unsaved_return_edit_does_not_hide_outbound_acceptance(tmp_path, tg, monkeypatch):
+    messages = []
+    fail_save = False
+
+    def receive(request):
+        nonlocal fail_save
+        if request.url.host == "copy.example.test":
+            messages.append(json.loads(request.content)["text"])
+            if "NS moved" in messages[-1]:
+                fail_save = True
+        return httpx.Response(200)
+
+    tg.other = receive
+    clock = TickClock(NOW)
+    app = make_app(
+        tmp_path,
+        tg,
+        clock,
+        ntfy=NtfySettings(TOPIC, TOKEN),
+        webhook_urls=("https://copy.example.test/hook",),
+        webhook_secret="test-secret",
+    )
+    yaml = YAML + "    alerts: {ntfy_enabled: false}\n"
+    app.settings.profiles.write_text(yaml)
+    await app.rt.start()
+    history, _ = adoption(app.rt)
+    store = seam.store(app.rt)
+    save = store.save
+
+    def save_or_fail(state):
+        if fail_save:
+            raise StorageError("test disk failure")
+        save(state)
+
+    monkeypatch.setattr(store, "save", save_or_fail)
+    await seam.deliver(app.rt)
+    await app.rt.webhooks_idle()
+    assert fail_save
+    app.settings.profiles.write_text(yaml.replace("17:52", "17:58"))
+    assert await app.rt.reload() is not None
+    clock.jump(25)
+    config = app.rt.config
+    results = tuple(result for day in DAYS for result in probe(day, history.in_force(day)))
+    seam.apply_lookahead_run(
+        app.rt,
+        config.profiles[0],
+        OUT,
+        ProbedRun(clock.now(), config.revision, history.latest, results),
+    )
+    fail_save = False
+    seam.save_state(app.rt)
+    await seam.deliver(app.rt)
+    await app.rt.webhooks_idle()
+    assert sum("ignore the earlier change" in x for x in messages) == 1
+
+
+@pytest.mark.parametrize("exact_adoption", [True, False])
+async def test_legacy_owed_copy_recovers_only_its_pinned_receipt(tmp_path, tg, exact_adoption):
+    corrections = []
+
+    def receive(request):
+        payload = json.loads(request.content)
+        if "ignore the earlier change" in payload["text"]:
+            corrections.append(request.url.host)
+        return httpx.Response(200 if request.url.host == "done.example.test" else 500)
+
+    tg.other = receive
+    clock = TickClock(NOW)
+    app = make_app(
+        tmp_path,
+        tg,
+        clock,
+        webhook_urls=("https://done.example.test/hook", "https://owed.example.test/hook"),
+        webhook_secret="test-secret",
+    )
+    app.settings.profiles.write_text(YAML)
+    await app.rt.start()
+    history, old = adoption(app.rt)
+    await seam.deliver(app.rt)
+    await app.rt.webhooks_idle()
+    (copy,) = seam.store(app.rt).load().webhook_copies
+    assert copy.obligation.id == old.id and len(copy.done) == 1
+    legacy_adoption_file(app)
+    if not exact_adoption:
+        path = tmp_path / "tcc-state.json"
+        raw = json.loads(path.read_text())
+        raw["state"]["webhook_copies"][0]["obligation"]["id"] += "|old instance"
+        path.write_text(json.dumps(raw))
+    clock.jump(25)
+    resumed = build(app.settings, clock=clock, provider=seam.provider(app.rt), client=tg.client())
+    await resumed.rt.start()
+    withdraw_adoption(resumed.rt, history, clock.now())
+    await seam.deliver(resumed.rt)
+    await resumed.rt.webhooks_idle()
+    assert corrections == (["done.example.test"] if exact_adoption else [])
+
+
+async def test_webhook_correction_key_matches_filtered_facts_and_keeps_retry_id(tmp_path, tg):
+    attempts = []
+
+    def receive(request):
+        payload = json.loads(request.content)
+        if "Other timetable news" in payload["text"]:
+            attempts.append(
+                (payload, request.headers["webhook-id"], request.headers["idempotency-key"])
+            )
+        return httpx.Response(500 if len(attempts) == 1 else 200)
+
+    tg.other = receive
+    clock = TickClock(NOW)
+    app = make_app(
+        tmp_path,
+        tg,
+        clock,
+        webhook_urls=("https://copy.example.test/hook",),
+        webhook_secret="test-secret",
+    )
+    app.settings.profiles.write_text(YAML)
+    await app.rt.start()
+    history, _ = adoption(app.rt)
+    config = app.rt.config
+    key = direction_key("p1", OUT)
+    clock.jump(5)
+    withdraw_adoption(app.rt, history, clock.now())
+    ledger = app.rt.state.lookahead[key]
+    (correction,) = ledger.pending
+    correction_fact = ledger.facts[correction.id][0]
+    news = LookAheadFact("test-news", "Other timetable news", False, False)
+    facts = (correction_fact, news)
+    kind, body = render_message(config.profiles[0], correction.look_ahead[2], facts)
+    mixed = replace(
+        correction,
+        fact_key=bundle_key(facts),
+        event=replace(
+            correction.event, kind=kind, text=body, key=f"{correction.event.key};{news.key}"
+        ),
+    )
+    seam.seed_state(
+        app.rt,
+        lookahead={key: replace(ledger, facts={mixed.id: facts}, pending=(mixed,))},
+        obligations=(mixed,),
+    )
+    seam.save_state(app.rt)
+    await seam.deliver(app.rt)
+    await app.rt.webhooks_idle()
+    clock.jump(61)
+    resumed = build(app.settings, clock=clock, provider=seam.provider(app.rt), client=tg.client())
+    await resumed.rt.start()
+    await resumed.rt.webhooks_idle()
+    assert len(attempts) == 2
+    assert attempts[0] == attempts[1]
+    payload, webhook_id, idempotency_key = attempts[0]
+    assert payload["key"] == mixed.event.key.removesuffix(mixed.fact_key) + news.key
+    assert "ignore the earlier change" not in payload["text"]
+    assert idempotency_key == webhook_id
+
+
+@pytest.mark.parametrize("withdraw", [False, True])
+async def test_timetable_receipts_prune_after_last_use(tmp_path, tg, withdraw):
+    clock = TickClock(NOW)
+    app = make_app(tmp_path, tg, clock)
+    app.settings.profiles.write_text(YAML)
+    await app.rt.start()
+    history, _ = adoption(app.rt)
+    await seam.deliver(app.rt)
+    key = direction_key("p1", OUT)
+    assert any(app.rt.state.lookahead[key].adoption_receipts.values())
+    if withdraw:
+        clock.jump(25)
+        withdraw_adoption(app.rt, history, clock.now())
+        assert any(app.rt.state.lookahead[key].adoption_receipts.values())
+        await seam.deliver(app.rt)
+    else:
+        clock.t += timedelta(days=2)
+        seam.save_state(app.rt)
+    assert not seam.store(app.rt).load().lookahead[key].adoption_receipts
 
 
 async def test_long_unicode_messages_resume_only_unaccepted_parts():

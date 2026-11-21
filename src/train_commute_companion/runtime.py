@@ -88,11 +88,9 @@ from train_commute_companion.lookahead import forget_pending, rebase_on_edit, re
 from train_commute_companion.lookahead_probe import service_date
 from train_commute_companion.lookahead_run import (
     ProbedRun,
-    adoption_correction,
     apply_run,
     directions_due,
     lookahead_done,
-    lookahead_received,
     probe_direction,
 )
 from train_commute_companion.match import usual_connection
@@ -193,6 +191,12 @@ from train_commute_companion.state import (
 from train_commute_companion.state_writer import Change, StateWriter
 from train_commute_companion.store import PersistedState, StorageError, Store
 from train_commute_companion.tasks import RefreshTask
+from train_commute_companion.timetable_receipts import (
+    adoption_correction,
+    lookahead_received,
+    prune_adoptions,
+    restore_adoptions,
+)
 from train_commute_companion.travel_changes import (
     active_travel_schedules,
     request_hash,
@@ -407,11 +411,13 @@ class Runtime:
         weather: WeatherProvider | None = None,
         primary_destination_scope: Callable[[str], bool] = lambda destination: False,
         park_primary_pin: Callable[[str], bool] = lambda destination: False,
+        legacy_adoption_destination: Callable[[], str | None] = lambda: LEGACY_PRIMARY,
     ) -> None:
         # Omitted only for legacy clients and replay rigs. Shells supply actual recipient IDs.
         self._primary_destination = primary_destination or (lambda: LEGACY_PRIMARY)
         self._primary_destination_scope = primary_destination_scope
         self._park_primary_pin = park_primary_pin
+        self._legacy_adoption_destination = legacy_adoption_destination
         self._primary_in_flight: Obligation | None = None
         self._in_flight_opted_out = False
         self._target_pins: dict[str, Obligation] = {}
@@ -425,7 +431,14 @@ class Runtime:
             lambda copy: self._writer.copy_audience_written(copy),
         )
         self._writer = StateWriter(
-            store, self._queue, self._storage_note, self._suppress_primary, self._latch_optout
+            store,
+            self._queue,
+            self._storage_note,
+            self._suppress_primary,
+            self._latch_optout,
+            prune=lambda st: prune_adoptions(
+                st, clock.now().astimezone(TZ).date(), self._primary_in_flight
+            ),
         )
         self._lookahead_at = lookahead_at
         self._reload = ReloadControl()
@@ -458,12 +471,6 @@ class Runtime:
         def read() -> PersistedState:
             return self._writer.st
 
-        def requires_adoption_receipt(destination: str) -> bool:
-            # Older state can imply a phone send, but cannot identify an auxiliary recipient.
-            return destination != self._primary_destination() or self._primary_destination_scope(
-                destination
-            )
-
         self._ledger = LiveLedger(
             read,
             read,
@@ -472,7 +479,6 @@ class Runtime:
             lambda: self.available_channels,
             format_event=self._weather_event,
             primary_enabled=self._primary_enabled,
-            requires_adoption_receipt=requires_adoption_receipt,
         )
         self._held_ledger = LiveLedger(
             read,
@@ -482,7 +488,6 @@ class Runtime:
             lambda: self.available_channels,
             format_event=self._weather_event,
             primary_enabled=self._primary_enabled,
-            requires_adoption_receipt=requires_adoption_receipt,
         )
         # an edit waiting for the station list retries it under the shared budget
         self._require_stations = require_stations
@@ -1228,7 +1233,7 @@ class Runtime:
     def _waits(self, o: Obligation) -> bool:
         """Not judged yet: written before this start (judged once the reconcile ran, rule 11),
         or judged on observations while its occurrence has no healthy answer (rule 5b)."""
-        if not self._routing_ready_in(self._writer.st, o):
+        if self._writer.correction_waits(o) or not self._routing_ready_in(self._writer.st, o):
             return True
         if self._lifecycle.holds(o.event.created_at):
             return True
@@ -1364,12 +1369,18 @@ class Runtime:
                     EventKind.DISRUPTION_CLEARED,
                 ):
                     told.append((o, sent))
-                if self._writer.settle(o, r, sent):
-                    continue
-                if r is None:
-                    finished.add(o.id)
-                elif r != o:
-                    kept[o.id] = r
+                if not self._writer.settle(o, r, sent):
+                    if r is None:
+                        finished.add(o.id)
+                    elif r != o:
+                        kept[o.id] = r
+                if adoption_accepted:
+                    self._record_delivery(finished, kept, told, copies, accepted=accepted)
+                    finished.clear()
+                    kept.clear()
+                    told.clear()
+                    accepted.clear()
+                    copies = False
         finally:  # each acknowledged send is recorded, also when shutdown cancels the pass
             self._record_delivery(finished, kept, told, copies, accepted=accepted)
 
@@ -1399,7 +1410,7 @@ class Runtime:
             st = _advice_told(st, told)
             st = disruptions_told(st, told)
             st = disruptions_received(st, accepted)
-            ledgers = lookahead_received(ledgers, accepted, track_adoptions=True)
+            ledgers = lookahead_received(ledgers, accepted)
             obligations = _survivors(st.obligations, finished, kept, marks)
             st = replace(st, obligations=obligations, lookahead=ledgers)
             if any(o.occurrence is not None for o, _ in accepted):
@@ -2714,9 +2725,6 @@ class Runtime:
 
     def _apply_lookahead_run(self, p: Profile, d: Direction, run: ProbedRun) -> None:
         st = self._writer.st
-        waiting = self._writer.judged_state()
-        pending = waiting.lookahead.get(direction_key(p.id, d))
-        same_profile = find_profile(waiting.config, p.id)
         applied = apply_run(
             st,
             self._queue,
@@ -2724,11 +2732,7 @@ class Runtime:
             d,
             run,
             track_adoptions=True,
-            pending_receipts=(
-                pending.adoption_receipts
-                if pending is not None and same_profile is not None and same_route(p, same_profile)
-                else None
-            ),
+            pending_ledger=self._writer.judged_state().lookahead.get(direction_key(p.id, d)),
         )
         if applied is not None:
             self._writer.commit(applied, Change.LOOKAHEAD)
@@ -2769,7 +2773,12 @@ class Runtime:
             loaded, lost = None, str(e)
         st = self._writer.st
         if loaded is not None:
-            st = _restarted(loaded)
+            primary = self._legacy_adoption_destination()
+            st = restore_adoptions(
+                _restarted(loaded),
+                now.astimezone(TZ).date(),
+                primary if primary == self._primary_destination() else None,
+            )
             self._queue.restore(loaded, preserve=lambda o: not self._routing_ready_in(loaded, o))
         self._writer.begin(replace(st, started_before=True))
         if lost is not None:  # rule 22: fresh state, loud, and a write clears "state lost"

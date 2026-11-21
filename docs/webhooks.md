@@ -6,9 +6,9 @@ Data: NS.
 
 ## What is sent
 
-One POST per alert to every configured URL. The webhook gets the same alerts as your phone, with the same text, and quiet hours hold silent alerts back for both. The phone stays the channel that counts: a webhook that is down never holds back or repeats a phone alert.
+The companion queues a copy of each alert for every eligible URL. Quiet hours hold silent alerts on both channels. A webhook outage never delays or repeats a phone alert.
 
-A webhook receives a timetable correction only when it accepted the earlier timetable change. If a message combines the correction with other updates, a webhook without that receipt can still receive those updates.
+A webhook receives a timetable correction only when it accepted that timetable change. If a message combines the correction with other updates, a webhook without that receipt can still receive those updates. The JSON `key` lists the facts in that webhook's message. The `webhook-id` and `idempotency-key` stay the same across retries.
 
 ## Headers
 

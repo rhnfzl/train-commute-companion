@@ -147,7 +147,9 @@ class Ledger(Protocol):
     def newer_covers(self, o: Obligation) -> bool: ...
     def revision_live(self, key: OccurrenceKey, rev: int) -> bool: ...
     def in_quiet_hours(self, profile_id: str, now: datetime) -> bool: ...
-    def current(self, o: Obligation, destination: str | None = None) -> AlertEvent | None:
+    def current(
+        self, o: Obligation, destination: str | None = None, *, for_copy: bool = False
+    ) -> AlertEvent | None:
         """The message regenerated from the current state right before sending (rule 5): the
         current profile name, a journey warning naming the current lock and its next good
         connection now, never the replacement frozen when the obligation was written."""
@@ -290,7 +292,8 @@ async def post_copy(
     events = {
         u: event
         for u in todo
-        if (event := ledger.current(c.obligation, destination_id(port, u))) is not None
+        if (event := ledger.current(c.obligation, destination_id(port, u), for_copy=True))
+        is not None
     }
     if not events:
         return None

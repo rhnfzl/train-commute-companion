@@ -12,8 +12,6 @@ from train_commute_companion.lookahead_probe import (
     ProbeResult,
     adopt_key,
     bundle_key,
-    bundle_names,
-    cancel_key,
     evaluate,
     probe_dates,
     probe_queries,
@@ -29,6 +27,10 @@ from train_commute_companion.state import (
     PollFailure,
 )
 from train_commute_companion.store import PersistedState
+from train_commute_companion.timetable_receipts import (
+    adoption_correction,
+    merge_adoption_receipts,
+)
 from train_commute_companion.webhook_queue import CopyQueue
 
 log = logging.getLogger(__name__)
@@ -111,7 +113,7 @@ def apply_run(
     run: ProbedRun,
     *,
     track_adoptions: bool = False,
-    pending_receipts: Mapping[str, frozenset[str]] | None = None,
+    pending_ledger: LookAheadLedger | None = None,
 ) -> PersistedState | None:
     """`st` (the state now, at write time) with the run, its owed copies in `queue` following its
     messages; None when it is discarded (rule 21), and then those copies are left as they were."""
@@ -125,14 +127,8 @@ def apply_run(
     )
     ledger = replace(stored, started_revision=run.revision, started_baseline=run.baseline)
     current = st.baselines.get(dk, BaselineHistory())
-    if pending_receipts:
-        receipts = dict(stored.adoption_receipts)
-        # A failed receipt write still proves delivery. Only current versions can be withdrawn.
-        for version in current.versions:
-            receipt_key = cancel_key(version.version)
-            if accepted := pending_receipts.get(receipt_key):
-                receipts[receipt_key] = receipts.get(receipt_key, frozenset()) | accepted
-        ledger = replace(ledger, adoption_receipts=receipts)
+    if pending_ledger is not None:
+        ledger = replace(ledger, adoption_receipts=merge_adoption_receipts(ledger, pending_ledger))
     all_bases = {
         (x.id, y): st.baselines.get(direction_key(x.id, y), BaselineHistory())
         for x in cfg.profiles
@@ -147,6 +143,7 @@ def apply_run(
         if o.look_ahead is not None
         and o.look_ahead[:2] == (p.id, d)
         and (correction := adoption_correction(o)) is not None
+        and ledger.adoption_ids.get(correction) in (None, o.id)
     }
     out = run_lookahead(
         p,
@@ -248,11 +245,17 @@ def _rewrite_withdrawn(
         day = o.look_ahead[2]
         kind, text = render_message(p, day, rest)
         b = baseline_on(new_hist, p, d, day)
+        fact_key = bundle_key(rest)
         o = replace(
             o,
             baseline_version=b.version if b else None,
-            fact_key=bundle_key(rest),
-            event=replace(o.event, kind=kind, text=text),
+            fact_key=fact_key,
+            event=replace(
+                o.event,
+                kind=kind,
+                text=text,
+                key=o.event.key.removesuffix(o.fact_key) + fact_key,
+            ),
         )
         queue.rewrite(c, o)
         rewritten[o.id] = rest
@@ -279,42 +282,4 @@ def _copies_through(
     owed = {c.obligation.id for c in queue.copies.values()}
     carry = {i: f for i, f in stored.facts.items() if i in owed}
     facts = {**carry, **rewritten, **new_ledger.facts}
-    live_corrections = {cancel_key(v.version) for v in new_hist.versions}
-    live_corrections.update(f.key for fs in facts.values() for f in fs if f.cancels)
-    return replace(
-        new_ledger,
-        pending=tuple(pending.values()),
-        facts=facts,
-        adoption_receipts={
-            key: destinations
-            for key, destinations in new_ledger.adoption_receipts.items()
-            if key in live_corrections
-        },
-    )
-
-
-def adoption_correction(o: Obligation) -> str | None:
-    version = o.baseline_version
-    if o.look_ahead is None or version is None or not bundle_names(o.fact_key, adopt_key(version)):
-        return None
-    return cancel_key(version)
-
-
-def lookahead_received(
-    ledgers: dict[str, LookAheadLedger],
-    received: Sequence[tuple[Obligation, str]],
-    *,
-    track_adoptions: bool,
-) -> dict[str, LookAheadLedger]:
-    for o, destination in received:
-        correction = adoption_correction(o)
-        if o.look_ahead is None or correction is None:
-            continue
-        pid, direction, _ = o.look_ahead
-        key = direction_key(pid, direction)
-        ledger = ledgers.get(key)
-        if ledger is not None and (track_adoptions or correction in ledger.adoption_receipts):
-            receipts = ledger.adoption_receipts
-            destinations = receipts.get(correction, frozenset()) | {destination}
-            ledgers[key] = replace(ledger, adoption_receipts={**receipts, correction: destinations})
-    return ledgers
+    return replace(new_ledger, pending=tuple(pending.values()), facts=facts)

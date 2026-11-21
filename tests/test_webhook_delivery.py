@@ -927,16 +927,17 @@ async def test_partial_relapse_or_recovery_sends_only_live_facts(tmp_path, chang
     await tick(rig)
     phone = [(e.kind.value, e.text) for e in rig.notifier.attempts if e.key == o.event.key]
     hook = [
-        (r.headers["webhook-id"], p["kind"], p["text"])
+        (p["key"], p["kind"], p["text"])
         for r, p in rig.end.accepted
-        if p["key"] == o.event.key
+        if r.headers["webhook-id"] == event_id(o.id)
     ]
     if stale:
         assert phone == [] and hook == []
         return
     kind, text = render_message(rig.rt.config.profiles[0], o.look_ahead[2], live)
     assert phone == [(kind.value, text)]
-    assert hook == [(event_id(o.id), kind.value, text)]
+    key = o.event.key.removesuffix(o.fact_key) + ";".join(f.key for f in live)
+    assert hook == [(key, kind.value, text)]
 
 
 async def test_start_without_webhooks_drops_saved_copies(tmp_path, caplog):  # Review Focus 13

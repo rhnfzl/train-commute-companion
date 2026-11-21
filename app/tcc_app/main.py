@@ -280,6 +280,11 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         lookahead_at=s.lookahead_at,
         webhooks=webhooks,
         primary_destination=lambda: notifier.destination_id,
+        legacy_adoption_destination=lambda: (
+            telegram.destination_id
+            if s.ntfy is None and telegram is not None and bot is not None and bot.confirmed
+            else None
+        ),
         weather=WeatherProvider(client, clock.now, s.knmi_key),
         primary_destination_scope=lambda destination: destination.startswith(
             NTFY_DESTINATION_PREFIX

@@ -16,6 +16,7 @@ from train_commute_companion.advice import (
 from train_commute_companion.calendar import TZ, hhmm, to_utc
 from train_commute_companion.classify import current_run, find_leg
 from train_commute_companion.delivery import JOURNEY_WARNINGS, covers
+from train_commute_companion.disruptions import LEGACY_PRIMARY
 from train_commute_companion.health import FRESH_FOR, WatchedLeg
 from train_commute_companion.lifecycle import (
     PollAnswers,
@@ -31,6 +32,7 @@ from train_commute_companion.lookahead_probe import (
     RESTORED_FACT,
     UNCLEAR_MARK,
     WORKS_MARKS,
+    bundle_key,
     is_restored,
     latest_mark,
     split_fact_key,
@@ -85,6 +87,7 @@ from train_commute_companion.state import (
     unclear_slot,
 )
 from train_commute_companion.store import PersistedState
+from train_commute_companion.timetable_receipts import correction_keys
 from train_commute_companion.unclear import train_key
 
 # ongoing facts a poll restates while they last: a held one holds while its key is live (rule 5)
@@ -337,12 +340,10 @@ class LiveLedger:
         available_channels: Callable[[], frozenset[NotificationChannel]] = lambda: CHANNELS,
         format_event: Callable[[AlertEvent], AlertEvent] = lambda event: event,
         primary_enabled: Callable[[AlertSettings], bool] = lambda settings: True,
-        requires_adoption_receipt: Callable[[str], bool] = lambda destination: False,
     ) -> None:
         self._available_channels = available_channels
         self._format_event = format_event
         self._primary_enabled = primary_enabled
-        self._requires_adoption_receipt = requires_adoption_receipt
         self._written, self._judged, self._memory, self._now = written, judged, memory, now
 
     @property
@@ -664,8 +665,10 @@ class LiveLedger:
         p = routing_profile(self._state, profile_id)
         return p is not None and _in_quiet(p.alerts.quiet_hours, now)
 
-    def current(self, o: Obligation, destination: str | None = None) -> AlertEvent | None:
-        event = self._current(o, destination)
+    def current(
+        self, o: Obligation, destination: str | None = None, *, for_copy: bool = False
+    ) -> AlertEvent | None:
+        event = self._current(o, destination, for_copy=for_copy)
         if event is None:
             return None
         state = None if o.occurrence is None else self._occurrence(o.occurrence)
@@ -686,7 +689,9 @@ class LiveLedger:
             event = replace(event, text="Original train monitoring: " + event.text)
         return self._format_event(event)
 
-    def _current(self, o: Obligation, destination: str | None) -> AlertEvent | None:
+    def _current(
+        self, o: Obligation, destination: str | None, *, for_copy: bool
+    ) -> AlertEvent | None:
         if o.look_ahead is not None:
             pid, direction, day = o.look_ahead
             # A correction belongs only to destinations that received its adoption.
@@ -694,7 +699,7 @@ class LiveLedger:
             if destination is not None:
                 ledger = self._state.lookahead.get(direction_key(pid, direction))
                 receipts = {} if ledger is None else ledger.adoption_receipts
-                legacy_allowed = not self._requires_adoption_receipt(destination)
+                legacy_allowed = destination == LEGACY_PRIMARY
                 if live is not None:
                     live = tuple(
                         f
@@ -704,12 +709,19 @@ class LiveLedger:
                     )
                     if not live:
                         return None
-                elif not legacy_allowed and re.search(r"(?:^|;)cancel:\d+(?:;|$)", o.fact_key):
+                elif any(
+                    destination not in receipts[key] if key in receipts else not legacy_allowed
+                    for key in correction_keys(o)
+                ):
                     return None
             p = find_profile(self._state.config, pid)
             if live and p is not None and len(live) < len(self._stored_facts(o)):
                 kind, text = render_message(p, day, live)
-                return replace(o.event, kind=kind, text=text, profile_name=p.name)
+                event = replace(o.event, kind=kind, text=text, profile_name=p.name)
+                if for_copy:
+                    key = f"lookahead|{pid}|{direction.value}|{day.isoformat()}|{bundle_key(live)}"
+                    event = replace(event, key=key)
+                return event
         e = self._regenerated(o, self._relocked(o, o.event))
         p = find_profile(self._state.config, e.profile_id)
         if p is None or p.name == e.profile_name:

@@ -18,6 +18,10 @@ from train_commute_companion.model import (
 from train_commute_companion.revisions import find_profile, same_route
 from train_commute_companion.state import OccurrenceState, is_sent
 from train_commute_companion.store import PersistedState, StorageError, Store
+from train_commute_companion.timetable_receipts import (
+    merge_adoption_receipts,
+    receipt_write_pending,
+)
 from train_commute_companion.webhook_queue import CopyQueue
 
 log = logging.getLogger(__name__)
@@ -114,10 +118,7 @@ class _Delta:
                 # Delivery can have recorded acceptance while this run waited to be saved.
                 v = replace(
                     v,
-                    adoption_receipts={
-                        fact: recipients | current.adoption_receipts.get(fact, frozenset())
-                        for fact, recipients in v.adoption_receipts.items()
-                    },
+                    adoption_receipts=merge_adoption_receipts(v, current),
                 )
             leds[k] = v
         return replace(
@@ -185,8 +186,10 @@ class StateWriter:
             state
         ),
         on_saved: Callable[[PersistedState], None] = lambda state: None,
+        prune: Callable[[PersistedState], PersistedState] = lambda state: state,
     ) -> None:
         self._on_saved = on_saved
+        self._prune = prune
         self._store, self._outbox, self._storage_note = store, outbox, storage_note
         self._prepare = prepare
         self._st = PersistedState(
@@ -246,6 +249,10 @@ class StateWriter:
     def judged_state(self) -> PersistedState:
         """What the alerts of unwritten changes are judged on: what the last write tried."""
         return self._st if self._journal.shadow is None else self._journal.shadow
+
+    def correction_waits(self, o: Obligation) -> bool:
+        waiting = self._journal.shadow
+        return waiting is not None and receipt_write_pending(self._durable, waiting, o)
 
     def begin(self, st: PersistedState) -> None:
         """The state a start runs from, as if just written."""
@@ -331,7 +338,7 @@ class StateWriter:
                         c for c in written.webhook_copies if c.id not in discarded
                     ),
                 )
-            written = _prune(self._prepare(written, self._st))
+            written = self._prune(_prune(self._prepare(written, self._st)))
             self._store.save(written)
         except StorageError as error:
             self.store_ok = False
@@ -388,7 +395,8 @@ class StateWriter:
                 if isinstance(x, _Delta):
                     x.supersede(mine)
         try:
-            write = _prune(self._prepare(self._outbox.with_copies(self._compose(cand)), self._st))
+            write = self._prepare(self._outbox.with_copies(self._compose(cand)), self._st)
+            write = self._prune(_prune(write))
             self._store.save(write)
         except StorageError as e:
             self._pend(cand, stage, op)

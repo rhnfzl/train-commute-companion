@@ -153,7 +153,7 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
                     "ask_to_remember_station": True,
                 }
     for ledger in raw["state"]["lookahead"].values():
-        ledger["adoption_receipts"] = {}
+        ledger |= {"adoption_ids": {}, "adoption_receipts": {}}
     assert encode(state) == raw["state"]
     store.save(state)
     assert JsonFileStore(path).load() == state

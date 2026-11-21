@@ -223,6 +223,7 @@ class _Draft:
     pending: list[Obligation]
     bundled: dict[str, tuple[LookAheadFact, ...]]
     adoption_receipts: dict[str, frozenset[str]]
+    adoption_ids: dict[str, str]
     awaiting_adoption: Collection[str]
     track_adoptions: bool
     carried: list[_Bundle] = field(default_factory=list)
@@ -540,7 +541,7 @@ class _MessageBuilder:
         expires: datetime | None,
     ) -> Obligation:
         return Obligation(
-            id=f"{event.key}|{self.now.isoformat()}",
+            id=f"{event.key}|{self.revision}|{self.now.isoformat()}",
             event=event,
             occurrence=None,
             look_ahead=(self.p.id, self.d, day),
@@ -592,7 +593,9 @@ def _fact_messages(
             expires = w.journey_end(sd)
         ob = w.obligation(event, sd, version, fact_key, expires)
         if draft.track_adoptions and is_adopt and version is not None:
-            draft.adoption_receipts.setdefault(cancel_key(version), frozenset())
+            correction = cancel_key(version)
+            draft.adoption_ids[correction] = ob.id
+            draft.adoption_receipts[correction] = frozenset()
         events.append(event)
         draft.pending.append(ob)
         draft.bundled[ob.id] = tuple(b.facts)
@@ -686,6 +689,7 @@ def run_lookahead(
         list(ledger.pending),
         dict(ledger.facts),
         dict(ledger.adoption_receipts),
+        dict(ledger.adoption_ids),
         awaiting_adoption,
         track_adoptions,
     )
@@ -769,6 +773,7 @@ def run_lookahead(
         last_applied=now,
         facts={o.id: draft.bundled[o.id] for o in draft.pending if o.id in draft.bundled},
         adoption_receipts=draft.adoption_receipts,
+        adoption_ids=draft.adoption_ids,
     )
     return final, new_ledger, events
 
