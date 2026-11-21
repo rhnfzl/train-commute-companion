@@ -9,6 +9,7 @@ import yaml
 
 from train_commute_companion.calendar import MINUTES_PER_DAY, WEEKDAYS, minute_of_day
 from train_commute_companion.model import (
+    MAX_TIMETABLE_HORIZON,
     AccessibilitySettings,
     AlertSettings,
     Config,
@@ -23,6 +24,7 @@ from train_commute_companion.model import (
     Profile,
     ProfileProblem,
     Stations,
+    TimetableHorizonUnit,
     UsualJourney,
     WorksDigestSettings,
     resolve_day,
@@ -436,10 +438,26 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "delay_min",
             "delay_step_min",
             "leave_by",
+            "custom_timetable_horizon",
+            "timetable_horizon_unit",
+            "timetable_horizon_count",
         ),
         "alerts",
     )
     d = AlertSettings()
+    custom_horizon = c.boolean(
+        raw.get("custom_timetable_horizon", d.custom_timetable_horizon),
+        "alerts.custom_timetable_horizon",
+    )
+    horizon_unit = raw.get("timetable_horizon_unit", d.timetable_horizon_unit)
+    if horizon_unit not in get_args(TimetableHorizonUnit):
+        c.err("alerts.timetable_horizon_unit", "must be calendar_days or commute_dates")
+    horizon_count = raw.get("timetable_horizon_count", d.timetable_horizon_count)
+    if type(horizon_count) is not int or not 1 <= horizon_count <= MAX_TIMETABLE_HORIZON:
+        c.err(
+            "alerts.timetable_horizon_count",
+            f"must be a whole number from 1 to {MAX_TIMETABLE_HORIZON}",
+        )
     weather = raw.get("weather", True)
     if not isinstance(weather, bool):
         c.err("alerts.weather", "must be true or false")
@@ -508,7 +526,7 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
                 channels[cast(NotificationCategory, category)] = frozenset(
                     cast(list[NotificationChannel], selected)
                 )
-    if len(c.errors) > n or thr is None or sav is None or leave is None:
+    if len(c.errors) > n or thr is None or sav is None or leave is None or custom_horizon is None:
         return None
     return AlertSettings(
         thr,
@@ -523,6 +541,9 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         delay_min=delays["delay_min"],
         delay_step_min=delays["delay_step_min"],
         leave_by=leave,
+        custom_timetable_horizon=custom_horizon,
+        timetable_horizon_unit=cast(TimetableHorizonUnit, horizon_unit),
+        timetable_horizon_count=horizon_count,
     )
 
 

@@ -196,6 +196,27 @@ def test_notification_categories_preserve_aliased_alert_settings(tmp_path):
     assert saved["profiles"][1]["alerts"] == shared
 
 
+def test_timetable_horizon_preserves_aliased_alert_settings(tmp_path):
+    raw = yaml.safe_load(PROFILE)
+    alerts = {
+        "weather": False,
+        "leave_by": False,
+        "delay_min": 8,
+        "quiet_hours": ["20:00", "06:00"],
+    }
+    raw["profiles"][0]["alerts"] = raw["profiles"][1]["alerts"] = alerts
+    doc = document(tmp_path, yaml.safe_dump(raw))
+    changes = {
+        "custom_timetable_horizon": False,
+        "timetable_horizon_unit": "commute_dates",
+        "timetable_horizon_count": 14,
+    }
+    saved = yaml.safe_load(edit_profile(doc, "p1", {**VALUES, **changes}, KNOWN, TODAY))
+    assert saved["profiles"][0]["id"] == "p1"
+    assert saved["profiles"][0]["alerts"] == {**alerts, **changes}
+    assert saved["profiles"][1] == raw["profiles"][1]
+
+
 def test_quiet_repeat_misses_is_written_only_once_chosen(tmp_path):
     doc = document(tmp_path)
     off = yaml.safe_load(

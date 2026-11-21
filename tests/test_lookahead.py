@@ -136,8 +136,15 @@ def test_return_day_offset_service_date_11_days_out_not_probed():
     tue_only = replace(ps, days=frozenset({2}))
     same_day = replace(tue_only, return_=replace(ps.return_, first_train=time(4, 0)))
     next_day = replace(same_day, return_=replace(same_day.return_, day_offset=1))
-    assert probe_dates(same_day, sat) == [date(2026, 11, 3), date(2026, 11, 10)]
-    assert probe_dates(next_day, sat) == [date(2026, 11, 3)]  # its return is on 11 Nov, +11
+    same_day, next_day = (
+        replace(p, alerts=replace(p.alerts, custom_timetable_horizon=False))
+        for p in (same_day, next_day)
+    )
+    assert probe_dates(same_day, sat, direction=OUT).dates == (
+        date(2026, 11, 3),
+        date(2026, 11, 10),
+    )
+    assert probe_dates(next_day, sat, direction=OUT).dates == (date(2026, 11, 3),)
 
 
 def test_failed_maintenance_lookup_no_clean_probe():
@@ -1054,7 +1061,7 @@ def test_unanimous_change_already_announced_is_adopted_without_restored():
 
 def test_public_holiday_is_not_a_probe_day():
     every_day = replace(P, days=frozenset(range(1, 8)))
-    days = probe_dates(every_day, date(2026, 12, 23))  # Fri 25 and Sat 26 Dec are holidays
+    days = probe_dates(every_day, date(2026, 12, 23), direction=OUT).dates
     assert date(2026, 12, 25) not in days and len(days) == 3
 
 
@@ -1100,15 +1107,15 @@ def test_a_healthy_run_records_success():
     assert led.last_run is not None and events == []
 
 
-def test_one_failed_horizon_still_records_success():
+def test_one_failed_date_leaves_the_horizon_incomplete():
     rs = [r for r in week() if r.service_date != WED]  # Wednesday's answers never came
     _, led, _ = run(HISTORY, rs)
-    assert led.last_run is not None
+    assert led.last_run is None
 
 
 def test_only_commute_days_are_probed():
     # the profile commutes Tue and Wed: the next three are never fixed +7 / +14 offsets
-    assert probe_dates(P, MON) == [TUE, WED, NEXT_TUE]
+    assert probe_dates(P, MON, direction=OUT).dates == (TUE, WED, NEXT_TUE)
 
 
 def test_one_surviving_probe_never_looks_complete():

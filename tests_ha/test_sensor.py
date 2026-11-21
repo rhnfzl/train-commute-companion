@@ -10,7 +10,7 @@ from ha_rig import B_ONLY, PROFILE, PROFILES, drive, jump, rebound, setup_tcc, w
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from lifecycle_fixtures import journey, occ
-from runtime_rig import at
+from runtime_rig import at, every_day, returns_every_day
 
 from custom_components.train_commute_companion.const import DOMAIN
 from custom_components.train_commute_companion.entity import health_state, shown_and_others
@@ -371,7 +371,7 @@ def test_lock_usual_departure_comes_from_the_effective_occurrence():
 
 
 async def test_health_sensor_shows_lookahead_last_ok(hass):
-    h = await setup_tcc(hass, PROFILE)
+    h = await setup_tcc(hass, PROFILE, world=[*every_day(), *returns_every_day("17:52")])
     eid = "sensor.office_a_health"
     assert attr(hass, eid, "lookahead_last_ok") == {"outbound": None, "return": None}
     await h.host.run(lambda rt: rt.lookahead_once())

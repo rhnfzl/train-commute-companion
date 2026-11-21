@@ -54,6 +54,31 @@ See [Notification preferences](notification-preferences.md).
 
 Docker and Telegram profiles use the same per-direction `active_lead_min` setting in YAML.
 
+## Timetable lookahead
+
+The daily timetable check looks for planned works and changes to your usual trains. Each profile defaults to the next seven calendar days, starting tomorrow.
+
+In **Add or edit profiles**, use **Custom timetable lookahead**, **Timetable lookahead unit** and **Timetable lookahead count** in the details form. Both units accept whole numbers from 1 to 14. The same settings work in Home Assistant, Docker and the command line:
+
+```yaml
+alerts:
+  custom_timetable_horizon: true
+  timetable_horizon_unit: calendar_days
+  timetable_horizon_count: 7
+```
+
+- `calendar_days` checks every applicable commute that starts within that many calendar days. It includes the last day.
+- `commute_dates` counts upcoming dates separately for outbound and return. It searches up to 366 calendar days from tomorrow to find the requested number.
+- Set `custom_timetable_horizon: false` to use up to three commute dates again. In this mode the last leg of either direction must fall within ten calendar days of today.
+
+A return after midnight belongs to the date its commute starts. Each direction uses its own service date. When the timetable gives a later leg's departure date, the check uses that date for the leg.
+
+Pauses and individual skips use each direction's service date. Public holidays follow the profile's setting, and extra dates can add a commute. Window journeys have no usual train to check.
+
+The 14-date limit caps the work per direction. A direct journey needs one trip request per date. A journey with transfers needs one per leg and one for the whole route. The custom check spaces background trip requests two seconds apart across profiles and uses the shared NS backoff. Live monitoring runs separately.
+
+NS may not have published trips for every requested date. An incomplete custom check can still warn about dated evidence it received. It leaves the last successful check time unchanged and cannot adopt a timetable. An empty or off-date answer does not establish that the usual train has gone.
+
 ## Window mode and settings by day
 
 The main form has a mode for each direction. Fixed follows your usual train. Window follows the earliest good train between the two window times. In window mode the first train can stay blank, and the latest time is required. The same form sets the train choice and the minimum stay. See [Schedules](weekday-schedules.md#window-mode).

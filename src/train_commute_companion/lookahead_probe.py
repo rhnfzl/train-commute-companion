@@ -1,7 +1,7 @@
 """Look-ahead probing: the stored keys, signatures, what to ask NS and how one day's answers read
 (7.10, 7.12 rules 18, 19, 21). Pure."""
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
@@ -36,8 +36,9 @@ from train_commute_companion.state import BaselineHistory, BaselineVersion, Look
 from train_commute_companion.transfer import check_transfer
 from train_commute_companion.unclear import Unclear, disagreement, newest_copies, train_key
 
-PROBE_DAYS = 3
-HORIZON_DAYS = 10
+LEGACY_PROBE_DAYS = 3
+LEGACY_HORIZON_DAYS = 10
+COMMUTE_DATE_SEARCH_DAYS = 366
 SEARCH_WINDOW = timedelta(minutes=15)
 # change tolerances of look-ahead 23; a unanimous run adopts any difference (7.12 rule 18)
 DEP_TOL_MIN = 5
@@ -81,6 +82,7 @@ class ProbeResult:
     works_known: bool = True  # False when planned_works() coverage was unknown (look-ahead 36)
     # (train key, where its copies in one answer disagree on the user's trip): rule 23
     unclear: tuple[tuple[str, Unclear], ...] = ()
+    published_works: bool = False
 
     @property
     def works(self) -> bool:
@@ -346,49 +348,60 @@ def probe_queries(p: Profile, d: Direction, day: date, base: BaselineVersion | N
     return [*legs, whole]
 
 
+@dataclass(frozen=True, slots=True)
+class ProbePlan:
+    dates: tuple[date, ...]
+    complete: bool
+
+
 def probe_dates(
     p: Profile,
     today: date,
-    bases: Mapping[Direction, BaselineVersion | None] | None = None,
     *,
-    direction: Direction | None = None,
+    direction: Direction,
     histories: Mapping[Direction, BaselineHistory] | None = None,
-) -> list[date]:
-    """The next 3 commute days whose every query date is within 10 days of today. `bases`
-    gives leg day offsets (a leg after midnight is queried with its own date)."""
-
-    def base_for(d: Direction, day: date) -> BaselineVersion | None:
-        if histories is not None:
-            return baseline_on(histories.get(d, BaselineHistory()), p, d, service_date(p, d, day))
-        base = (bases or {}).get(d)
-        return (
-            base
-            if base is None or base.commute_weekday == baseline_scope(p, d, service_date(p, d, day))
-            else None
-        )
-
+    skipped: Collection[date] = (),
+) -> ProbePlan:
+    """Count commute start dates. Pauses and individual skips use the direction's service date."""
+    alerts = p.alerts
+    legacy = not alerts.custom_timetable_horizon
+    by_commute = alerts.timetable_horizon_unit == "commute_dates"
+    if legacy:
+        count, days = LEGACY_PROBE_DAYS, LEGACY_HORIZON_DAYS
+    else:
+        count = alerts.timetable_horizon_count
+        days = COMMUTE_DATE_SEARCH_DAYS if by_commute else count
+    # Leave room for next-day returns, onward legs and local-to-UTC conversions.
+    scan = min(days, (date(9998, 12, 31) - today).days)
     out: list[date] = []
-    for i in range(1, HORIZON_DAYS + 1):
+    for i in range(1, scan + 1):
         day = today + timedelta(days=i)
         if not is_commute_day(day, p.days, p.extra_dates, p.skip_public_holidays):
             continue
-        directions = Direction if direction is None else (direction,)
-        if all(p.paused_on(service_date(p, d, day)) for d in directions):
+        sd = service_date(p, direction, day)
+        if p.paused_on(sd) or sd in skipped:
             continue
-        latest = max(
-            service_date(p, d, day)
-            + timedelta(
-                days=max((x.day_offset for x in sig.legs), default=0)
-                if (sig := baseline_usable(p, d, base_for(d, day))) is not None
-                else 0
-            )
-            for d in Direction
-        )
-        if (latest - today).days <= HORIZON_DAYS:
-            out.append(day)
-        if len(out) == PROBE_DAYS:
-            break
-    return out
+        if not legacy and p.journey_on(direction, day).mode == "window":
+            continue
+        if legacy and not _within_legacy_horizon(p, today, day, histories or {}):
+            continue
+        out.append(day)
+        if (legacy or by_commute) and len(out) == count:
+            return ProbePlan(tuple(out), True)
+    return ProbePlan(tuple(out), scan == days and (legacy or not by_commute))
+
+
+def _within_legacy_horizon(
+    p: Profile, today: date, day: date, histories: Mapping[Direction, BaselineHistory]
+) -> bool:
+    # Legacy limits the latest leg of either direction, including the next-day return.
+    for d in Direction:
+        sd = service_date(p, d, day)
+        sig = baseline_usable(p, d, baseline_on(histories.get(d, BaselineHistory()), p, d, sd))
+        offset = max((x.day_offset for x in sig.legs), default=0) if sig is not None else 0
+        if (sd - today).days + offset > LEGACY_HORIZON_DAYS:
+            return False
+    return True
 
 
 def _nearest(conns: Sequence[Connection], ref: datetime) -> Connection | None:
@@ -596,7 +609,7 @@ class _Judging:
     works: PlannedWorks
     transfer_ok: bool
 
-    def _clean(self, c: Connection, reasons: Sequence[ProbeReason]) -> bool:
+    def _clean(self, c: Connection, reasons: Sequence[ProbeReason], published_works: bool) -> bool:
         return (
             not reasons
             and self.transfer_ok
@@ -605,7 +618,7 @@ class _Judging:
                 _kind(x, r.alight.code) is LegKind.OK
                 for x, r in zip(_current(self.answers, c).legs, c.legs, strict=True)
             )
-            and not any(_covered(x, self.works) for x in _copies(self.answers, c))
+            and not published_works
         )
 
     def _on_first_train(self, c: Connection) -> bool:
@@ -626,9 +639,15 @@ class _Judging:
         self, leg_index: int | None, c: Connection, extra: Sequence[ProbeReason]
     ) -> ProbeResult:
         reasons = [*_leg_reasons(_current(self.answers, c), c), *extra]
-        clean = self._clean(c, reasons) and (leg_index is not None or self._on_first_train(c))
+        published = any(_covered(x, self.works) for x in _copies(self.answers, c))
+        clean = self._clean(c, reasons, published) and (
+            leg_index is not None or self._on_first_train(c)
+        )
         head = signature_text(signature_of(c, self.service_date))
-        return self._result(leg_index, c, head, reasons, clean, _unclear_of(self.answers, c))
+        return replace(
+            self._result(leg_index, c, head, reasons, clean, _unclear_of(self.answers, c)),
+            published_works=published,
+        )
 
     def _result(
         self,
@@ -651,6 +670,16 @@ class _Judging:
             works_known=self.works.coverage == "complete",
             unclear=unclear,
         )
+
+
+def _has_dated_trips(answer: ProviderAnswer, ref: datetime) -> bool:
+    """An empty or off-date response does not establish timetable coverage."""
+    day = ref.astimezone(TZ).date()
+    return any(
+        (c.origin, c.destination) == (answer.query.origin, answer.query.destination)
+        and planned_departure(c.legs[0]).astimezone(TZ).date() == day
+        for c in answer.connections
+    )
 
 
 def evaluate(
@@ -686,7 +715,6 @@ def evaluate(
         deps[i] or (planned_departure(whole.legs[i]) if whole is not None else None)
         for i in range(n if n > 1 else 0)
     ]
-    answered = [(st[i], st[i + 1]) in by_route and ref is not None for i, ref in enumerate(refs)]
     legs = [
         None
         if ref is None
@@ -702,13 +730,22 @@ def evaluate(
     judging = _Judging(d, sd, j.first_train, answers, works, not chain_issues and not whole_issues)
 
     out: list[ProbeResult] = []
-    for i, c in enumerate(legs):
-        if answered[i]:
+    for i, (c, ref) in enumerate(zip(legs, refs, strict=True)):
+        if c is not None:
             issue = chain_issues.get(i)
-            extra = () if issue is None else (issue,)
-            out.append(judging.missing(i) if c is None else judging.usual(i, c, extra))
+            out.append(judging.usual(i, c, () if issue is None else (issue,)))
+        elif (
+            ref is not None
+            and (answer := by_route.get((st[i], st[i + 1]))) is not None
+            and _has_dated_trips(answer, ref)
+        ):
+            out.append(judging.missing(i))
     if whole_ans is None:
         return out
     if whole is not None:
         return [*out, judging.usual(None, whole, whole_issues)]
-    return [*out, judging.other_pattern(pattern) if pattern is not None else judging.missing(None)]
+    if pattern is not None:
+        return [*out, judging.other_pattern(pattern)]
+    if _has_dated_trips(whole_ans, first):
+        out.append(judging.missing(None))
+    return out

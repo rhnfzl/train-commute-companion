@@ -71,6 +71,9 @@ async def test_guided_profile_waits_for_phone_confirmation_before_writing(hass, 
     flow = await configure(
         hass, flow, {**VALUES, "require_accessible": True, "disabled_categories": ["crowding"]}
     )
+    assert shown(flow)["custom_timetable_horizon"] is True
+    assert shown(flow)["timetable_horizon_unit"] == "calendar_days"
+    assert shown(flow)["timetable_horizon_count"] == 7
     flow = await details(
         hass, flow, pause_action="add", pause_start="2027-04-01", pause_end="2027-04-07"
     )
@@ -379,7 +382,15 @@ async def test_an_empty_catalogue_is_a_clear_error_and_does_not_write(hass):
 async def test_options_profile_edit_preserves_advanced_settings(hass):
     raw = yaml.safe_load(PROFILE)
     raw["profiles"][0]["pauses"] = [{"start": "2027-04-01", "end": "2027-04-07"}]
-    raw["profiles"][0]["alerts"] = {"delay_min": 7, "delay_step_min": 4, "weather": False}
+    raw["profiles"][0]["alerts"] = {
+        "delay_min": 7,
+        "delay_step_min": 4,
+        "weather": False,
+        "leave_by": False,
+        "custom_timetable_horizon": False,
+        "timetable_horizon_unit": "commute_dates",
+        "timetable_horizon_count": 14,
+    }
     write_profiles(hass, yaml.safe_dump(raw))
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -403,16 +414,43 @@ async def test_options_profile_edit_preserves_advanced_settings(hass):
     assert flow["step_id"] == "profile_details"
     assert shown(flow)["delay_min"] == 7
     assert shown(flow)["delay_step_min"] == 4
+    assert shown(flow)["custom_timetable_horizon"] is False
+    assert shown(flow)["timetable_horizon_unit"] == "commute_dates"
+    assert shown(flow)["timetable_horizon_count"] == 14
+    count_selector = next(
+        selector
+        for field, selector in flow["data_schema"].schema.items()
+        if field.schema == "timetable_horizon_count"
+    )
+    assert count_selector.serialize()["selector"]["number"]["max"] == 14
+    for invalid in (True, False, "7", None, 7.5):
+        with pytest.raises(vol.Invalid):
+            count_selector(invalid)
     flow = await hass.config_entries.options.async_configure(
-        flow["flow_id"], {"minimum_UT": 8, "pause_action": "keep", "delay_min": 10.0,
-                          "delay_step_min": 5.0}
+        flow["flow_id"],
+        {
+            "minimum_UT": 8,
+            "pause_action": "keep",
+            "delay_min": 10.0,
+            "delay_step_min": 5.0,
+            "custom_timetable_horizon": True,
+            "timetable_horizon_unit": "calendar_days",
+            "timetable_horizon_count": 10.0,
+        },
     )
     assert flow["type"] is FlowResultType.ABORT and flow["reason"] == "profile_saved"
     saved = yaml.safe_load(profiles_path(hass).read_text())
     assert saved["profiles"][0]["id"] == "p1"
     assert saved["profiles"][0]["pauses"] == raw["profiles"][0]["pauses"]
     assert saved["profiles"][0]["alerts"] == {
-        "delay_min": 10, "delay_step_min": 5, "disabled_categories": [], "weather": False
+        "delay_min": 10,
+        "delay_step_min": 5,
+        "disabled_categories": [],
+        "weather": False,
+        "leave_by": False,
+        "custom_timetable_horizon": True,
+        "timetable_horizon_unit": "calendar_days",
+        "timetable_horizon_count": 10,
     }
     assert saved["profiles"][1] == raw["profiles"][1]
 

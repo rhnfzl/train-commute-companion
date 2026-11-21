@@ -481,6 +481,10 @@ NotificationCategory = Literal[
 ]
 
 
+TimetableHorizonUnit = Literal["calendar_days", "commute_dates"]
+MAX_TIMETABLE_HORIZON = 14
+
+
 @dataclass(frozen=True, slots=True)
 class AlertSettings:
     earlier_train_threshold_min: int = 10
@@ -499,6 +503,9 @@ class AlertSettings:
     delay_step_min: int = 3
     weather: bool = True
     leave_by: bool = True
+    custom_timetable_horizon: bool = True
+    timetable_horizon_unit: TimetableHorizonUnit = "calendar_days"
+    timetable_horizon_count: int = 7
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]

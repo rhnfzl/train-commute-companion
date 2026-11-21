@@ -82,7 +82,12 @@ from train_commute_companion.lifecycle_lock import unfinished_leg
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import forget_pending, rebase_on_edit, reset_on_edit
 from train_commute_companion.lookahead_probe import service_date
-from train_commute_companion.lookahead_run import apply_run, lookahead_done, probe_direction
+from train_commute_companion.lookahead_run import (
+    apply_run,
+    directions_due,
+    lookahead_done,
+    probe_direction,
+)
 from train_commute_companion.match import usual_connection
 from train_commute_companion.messages import (
     CHECK_APP,
@@ -184,6 +189,7 @@ log = logging.getLogger(__name__)
 WATCHDOG_EVERY_S = 30
 FILE_EVERY_S = 10
 LOOKAHEAD_AT = time(6, 0)
+LOOKAHEAD_TRIP_INTERVAL = timedelta(seconds=2)
 _APP = "app"  # profile name on application warnings, which belong to no profile
 
 
@@ -398,6 +404,8 @@ class Runtime:
         self._clock = clock
         self.known_stations = known_stations
         self._gate = RequestGate(provider, clock.now)
+        self._lookahead_slot = asyncio.Lock()
+        self._next_lookahead_trip: datetime | None = None
         self._mtime: int | None = None
         self._auth = AuthEpisode()
         self._memory = PollMemory()
@@ -2313,14 +2321,14 @@ class Runtime:
 
     # --- look-ahead (7.10, rule 21) ---
 
-    async def lookahead_once(self) -> None:
-        cfg = self._writer.st.config
-        if cfg is None or all(p.home_station == p.work_station for p in cfg.profiles):
+    async def lookahead_once(self, *, since: datetime | None = None) -> None:
+        due = directions_due(self._writer.st, since)
+        if not due:
             return
         works = await self._fetch_works()
         if works is None:  # refused by the shared cooldown: retried by `daily`
             return
-        for pid, d in [(p.id, d) for p in cfg.profiles for d in Direction]:
+        for pid, d in due:
             # the profile as configured now: one held across an earlier direction's requests
             # could be stamped with a newer revision than its own (rule 21)
             p = find_profile(self._writer.st.config, pid)
@@ -2355,7 +2363,8 @@ class Runtime:
         start = self._clock.now()
 
         async def probe(queries: Sequence[Query]) -> tuple[ProviderAnswer, ...] | PollFailure:
-            got = await self._gate.all_trips(queries, False, None)
+            pace = self._pace_lookahead_trip if p.alerts.custom_timetable_horizon else None
+            got = await self._gate.all_trips(queries, False, None, before_trip=pace)
             self._track_key_rejection(got if isinstance(got, str) else None, "lookahead", start)
             return got
 
@@ -2363,6 +2372,14 @@ class Runtime:
         st = None if run is None else apply_run(self._writer.st, self._queue, p, d, run)
         if st is not None:
             self._writer.commit(st, Change.LOOKAHEAD)
+
+    async def _pace_lookahead_trip(self) -> None:
+        # Background trips share one cadence across profiles. Live polls never wait on this lock.
+        async with self._lookahead_slot:
+            now = to_utc(self._clock.now())
+            if self._next_lookahead_trip is not None and self._next_lookahead_trip > now:
+                await self._clock.sleep((self._next_lookahead_trip - now).total_seconds())
+            self._next_lookahead_trip = to_utc(self._clock.now()) + LOOKAHEAD_TRIP_INTERVAL
 
     # --- start, reconcile and the loops ---
 
@@ -2429,7 +2446,7 @@ class Runtime:
                     await self._clock.sleep((to_utc(six) - to_utc(now)).total_seconds())
                     continue
                 try:
-                    await self.lookahead_once()
+                    await self.lookahead_once(since=six)
                 except Exception:
                     log.exception("look-ahead failed")
                 if not lookahead_done(self._writer.st, six):
