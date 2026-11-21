@@ -15,7 +15,7 @@
       },
       "profiles_file": {
         "title": "Your profiles file",
-        "description": "Enter the full path of your profiles file. If a profiles file is already in the default place, it is filled in.",
+        "description": "Enter the full path of your profiles file. If a profiles file is already in the default place, it is filled in. Setup never writes over that file. To use the station forms instead, move that file away and add the integration again.",
         "data": {
           "profiles_path": "Profiles file"
         },
@@ -198,7 +198,11 @@
       "invalid_profile": "The profile is not valid. Review the report above.",
       "file_changed": "The file changed or already exists. Reopen the editor to use its current contents.",
       "save_failed": "The file could not be saved. Check its folder permissions. Existing contents were not replaced.",
-      "unknown_station": "Pick a station from the list."
+      "unknown_station": "Pick a station from the list.",
+      "file_broken": "The file at this path has a problem: {report}. Fix the file, or enter the path of another profiles file."
+    },
+    "create_entry": {
+      "guided": "Add more commutes later under Configure > Add or edit profiles."
     },
     "abort": {
       "no_mobile_app": "No phone with the Home Assistant companion app was found. Install the app, sign in, then try again.",

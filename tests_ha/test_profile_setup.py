@@ -1,3 +1,4 @@
+from itertools import permutations
 from unittest.mock import patch
 
 import pytest
@@ -9,6 +10,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.train_commute_companion.const import DOMAIN
+from custom_components.train_commute_companion.profile_flow import ProfileEditorFlow
 from train_commute_companion.model import Stations
 from train_commute_companion.providers.base import ProviderError
 
@@ -48,11 +50,11 @@ async def details(hass, flow, **values):
     return await configure(hass, flow, {"minimum_UT": 7, "pause_action": "keep", **values})
 
 
-async def guided(hass):
+async def guided(hass, catalogue=CATALOGUE):
     flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
     with (
-        patch(CHECK, return_value=frozenset(CATALOGUE)),
-        patch(CATALOGUE_CALL, return_value=CATALOGUE),
+        patch(CHECK, return_value=frozenset(catalogue)),
+        patch(CATALOGUE_CALL, return_value=catalogue),
     ):
         return await configure(hass, flow, {"api_key": "k"})
 
@@ -77,6 +79,7 @@ async def test_guided_profile_waits_for_phone_confirmation_before_writing(hass, 
     with patch("custom_components.train_commute_companion.async_setup_entry", return_value=True):
         flow = await configure(hass, flow, {"next_step_id": "test_ok"})
     assert flow["type"] is FlowResultType.CREATE_ENTRY
+    assert flow["description"] == "guided"  # says where to add more commutes later
     raw = yaml.safe_load(profiles_path(hass).read_text())
     assert raw["profiles"][0]["name"] == "commute"
     assert raw["profiles"][0]["home_station"] == "AAA"
@@ -95,16 +98,82 @@ async def test_guided_setup_never_writes_over_an_existing_file(hass):
 
 
 @pytest.mark.parametrize("field", ["home_station", "work_station"])
-@pytest.mark.parametrize("typed", ["Nowhere", "AAA"])  # a raw code is not a name
+@pytest.mark.parametrize("typed", ["Nowhere", "Rotterdam", " "])
 async def test_a_station_not_in_the_list_is_refused(hass, field, typed):
     flow = await configure(hass, await guided(hass), {**VALUES, field: typed})
     assert flow["step_id"] == "profile"
     assert flow["errors"] == {field: "unknown_station"}
-    assert shown(flow)[field] == typed  # the typed text stays to be fixed
+    assert shown(flow).get(field, " ") == typed  # the typed text stays to be fixed
     assert not profiles_path(hass).exists()
 
 
-async def test_two_stations_with_one_name_stay_apart(hass):
+@pytest.mark.parametrize(
+    "typed",
+    ["rotterdam centraal", "Rotterdam Centraal ", " ROTTERDAM CENTRAAL", "Rotterdam C.", "RTD"],
+)
+async def test_a_typed_name_the_catalogue_knows_is_taken(hass, monkeypatch, typed):
+    """Other case, extra spaces, a short name or the code all mean the one station."""
+    fake_phone(hass, monkeypatch)
+    catalogue = Stations({**CATALOGUE.labels, "RTD": ["Rotterdam Centraal", "Rotterdam C."]})
+    flow = await configure(hass, await guided(hass, catalogue), {**VALUES, "work_station": typed})
+    flow = await details(hass, flow)
+    flow = await configure(hass, flow, {"notify_service": NOTIFY})
+    with patch("custom_components.train_commute_companion.async_setup_entry", return_value=True):
+        flow = await configure(hass, flow, {"next_step_id": "test_ok"})
+    assert flow["type"] is FlowResultType.CREATE_ENTRY
+    assert yaml.safe_load(profiles_path(hass).read_text())["profiles"][0]["work_station"] == "RTD"
+
+
+@pytest.mark.parametrize("typed", ["Home station", "home station"])
+async def test_a_name_two_stations_share_is_refused_when_typed(hass, typed):
+    catalogue = Stations({**CATALOGUE.labels, "BBB": ["Home station"]})
+    flow = await configure(hass, await guided(hass, catalogue), {**VALUES, "home_station": typed})
+    assert flow["step_id"] == "profile"
+    assert flow["errors"] == {"home_station": "unknown_station"}
+
+
+COLLIDING = {"AAA": ["Home"], "BBB": ["Home"], "CCC": ["Home (AAA)"], "DDD": ["Home (AAA) (AAA)"]}
+
+
+@pytest.mark.parametrize("order", list(permutations(COLLIDING)))
+def test_every_station_keeps_its_own_label(order):
+    """A real name that looks like a generated label never hides a station, in any order."""
+    flow = ProfileEditorFlow()
+    flow._catalogue = Stations({code: COLLIDING[code] for code in order})
+    labels = flow._station_codes()
+    assert sorted(labels.values()) == sorted(COLLIDING)  # one label per station
+    assert labels["Home (AAA)"] == "CCC" and labels["Home (AAA) (AAA)"] == "DDD"
+    assert all(flow._station_code(label) == code for label, code in labels.items())
+
+
+async def test_an_existing_profile_with_a_colliding_label_opens_filled(hass):
+    write_profiles(hass, PROFILE)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "k"},
+        options={"profiles_path": str(profiles_path(hass)), "notify_service": NOTIFY},
+    )
+    entry.add_to_hass(hass)
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    catalogue = Stations({**CATALOGUE.labels, **COLLIDING})
+    with patch(CATALOGUE_CALL, return_value=catalogue):
+        flow = await hass.config_entries.options.async_configure(
+            flow["flow_id"], {"next_step_id": "profiles"}
+        )
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"profile": "edit:p1"}
+    )
+    defaults = shown(flow)
+    assert defaults["home_station"] == "Home (AAA) (AAA) (AAA)"  # AAA, never an empty field
+    flow = await hass.config_entries.options.async_configure(flow["flow_id"], defaults)
+    assert flow["step_id"] == "profile_details", flow.get("errors")
+    flow = await hass.config_entries.options.async_configure(flow["flow_id"], shown(flow))
+    assert flow["reason"] == "profile_saved"
+    assert yaml.safe_load(profiles_path(hass).read_text())["profiles"][0]["home_station"] == "AAA"
+
+
+@pytest.mark.parametrize("typed", ["Home station (BBB)", " Home station (BBB) "])
+async def test_two_stations_with_one_name_stay_apart(hass, typed):
     catalogue = Stations({**CATALOGUE.labels, "BBB": ["Home station"]})
     flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
     with (
@@ -114,7 +183,7 @@ async def test_two_stations_with_one_name_stay_apart(hass):
         flow = await configure(hass, flow, {"api_key": "k"})
     selector = next(v for k, v in flow["data_schema"].schema.items() if str(k) == "home_station")
     assert {"Home station (AAA)", "Home station (BBB)"} <= set(selector.config["options"])
-    flow = await configure(hass, flow, {**VALUES, "home_station": "Home station (BBB)"})
+    flow = await configure(hass, flow, {**VALUES, "home_station": typed})
     assert flow["step_id"] == "profile_details", flow.get("errors")
 
 
@@ -156,6 +225,13 @@ async def test_catalogue_failure_is_visible_and_does_not_write(hass):
         patch(CATALOGUE_CALL, side_effect=ProviderError),
     ):
         flow = await configure(hass, flow, {"api_key": "k"})
+    assert flow["errors"] == {"base": "cannot_connect"}
+    assert not profiles_path(hass).exists()
+
+
+async def test_an_empty_catalogue_is_a_clear_error_and_does_not_write(hass):
+    flow = await guided(hass, Stations({}))
+    assert flow["step_id"] == "profile_error"
     assert flow["errors"] == {"base": "cannot_connect"}
     assert not profiles_path(hass).exists()
 
@@ -245,6 +321,18 @@ async def test_editor_rejects_new_file_created_during_notification_tests(hass, m
     assert flow["errors"] == {"base": "file_changed"}
     assert not hass.config_entries.async_entries(DOMAIN)
     assert profiles_path(hass).read_text() == PROFILE
+    # retrying moves on to the path form with the new file filled in, not the same error
+    flow = await configure(hass, flow, {})
+    assert flow["step_id"] == "profiles_file" and not flow["errors"]
+    path = next(k.default() for k in flow["data_schema"].schema if str(k) == "profiles_path")
+    assert path == str(profiles_path(hass))
+    flow = await configure(hass, flow, {"profiles_path": path})
+    flow = await configure(hass, flow, {"notify_service": NOTIFY})
+    with patch("custom_components.train_commute_companion.async_setup_entry", return_value=True):
+        flow = await configure(hass, flow, {"next_step_id": "test_ok"})
+    assert flow["type"] is FlowResultType.CREATE_ENTRY and flow["description"] is None
+    assert flow["options"]["profiles_path"] == path
+    assert profiles_path(hass).read_text() == PROFILE  # the draft was dropped, never written
 
 
 async def test_guided_window_profile_and_day_overrides_round_trip(hass, monkeypatch):

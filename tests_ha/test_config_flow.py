@@ -110,6 +110,7 @@ async def test_entry_created_only_after_both_test_pushes_confirmed(hass, monkeyp
     )
     assert r["options"]["profiles_path"] == str(profiles_path(hass))
     assert r["title"] == "Train Commute Companion"
+    assert r["description"] is None  # the closing hint is for guided setup only
 
 
 async def test_critical_style_test_push_is_critical(hass, monkeypatch):
@@ -165,7 +166,32 @@ async def test_user_step_errors(hass, monkeypatch):
     r = await step(hass, r, {"profiles_path": folder})
     assert r["step_id"] == "profiles_file"
     assert r["errors"] == {"profiles_path": "file_missing"}
-    assert r["description_placeholders"] == {"path": folder}
+    assert r["description_placeholders"] == {"path": folder, "report": ""}
+
+
+async def test_existing_file_switch_with_no_file_yet_opens_a_clean_path_form(hass):
+    r = await file_step(hass)
+    assert not r["errors"]
+    assert shown_default(r, "profiles_path") == str(profiles_path(hass))
+    r = await step(hass, r, {"profiles_path": str(profiles_path(hass))})
+    assert r["step_id"] == "profiles_file" and r["errors"] == {"profiles_path": "file_missing"}
+    assert not profiles_path(hass).exists()
+
+
+async def test_a_broken_file_at_the_default_place_is_explained_on_the_path_form(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    write_profiles(hass, "profiles: [")
+    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    with patch(CHECK_KEY, return_value=KNOWN):
+        r = await step(hass, r, {"api_key": "k"})
+    assert r["step_id"] == "profiles_file"
+    assert r["errors"] == {"profiles_path": "file_broken"}
+    assert r["description_placeholders"]["report"]  # what is wrong, in words
+    other = Path(hass.config.config_dir) / "other.yaml"
+    other.write_text(PROFILE)
+    r = await step(hass, r, {"profiles_path": str(other)})  # another path is taken
+    assert r["step_id"] == "notify"
+    assert profiles_path(hass).read_text() == "profiles: ["
 
 
 async def test_path_outside_allowed_dirs_errors(hass):
@@ -347,6 +373,9 @@ def test_validate_description_has_location_caveat_verbatim():
         data = json.loads((ROOT / "custom_components" / DOMAIN / name).read_text())
         desc = data["options"]["step"]["validate"]["description"]
         assert desc == "{report}\n\n" + CAVEAT
+        assert data["config"]["create_entry"]["guided"] == (
+            "Add more commutes later under Configure > Add or edit profiles."
+        )
     a = (ROOT / "custom_components" / DOMAIN / "strings.json").read_text()
     assert a == (ROOT / "custom_components" / DOMAIN / "translations/en.json").read_text()
 
@@ -448,6 +477,32 @@ async def test_flow_aborts_when_only_a_non_phone_target_exists(hass):
     async_mock_service(hass, "notify", "mobile_app_fake")
     r = await flow_to_notify(hass)
     assert r["type"] is FlowResultType.ABORT and r["reason"] == "no_mobile_app"
+
+
+async def test_options_settings_suggest_the_one_phone_left_when_the_saved_one_is_gone(
+    hass, monkeypatch
+):
+    fake_phone(hass, monkeypatch, "mobile_app_tablet")  # the saved phone no longer exists
+    entry = add_entry(hass)
+    r = await hass.config_entries.options.async_init(entry.entry_id)
+    r = await hass.config_entries.options.async_configure(
+        r["flow_id"], {"next_step_id": "settings"}
+    )
+    key = next(k for k in r["data_schema"].schema if str(k) == "notify_service")
+    assert (key.description or {}).get("suggested_value") is None
+    assert key.default() == "mobile_app_tablet"
+
+
+async def test_options_settings_keep_suggesting_the_saved_phone(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    fake_phone(hass, monkeypatch, "mobile_app_tablet")
+    entry = add_entry(hass)
+    r = await hass.config_entries.options.async_init(entry.entry_id)
+    r = await hass.config_entries.options.async_configure(
+        r["flow_id"], {"next_step_id": "settings"}
+    )
+    key = next(k for k in r["data_schema"].schema if str(k) == "notify_service")
+    assert key.description["suggested_value"] == NOTIFY
 
 
 async def test_options_flow_offers_only_real_phone_targets(hass, monkeypatch):

@@ -57,7 +57,7 @@ from .notifier import async_push, notify_payload
 from .profile_editor import EditorError
 from .profile_flow import ProfileEditorFlow
 from .recovery_flow import RecoveryFlow
-from .validate import check_path, validate_file
+from .validate import check_path, file_problem, validate_file
 
 MOBILE_PREFIX = "mobile_app_"
 HOST_TIMEOUT_S = 10
@@ -265,6 +265,7 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         path = self.hass.config.path(DOMAIN, "profiles.yaml")
+        report = ""
         if user_input is not None:
             path = user_input[CONF_PROFILES_PATH]
             if (bad := await check_path(self.hass, path)) is not None:
@@ -272,12 +273,25 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
             else:
                 self._path = path
                 return await self.async_step_notify()
+        elif report := await self.hass.async_add_executor_job(file_problem, path):
+            errors[CONF_PROFILES_PATH] = "file_broken"  # a broken file at the default place
         return self.async_show_form(
             step_id="profiles_file",
             data_schema=vol.Schema({vol.Required(CONF_PROFILES_PATH, default=path): str}),
             errors=errors,
-            description_placeholders={"path": path},
+            description_placeholders={"path": path, "report": report},
         )
+
+    async def async_step_profile_error(
+        self, user_input: Mapping[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        # a file appeared where guided setup would create one: offer it, never write over it
+        if self._editor_create and await self.hass.async_add_executor_job(
+            os.path.exists, self._editor_path
+        ):
+            self._document = self._pending_profile = None
+            return await self.async_step_profiles_file()
+        return await super().async_step_profile_error(user_input)
 
     async def async_step_notify(
         self, user_input: Mapping[str, Any] | None = None
@@ -295,7 +309,8 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
         proof = self._proof()
         if not proof.claim(self._notify_identity()):
             return self._failed()
-        if self._pending_profile is not None:
+        guided = self._pending_profile is not None
+        if guided:
             try:
                 await self._save_profile()
             except EditorError as err:
@@ -305,6 +320,7 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
         proof.finish()
         return self.async_create_entry(
             title=TITLE,
+            description="guided" if guided else None,
             data={CONF_API_KEY: self._key},
             options={
                 CONF_PROFILES_PATH: self._path,
@@ -479,7 +495,10 @@ class TccOptionsFlow(
                 for key in (CONF_NOTIFICATIONS_ENABLED_ENTITY, CONF_NOTIFICATIONS_QUIET_ENTITY)
             }
         )
-        schema = self.add_suggested_values_to_schema(schema, self.config_entry.options)
+        suggested = dict(self.config_entry.options)
+        if suggested.get(CONF_NOTIFY) not in notify_services(self.hass):
+            suggested.pop(CONF_NOTIFY, None)  # a removed phone: one remaining phone is the default
+        schema = self.add_suggested_values_to_schema(schema, suggested)
         return self.async_show_form(
             step_id="settings",
             data_schema=schema,

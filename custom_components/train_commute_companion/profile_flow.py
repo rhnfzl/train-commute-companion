@@ -97,10 +97,29 @@ class ProfileEditorFlow:
 
     def _station_codes(self) -> dict[str, str]:
         """Name -> code for the single station pickers. The picker shows its raw value, so the
-        value is the name; a name two stations share gets its code added."""
+        value is the name; a name two stations share gets its code added, again until no other
+        label has it, so every station keeps exactly one label."""
         labels = self._labels()
         shared = Counter(labels.values())
-        return {(n if shared[n] == 1 else f"{n} ({c})"): c for c, n in labels.items()}
+        out = {name: code for code, name in labels.items() if shared[name] == 1}
+        for code, name in sorted(labels.items()):
+            if shared[name] > 1:
+                label = f"{name} ({code})"
+                while label in out:
+                    label += f" ({code})"
+                out[label] = code
+        return out
+
+    def _station_code(self, text: object) -> str | None:
+        """The code for a picked label, else for the one station a typed name or code means."""
+        assert self._catalogue is not None
+        if not isinstance(text, str):
+            return None
+        codes = self._station_codes()
+        if (code := codes.get(text, codes.get(text.strip()))) is not None:
+            return code
+        found = self._catalogue.lookup(text.strip())  # case, spaces, aliases; never a guess
+        return found[0] if len(found) == 1 else None
 
     def _existing(self) -> dict[str, Any]:
         """The profile being edited, its stations as codes for the form."""
@@ -130,6 +149,8 @@ class ProfileEditorFlow:
         self._pending_profile = None
         try:
             known = self._catalogue = await station_catalogue(self.hass, key)
+            if not known:  # NS answered without stations: nothing could be picked or checked
+                return self._editor_error("cannot_connect")
             self._document = await self.hass.async_add_executor_job(
                 lambda: read_document(
                     Path(path),
@@ -320,9 +341,11 @@ class ProfileEditorFlow:
         errors: dict[str, str] = {}
         report = ""
         if user_input is not None:
-            codes = self._station_codes()
             # the form keeps names; everything after this step works with codes
-            coded_values = {**values, **{k: codes.get(values.get(k, "")) for k in _SINGLE_STATIONS}}
+            coded_values = {
+                **values,
+                **{k: self._station_code(values.get(k)) for k in _SINGLE_STATIONS},
+            }
             errors = {k: "unknown_station" for k in _SINGLE_STATIONS if coded_values[k] is None}
             if not errors:
                 try:

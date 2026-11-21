@@ -23,7 +23,9 @@ Never delete the state file to force a downgrade.
 3. Set up your commute in the station forms that come next. Type part of a station name to search the list. See [the profile editor guide](profile-editor.md).
 4. Pick your phone and the loud alert style (below). If you have one phone, it is already picked. Two test notifications go out, one loud and one silent. Confirm that both arrived.
 
-Already have a profiles file? Turn on **Use an existing YAML file** next to the key, then enter the file's full path. If a profiles file is already in the config folder at `train_commute_companion/profiles.yaml`, setup asks for the path and fills it in. It never writes over that file.
+Add more commutes later under Configure > Add or edit profiles.
+
+Already have a profiles file? Turn on **Use an existing YAML file** next to the key, then enter the file's full path. If a profiles file is already in the config folder at `train_commute_companion/profiles.yaml`, setup asks for the path and fills it in. It never writes over that file. If that file has a problem, the form says what it is. Fix it, or enter the path of another file.
 
 Only one NS key is set up per Home Assistant instance.
 
