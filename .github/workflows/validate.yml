@@ -2,6 +2,9 @@ name: Validate
 
 on:
   push:
+    # Rehan checks these branches locally. The batch runs the full suite on its PR.
+    branches-ignore: ["batch/rhnfzl-*", "work/rhnfzl/**"]
+    tags: ["**"]
   pull_request:
   schedule:
     - cron: "0 3 * * *"
