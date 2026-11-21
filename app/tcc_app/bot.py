@@ -55,6 +55,7 @@ from .commands import (
     status_buttons,
 )
 from .follow import FUTURE_LIMIT, Follower, stamp
+from .setup_wizard import SetupWizard
 from .telegram import TelegramApi, TelegramError, split_text
 from .travel_actions import POLICY_LABELS, TravelActions
 from .travel_chat import TravelChat, TravelReply, buttons, plan_receipt
@@ -88,6 +89,7 @@ HELP = (
     "/skip [profile] [outbound|return|day] [YYYY-MM-DD]: not travelling, alerts for it stop\n"
     "/stations: the boarding stations TCC remembers\n"
     "/forget STATION: stop remembering that boarding station\n"
+    "/setup: create your first commute when using the Docker installer\n"
     "/test: send the loud and the silent test alert (and test each webhook)\n"
     "/help: this list\n"
     "Data: NS"
@@ -110,7 +112,7 @@ BUTTON_LABELS = {
     "tm": "Travel preference",
 }
 # exclusive one-time choices: a used one takes its whole keyboard; any other used button goes alone
-WHOLE_KEYBOARD = frozenset({"ok", "av", "q", "ra", "tp", "ta", "ag", "tm"})
+WHOLE_KEYBOARD = frozenset({"ok", "av", "q", "ra", "tp", "ta", "ag", "tm", "setup"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,9 +213,11 @@ class Bot:
         *,
         travel_actions: TravelActions | None = None,
         travel_language: TravelLanguage | None = None,
+        setup_path: Path | None = None,
     ) -> None:
         self._api, self._rt, self._chat, self._path = api, rt, chat_id, state_path
         self._follower, self._webhook_test = follower, webhook_test
+        self._wizard = SetupWizard(rt, setup_path) if setup_path is not None else None
         loaded = load_state(state_path)
         # An unreadable binding must never turn back into an open setup link.
         self._state_safe = loaded is not None or not os.path.lexists(state_path)
@@ -511,6 +515,16 @@ class Bot:
             await self._reply(HELP)
             if not self.confirmed:
                 await self._test_pair()
+        elif word in ("/setup", "/cancel_setup"):
+            if self._wizard is None:
+                await self._reply("This install uses a manual profiles file. See the Docker guide.")
+            elif self._setup_allowed(msg.get("chat"), msg.get("from")):
+                setup_reply = (
+                    await self._wizard.begin() if word == "/setup" else await self._wizard.cancel()
+                )
+                await self._reply(setup_reply.text, setup_reply.markup)
+            else:
+                await self._reply("Open the private setup link or confirm both test alerts first.")
         elif word == "/test":
             await self._test_pair()
             # the phone pair and its button stay the rule-16 proof; a webhook only needs a 2xx
@@ -545,6 +559,10 @@ class Bot:
                     "/preferences",
                 ):
                     await self._offer_travel_memory(check=True)
+        elif self._wizard is not None and self._wizard.pending and not word.startswith("/"):
+            if self._setup_allowed(msg.get("chat"), msg.get("from")):
+                setup_reply = await self._wizard.text(text)
+                await self._reply(setup_reply.text, setup_reply.markup)
         elif self.confirmed and not text.lstrip().startswith("/"):
             async with self._travel_lock:
                 reply_or_none = self._travel_chat.text(text)
@@ -572,6 +590,15 @@ class Bot:
         if self.travel_actions.can_always(approval_id):
             rows.append([("Always allow", f"ta|{approval_id}|always")])
         return self.confirmed and await self._reply(text, buttons(*rows))
+
+    def _setup_allowed(self, chat: Any, sender: Any) -> bool:
+        return (
+            self._state_safe
+            and self._chat is not None
+            and _obj(chat).get("type") == "private"
+            and _obj(sender).get("id") == self._chat
+            and (self.confirmed or self.state.claimed_for == f"{self._api.bot_id}:{self._chat}")
+        )
 
     async def _targeted(self, word: str, args: Sequence[str]) -> None:
         view = self._rt.view()  # outside the try: only parse_target's refusals are replies
@@ -609,7 +636,19 @@ class Bot:
             return
         data, message = cb.get("data"), _obj(cb.get("message"))
         try:
-            out = await self._dispatch(data, cb.get("id"))
+            parts = data.split("|") if isinstance(data, str) else []
+            if parts[:1] == ["setup"]:
+                if (
+                    len(parts) != 3
+                    or self._wizard is None
+                    or not self._setup_allowed(message.get("chat"), cb.get("from"))
+                ):
+                    out = Outcome(INVALID)
+                else:
+                    reply = await self._wizard.button(parts[1], parts[2])
+                    out = Outcome(reply.text, reply.markup, reply.done)
+            else:
+                out = await self._dispatch(data, cb.get("id"))
         except _TimedOut:
             out = Outcome(TIMED_OUT)
         except Exception:

@@ -1,0 +1,26 @@
+# The installer replaces the image and port placeholders before starting Compose.
+services:
+  tcc:
+    image: &image "@TCC_INSTALL_IMAGE@"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    env_file: .env
+    environment:
+      TCC_PROFILES: /data/profiles.yaml
+    volumes: [tcc-data:/data]
+    ports: ["127.0.0.1:@TCC_INSTALL_PORT@:8080"]
+  mcp:
+    image: *image
+    profiles: [mcp]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes: ["tcc-data:/data:ro"]
+    network_mode: none
+    healthcheck:
+      disable: true
+    command: [python, -m, tcc_app.mcp_server]
+volumes:
+  tcc-data:

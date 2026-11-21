@@ -245,6 +245,7 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
     if s.email is not None:
         email = EmailPoster(s.email, clock.now)
         webhooks = CopyPorts(webhooks, email) if webhooks is not None else email
+    setup_path = s.profiles if s.profiles == s.state_dir / "profiles.yaml" else None
     rt = Runtime(
         profile_path=s.profiles,
         store=JsonFileStore(s.state_dir / "tcc-state.json"),
@@ -256,6 +257,7 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         webhooks=webhooks,
         primary_destination=lambda: notifier.destination_id,
         weather=WeatherProvider(client, clock.now, s.knmi_key),
+        profile_setup=setup_path is not None,
     )
     follower = Follower(rt)
     preferences = TravelPreferences(s.state_dir / "travel-preferences.json", rt.now)
@@ -282,6 +284,7 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
         notifier.bind_chat,
         travel_actions=actions,
         travel_language=TravelLanguage(language, client) if language is not None else None,
+        setup_path=setup_path,
     )
     return App(s, rt, notifier, bot, follower, webhooks)
 
