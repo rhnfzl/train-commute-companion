@@ -1,5 +1,6 @@
 """Station-name forms backed by the same portable profile file as every other shell."""
 
+import asyncio
 from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime
@@ -14,6 +15,8 @@ from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.selector import (
     BooleanSelector,
     DateSelector,
+    EntitySelector,
+    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -23,6 +26,7 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
 )
 
+from train_commute_companion.budget import RequestGate
 from train_commute_companion.calendar import TZ, WEEKDAYS
 from train_commute_companion.model import (
     MAX_TIMETABLE_HORIZON,
@@ -32,9 +36,10 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.notification_policy import CATEGORIES
 from train_commute_companion.profile import slug
-from train_commute_companion.providers.base import AuthError, ProviderError
+from train_commute_companion.providers.base import AuthError, ProviderAnswer, ProviderError, Query
 from train_commute_companion.providers.ns import NsProvider
 from train_commute_companion.recurrence import MAX_TRIPS
+from train_commute_companion.state import PollFailure
 from train_commute_companion.transfer import FALLBACK_MIN
 
 from .flow_state import ReviewPhase
@@ -49,6 +54,8 @@ from .profile_editor import (
     save_document,
     validate_text,
 )
+from .profile_location import location_choices
+from .profile_preview import nearby_stations, trip_preview
 
 MODE_OPTIONS: list[SelectOptionDict] = [
     {"value": "fixed", "label": "Fixed: follow my usual train"},
@@ -65,6 +72,7 @@ DAY_NAMES = dict(
 )
 _OPTIONAL_TEXT = ("time", "window_start", "window_end")
 _SINGLE_STATIONS = ("home_station", "work_station")
+_ALERT_TIMES = ("quiet_start", "quiet_end", "works_digest_time")
 
 
 class WholeNumberSelector(NumberSelector):
@@ -119,10 +127,22 @@ class ProfileEditorFlow:
     _pending_profile: str | None = None
     _editor_values: dict[str, Any] | None = None
     _day_target: tuple[str, str] | None = None
+    _preview: dict[str, str] | None = None
+    _preview_gate: RequestGate | None = None
     _profile_phase = ReviewPhase.SELECTING
 
     def _profile_channels(self) -> frozenset[NotificationChannel]:
         return frozenset({"primary"})
+
+    async def _preview_trips(self, query: Query) -> ProviderAnswer | PollFailure | None:
+        if self._preview_gate is None:
+
+            def now() -> datetime:
+                return datetime.now(TZ)
+
+            provider = NsProvider(self._editor_key, get_async_client(self.hass), now)
+            self._preview_gate = RequestGate(provider, now)
+        return await self._preview_gate.trips(query, live=False, window_end=None)
 
     def _labels(self) -> dict[str, str]:
         known = self._catalogue or Stations({})
@@ -174,14 +194,26 @@ class ProfileEditorFlow:
             description_placeholders={"report": report, "path": self._editor_path},
         )
 
-    async def _begin_editor(self, key: str, path: str, *, create: bool = False) -> ConfigFlowResult:
-        if self._profile_phase in (ReviewPhase.COMMITTING, ReviewPhase.COMPLETE):
+    async def _begin_editor(
+        self, key: str, path: str, *, create: bool = False, catalogue: Stations | None = None
+    ) -> ConfigFlowResult:
+        if self._profile_phase in (
+            ReviewPhase.PREVIEWING,
+            ReviewPhase.COMMITTING,
+            ReviewPhase.COMPLETE,
+        ):
             return self._editor_error("file_changed")
+        if key != self._editor_key:
+            self._preview_gate = None
         self._editor_key, self._editor_path, self._editor_create = key, path, create
         self._document = None
         self._pending_profile = None
+        self._editor_values = None
+        self._preview = None
         try:
-            known = self._catalogue = await station_catalogue(self.hass, key)
+            known = self._catalogue = (
+                catalogue if catalogue is not None else await station_catalogue(self.hass, key)
+            )
             if not known:  # NS answered without stations: nothing could be picked or checked
                 return self._editor_error("cannot_connect")
             self._document = await self.hass.async_add_executor_job(
@@ -216,7 +248,8 @@ class ProfileEditorFlow:
         self, user_input: Mapping[str, Any] | None = None
     ) -> ConfigFlowResult:
         if (
-            self._profile_phase in (ReviewPhase.COMMITTING, ReviewPhase.COMPLETE)
+            self._profile_phase
+            in (ReviewPhase.PREVIEWING, ReviewPhase.COMMITTING, ReviewPhase.COMPLETE)
             or self._document is None
         ):
             return self._editor_error("invalid_profile")
@@ -317,7 +350,7 @@ class ProfileEditorFlow:
             **{key: names.get(profile.get(key, "")) for key in _SINGLE_STATIONS},
             "skip_public_holidays": profile.get("skip_public_holidays", True),
             "require_accessible": profile.get("accessibility", {}).get("require_accessible", False),
-            "disabled_categories": profile.get("alerts", {}).get("disabled_categories", []),
+            "disabled_categories": (profile.get("alerts") or {}).get("disabled_categories", []),
             **{
                 f"{direction}_{field}": profile.get(direction, {}).get(source, default)
                 for direction in ("outbound", "return")
@@ -331,14 +364,16 @@ class ProfileEditorFlow:
             **schedule,  # last: a window profile's blank first train wins
         }
 
-    def _profile_schema(self, defaults: Mapping[str, Any]) -> vol.Schema:
+    def _profile_schema(self, defaults: Mapping[str, Any], nearby: list[str]) -> vol.Schema:
         options: list[SelectOptionDict] = [
             {"value": code, "label": label}
             for code, label in sorted(self._labels().items(), key=lambda item: item[1])
         ]
         # custom_value is what gives the single picker its search box; unknown text is refused
-        station = SelectSelector(
-            SelectSelectorConfig(options=sorted(self._station_codes()), custom_value=True)
+        names = sorted(self._station_codes())
+        station = SelectSelector(SelectSelectorConfig(options=names, custom_value=True))
+        home_station = SelectSelector(
+            SelectSelectorConfig(options=list(dict.fromkeys(nearby + names)), custom_value=True)
         )
         transfers = SelectSelector(
             SelectSelectorConfig(
@@ -352,7 +387,7 @@ class ProfileEditorFlow:
         ]
         fields: dict[Any, Any] = {
             vol.Required("name"): str,
-            vol.Required("home_station"): station,
+            vol.Required("home_station"): home_station,
             vol.Required("work_station"): station,
             vol.Required("days"): SelectSelector(
                 SelectSelectorConfig(
@@ -505,11 +540,16 @@ class ProfileEditorFlow:
                     errors["base"], report = err.code, err.report
                 else:
                     return await self.async_step_profile_details()
+        nearby = nearby_stations(self.hass, self._catalogue, self._station_codes())
         return self.async_show_form(
             step_id="profile",
-            data_schema=self._profile_schema(values),
+            data_schema=self._profile_schema(values, nearby),
             errors=errors,
-            description_placeholders={"report": report, "other": other},
+            description_placeholders={
+                "report": report,
+                "other": other,
+                "nearby": ", ".join(nearby),
+            },
         )
 
     async def async_step_profile_details(
@@ -538,26 +578,67 @@ class ProfileEditorFlow:
                 minimums[code] = (
                     int(minimum) if isinstance(minimum, float) and minimum.is_integer() else minimum
                 )
-            details = {**self._editor_values, **user_input, "transfer_min": minimums}
-            try:
-                self._draft_profile(details, available_channels=self._profile_channels())
-            except EditorError as err:
-                errors["base"], report = err.code, err.report
-            else:
-                if user_input.get("edit_weekday_times", False):
-                    return await self.async_step_profile_weekdays()
-                return await self._after_weekdays()
+            details = {
+                **self._editor_values,
+                **user_input,
+                "transfer_min": minimums,
+                **{key: user_input.get(key, "") for key in _ALERT_TIMES},
+            }
+            person = user_input.get("ha_person")
+            if person and (
+                user_input.get("disable_ha_location")
+                or not isinstance(person, str)
+                or not person.startswith("person.")
+                or self.hass.states.get(person) is None
+            ):
+                errors["ha_person"] = "invalid_location_person"
+            if not errors:
+                try:
+                    self._draft_profile(details, available_channels=self._profile_channels())
+                except EditorError as err:
+                    errors["base"], report = err.code, err.report
+                else:
+                    if person:
+                        return await self.async_step_profile_location()
+                    return await self._after_profile_details()
         fields: dict[Any, Any] = {}
         for key in ("edit_weekday_times", "edit_day_overrides"):
             default = values.get(key, self._editor_values.get(key, False))
             fields[vol.Optional(key, default=default)] = BooleanSelector()
+        alerts = existing.get("alerts") or {}
         for key in ("delay_min", "delay_step_min"):
-            fields[
-                vol.Optional(key, default=values.get(key, existing.get("alerts", {}).get(key, 3)))
-            ] = NumberSelector(
+            fields[vol.Optional(key, default=values.get(key, alerts.get(key, 3)))] = NumberSelector(
                 NumberSelectorConfig(min=1, max=1440, step=1, mode=NumberSelectorMode.BOX)
             )
-        alerts = existing.get("alerts", {})
+        quiet = [t.zfill(5) for t in alerts.get("quiet_hours") or ("", "")]
+        digest = existing.get("works_digest") or {}
+        initial = {
+            "quiet_start": quiet[0] if quiet[0] != quiet[1] else "",
+            "quiet_end": quiet[1] if quiet[0] != quiet[1] else "",
+            "works_digest_time": digest["time"].zfill(5) if digest else "",
+        }
+        for key in _ALERT_TIMES:
+            fields[
+                vol.Optional(
+                    key,
+                    description={
+                        "suggested_value": initial[key]
+                        if user_input is None
+                        else values.get(key, "")
+                    },
+                )
+            ] = str
+        fields[
+            vol.Optional(
+                "works_digest_day", default=values.get("works_digest_day", digest.get("day", "off"))
+            )
+        ] = SelectSelector(
+            SelectSelectorConfig(
+                options=["off", *WEEKDAYS],
+                mode=SelectSelectorMode.DROPDOWN,
+                translation_key="works_digest_day",
+            )
+        )
         defaults = AlertSettings()
         for key in (
             "compensation_reminder",
@@ -575,10 +656,24 @@ class ProfileEditorFlow:
             "arrive_by",
             "alert_history",
             "calendar_feed",
+            "quick_trip",
+            "daily_brief",
         ):
             fields[
                 vol.Optional(key, default=values.get(key, alerts.get(key, getattr(defaults, key))))
             ] = BooleanSelector()
+        brief = existing.get("brief", {})
+        for key in ("at", "evening_at"):
+            field = f"brief_{key}"
+            fields[vol.Optional(field, default=values.get(field, brief.get(key, "")))] = str
+        fields[
+            vol.Optional(
+                "brief_only_if_something",
+                default=values.get(
+                    "brief_only_if_something", brief.get("only_if_something", False)
+                ),
+            )
+        ] = BooleanSelector()
         key = "timetable_horizon_unit"
         fields[
             vol.Optional(
@@ -602,6 +697,12 @@ class ProfileEditorFlow:
             )
         )
         location = existing.get("location")
+        fields[
+            vol.Optional("ha_person", description={"suggested_value": values.get("ha_person")})
+        ] = EntitySelector(EntitySelectorConfig(domain="person"))
+        fields[
+            vol.Optional("disable_ha_location", default=values.get("disable_ha_location", False))
+        ] = BooleanSelector()
         if isinstance(location, dict):  # other boarding stations need a location source
             fields.update(self._other_station_fields(existing, location, values))
         for code in stations:
@@ -632,7 +733,7 @@ class ProfileEditorFlow:
             suggested = {"suggested_value": values[key]} if key in values else {}
             fields[vol.Optional(key, description=suggested)] = DateSelector()
         configured = self._profile_channels()
-        saved_channels = existing.get("alerts", {}).get("channels", {})
+        saved_channels = alerts.get("channels", {})
         for category in CATEGORIES:
             key = f"channel_{category}"
             default = (
@@ -675,6 +776,65 @@ class ProfileEditorFlow:
             data_schema=vol.Schema(fields),
             errors=errors,
             description_placeholders={"stations": labels, "pauses": pauses, "report": report},
+        )
+
+    async def _after_profile_details(self) -> ConfigFlowResult:
+        assert self._editor_values is not None
+        if self._editor_values.get("edit_weekday_times", False):
+            return await self.async_step_profile_weekdays()
+        return await self._after_weekdays()
+
+    async def async_step_profile_location(
+        self, user_input: Mapping[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if (
+            self._profile_phase is not ReviewPhase.EDITING
+            or self._document is None
+            or self._editor_values is None
+            or self._catalogue is None
+            or "ha_person" not in self._editor_values
+        ):
+            return self._editor_error("invalid_profile")
+        person_id = self._editor_values["ha_person"]
+        person = self.hass.states.get(person_id)
+        if person is None:
+            return self._editor_error("invalid_location_person")
+        saved = self._existing().get("location") or {}
+        schema, errors, wifi_hint = location_choices(self.hass, person, saved, user_input)
+        report = ""
+        if user_input is not None and not errors:
+            details = {
+                **self._editor_values,
+                "ha_location": {
+                    "entity": person_id,
+                    "zones": {
+                        role: user_input[f"ha_{role}_zone"]
+                        for role in ("home", "work")
+                        if user_input.get(f"ha_{role}_zone")
+                    },
+                    "wifi": {
+                        role: user_input[f"ha_{role}_wifi"]
+                        for role in ("home", "work")
+                        if user_input.get(f"ha_{role}_wifi")
+                    },
+                    "activity_entity": user_input.get("ha_activity"),
+                },
+            }
+            try:
+                self._draft_profile(details, available_channels=self._profile_channels())
+            except EditorError as err:
+                errors["base"], report = err.code, err.report
+            else:
+                return await self._after_profile_details()
+        return self.async_show_form(
+            step_id="profile_location",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "person": person.name,
+                "wifi_hint": wifi_hint,
+                "report": report,
+            },
         )
 
     def _other_station_fields(
@@ -767,8 +927,7 @@ class ProfileEditorFlow:
                     saved = existing.get(direction, {}).get("by_weekday", {})
                     self._editor_values[key] = dict(saved) if isinstance(saved, dict) else {}
             return await self.async_step_profile_day_pick()
-        self._profile_phase = ReviewPhase.REVIEWING
-        return await self._profile_ready()
+        return await self._finish_editor()
 
     def _day_summary(self) -> str:
         assert self._editor_values is not None
@@ -800,8 +959,7 @@ class ProfileEditorFlow:
                 except EditorError as err:
                     errors["base"], report = err.code, err.report
                 else:
-                    self._profile_phase = ReviewPhase.REVIEWING
-                    return await self._profile_ready()
+                    return await self._finish_editor()
             else:
                 direction, _, day = str(target).replace(":", "_").partition("_")
                 if direction not in ("outbound", "return") or day not in DAY_NAMES:
@@ -918,6 +1076,48 @@ class ProfileEditorFlow:
                 "day": f"{DAY_NAMES[day]} {direction}",
                 "report": report,
             },
+        )
+
+    async def _finish_editor(self) -> ConfigFlowResult:
+        assert self._pending_profile is not None and self._catalogue is not None
+        self._profile_phase = ReviewPhase.PREVIEWING
+        try:
+            config = await self.hass.async_add_executor_job(
+                validate_text,
+                self._pending_profile,
+                self._catalogue,
+                datetime.now(TZ).date(),
+                self._profile_channels(),
+            )
+            profile = next(
+                (p for p in config.profiles if p.id == self._profile_id), config.profiles[-1]
+            )
+            self._preview = await trip_preview(
+                profile, self._catalogue, lambda: datetime.now(TZ), self._preview_trips
+            )
+        except EditorError as err:
+            self._profile_phase = ReviewPhase.EDITING
+            return self._editor_error(err.code, err.report)
+        except asyncio.CancelledError:
+            self._profile_phase = ReviewPhase.EDITING
+            raise
+        self._profile_phase = ReviewPhase.REVIEWING
+        if self._preview is not None:
+            return await self.async_step_profile_preview()
+        return await self._profile_ready()
+
+    async def async_step_profile_preview(
+        self, user_input: Mapping[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if self._profile_phase is not ReviewPhase.REVIEWING or self._preview is None:
+            return self._editor_error("invalid_profile")
+        if user_input is not None:
+            self._preview = None
+            return await self._profile_ready()
+        return self.async_show_form(
+            step_id="profile_preview",
+            data_schema=vol.Schema({}),
+            description_placeholders=self._preview,
         )
 
     async def _save_profile(self) -> None:

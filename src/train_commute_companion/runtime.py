@@ -9,10 +9,11 @@ from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, S
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
-from train_commute_companion import works_digest
+from train_commute_companion import daily_brief, works_digest
 from train_commute_companion.advice import (
     advice_query,
     advise,
@@ -23,7 +24,7 @@ from train_commute_companion.arrival import planning_query
 from train_commute_companion.budget import POLL_DEADLINE, POLL_EVERY_S, RequestGate
 from train_commute_companion.calendar import TZ, Clock, hhmm, resolve_local, to_utc
 from train_commute_companion.choice import ChoiceTarget, choice_target, named_connections
-from train_commute_companion.classify import current_run, evidence, find_leg
+from train_commute_companion.classify import current_run, evidence, expected_departure, find_leg
 from train_commute_companion.compensation import ArrivalError, arrival_text, confirm
 from train_commute_companion.compensation_state import JourneyRecord
 from train_commute_companion.delivery import (
@@ -46,6 +47,7 @@ from train_commute_companion.disruptions import (
     update_disruptions,
 )
 from train_commute_companion.health import (
+    FRESH_FOR,
     WatchedLeg,
     blindness,
     board_blind,
@@ -103,7 +105,6 @@ from train_commute_companion.lookahead_run import (
     ProbedRun,
     apply_run,
     directions_due,
-    lookahead_done,
     probe_direction,
 )
 from train_commute_companion.match import usual_connection
@@ -120,6 +121,7 @@ from train_commute_companion.model import (
     AlertEvent,
     AlertFacts,
     AlertSettings,
+    BriefRow,
     Config,
     Ctx,
     Direction,
@@ -139,6 +141,7 @@ from train_commute_companion.model import (
     Provenance,
     SentAlert,
     Severity,
+    Stations,
     TrainId,
     alert_facts,
     direction_key,
@@ -165,6 +168,7 @@ from train_commute_companion.providers.base import (
     Query,
 )
 from train_commute_companion.providers.weather import WeatherProvider, WeatherView, weather_text
+from train_commute_companion.quick_trip import resolve_station, trip_result
 from train_commute_companion.recovery_runtime import RecoveryController
 from train_commute_companion.recovery_state import ORIGINAL_ROUTINE, RecoveryOffer, SelectedRecovery
 from train_commute_companion.revisions import (
@@ -224,7 +228,7 @@ from train_commute_companion.travel_plans import plan_dict, plan_suppresses, pla
 from train_commute_companion.travelling import resume
 from train_commute_companion.vehicle import VehicleProvider, VehicleWatch
 from train_commute_companion.vehicle_monitor import VehicleMonitor
-from train_commute_companion.view import OccurrenceView, RuntimeView, runtime_view
+from train_commute_companion.view import OccurrenceView, RuntimeView, occurrence_view, runtime_view
 from train_commute_companion.weather_allowance import WeatherAllowance, weather_allowance
 from train_commute_companion.webhook import event_id
 from train_commute_companion.webhook_queue import CopyQueue
@@ -407,13 +411,17 @@ def _rebased(
         for d in Direction:
             dk = direction_key(p.id, d)
             hist = baselines.get(dk)
-            if hist is None:
-                continue
             if dk in ledgers:
-                ledgers[dk] = reset_on_edit(q, p, d, hist, ledgers[dk], today)
+                ledger = reset_on_edit(q, p, d, hist or BaselineHistory(), ledgers[dk], today)
                 if not same_route(q, p):  # rule 5(c) drops its pending messages
-                    ledgers[dk] = forget_pending(ledgers[dk])
-            baselines[dk] = rebase_on_edit(q, p, d, hist, today)
+                    ledger = forget_pending(ledger)
+                if daily_brief.itinerary_changed(q, p, d, today + timedelta(days=1)):
+                    ledger = replace(
+                        ledger, last_evening=None, last_evening_attempt=None, evening_failures=0
+                    )
+                ledgers[dk] = ledger
+            if hist is not None:
+                baselines[dk] = rebase_on_edit(q, p, d, hist, today)
     return baselines, ledgers
 
 
@@ -492,8 +500,10 @@ class Runtime:
         self._clock = clock
         self.known_stations = known_stations
         self._gate = RequestGate(provider, clock.now)
+        self._next_quick_trip = float("-inf")
         self._lookahead_slot = asyncio.Lock()
         self._next_lookahead_trip: datetime | None = None
+        self._active_feed: tuple[datetime, ActiveDisruptions] | None = None
         self._mtime: int | None = None
         self._auth = AuthEpisode()
         self._memory = PollMemory()
@@ -504,6 +514,7 @@ class Runtime:
         )
         self._vehicle_refresh = RefreshTask(self._refresh_vehicles, coalesce=True)
         self._weather = weather
+        self._weather_lock = asyncio.Lock()
         self._weather_refresh = RefreshTask(self._refresh_weather, coalesce=True)
         self._digest_refresh = RefreshTask(self.works_digest_once, coalesce=False)
         self._digest_attempts: dict[str, datetime] = {}
@@ -617,6 +628,9 @@ class Runtime:
             ),
             discard_copy_kinds=HISTORY_ALERTS,
         )
+
+    async def preview_trip(self, query: Query) -> ProviderAnswer | PollFailure:
+        return await self._gate.trips(query, live=False, window_end=None)
 
     def list_travel_plans(self) -> dict[str, Any]:
         return {
@@ -888,17 +902,17 @@ class Runtime:
         ):
             self._weather_refresh.request()
 
-    async def _refresh_weather(self) -> None:
+    async def _refresh_weather(self, extra_stations: Iterable[str] = ()) -> None:
         if self._weather is None:
             return
         # Snapshot current switches and stations. Results are filtered again when read or sent.
-        stations = {
-            w.station: self._provider.positions[w.station]
-            for o in self.view().occurrences
-            for w in o.weather
-        }
+        codes = dict.fromkeys(
+            (*extra_stations, *(w.station for o in self.view().occurrences for w in o.weather))
+        )
+        stations = {s: self._provider.positions[s] for s in codes if s in self._provider.positions}
         try:
-            await self._weather.refresh(stations)
+            async with self._weather_lock:
+                await self._weather.refresh(stations)
         except Exception:
             log.exception("optional weather refresh failed")
 
@@ -1471,7 +1485,10 @@ class Runtime:
     def _waits(self, o: Obligation) -> bool:
         """Not judged yet: written before this start (judged once the reconcile ran, rule 11),
         or judged on observations while its occurrence has no healthy answer (rule 5b)."""
-        if self._writer.correction_waits(o) or not self._routing_ready_in(self._writer.st, o):
+        if self._writer.correction_waits(o) or (
+            not self._routing_ready_in(self._writer.st, o)
+            and (o.event.kind is not EventKind.DAILY_BRIEF or self._ledger.fact_holds(o))
+        ):
             return True
         if self._lifecycle.holds(o.event.created_at):
             return True
@@ -1823,12 +1840,9 @@ class Runtime:
             for s in self._writer.st.occurrences.values()
         ):
             return
-        got = await self._gate.listing(self._provider.active_disruptions, "active disruptions")
+        feed = await self._fetch_active_disruptions()
         if not self._writer.store_ok:
             return
-        if got == "auth":
-            self._track_key_rejection("auth", "active disruptions", self._clock.now())
-        feed = got if isinstance(got, ActiveDisruptions) else ActiveDisruptions((), "unknown")
         changes: dict[str, tuple[OccurrenceState, Sequence[AlertEvent]]] = {}
         for key, state in self._writer.st.occurrences.items():
             context = self._disruption_context(state, self._clock.now())
@@ -1843,6 +1857,16 @@ class Runtime:
             )
             changes[key] = (transition.state, transition.events)
         self._apply(changes)
+
+    async def _fetch_active_disruptions(self) -> ActiveDisruptions:
+        got = await self._gate.listing(self._provider.active_disruptions, "active disruptions")
+        now = self._clock.now()
+        if isinstance(got, ActiveDisruptions):
+            self._active_feed = (now, got)
+            return got
+        if got == "auth" and self._writer.store_ok:
+            self._track_key_rejection("auth", "active disruptions", now)
+        return ActiveDisruptions((), "unknown")
 
     async def _poll_occurrence(self, k: str) -> None:
         s = self._writer.st.occurrences.get(k)
@@ -2789,15 +2813,18 @@ class Runtime:
                 return Refused(
                     "Another profile reload replaced this request. Try again.", RefusalKind.RETRY
                 )
-            if isinstance(e, FileNotFoundError) and self._profile_setup and self.config is None:
-                await self._fetch_stations()
-                if not self._reload.current(request):
-                    return Refused(
-                        "Another profile reload replaced this request. Try again.",
-                        RefusalKind.RETRY,
-                    )
+            if isinstance(e, FileNotFoundError) and self.config is None:
+                if self._profile_setup:
+                    await self._fetch_stations()
+                    if not self._reload.current(request):
+                        return Refused(
+                            "Another profile reload replaced this request. Try again.",
+                            RefusalKind.RETRY,
+                        )
                 self._reload.refusal = None
-                self._reload.phase = ReloadPhase.READY
+                self._reload.phase = (
+                    ReloadPhase.READY if self._profile_setup else ReloadPhase.UNCONFIGURED
+                )
                 self._reload.pending = PendingEditPhase.NONE
             else:
                 self._refuse(f"cannot read {self._path.name} ({e})", now)
@@ -2881,9 +2908,12 @@ class Runtime:
         self._stations_tried = self._clock.now()
         got = await self.stations()
         if got:  # an empty list checks nothing
-            self.known_stations = got
-            if self._on_stations is not None:
-                self._on_stations(got)
+            self._remember_stations(got)
+
+    def _remember_stations(self, stations: frozenset[str]) -> None:
+        self.known_stations = stations
+        if self._on_stations is not None:
+            self._on_stations(stations)
 
     def _apply_config(self, new: Config, now: datetime) -> None:
         self._recovery.invalidate()
@@ -2923,6 +2953,7 @@ class Runtime:
         self._writer.propose(replace(
             self._writer.st, config=new, config_snapshots=snaps, occurrences=occs,
             baselines=baselines, lookahead=ledgers,
+            brief_days={pid: day for pid, day in self._writer.st.brief_days.items() if pid in now_loc},
         ))  # fmt: skip
 
     async def reload_if_changed(self) -> None:
@@ -2989,38 +3020,80 @@ class Runtime:
         self._track_key_rejection(got if isinstance(got, str) else None, "setup", now)
         return () if isinstance(got, str) else got
 
-    async def _lookahead_direction(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
-        start = self._clock.now()
-        snapshot = self._writer.st
-        config = snapshot.config
-        if config is None:
-            return
+    def _quick_trip_refusal(self) -> Refused | None:
+        config = self.config
+        if config is not None and any(not p.alerts.quick_trip for p in config.profiles):
+            return Refused("Quick trip checks are disabled for this companion by a profile.")
+        if not self.started or self._reload.pending is PendingEditPhase.STATIONS:
+            return Refused(
+                "The companion is still checking its settings. Try again.", RefusalKind.RETRY
+            )
+        return None
 
-        async def before_trip() -> None:
-            if p.alerts.custom_timetable_horizon:
-                await self._pace_lookahead_trip()
-            current = self._writer.st
-            if (
-                current.config is None
-                or current.config.revision != config.revision
-                or current.travel_revision != snapshot.travel_revision
-            ):
-                raise _ObsoleteLookahead
+    async def check_trip(self, origin: str, destination: str) -> dict[str, Any] | Refused:
+        """Check upcoming options without changing or notifying about a followed journey."""
+        if refusal := self._quick_trip_refusal():
+            return refusal
+        tick = monotonic()
+        if tick < self._next_quick_trip:
+            return Refused("Wait 30 seconds between trip checks.", RefusalKind.RETRY)
+        self._next_quick_trip = tick + 30
+        known = self.known_stations
+        if not known:
+            got = await self._listing(self._provider.stations, "quick trip station list")
+            if got == "auth":
+                return Refused("NS rejected your API key. Check the NS-App key.", RefusalKind.RETRY)
+            if not got or isinstance(got, str):
+                return Refused("The NS station list is unavailable. Try again.", RefusalKind.RETRY)
+            if not self.known_stations:
+                self._remember_stations(got)
+            known = self.known_stations or got
+        catalogue = known if isinstance(known, Stations) else Stations(dict.fromkeys(known, ()))
+        start = resolve_station(catalogue, origin)
+        if isinstance(start, Refused):
+            return start
+        end = resolve_station(catalogue, destination)
+        if isinstance(end, Refused):
+            return end
+        if start == end:
+            return Refused("Choose different origin and destination stations.")
+        if refusal := self._quick_trip_refusal():
+            return refusal
+        query = Query(start, end, self.now().astimezone(TZ))
+        answer = await self._gate.trips(query, live=False, window_end=None)
+        self._track_key_rejection(
+            answer if isinstance(answer, str) else None, "quick trip", self.now()
+        )
+        if answer == "auth":
+            return Refused("NS rejected your API key. Check the NS-App key.", RefusalKind.RETRY)
+        if refusal := self._quick_trip_refusal():
+            return refusal
+        if isinstance(answer, str) or answer.query != query:
+            return Refused("NS trip data is unavailable. Try again.", RefusalKind.RETRY)
+        return trip_result(answer, catalogue, self.now())
 
-        async def probe(queries: Sequence[Query]) -> tuple[ProviderAnswer, ...] | PollFailure:
-            got = await self._gate.all_trips(queries, False, None, before_trip=before_trip)
-            self._track_key_rejection(got if isinstance(got, str) else None, "lookahead", start)
-            return got
-
-        try:
-            run = await probe_direction(snapshot, p, d, works, start, probe)
-        except _ObsoleteLookahead:
+    async def _lookahead_direction(
+        self,
+        p: Profile,
+        d: Direction,
+        works: PlannedWorks,
+        *,
+        evening_day: date | None = None,
+        answers: dict[Query, ProviderAnswer] | None = None,
+    ) -> None:
+        run = await self._probe_lookahead(
+            p, d, works, day=evening_day, evening=evening_day is not None, answers=answers
+        )
+        if evening_day is not None and (
+            self._clock.now().astimezone(TZ).date() + timedelta(days=1) != evening_day
+        ):
             return
         if run is not None:
             self._apply_lookahead_run(p, d, run)
 
     def _apply_lookahead_run(self, p: Profile, d: Direction, run: ProbedRun) -> None:
         st = self._writer.st
+        key = direction_key(p.id, d)
         applied = apply_run(
             st,
             self._queue,
@@ -3028,10 +3101,282 @@ class Runtime:
             d,
             run,
             track_adoptions=True,
-            pending_ledger=self._writer.judged_state().lookahead.get(direction_key(p.id, d)),
+            pending_ledger=self._writer.judged_state().lookahead.get(key),
         )
-        if applied is not None:
+        if applied is None:
+            return
+        if run.evening_day is None:
             self._writer.commit(applied, Change.LOOKAHEAD)
+            return
+        ledger = applied.lookahead[key]
+        existing = {o.id for o in st.obligations}
+        pinned = {
+            o.id: self._pin_targets(o, self._ledger) for o in ledger.pending if o.id not in existing
+        }
+        self._writer.commit_strict(
+            replace(
+                applied,
+                lookahead={
+                    **applied.lookahead,
+                    key: replace(
+                        ledger, pending=tuple(pinned.get(o.id, o) for o in ledger.pending)
+                    ),
+                },
+                obligations=tuple(pinned.get(o.id, o) for o in applied.obligations),
+            )
+        )
+
+    async def _probe_lookahead(
+        self,
+        p: Profile,
+        d: Direction,
+        works: PlannedWorks,
+        *,
+        day: date | None = None,
+        evening: bool = False,
+        snapshot: Sequence[ProviderAnswer] = (),
+        answers: dict[Query, ProviderAnswer] | None = None,
+    ) -> ProbedRun | None:
+        start = self._clock.now()
+        starting_state = self._writer.st
+        config = starting_state.config
+        if config is None:
+            return None
+
+        async def before_trip() -> None:
+            if day is not None or p.alerts.custom_timetable_horizon:
+                await self._pace_lookahead_trip()
+            current = self._writer.st
+            if (
+                current.config is None
+                or current.config.revision != config.revision
+                or current.travel_revision != starting_state.travel_revision
+            ):
+                raise _ObsoleteLookahead
+
+        partial = False
+
+        async def probe(queries: Sequence[Query]) -> tuple[ProviderAnswer, ...] | PollFailure:
+            nonlocal partial
+            # Two local clock readings can name different instants when daylight saving ends.
+            keyed = {replace(q, at=to_utc(q.at)): q for q in queries}
+            reused = {} if answers is None else {k: answers[k] for k in keyed if k in answers}
+
+            def received(answer: ProviderAnswer) -> None:
+                key = replace(answer.query, at=to_utc(answer.query.at))
+                reused[key] = answer
+                if answers is not None:
+                    answers[key] = answer
+
+            missing = [q for k, q in keyed.items() if k not in reused]
+            if missing:
+                got = await self._gate.all_trips(
+                    missing, False, None, before_trip=before_trip, received=received
+                )
+                self._track_key_rejection(got if isinstance(got, str) else None, "lookahead", start)
+                if isinstance(got, str):
+                    if not (evening and reused):
+                        return got
+                    partial = True
+            return tuple(reused[k] for k in keyed if k in reused)
+
+        try:
+            run = await probe_direction(
+                starting_state,
+                p,
+                d,
+                works,
+                start,
+                probe,
+                day=day,
+                evening=evening,
+                snapshot=snapshot,
+            )
+            return replace(run, probe_finished=False) if partial and run is not None else run
+        except _ObsoleteLookahead:
+            return None
+
+    async def _brief_row(
+        self,
+        p: Profile,
+        d: Direction,
+        day: date,
+        works: PlannedWorks,
+        disruptions: ActiveDisruptions | None,
+    ) -> BriefRow:
+        sd = service_date(p, d, day)
+        key = OccurrenceKey(p.id, d, sd)
+        now = self._clock.now()
+        st = self._writer.st
+        planned = daily_brief.schedule(st, p, d, day).first_departure
+        occurrence = st.occurrences.get(okey(key))
+        context = self._ctx(occurrence, now) if occurrence is not None else None
+        boards = self._memory.boards.get(okey(key), ())
+        observed = None
+        if occurrence is not None and context is not None and same_route(context.profile, p):
+            observed = self._with_weather(occurrence_view(occurrence, context, boards), (p,), now)
+        snapshot = tuple(
+            a
+            for a in boards
+            if observed is not None
+            and timedelta(0) <= to_utc(now) - to_utc(a.fetched_at) < FRESH_FOR
+            and (a.query.origin, a.query.destination) == (p.origin(d), p.destination(d))
+        )
+        run = None
+        if (
+            snapshot
+            or to_utc(planned) > to_utc(now)
+            and not (observed and observed.health.fresh and observed.legs)
+        ):
+            run = await self._probe_lookahead(p, d, works, day=day, snapshot=snapshot)
+        now = self._clock.now()
+        station = p.origin(d)
+        target = planned
+        if observed is not None and observed.legs and observed.health.fresh:
+            leg = observed.legs[0]
+            station, target = leg.board, leg.departure or leg.planned_departure
+        elif run is not None:
+            whole = next((r.connection for r in run.results if r.leg_index is None), None)
+            if whole is not None:
+                station, target = whole.legs[0].board.code, expected_departure(whole)
+        weather = (
+            self._weather.snapshot(station, self._provider.positions[station], target, now)
+            if self._weather is not None
+            and p.alerts.weather
+            and station in self._provider.positions
+            and to_utc(target) >= to_utc(now)
+            else None
+        )
+        return daily_brief.build_row(
+            p,
+            d,
+            day,
+            planned,
+            observed,
+            () if run is None else run.results,
+            daily_brief.has_works_warning(st, p, d, sd),
+            works,
+            weather,
+            disruptions,
+            now,
+        )
+
+    async def _morning_brief(
+        self,
+        p: Profile,
+        revision: int,
+        day: date,
+        works: PlannedWorks,
+        disruptions: ActiveDisruptions | None,
+    ) -> None:
+        st = self._writer.st
+        travel_revision = st.travel_revision
+        directions = daily_brief.open_directions(st, p, day, self._clock.now())
+        rows = []
+        for d in directions:
+            st = self._writer.st
+            if (
+                st.config is None
+                or st.config.revision != revision
+                or st.travel_revision != travel_revision
+            ):
+                return
+            if d in daily_brief.open_directions(st, p, day, self._clock.now()):
+                rows.append(await self._brief_row(p, d, day, works, disruptions))
+        st = self._writer.st
+        now = self._clock.now()
+        if (
+            st.config is None
+            or st.config.revision != revision
+            or st.travel_revision != travel_revision
+            or now.astimezone(TZ).date() != day
+            or st.brief_days.get(p.id) == day
+        ):
+            return
+        eligible = daily_brief.open_directions(st, p, day, now)
+        message = daily_brief.obligation(
+            p, revision, day, now, [r for r in rows if r.direction in eligible]
+        )
+        self._writer.commit_strict(
+            replace(
+                st,
+                brief_days={**st.brief_days, p.id: day},
+                obligations=(
+                    st.obligations
+                    if message is None
+                    else (*st.obligations, self._pin_targets(message, self._ledger))
+                ),
+            )
+        )
+
+    async def scheduled_lookahead_once(self) -> None:
+        """One batch shares its works listing and request budget across all due checks."""
+        st = self._writer.st
+        config = st.config
+        now = self._clock.now()
+        day = now.astimezone(TZ).date()
+        batch = daily_brief.due(st, now, self._lookahead_at)
+        if config is None or not batch:
+            return
+        works = await self._fetch_works()
+        if works is not None:
+            await self._scheduled_timetable(batch, config, day, works)
+        if self.config == config and self._clock.now().astimezone(TZ).date() == day:
+            mornings = [due for due in batch if due.morning and not self._writer.waiting]
+            if mornings:
+                await self._morning_briefs(
+                    mornings, config, day, works or PlannedWorks((), "unknown")
+                )
+        await self._deliver()
+
+    async def _scheduled_timetable(
+        self, batch: Sequence[daily_brief.Due], config: Config, day: date, works: PlannedWorks
+    ) -> None:
+        answers: dict[Query, ProviderAnswer] = {}
+        for due in batch:
+            for d in due.horizon:
+                if self.config != config or self._clock.now().astimezone(TZ).date() != day:
+                    return
+                await self._lookahead_direction(due.profile, d, works, answers=answers)
+            for d in due.evening:
+                if self.config != config or self._clock.now().astimezone(TZ).date() != day:
+                    return
+                if not self._writer.waiting and self._gate.budget.allow(
+                    self._clock.now(), live=False
+                ):
+                    await self._lookahead_direction(
+                        due.profile, d, works, evening_day=day + timedelta(days=1), answers=answers
+                    )
+
+    async def _morning_briefs(
+        self, batch: Sequence[daily_brief.Due], config: Config, day: date, works: PlannedWorks
+    ) -> None:
+        disruptions = None
+        if any(enabled(due.profile.alerts, EventKind.DISRUPTION) for due in batch):
+            cached = self._active_feed
+            disruptions = (
+                cached[1]
+                if cached is not None
+                and timedelta(0) <= to_utc(self._clock.now()) - to_utc(cached[0]) < FRESH_FOR
+                else await self._fetch_active_disruptions()
+            )
+        stations = tuple(
+            due.profile.origin(d)
+            for due in batch
+            if due.profile.alerts.weather
+            for d in due.morning
+        )
+        if self.config == config and stations:
+            try:
+                async with asyncio.timeout(8):
+                    await self._refresh_weather(stations)
+            except TimeoutError:
+                pass  # The brief uses any forecast the provider has already cached.
+        for due in batch:
+            if self.config != config or self._clock.now().astimezone(TZ).date() != day:
+                return
+            if not self._writer.waiting:
+                await self._morning_brief(due.profile, config.revision, day, works, disruptions)
 
     async def _pace_lookahead_trip(self) -> None:
         # Background trips share one cadence across profiles. Live polls never wait on this lock.
@@ -3097,25 +3442,19 @@ class Runtime:
         c = self._clock
 
         async def daily() -> None:
-            """Today's run once the look-ahead time (LOOKAHEAD_AT by default) has passed, also
-            after a start past it; retried each poll interval until every direction's run has
-            written (7.10)."""
             while True:
-                now = self._clock.now().astimezone(TZ)
-                six = resolve_local(now.date(), self._lookahead_at, edge="start")
-                if to_utc(six) <= to_utc(now) and lookahead_done(self._writer.st, six):
-                    six = resolve_local(
-                        now.date() + timedelta(days=1), self._lookahead_at, edge="start"
-                    )
-                if to_utc(six) > to_utc(now):
-                    await self._clock.sleep((to_utc(six) - to_utc(now)).total_seconds())
-                    continue
                 try:
-                    await self.lookahead_once(since=six)
+                    await self.scheduled_lookahead_once()
                 except Exception:
                     log.exception("look-ahead failed")
-                if not lookahead_done(self._writer.st, six):
-                    await self._clock.sleep(POLL_EVERY_S)
+                now = self._clock.now().astimezone(TZ)
+                config = self.config
+                waits: list[float] = [POLL_EVERY_S]
+                for p in config.profiles if config is not None else ():
+                    for slot in daily_brief.slots(p, now.date(), self._lookahead_at):
+                        if to_utc(slot) > to_utc(now):
+                            waits.append((to_utc(slot) - to_utc(now)).total_seconds())
+                await c.sleep(min(waits))
 
         async def main() -> None:
             if not started:

@@ -29,9 +29,11 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from train_commute_companion.model import NotificationChannel, Severity
-from train_commute_companion.providers.base import AuthError, ProviderError
+from train_commute_companion.model import NotificationChannel, Severity, Stations
+from train_commute_companion.providers.base import AuthError, ProviderAnswer, ProviderError, Query
 from train_commute_companion.providers.ns import NsProvider
+from train_commute_companion.runtime import Runtime
+from train_commute_companion.state import PollFailure
 from train_commute_companion.webhook import check_secret, check_token, parse_urls
 from train_commute_companion.webhook_send import send_webhook_tests
 
@@ -103,13 +105,19 @@ async def check_key(hass: HomeAssistant, api_key: str) -> frozenset[str]:
 
 async def key_error(hass: HomeAssistant, api_key: str) -> str | None:
     """The form's error key for an API key NS does not take, else None."""
+    _, error = await _checked_stations(hass, api_key)
+    return error
+
+
+async def _checked_stations(
+    hass: HomeAssistant, api_key: str
+) -> tuple[frozenset[str] | None, str | None]:
     try:
-        await check_key(hass, api_key)
+        return await check_key(hass, api_key), None
     except AuthError:
-        return "invalid_auth"
+        return None, "invalid_auth"
     except ProviderError:
-        return "cannot_connect"
-    return None
+        return None, "cannot_connect"
 
 
 def notify_services(hass: HomeAssistant) -> list[str]:
@@ -246,7 +254,8 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
         errors: dict[str, str] = {}
         if user_input is not None:
             key = user_input[CONF_API_KEY]
-            if (bad_key := await key_error(self.hass, key)) is not None:
+            stations, bad_key = await _checked_stations(self.hass, key)
+            if bad_key is not None:
                 errors["base"] = bad_key
             else:
                 self._key = key
@@ -257,7 +266,14 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
                 ):
                     return await self.async_step_profiles_file()
                 self._path = path
-                return await self._begin_editor(key, path, create=True)
+                if user_input.get("skip_profile", False):
+                    return await self.async_step_notify()
+                return await self._begin_editor(
+                    key,
+                    path,
+                    create=True,
+                    catalogue=stations if isinstance(stations, Stations) else None,
+                )
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
@@ -266,6 +282,7 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
                         TextSelectorConfig(type=TextSelectorType.PASSWORD)
                     ),
                     vol.Optional("existing_file", default=False): BooleanSelector(),
+                    vol.Optional("skip_profile", default=False): BooleanSelector(),
                 }
             ),
             errors=errors,
@@ -402,6 +419,19 @@ class TccOptionsFlow(
 ):
     _back = "settings"
 
+    async def _preview_trips(self, query: Query) -> ProviderAnswer | PollFailure | None:
+        entry = self.config_entry
+        if hasattr(entry, "runtime_data"):
+            try:
+                return await entry.runtime_data.host.run(lambda rt: rt.preview_trip(query))
+            except host_mod.RuntimeNotRunning:
+                pass
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise
+        return None
+
     def _profile_channels(self) -> frozenset[NotificationChannel]:
         return (
             frozenset({"primary", "webhook"})
@@ -483,7 +513,30 @@ class TccOptionsFlow(
         self, user_input: Mapping[str, Any] | None = None
     ) -> ConfigFlowResult:
         if self._document is None:
-            return await self._begin_editor(self.config_entry.data[CONF_API_KEY], self._path)
+            default_path = self.hass.config.path(DOMAIN, "profiles.yaml")
+            create = self._path == default_path and not await self.hass.async_add_executor_job(
+                os.path.lexists, self._path
+            )
+            entry = self.config_entry
+            catalogue = None
+            if hasattr(entry, "runtime_data"):
+
+                async def profile_stations(rt: Runtime) -> frozenset[str] | None:
+                    return rt.known_stations or await rt.stations()
+
+                try:
+                    async with asyncio.timeout(HOST_TIMEOUT_S):
+                        known = await entry.runtime_data.host.run(profile_stations)
+                except (host_mod.RuntimeNotRunning, TimeoutError):
+                    return self._editor_error("cannot_connect")
+                if not known:
+                    return self._editor_error("cannot_connect")
+                catalogue = (
+                    known if isinstance(known, Stations) else Stations(dict.fromkeys(known, ()))
+                )
+            return await self._begin_editor(
+                entry.data[CONF_API_KEY], self._path, create=create, catalogue=catalogue
+            )
         return await super().async_step_profiles(user_input)
 
     async def _profile_ready(self) -> ConfigFlowResult:
@@ -579,6 +632,10 @@ class TccOptionsFlow(
         self._path, self._service, self._style = candidate.path, candidate.service, candidate.style
         version = self._settings_check.begin(candidate)
         bad = await check_path(self.hass, candidate.path)
+        if bad == "file_missing" and candidate.path == candidate.base_options.get(
+            CONF_PROFILES_PATH
+        ):
+            bad = None
         # only a new path is checked for problems: a broken file at the saved path must not
         # block a phone change, and the runtime already reports it
         report = (

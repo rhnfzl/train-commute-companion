@@ -78,10 +78,12 @@ ALLOWED = ["message", "edited_message", "callback_query"]
 LOUD_TEST = "Train Commute Companion: test alert, loud. You should hear this one."
 SILENT_TEST = "Train Commute Companion: test alert, silent. This one should arrive without sound."
 USAGE_CHOOSE = "Usage: /choose [profile] [outbound|return] HH:MM [train number] [YYYY-MM-DD]"
+USAGE_TRIP = "Use /trip UT RTD, /trip Utrecht Centraal -> Rotterdam Centraal, or /trip saved NAME."
 HELP = (
     "/status: the journeys being followed now\n"
     "/stats [week|month|year]: your recorded commute statistics\n"
     "/clearstats: review clearing your local commute statistics\n"
+    "/trip UT RTD: check the next trains between two stations\n"
     "/plan: set up a one-off or repeating trip\n"
     "/plans: view, edit or cancel saved trips\n"
     "/agents: choose which agents can change plans\n"
@@ -589,6 +591,9 @@ class Bot:
             await self._reply(
                 render_status(view, self.confirmed), status_buttons(view, self.confirmed)
             )
+        elif word == "/trip":
+            if _obj(msg.get("chat")).get("type") == "private":
+                await self._check_trip(text.split(maxsplit=1)[1:])
         elif word == "/arrived":
             await self._arrival_review(args)
         elif word in ("/stats", "/clearstats"):
@@ -626,6 +631,24 @@ class Bot:
                     reply_or_none = await self._travel_chat.interpret(text)
                 if reply_or_none and await self._reply(reply_or_none.text, reply_or_none.markup):
                     await self._offer_travel_memory()
+
+    async def _check_trip(self, args: list[str]) -> None:
+        raw = args[0] if args else ""
+        words = raw.split(maxsplit=1)
+        if len(words) == 2 and words[0].casefold() == "saved":
+            preferences = self.travel_actions.preferences
+            saved = preferences.saved_route(words[1]) if preferences is not None else None
+            if saved is None:
+                await self._reply("No saved travel preference by that name. See /preferences.")
+                return
+            pair = list(saved)
+        else:
+            pair = raw.split("->") if "->" in raw else raw.split()
+        if len(pair) != 2 or not all(station.strip() for station in pair):
+            await self._reply(USAGE_TRIP)
+            return
+        result = await self._call_runtime(self._rt.check_trip(*pair))
+        await self._reply(result.text if isinstance(result, Refused) else result["text"])
 
     async def _offer_travel_memory(self, *, check: bool = False) -> None:
         reply = self._travel_chat.memory_suggestion(check=check)

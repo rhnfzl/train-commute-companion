@@ -99,6 +99,7 @@ class EventKind(StrEnum):
     RESTORED = "restored"
     WORKS_AHEAD = "works_ahead"
     WORKS_DIGEST = "works_digest"
+    DAILY_BRIEF = "daily_brief"
     COMPENSATION_REMINDER = "compensation_reminder"
     WEEKLY_RECAP = "weekly_recap"
     AFTER_TRIP_NOTE = "after_trip_note"
@@ -541,6 +542,8 @@ class AlertSettings:
     after_trip_note: bool = True
     alert_history: bool = False
     calendar_feed: bool = True
+    quick_trip: bool = True
+    daily_brief: bool = True
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]
@@ -574,6 +577,13 @@ class WorksDigestSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class BriefSettings:
+    at: time | None = None
+    evening_at: time = time(20)
+    only_if_something: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class Profile:
     id: str
     name: str
@@ -593,6 +603,7 @@ class Profile:
     works_digest: WorksDigestSettings | None = None
     travel_plan: bool = False
     repeat: RepeatSchedule | None = None
+    brief: BriefSettings = field(default_factory=BriefSettings)
 
     def repeats_on(self, day: date) -> bool:
         if self.repeat is None:
@@ -689,18 +700,26 @@ class Stations(frozenset[str]):
     still works everywhere and simply knows no names."""
 
     labels: Mapping[str, tuple[str, ...]]  # code -> its names, the display name first
+    positions: Mapping[str, tuple[float, float]]
     _exact: dict[str, tuple[str, ...]]
     _loose: dict[str, tuple[str, ...]]
 
-    def __new__(cls, labels: Mapping[str, Sequence[str]]) -> Self:
+    def __new__(
+        cls,
+        labels: Mapping[str, Sequence[str]],
+        positions: Mapping[str, tuple[float, float]] | None = None,
+    ) -> Self:
         self = super().__new__(cls, labels)
         self.labels = {code: tuple(names) for code, names in labels.items()}
+        self.positions = dict(positions or {})
         self._exact = self._index(accents=True)
         self._loose = self._index(accents=False)
         return self
 
-    def __reduce__(self) -> tuple[type["Stations"], tuple[dict[str, tuple[str, ...]]]]:
-        return Stations, (dict(self.labels),)  # a copy keeps the names
+    def __reduce__(
+        self,
+    ) -> tuple[type["Stations"], tuple[dict[str, tuple[str, ...]], dict[str, tuple[float, float]]]]:
+        return Stations, (dict(self.labels), dict(self.positions))
 
     def _index(self, *, accents: bool) -> dict[str, tuple[str, ...]]:
         out: dict[str, tuple[str, ...]] = {}
@@ -784,6 +803,18 @@ class NotTravelling:
 
 
 @dataclass(frozen=True, slots=True)
+class BriefRow:
+    direction: Direction
+    service_date: date
+    details: str
+    actionable: bool = False
+    leave_by: datetime | None = None
+    advice: str | None = None
+    advice_actionable: bool = False
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class Obligation:
     id: str
     event: AlertEvent
@@ -800,6 +831,8 @@ class Obligation:
     digest_token: str | None = None
     primary_suppressed: bool = False
     alert_history_origin: tuple[str, datetime] | None = None
+    brief_directions: tuple[Direction, ...] = ()
+    brief_rows: tuple[BriefRow, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

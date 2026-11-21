@@ -361,7 +361,9 @@ def pair_transfer(
     return replace(inc, leg=a), replace(out, leg=b)
 
 
-def current_connection(answers: Sequence[ProviderAnswer], c: Connection) -> Connection:
+def current_connection(
+    answers: Sequence[ProviderAnswer], c: Connection, *, merge_crowd_forecasts: bool = False
+) -> Connection:
     """`c` with each leg's current copy, for times, ranking and as a returned copy only: a
     replaced leg may end before `c`'s alight stop, so it is never judged nor normalized again."""
     legs: list[Leg] = []
@@ -381,6 +383,7 @@ def current_connection(answers: Sequence[ProviderAnswer], c: Connection) -> Conn
                 messages=g.messages,
                 alternative_transport=g.alternative_transport,
                 category=g.category,
+                crowd_forecast=g.crowd_forecast if merge_crowd_forecasts else leg.crowd_forecast,
             )
         )
     reach: list[list[bool | None]] = [[] for _ in legs]

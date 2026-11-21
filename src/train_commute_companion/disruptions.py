@@ -9,11 +9,13 @@ from itertools import pairwise
 from uuid import uuid4
 
 from train_commute_companion.calendar import TZ, to_utc
+from train_commute_companion.classify import expected_departure
 from train_commute_companion.health import FRESH_FOR
 from train_commute_companion.lifecycle import Transition, is_resolved, make_event
 from train_commute_companion.model import (
     AlertEvent,
     AlertFacts,
+    Connection,
     Ctx,
     EventKind,
     LegState,
@@ -188,6 +190,26 @@ def _hits_your_train(item: ActiveDisruption, legs: Sequence[_Leg]) -> bool:
         if section.only is None or any(kind in (None, section.only) for kind in kinds):
             return True
     return not touched and not (legs and item.sections)
+
+
+def for_connection(
+    feed: ActiveDisruptions, connection: Connection, now: datetime
+) -> tuple[ActiveDisruption, ...]:
+    legs: list[_Leg] = []
+    for leg in connection.legs:
+        path = tuple(frozenset(x for x in (s.code, s.uic) if x) for s in leg.stops)
+        legs.append(
+            (set().union(*path), _train_type(leg.category), (path,) if len(path) > 2 else None)
+        )
+    route = set().union(*(leg[0] for leg in legs))
+    dep = expected_departure(connection)
+    return tuple(
+        item
+        for item in feed.items
+        if item.stations & route
+        and _hits_your_train(item, legs)
+        and (item.end is None or to_utc(item.end) > max(to_utc(now), to_utc(dep)))
+    )
 
 
 def notice_key(notice: DisruptionNotice, service_date: str) -> str:

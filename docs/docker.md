@@ -125,6 +125,7 @@ Then follow the first run from step 1. After each update of the checkout, build 
 ## Commands and buttons
 
 - `/status`: the journeys being followed now
+- `/trip UT RTD`: check the next trains between two stations
 - `/plan`: start guided travel setup
 - `/plans`: view, edit or cancel saved travel plans
 - `/agents`: review or change which connected agents can manage plans
@@ -144,6 +145,16 @@ The same actions are buttons under the alerts and the `/status` reply. A questio
 Every tap gets a reply that names the button and says what it did, for example "I got both: Delivery confirmed. Setup is complete." When the tap takes effect, that button goes away and the others under the message stay, so "Not travelling" still works after "I'm leaving". A one-time choice, such as "I got both", an arrival confirmation or the answer to a question, takes all of its buttons with it. A refused tap keeps them, so you can try again.
 
 A recovery step removes both old progress and stop controls for that step. The reply carries the current controls. If the reply cannot be delivered, the original buttons stay.
+
+### Quick trip checks
+
+Use `/trip UT RTD` or `/trip Utrecht Centraal -> Rotterdam Centraal` in your bound private chat.
+Use `->` between station names with spaces. If a name matches more than one station, use a code from the reply.
+After saving a route with `/remember` and confirming it, use `/trip saved NAME`. The check uses the saved station pair and searches from now. Saved arrival and return preferences apply when planning trips.
+
+The reply shows up to three train options by departure time, including changes. It labels timetable and NS-reported times and shows boarding platforms and crowd forecasts when available. If NS data is stale or unavailable, the reply asks you to try again.
+
+For a fresh install used only for quick checks, skip the example profiles file and use the usual private chat setup. The running companion allows one check every 30 seconds. The check shares the NS request budget with monitoring and leaves travel plans untouched. Any configured profile can disable checks for the whole companion. [Quick trip settings](notification-preferences.md#quick-trip-checks)
 
 ## Plan a trip in Telegram
 
@@ -185,7 +196,7 @@ Everything comes from the environment (`.env`):
 | `OWNTRACKS_SECRET` | optional, 16+ printable ASCII characters without spaces; turns on the OwnTracks endpoint |
 | `TCC_HEALTH_TOKEN` | optional override, 16+ printable ASCII characters without spaces; otherwise generated and saved in `/data/health-token`; grants full `/health` and Today access |
 | `TCC_CALENDAR_TOKEN` | optional, separate 64-character lowercase hex token for the private calendar subscription |
-| `TCC_LOOKAHEAD_AT` | when the planned-works look-ahead runs, `HH:MM`, default `06:00` |
+| `TCC_LOOKAHEAD_AT` | default time for the planned-works lookahead and morning commute brief, `HH:MM`, default `06:00` |
 | `TCC_NTFY_TOPIC` | optional random private topic, 32-64 letters, digits, `_` or `-`; requires your access token |
 | `TCC_NTFY_TOKEN` | your ntfy user access token; required with the topic |
 | `TCC_NTFY_SERVER` | optional HTTPS server root, default `https://ntfy.sh`; no path, credentials, query or fragment |

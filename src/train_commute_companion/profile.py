@@ -19,6 +19,7 @@ from train_commute_companion.model import (
     MAX_TIMETABLE_HORIZON,
     AccessibilitySettings,
     AlertSettings,
+    BriefSettings,
     Config,
     DayOverride,
     Direction,
@@ -57,6 +58,54 @@ _DATE_MIN, _DATE_MAX = date(2, 1, 1), date(9998, 12, 31)
 
 class _Loader(yaml.SafeLoader):
     """Leaves YAML timestamps as text, so _date validates every configured date."""
+
+    def get_single_data(self) -> Any:
+        node = self.get_single_node()
+        if node is None:
+            return None
+        for _, profiles in _settings(node, {"profiles"}, unique=False):
+            if isinstance(profiles, yaml.SequenceNode):
+                for profile in profiles.value:
+                    for key, settings in _settings(profile, {"brief", "alerts"}):
+                        fields = (
+                            {"at", "evening_at", "only_if_something"}
+                            if key == "brief"
+                            else {"daily_brief"}
+                        )
+                        _settings(settings, fields)
+        return self.construct_document(node)
+
+
+def _settings(
+    node: yaml.Node, fields: set[str], *, unique: bool = True
+) -> list[tuple[str, yaml.Node]]:
+    """Check explicit settings keys before PyYAML flattens anchors and merge overrides."""
+    pending = [node]
+    visited: set[yaml.Node] = set()
+    found = []
+    while pending:
+        mapping = pending.pop()
+        if not isinstance(mapping, yaml.MappingNode) or mapping in visited:
+            continue
+        visited.add(mapping)
+        seen = set()
+        for key, value in mapping.value:
+            if key.tag == "tag:yaml.org,2002:merge":
+                pending.extend(value.value if isinstance(value, yaml.SequenceNode) else [value])
+            if not isinstance(key, yaml.ScalarNode) or key.tag not in (
+                "tag:yaml.org,2002:str",
+                "tag:yaml.org,2002:value",
+                "tag:yaml.org,2002:timestamp",
+            ):
+                continue
+            if key.value in fields:
+                if unique and key.value in seen:
+                    raise yaml.constructor.ConstructorError(
+                        None, None, f"duplicate {key.value!r} setting", key.start_mark
+                    )
+                seen.add(key.value)
+                found.append((key.value, value))
+    return found
 
 
 def _as_text(loader: _Loader, node: yaml.Node) -> str:
@@ -166,7 +215,7 @@ def _other_stations(
     return [s for s in found if s]
 
 
-def _check_other_stations(c: _ProfileErrors, p: Profile) -> None:
+def _check_other_stations(c: _ProfileErrors, p: Profile, has_location_block: bool) -> None:
     """Other boarding stations: never where the direction starts or ends, and only with a
     location source that can see the phone there."""
     for d in Direction:
@@ -179,7 +228,7 @@ def _check_other_stations(c: _ProfileErrors, p: Profile) -> None:
                 )
             elif code == p.destination(d):
                 c.err(f"{name}.other_stations[{i}]", f"{code} is where this direction ends")
-        if others and p.location is None:
+        if others and not has_location_block:
             c.err(
                 f"{name}.other_stations",
                 "other_stations need a location block",
@@ -501,6 +550,8 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "after_trip_note",
             "alert_history",
             "calendar_feed",
+            "quick_trip",
+            "daily_brief",
         ),
         "alerts",
     )
@@ -509,6 +560,8 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         key: c.boolean(raw.get(key, getattr(d, key)), f"alerts.{key}")
         for key in ("commute_stats", "weekly_recap", "after_trip_note")
     }
+    quick_trip = c.boolean(raw.get("quick_trip", d.quick_trip), "alerts.quick_trip")
+    daily_brief = c.boolean(raw.get("daily_brief", d.daily_brief), "alerts.daily_brief")
     custom_horizon = c.boolean(
         raw.get("custom_timetable_horizon", d.custom_timetable_horizon),
         "alerts.custom_timetable_horizon",
@@ -614,6 +667,8 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         or arrive is None
         or history is None
         or calendar_feed is None
+        or quick_trip is None
+        or daily_brief is None
     ):
         return None
     return AlertSettings(
@@ -642,6 +697,8 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         after_trip_note=cast(bool, history_switches["after_trip_note"]),
         alert_history=history,
         calendar_feed=calendar_feed,
+        quick_trip=quick_trip,
+        daily_brief=daily_brief,
     )
 
 
@@ -654,6 +711,7 @@ def _location(c: _ProfileErrors, raw: object) -> tuple[bool, LocationSettings | 
     n = len(c.errors)
     keys = (
         "source",
+        "enabled",
         "entity",
         "zones",
         "station_radius_m",
@@ -670,6 +728,7 @@ def _location(c: _ProfileErrors, raw: object) -> tuple[bool, LocationSettings | 
     if isinstance(radius, bool) or not isinstance(radius, int) or radius <= 0:
         c.err("location.station_radius_m", "must be a whole number of metres above 0")
     source = next((s for s in _SOURCES if s == src), None)
+    enabled = c.boolean(raw.get("enabled", True), "location.enabled")
     if source is None:
         c.err("location.source", f"must be one of {', '.join(_SOURCES)}, got {src!r}")
     if ent is not None and not isinstance(ent, str):
@@ -701,8 +760,10 @@ def _location(c: _ProfileErrors, raw: object) -> tuple[bool, LocationSettings | 
     if not _whole(dwell, 0, 60):
         c.err("location.other_station_dwell_min", "must be a whole number of minutes from 0 to 60")
     ask = c.boolean(raw.get("ask_to_remember_station", True), "location.ask_to_remember_station")
-    if source is None or ask is None or len(c.errors) > n:
+    if source is None or enabled is None or ask is None or len(c.errors) > n:
         return False, None
+    if not enabled:
+        return True, None
     return True, LocationSettings(
         source, ent, dict(zones), radius, dict(wifi), activity, other_radius, dwell, ask
     )
@@ -883,6 +944,7 @@ _PROFILE_KEYS = (
     "location",
     "accessibility",
     "works_digest",
+    "brief",
 )
 
 
@@ -908,6 +970,18 @@ def _works_digest(c: _ProfileErrors, raw: object) -> WorksDigestSettings | None:
         c.err("works_digest.day", "must be one of " + ", ".join(WEEKDAYS))
         return None
     return None if at is None else WorksDigestSettings(WEEKDAYS.index(day) + 1, at)
+
+
+def _brief(c: _ProfileErrors, raw: object) -> BriefSettings:
+    defaults = BriefSettings()
+    if not isinstance(raw, dict):
+        c.err("brief", "must be a mapping")
+        return defaults
+    c.keys(raw, ("at", "evening_at", "only_if_something"), "brief")
+    at = c.time(raw["at"], "brief.at") if "at" in raw else None
+    evening = c.time(raw["evening_at"], "brief.evening_at") if "evening_at" in raw else None
+    only = c.boolean(raw.get("only_if_something", False), "brief.only_if_something")
+    return BriefSettings(at, evening or defaults.evening_at, only is True)
 
 
 def _name(c: _ProfileErrors, raw: object) -> str | None:
@@ -953,6 +1027,7 @@ def _profile(
     loc_ok, loc = _location(c, raw.get("location"))
     accessibility = _accessibility(c, raw.get("accessibility", {}))
     digest = _works_digest(c, raw.get("works_digest"))
+    brief = _brief(c, raw.get("brief", {}))
     if c.errors or not (
         out
         and ret
@@ -985,8 +1060,9 @@ def _profile(
         accessibility,
         digest,
         repeat=repeat,
+        brief=brief,
     )
-    _check_other_stations(c, profile)
+    _check_other_stations(c, profile, raw.get("location") is not None)
     return (None, c.errors) if c.errors else (profile, [])
 
 

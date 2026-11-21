@@ -5,6 +5,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 
+from train_commute_companion.calendar import TZ, resolve_local, to_utc
 from train_commute_companion.lookahead_probe import (
     DEP_TOL_MIN,
     DUR_TOL_MIN,
@@ -14,6 +15,7 @@ from train_commute_companion.lookahead_probe import (
     RESTORED_FACT,
     UNCLEAR_MARK,
     WORKS_MARKS,
+    ProbePlan,
     ProbeReason,
     ProbeResult,
     adopt_key,
@@ -40,9 +42,11 @@ from train_commute_companion.lookahead_probe import (
     signature_minutes,
     signature_of,
     split_day_key,
+    travels_on,
     unclear_day_key,
     warn_mark,
 )
+from train_commute_companion.match import planned_departure
 from train_commute_companion.messages import data_unclear_text
 from train_commute_companion.model import (
     AlertEvent,
@@ -54,6 +58,7 @@ from train_commute_companion.model import (
     Signature,
     display_name,
 )
+from train_commute_companion.notification_policy import enabled
 from train_commute_companion.overlap import find_overlaps
 from train_commute_companion.revisions import (
     baseline_on,
@@ -449,6 +454,20 @@ def _changed(r: ProbeResult, exp: Signature | None) -> bool:
     )
 
 
+def _configured_shift(p: Profile, d: Direction, day: date, r: ProbeResult) -> str | None:
+    if r.connection is None or r.works:
+        return None
+    configured = p.journey_on(d, day).first_train
+    expected = resolve_local(r.service_date, configured, edge="start")
+    departure = planned_departure(r.connection.legs[0])
+    if abs(departure - to_utc(expected)) < timedelta(minutes=DEP_TOL_MIN):
+        return None
+    return (
+        f"your usual {_clock_text(configured)} departure is listed at "
+        f"{departure.astimezone(TZ):%H:%M}. Check NS for your journey"
+    )
+
+
 def _probe_facts(
     draft: _Draft,
     p: Profile,
@@ -456,7 +475,9 @@ def _probe_facts(
     results: Sequence[ProbeResult],
     final: BaselineHistory,
     adopted: Mapping[int | None, BaselineVersion],
-    today: date,
+    loud_days: Collection[date],
+    *,
+    evening_day: date | None,
 ) -> set[date]:
     """Per probe: warnings, already told, restored (look-ahead 23-27). Returns the dates with a
     fact whose affected journey has no known end."""
@@ -472,8 +493,17 @@ def _probe_facts(
         )
         exp = _expected(conf, r.leg_index) if conf is not None else None
         last, since = latest_mark(draft.per_date.get(key, ()), WORKS_MARKS)
-        if r.works or _changed(r, exp):
-            loud = sd == today + timedelta(days=1)
+        shift = None
+        warned_shift = last is not None and is_warning(last) and "|" not in last
+        if (
+            (evening_day is not None or warned_shift)
+            and exp is None
+            and r.leg_index is None
+            and not r.unclear
+        ):
+            shift = _configured_shift(p, d, commute_day_for(p, d, sd), r)
+        if r.works or _changed(r, exp) or shift is not None:
+            loud = sd in loud_days
             warned = warn_mark(r.fingerprint)
             fact = f"{key}|{warned}"
             if last == warned:  # only the latest entry counts
@@ -484,10 +514,10 @@ def _probe_facts(
                 draft.add_owned_entry(sd, key, warned)
             if loud:
                 draft.add_owned_entry(sd, key, loud_mark(r.fingerprint))
-            draft.add_fact(sd, LookAheadFact(fact, _warn_text(r, p, exp), loud, r.works))
+            draft.add_fact(sd, LookAheadFact(fact, shift or _warn_text(r, p, exp), loud, r.works))
             if probed_end(r) is None:
                 unsure.add(sd)
-        elif is_warning(last) and r.works_known and not r.published_works:
+        elif is_warning(last) and r.works_known and not r.published_works and not r.unclear:
             draft.add_owned_entry(sd, key, restored_mark(r.fingerprint))
             if baseline_scope(p, d, sd) in adopted and last == warn_mark(r.fingerprint):
                 continue  # the warned change is what this run adopted: told by the adoption
@@ -673,6 +703,7 @@ def run_lookahead(
     replaced: Callable[[date], bool] | None = None,
     awaiting_adoption: Collection[str] = (),
     track_adoptions: bool = False,
+    evening_day: date | None = None,
 ) -> tuple[BaselineHistory, LookAheadLedger, list[AlertEvent]] | None:
     """The direction's serialised look-ahead writer. Every fact is written to the ledger and
     stored as a pending message before any delivery. `others` are the other profiles and
@@ -687,7 +718,15 @@ def run_lookahead(
     `ledger.pending` holds only undelivered obligations: delivery removes each one it finishes."""
     if ledger.started_revision != revision or ledger.started_baseline != history.latest:
         return None  # the route or baseline changed since the run started (rule 21)
-    stamps = [t.astimezone(UTC) for t in (ledger.last_applied, ledger.last_run) if t is not None]
+    stamps = [
+        t.astimezone(UTC)
+        for t in (
+            ledger.last_applied,
+            ledger.last_run,
+            ledger.last_evening_attempt or ledger.last_evening,
+        )
+        if t is not None
+    ]
     if stamps and max(stamps) > now.astimezone(UTC):
         return None  # an older run overlapping a newer one, also a newer failed-health one
     draft = _Draft(
@@ -706,8 +745,13 @@ def run_lookahead(
         dx: draft.history() if dx is d else bases.get((p.id, dx), BaselineHistory())
         for dx in Direction
     }
-    plan = probe_dates(
-        p, today, direction=d, histories=histories, skipped=skipped, replaced=replaced
+    plan = (
+        probe_dates(p, today, direction=d, histories=histories, skipped=skipped, replaced=replaced)
+        if evening_day is None
+        else ProbePlan(
+            (evening_day,) if travels_on(p, d, evening_day, skipped, replaced=replaced) else (),
+            False,
+        )
     )
     expected_all = [
         service_date(p, d, day) for day in plan.dates if p.journey_on(d, day).mode != "window"
@@ -720,7 +764,7 @@ def run_lookahead(
             if r.direction is d
             and r.service_date not in skipped
             and (replaced is None or not replaced(r.service_date))
-            and (not custom or r.service_date in expected_all)
+            and (not custom and evening_day is None or r.service_date in expected_all)
         ),
         key=lambda r: (r.service_date, r.leg_index is None, r.leg_index or 0),
     )
@@ -729,16 +773,24 @@ def run_lookahead(
     probes_per_day = n + 1 if n > 1 else 1
     counts = Counter(r.service_date for r in results)
     fully_observed = {sd for sd in wholes if counts[sd] == probes_per_day}
-    complete = (
+    observed = (
         probe_finished
-        and plan.complete
         and all(sd in fully_observed for sd in expected_all)
         and all(r.works_known for r in results)
+    )
+    complete = plan.complete and observed
+    evening_complete = (
+        evening_day is not None
+        and bool(expected_all)
+        and observed
+        and not any(r.unclear for r in results)
     )
     scopes = {baseline_scope(p, d, sd) for sd in (*expected_all, *wholes)}
     adopted: dict[int | None, BaselineVersion] = {}
     refusals = []
-    for scope in sorted(scopes, key=lambda x: -1 if x is None else x):
+    for scope in sorted(
+        scopes if evening_day is None else (), key=lambda x: -1 if x is None else x
+    ):
         scoped_results = [r for r in results if baseline_scope(p, d, r.service_date) == scope]
         scoped_wholes = {sd: r for sd, r in wholes.items() if baseline_scope(p, d, sd) == scope}
         seedable = {sd: r for sd, r in scoped_wholes.items() if not custom or sd in fully_observed}
@@ -763,25 +815,42 @@ def run_lookahead(
                 )
                 refusals.append(prefix + reason)
     final = draft.history()
-    unsure = _probe_facts(draft, p, d, results, final, adopted, today)
+    tomorrow = today + timedelta(days=1)
+    loud_days = {tomorrow} if evening_day is None else set()
+    if evening_day is not None or (
+        p.alerts.daily_brief
+        and enabled(p.alerts, EventKind.WORKS_AHEAD)
+        and travels_on(p, d, tomorrow, skipped, replaced=replaced)
+        and p.journey_on(d, tomorrow).mode != "window"
+    ):
+        loud_days.add(service_date(p, d, tomorrow))
+    unsure = _probe_facts(draft, p, d, results, final, adopted, loud_days, evening_day=evening_day)
 
     w = _MessageBuilder(p, d, revision, now, final, results, unsure)
     events = [
         *_fact_messages(draft, w, adopted),
-        *_unclear_messages(draft, w),
+        *(_unclear_messages(draft, w) if evening_day is None else ()),
         *_refusal_messages(draft, w, refusals, today),
     ]
-    success = bool(results) and complete
+    success = evening_day is None and bool(results) and complete
+    failures = ledger.evening_failures
+    if evening_day is not None:
+        attempt = ledger.last_evening_attempt
+        failures = failures if attempt is not None and attempt.astimezone(TZ).date() == today else 0
+        failures = 0 if evening_complete else failures + 1
     new_ledger = LookAheadLedger(
         per_date=draft.per_date,
         pending=tuple(draft.pending),
         last_run=now if success else ledger.last_run,
         started_revision=revision,
         started_baseline=final.latest,
-        last_applied=now,
+        last_applied=now if evening_day is None else ledger.last_applied,
         facts={o.id: draft.bundled[o.id] for o in draft.pending if o.id in draft.bundled},
         adoption_receipts=draft.adoption_receipts,
         adoption_ids=draft.adoption_ids,
+        last_evening=now if evening_complete else ledger.last_evening,
+        last_evening_attempt=now if evening_day is not None else ledger.last_evening_attempt,
+        evening_failures=failures,
     )
     return final, new_ledger, events
 

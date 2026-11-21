@@ -14,6 +14,7 @@ from train_commute_companion.lookahead_probe import (
     evaluate,
     probe_queries,
     service_date,
+    works_titles,
 )
 from train_commute_companion.model import (
     AlertEvent,
@@ -52,6 +53,10 @@ def profile_token(profile: Profile) -> str:
         data["alerts"].pop(key)
     if profile.repeat is None:
         data.pop("repeat")
+    # Pending weekly digests keep the same identity when daily brief settings are added or edited.
+    data.pop("brief")
+    data["alerts"].pop("daily_brief")
+    data["alerts"].pop("quick_trip")
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
@@ -106,37 +111,10 @@ class DigestRow:
     notes: tuple[str, ...] = ()
 
 
-def _works_titles(results: Sequence[ProbeResult], works: PlannedWorks) -> tuple[str, ...]:
-    titles = set()
-    for result in results:
-        connection = result.connection
-        if connection is None or not connection.legs:
-            continue
-        start = connection.legs[0].board.planned_departure
-        end = connection.legs[-1].alight.planned_arrival
-        if start is None or end is None:
-            continue
-        identifiers = {
-            name
-            for leg in connection.legs
-            for stop in leg.stops
-            for name in (stop.code, stop.uic)
-            if name is not None
-        }
-        for work in works.items:
-            if (
-                to_utc(work.start) <= to_utc(end)
-                and to_utc(work.end) > to_utc(start)
-                and identifiers & work.stations
-            ):
-                titles.add(work.title)
-    return tuple(sorted(titles))
-
-
 def _row(
     day: date, direction: Direction, sd: date, results: Sequence[ProbeResult], works: PlannedWorks
 ) -> DigestRow:
-    titles = _works_titles(results, works)
+    titles = works_titles(results, works)
     notes = tuple("NS planned works: " + title for title in titles)
     whole = next((result for result in results if result.leg_index is None), None)
     if whole is None or whole.connection is None or any(r.unclear for r in results):

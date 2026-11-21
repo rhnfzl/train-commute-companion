@@ -112,12 +112,21 @@ async def test_subscription_includes_replacement_plan_and_omits_replaced_commute
 
 
 @pytest.mark.parametrize(
-    "field", ["calendar_feed", "commute_stats", "weekly_recap", "after_trip_note", "alert_history"]
+    "field",
+    [
+        "calendar_feed",
+        "commute_stats",
+        "weekly_recap",
+        "after_trip_note",
+        "alert_history",
+        "quick_trip",
+        "daily_brief",
+    ],
 )
-async def test_readout_settings_do_not_change_flexible_trip_defaults(tmp_path, field):
+async def test_non_routing_settings_do_not_change_flexible_trip_defaults(tmp_path, field):
     rig = Rig(tmp_path)
     text = PROFILE.split('  - id: "p2"')[0].replace("buffer_min: 10", "buffer_min: 22")
-    rig.write(text=text + "    alerts: {disabled_categories: [routine]}\n")
+    rig.write(text=text + "    alerts: {disabled_categories: [routine], calendar_feed: false}\n")
     await rig.rt.start()
     (profile,) = rig.rt.config.profiles
     profile = replace(profile, alerts=replace(profile.alerts, **{field: True}))
@@ -137,8 +146,10 @@ async def test_readout_settings_do_not_change_flexible_trip_defaults(tmp_path, f
     )
     assert plan.profile.outbound.buffer_min == 22
     assert plan.profile.alerts.disabled_categories == frozenset({"routine"})
-    if field != "calendar_feed":
+    if field in {"commute_stats", "weekly_recap", "after_trip_note", "alert_history"}:
         assert not getattr(plan.profile.alerts, field)
+    if field != "calendar_feed":
+        assert not plan.profile.alerts.calendar_feed
 
 
 async def test_subscription_is_valid_when_no_profiles_are_included(tmp_path):

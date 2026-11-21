@@ -60,6 +60,26 @@ async def test_choose_service_locks_departure(hass):
     assert not refused(h)
 
 
+@pytest.mark.parametrize("with_profile", [False, True])
+async def test_check_trip_responds_without_changing_the_active_plan(hass, with_profile):
+    options = None if with_profile else {"profiles_path": hass.config.path("missing.yaml")}
+    h = await setup_tcc(hass, PROFILE, options=options)
+    before = await h.host.run(lambda rt: rt.state)
+    assert (before.config is not None) == with_profile
+    pushes = len(h.pushes)
+    response = await hass.services.async_call(
+        DOMAIN,
+        "check_trip",
+        {"origin": "aaa", "destination": "rtd"},
+        blocking=True,
+        return_response=True,
+    )
+    assert response["options"][0]["legs"][0]["departure"]["scheduled"] == at("08:12").isoformat()
+    assert response["options"][0]["legs"][1]["origin"]["code"] == "UT"
+    assert await h.host.run(lambda rt: rt.state) == before
+    assert len(h.pushes) == pushes
+
+
 async def test_choose_retained_remainder_the_user_rides(hass):  # review-codex-rev11 N3, required
     # left home at 07:20, so the 07:42 was locked; the errand timeout at 08:05 auto-locked the
     # 08:12 and kept the departed 07:42 a retained remainder (7.12 rule 7)

@@ -49,7 +49,7 @@ The Home Assistant profile form provides the same category list. Choosing a cate
 | `crowding` | Changed crowd forecast |
 | `planned_works` | Upcoming works, adopted timetable changes, restored lookahead journeys |
 | `disruptions` | Route disruption and its clearance |
-| `routine` | All-good confirmation, at-station status |
+| `routine` | All-good confirmation, at-station status, compensation reminders, daily commute brief |
 
 A platform change is loud from 15 minutes before the expected departure and silent before that.
 
@@ -80,6 +80,17 @@ A train missing from NS data is reported after two polls in a row miss it while 
 ## Sent alert history
 
 `alerts.alert_history` defaults to `false`. Set it to `true` to save recent accepted alerts locally. [View history and retention details](docker.md#recent-alerts)
+
+## Quick trip checks
+
+You can check the next trains between any two NS stations from the private Telegram chat or a Home Assistant action. Quick checks are enabled by default, including when you have no commute profile.
+
+```yaml
+alerts:
+  quick_trip: false
+```
+
+Set `quick_trip: false` in any configured profile to disable checks for the whole running companion, including checks for other station pairs. The setting accepts YAML booleans `true` and `false`. The Home Assistant profile details form has the same **Allow quick trip checks** switch.
 
 ## Repeated missed trains
 

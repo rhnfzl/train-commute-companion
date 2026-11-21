@@ -35,6 +35,15 @@ def test_planned_only_is_planned_not_reported():
     assert dep.provenance is Provenance.PLANNED and dep.value is None
 
 
+def test_matching_origin_supplies_a_missing_boarding_platform():
+    payload = fixture("on_time_direct.json")
+    leg = payload["trips"][0]["legs"][0]
+    leg["origin"]["plannedTrack"] = "7a"
+    leg["stops"][0].pop("plannedDepartureTrack", None)
+    board = map_trips(payload, Q, NOW).connections[0].legs[0].board
+    assert board.planned_track == "7a"
+
+
 def test_transfer_fields():
     c = map_trips(fixture("one_transfer.json"), Q, NOW).connections[0]
     leg0, leg1 = c.legs

@@ -26,10 +26,13 @@ Never delete the state file to force a downgrade.
 
 1. Get an NS API key from the NS API portal. See [Get an NS API key](ns-api-key.md).
 2. Add Train Commute Companion under Settings, Devices and services. Enter the key.
-3. Set up your commute in the station forms that come next. Type part of a station name to search the list. See [the profile editor guide](profile-editor.md).
-4. Pick your phone and the loud alert style (below). If you have one phone, it is already picked. Two test notifications go out, one loud and one silent. Confirm that both arrived.
+3. Set up your commute in the station forms. Type part of a name to search the full station list. See [the profile editor guide](profile-editor.md).
+4. Review the next trip if NS has a matching timetable for the date.
+5. Pick your phone and the loud alert style (below). If you have one phone, it is already picked. Two test notifications go out, one loud and one silent. Confirm that both arrived.
 
 Add more commutes later under Configure > Add or edit profiles.
+
+For quick train checks alone, select **Set up without a commute profile** when you enter the key. If a profiles file already exists, setup uses the existing file path form.
 
 Already have a profiles file? Turn on **Use an existing YAML file** next to the key, then enter the file's full path. If a profiles file is already in the config folder at `train_commute_companion/profiles.yaml`, setup asks for the path and fills it in. It never writes over that file. If the file you enter has a problem, the form says what it is and does not go on. Fix it, or enter the path of another file. Configure > Settings checks a new path the same way.
 
@@ -72,7 +75,7 @@ The health sensor shows `notifications_paused` unless a key, storage, profile, o
 
 Under Configure, Check the profiles file, the integration reads your file and names every error, with a suggestion where it can. Run it after every edit. The same file works with `tcc check-profile`.
 
-The file is checked again about every 10 seconds. A valid edit becomes the active configuration without a restart. If an edit has an error, the whole edit is refused, the last valid configuration keeps running, and you get one loud message and a repair issue that goes away when the file loads. If the file is missing or broken when Home Assistant starts, the last valid configuration runs and you get the same refusal.
+The file is checked again about every 10 seconds. A valid edit becomes the active configuration without a restart. If an edit has an error, the whole edit is refused, the last valid configuration keeps running, and you get one loud message and a repair issue that goes away when the file loads. If a previously loaded file is missing or broken when Home Assistant starts, the last valid configuration runs and you get the same refusal.
 
 ## What you get
 
@@ -88,6 +91,24 @@ Entity IDs come from the profile `name`, for example `sensor.office_a_outbound_s
 The [dashboard example](dashboard.md) shows journey details, data freshness and the action buttons with standard Home Assistant cards.
 
 ### Services
+
+#### Quick trip checks
+
+Run **Check a trip** in Developer Tools > Actions. Enter an NS station code or full name in each field. You can use any station pair without a commute profile.
+
+```yaml
+action: train_commute_companion.check_trip
+data:
+  origin: Utrecht Centraal
+  destination: RTD
+response_variable: trip
+```
+
+In a script, `trip.text` is the readable reply and `trip.options` holds the train legs. Each leg has its route, scheduled and reported times, boarding platform and crowd forecast. Missing values are `null`. The response includes `checked_at` and uses `no_options` when NS returns no usable upcoming trains. Stale or unavailable NS data yields an action error.
+
+Checks share the NS request budget and a 30-second limit per running companion. They leave travel plans untouched. Turn off **Allow quick trip checks** in any profile to disable the action for the whole companion. [Quick trip settings](notification-preferences.md#quick-trip-checks)
+
+#### Commute actions
 
 All four take `profile` (the profile `id` or `name`) and optionally `direction` and `service_date`.
 

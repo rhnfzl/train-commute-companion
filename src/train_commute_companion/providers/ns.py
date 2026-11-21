@@ -259,6 +259,14 @@ def _leg_stops(
                         exit_side=next(iter(sides)) if len(sides) == 1 else None,
                         **physical,
                     )
+                    if index == 0:
+                        stop = replace(
+                            stop,
+                            planned_track=stop.planned_track
+                            or _str(endpoint.get("plannedTrack") or None),
+                            actual_track=stop.actual_track
+                            or _str(endpoint.get("actualTrack") or None),
+                        )
                     items = list(stops)
                     items[index] = stop
                     stops = tuple(items)
@@ -809,4 +817,4 @@ class NsProvider:
         self.station_labels = {
             uic: names.get(code, code) for uic, code in self._station_codes.items()
         }
-        return codes
+        return Stations(codes.labels, self.positions)

@@ -149,6 +149,7 @@ class RequestGate:
         deadline: datetime | None = None,
         *,
         before_trip: Callable[[], Awaitable[None]] | None = None,
+        received: Callable[[ProviderAnswer], None] | None = None,
     ) -> tuple[ProviderAnswer, ...] | PollFailure:
         """All or nothing: a poll missing one answer cannot judge the legs it was for (rule 2).
         One hard deadline for the whole poll, not one per request (7.1)."""
@@ -161,6 +162,8 @@ class RequestGate:
             if isinstance(a, str):
                 return a
             answers.append(a)
+            if received is not None:
+                received(a)
         return tuple(answers)
 
     async def listing[T](
