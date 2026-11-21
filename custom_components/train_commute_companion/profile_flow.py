@@ -3,6 +3,7 @@
 from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime
+from itertools import count
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from homeassistant.helpers.selector import (
 from train_commute_companion.calendar import TZ, WEEKDAYS
 from train_commute_companion.model import NotificationChannel, Stations
 from train_commute_companion.notification_policy import CATEGORIES
+from train_commute_companion.profile import slug
 from train_commute_companion.providers.base import AuthError, ProviderError
 from train_commute_companion.providers.ns import NsProvider
 from train_commute_companion.transfer import FALLBACK_MIN
@@ -218,6 +220,28 @@ class ProfileEditorFlow:
             ),
         )
 
+    def _free_name(self) -> str:
+        """commute, else commute 2, commute 3: names must stay unique in the file."""
+        assert self._document is not None
+        taken = {slug(str(p.get("name", ""))) for p in self._document.data["profiles"]}
+        names = (f"commute {i}" if i > 1 else "commute" for i in count(1))
+        return next(name for name in names if slug(name) not in taken)
+
+    def _day_clash(self, days: object) -> str | None:
+        """The name of another profile that already runs on one of `days`, the same
+        shared-weekday rule the file check applies, said in the form's own words."""
+        assert self._document is not None
+        wanted = {d for d in days if isinstance(d, str)} if isinstance(days, list) else set()
+        for p in self._document.data["profiles"]:
+            theirs = p.get("days", [])
+            if (
+                p["id"] != self._profile_id
+                and isinstance(theirs, list)
+                and wanted & {str(d).lower() for d in theirs}
+            ):
+                return str(p.get("name", ""))
+        return None
+
     def _profile_defaults(self) -> dict[str, Any]:
         profile = self._existing()
         names = {code: name for name, code in self._station_codes().items()}
@@ -238,7 +262,7 @@ class ProfileEditorFlow:
             if journey.get("mode") == "window" and "first_train" not in journey:
                 schedule[f"{direction}_time"] = ""  # blank: a window day needs no first train
         return {
-            "name": profile.get("name", "commute"),
+            "name": profile.get("name") or self._free_name(),
             "days": profile.get("days", ["mon", "tue", "wed", "thu", "fri"]),
             **{key: names.get(profile.get(key, "")) for key in _SINGLE_STATIONS},
             "skip_public_holidays": profile.get("skip_public_holidays", True),
@@ -306,11 +330,17 @@ class ProfileEditorFlow:
                 )
             )
         # Suggested values also preserve an intentionally cleared input after a validation error.
-        schema: dict[Any, Any] = {
-            vol.Required(str(key), description={"suggested_value": defaults[str(key)]}): value
-            for key, value in fields.items()
-            if str(key) in defaults
-        }
+        schema: dict[Any, Any] = {}
+        for key, value in fields.items():
+            if (name := str(key)) in _SINGLE_STATIONS:
+                # optional with no default: HA fills an empty required pick list with its
+                # first station; the step itself refuses a missing station
+                saved = defaults.get(name)
+                schema[
+                    vol.Optional(name, description={"suggested_value": saved} if saved else None)
+                ] = value
+            elif name in defaults:
+                schema[vol.Required(name, description={"suggested_value": defaults[name]})] = value
         for direction in ("outbound", "return"):
             # blank text comes back as no key: a window day needs no first train
             for name in _OPTIONAL_TEXT:
@@ -340,6 +370,7 @@ class ProfileEditorFlow:
         values = dict(user_input) if user_input is not None else self._profile_defaults()
         errors: dict[str, str] = {}
         report = ""
+        other = ""
         if user_input is not None:
             # the form keeps names; everything after this step works with codes
             coded_values = {
@@ -347,6 +378,10 @@ class ProfileEditorFlow:
                 **{k: self._station_code(values.get(k)) for k in _SINGLE_STATIONS},
             }
             errors = {k: "unknown_station" for k in _SINGLE_STATIONS if coded_values[k] is None}
+            if not errors and coded_values["home_station"] == coded_values["work_station"]:
+                errors["work_station"] = "same_station"
+            if (clash := self._day_clash(values.get("days"))) is not None:
+                errors["days"], other = "days_clash", clash
             if not errors:
                 try:
                     self._pending_profile = edit_profile(
@@ -365,7 +400,7 @@ class ProfileEditorFlow:
             step_id="profile",
             data_schema=self._profile_schema(values),
             errors=errors,
-            description_placeholders={"report": report},
+            description_placeholders={"report": report, "other": other},
         )
 
     async def async_step_profile_details(

@@ -97,6 +97,72 @@ async def test_guided_setup_never_writes_over_an_existing_file(hass):
     assert profiles_path(hass).read_text() == PROFILE
 
 
+def station_keys(flow) -> dict:
+    return {str(k): k for k in flow["data_schema"].schema if str(k) in STATION_FIELDS}
+
+
+STATION_FIELDS = ("home_station", "work_station")
+
+
+async def test_a_new_profile_starts_with_empty_stations(hass):
+    """Required pick lists get their first item from HA; optional ones with no value stay
+    empty, and the step itself asks for both stations."""
+    flow = await guided(hass)
+    keys = station_keys(flow)
+    assert set(keys) == set(STATION_FIELDS)
+    for key in keys.values():
+        assert isinstance(key, vol.Optional) and key.default is vol.UNDEFINED
+        assert not (key.description or {}).get("suggested_value")
+    empty = {k: v for k, v in VALUES.items() if k not in STATION_FIELDS}
+    flow = await configure(hass, flow, empty)
+    assert flow["step_id"] == "profile"
+    assert flow["errors"] == dict.fromkeys(STATION_FIELDS, "unknown_station")
+    assert set(station_keys(flow)) == set(STATION_FIELDS)  # still there to be filled
+    assert not profiles_path(hass).exists()
+
+
+@pytest.mark.parametrize("work", ["Home station", "home station", "AAA"])
+async def test_home_and_work_must_differ(hass, work):
+    flow = await configure(hass, await guided(hass), {**VALUES, "work_station": work})
+    assert flow["step_id"] == "profile"
+    assert flow["errors"] == {"work_station": "same_station"}
+    assert not profiles_path(hass).exists()
+
+
+async def options_add(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "k"},
+        options={"profiles_path": str(profiles_path(hass)), "notify_service": NOTIFY},
+    )
+    entry.add_to_hass(hass)
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    with patch(CATALOGUE_CALL, return_value=CATALOGUE):
+        flow = await hass.config_entries.options.async_configure(
+            flow["flow_id"], {"next_step_id": "profiles"}
+        )
+    return await hass.config_entries.options.async_configure(flow["flow_id"], {"profile": "new"})
+
+
+async def test_add_a_profile_suggests_a_free_name_and_explains_a_day_clash(hass):
+    raw = yaml.safe_load(PROFILE)
+    raw["profiles"][1]["name"] = "commute"  # office_a runs mon-fri, commute on sat
+    write_profiles(hass, yaml.safe_dump(raw))
+    flow = await options_add(hass)
+    assert flow["step_id"] == "profile"
+    assert shown(flow)["name"] == "commute 2"
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {**VALUES, "name": "commute 2", "days": ["tue", "sun"]}
+    )
+    assert flow["step_id"] == "profile"
+    assert flow["errors"] == {"days": "days_clash"}
+    assert flow["description_placeholders"]["other"] == "office_a"
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {**VALUES, "name": "commute 2", "days": ["sun"]}
+    )
+    assert flow["step_id"] == "profile_details", flow.get("errors")
+
+
 @pytest.mark.parametrize("field", ["home_station", "work_station"])
 @pytest.mark.parametrize("typed", ["Nowhere", "Rotterdam", " "])
 async def test_a_station_not_in_the_list_is_refused(hass, field, typed):

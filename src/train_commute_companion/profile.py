@@ -754,6 +754,8 @@ def _profile(
     skip = c.boolean(raw.get("skip_public_holidays", True), "skip_public_holidays")
     home = _station(c, raw.get("home_station"), "home_station", known)
     work = _station(c, raw.get("work_station"), "work_station", known)
+    if home and home == work:  # every trip would start and end at the same station
+        c.err("work_station", f"{work} is also the home station", "pick two different stations")
     out = _journey(c, raw.get("outbound"), "outbound", known, allow_offset=False)
     ret = _journey(c, raw.get("return"), "return", known, allow_offset=True)
     tm = _transfer_min(c, raw, known)

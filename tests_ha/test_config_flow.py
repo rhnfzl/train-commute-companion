@@ -149,8 +149,19 @@ async def test_failed_test_push_stays_on_notify_step(hass, failure, monkeypatch)
         r = await step(hass, r, {"notify_service": NOTIFY})
     assert r["type"] is FlowResultType.FORM and r["step_id"] == "notify"
     assert r["errors"] == {"base": "send_failed"}
-    assert r["description_placeholders"] == {"service": NOTIFY}
+    # the text names the phone the picker now holds: the one left when the first went away
+    phone = "mobile_app_other" if failure == "missing" else NOTIFY
+    assert r["description_placeholders"] == {"service": NOTIFY, "phone": f"notify.{phone}"}
     assert not hass.config_entries.async_entries(DOMAIN)
+
+
+async def test_the_phone_form_names_the_phone_it_will_test(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    r = await flow_to_notify(hass)
+    assert r["description_placeholders"]["phone"] == f"notify.{NOTIFY}"
+    fake_phone(hass, monkeypatch, "mobile_app_other")
+    r = await flow_to_notify(hass)  # two phones: none is picked, and the text says so
+    assert r["description_placeholders"]["phone"] == "the phone you pick"
 
 
 async def test_user_step_errors(hass, monkeypatch):
@@ -187,6 +198,14 @@ async def test_a_broken_file_at_the_default_place_is_explained_on_the_path_form(
     assert r["step_id"] == "profiles_file"
     assert r["errors"] == {"profiles_path": "file_broken"}
     assert r["description_placeholders"]["report"]  # what is wrong, in words
+    r = await step(hass, r, {"profiles_path": str(profiles_path(hass))})  # sent again unchanged
+    assert r["step_id"] == "profiles_file"
+    assert r["errors"] == {"profiles_path": "file_broken"}
+    assert r["description_placeholders"]["report"]
+    broken = Path(hass.config.config_dir) / "broken.yaml"
+    broken.write_text("profiles: []")  # valid YAML the profile check refuses
+    r = await step(hass, r, {"profiles_path": str(broken)})
+    assert r["errors"] == {"profiles_path": "file_broken"}
     other = Path(hass.config.config_dir) / "other.yaml"
     other.write_text(PROFILE)
     r = await step(hass, r, {"profiles_path": str(other)})  # another path is taken
@@ -410,6 +429,19 @@ async def test_options_settings_path_checked_like_setup(hass, monkeypatch):
         r = await settings(hass, entry, **current(entry, profiles_path=path))
         assert r["type"] is FlowResultType.FORM and r["errors"] == {"profiles_path": error}
         hass.config_entries.options.async_abort(r["flow_id"])
+    assert dict(entry.options) == before
+
+
+async def test_options_settings_refuse_a_broken_profiles_file(hass, monkeypatch):
+    fake_phone(hass, monkeypatch)
+    entry = add_entry(hass)
+    before = dict(entry.options)
+    broken = Path(hass.config.config_dir) / "broken.yaml"
+    broken.write_text("profiles: [")
+    r = await settings(hass, entry, **current(entry, profiles_path=str(broken)))
+    assert r["type"] is FlowResultType.FORM
+    assert r["errors"] == {"profiles_path": "file_broken"}
+    assert r["description_placeholders"]["report"]  # what is wrong, in words
     assert dict(entry.options) == before
 
 

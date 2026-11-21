@@ -125,10 +125,16 @@ async def send_tests(hass: HomeAssistant, service: str, loud_style: LoudStyle) -
     return loud and silent
 
 
-def notify_schema(hass: HomeAssistant, service: str | None, style: LoudStyle) -> vol.Schema:
+def picked_phone(hass: HomeAssistant, service: str | None) -> str | None:
     services = notify_services(hass)
     if service not in services:  # one phone is the only sensible pick
         service = services[0] if len(services) == 1 else None
+    return service
+
+
+def notify_schema(hass: HomeAssistant, service: str | None, style: LoudStyle) -> vol.Schema:
+    services = notify_services(hass)
+    service = picked_phone(hass, service)
     pick = {"default": service} if service else {}
     return vol.Schema(
         {
@@ -214,11 +220,15 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
         return None
 
     def _notify_form(self, error: bool = False) -> ConfigFlowResult:
+        phone = picked_phone(self.hass, self._service or None)
         return self.async_show_form(
             step_id="notify",
-            data_schema=notify_schema(self.hass, self._service or None, self._style),
+            data_schema=notify_schema(self.hass, phone, self._style),
             errors={"base": "send_failed"} if error else {},
-            description_placeholders={"service": self._service},
+            description_placeholders={
+                "service": self._service,
+                "phone": f"notify.{phone}" if phone else "the phone you pick",
+            },
         )
 
     def _failed(self) -> ConfigFlowResult:
@@ -268,13 +278,13 @@ class TccConfigFlow(ProfileEditorFlow, _TestPushMixin, ConfigFlow, domain=DOMAIN
         report = ""
         if user_input is not None:
             path = user_input[CONF_PROFILES_PATH]
-            if (bad := await check_path(self.hass, path)) is not None:
-                errors[CONF_PROFILES_PATH] = bad
-            else:
-                self._path = path
-                return await self.async_step_notify()
+        if user_input is not None and (bad := await check_path(self.hass, path)) is not None:
+            errors[CONF_PROFILES_PATH] = bad
         elif report := await self.hass.async_add_executor_job(file_problem, path):
-            errors[CONF_PROFILES_PATH] = "file_broken"  # a broken file at the default place
+            errors[CONF_PROFILES_PATH] = "file_broken"  # shown until the file is fixed
+        elif user_input is not None:
+            self._path = path
+            return await self.async_step_notify()
         return self.async_show_form(
             step_id="profiles_file",
             data_schema=vol.Schema({vol.Required(CONF_PROFILES_PATH, default=path): str}),
@@ -481,7 +491,7 @@ class TccOptionsFlow(
             description_placeholders={"report": "\n".join(lines) or "No problems found."},
         )
 
-    def _settings_form(self, errors: dict[str, str]) -> ConfigFlowResult:
+    def _settings_form(self, errors: dict[str, str], report: str = "") -> ConfigFlowResult:
         if not notify_services(self.hass):
             return self.async_abort(reason="no_mobile_app")
         schema = vol.Schema({vol.Required(CONF_PROFILES_PATH, default=self._path): str}).extend(
@@ -503,7 +513,11 @@ class TccOptionsFlow(
             step_id="settings",
             data_schema=schema,
             errors=errors,
-            description_placeholders={"path": self._path, "service": self._service},
+            description_placeholders={
+                "path": self._path,
+                "service": self._service,
+                "report": report,
+            },
         )
 
     def _failed(self) -> ConfigFlowResult:
@@ -532,10 +546,13 @@ class TccOptionsFlow(
         self._path, self._service, self._style = candidate.path, candidate.service, candidate.style
         version = self._settings_check.begin(candidate)
         bad = await check_path(self.hass, candidate.path)
+        report = "" if bad else await self.hass.async_add_executor_job(file_problem, candidate.path)
         if not self._settings_current(candidate):
             return self._stale_settings()
         if bad is not None:
             return self._settings_form({CONF_PROFILES_PATH: bad})
+        if report:
+            return self._settings_form({CONF_PROFILES_PATH: "file_broken"}, report)
         if not self._settings_check.accept(version, candidate):
             return self._stale_settings()
         opts = candidate.base_options

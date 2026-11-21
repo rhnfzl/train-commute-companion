@@ -6,7 +6,7 @@ Create and edit commutes in Home Assistant without looking up station codes or c
 
 1. Add Train Commute Companion under Settings, Devices and services.
 2. Enter your NS API key. Leave **Use an existing YAML file** off.
-3. Choose home and work stations, travel days, first trains and travel buffers. Type part of a name, such as "Utr", to search the station list. Pick a station from the list, or type its full name in any case. Text that matches no station, or more than one, is refused.
+3. Choose home and work stations, travel days, first trains and travel buffers. Type part of a name, such as "Utr", to search the station list. Pick a station from the list, or type its full name in any case. Text that matches no station, or more than one, is refused. Both station fields start empty, and home and work must be different stations.
 4. Select transfer stations in travel order for each direction. Leave empty for a direct train.
 5. Set your minimum minutes at each selected transfer station.
 6. Keep existing holiday ranges, or choose Add and enter both dates.
@@ -19,6 +19,8 @@ Add more commutes later under Configure > Add or edit profiles.
 ## Edit or add a profile
 
 Open the integration's Configure menu and choose **Add or edit profiles**. Pick a profile or choose **Add a profile**. Existing profile IDs remain unchanged.
+
+A new profile gets a free name, such as "commute 2". Two profiles cannot run on the same weekday. If you pick a day that another profile uses, the form names that profile. Pick other days, or change the other profile first.
 
 The form shows full station names from the current NS catalogue. Transfer-minimum fields identify each station in the description. Minimums preserve your saved values; a newly selected transfer starts at the core fallback of five minutes.
 
@@ -50,7 +52,7 @@ When the profile has a location block, the details form shows the [other boardin
 
 In the YAML file a station can be a code (`UT`) or a name (`Utrecht Centraal`). For a name, case, accents and punctuation do not matter, and NS short names and synonyms such as `Utrecht` also work. TCC turns each name into its code when it reads the file, so names and codes run the same. A code must be written exactly, such as `UT`.
 
-A name that fits more than one station is refused. The error lists the matching codes, so use one of them. An unknown name gets a close suggestion.
+A name that fits more than one station is refused. The error lists the matching codes, so use one of them. An unknown name gets a close suggestion. Home and work must be different stations. A code and a name for the same station count as the same station.
 
 Names need the NS station list. When it cannot be fetched, a file with names waits like any edit, and the last valid configuration keeps running. When the form saves a profile that uses names, that profile is written with codes. Other profiles keep their names.
 

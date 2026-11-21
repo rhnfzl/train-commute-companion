@@ -25,7 +25,7 @@
       },
       "notify": {
         "title": "Where should alerts go?",
-        "description": "Pick your phone. Two test notifications are sent to notify.{service} next.",
+        "description": "Pick your phone. Two test notifications are sent to {phone} next.",
         "data": {
           "notify_service": "Phone",
           "loud_style": "Loud alert style"
@@ -199,7 +199,9 @@
       "file_changed": "The file changed or already exists. Reopen the editor to use its current contents.",
       "save_failed": "The file could not be saved. Check its folder permissions. Existing contents were not replaced.",
       "unknown_station": "Pick a station from the list.",
-      "file_broken": "The file at this path has a problem: {report}. Fix the file, or enter the path of another profiles file."
+      "file_broken": "The file at this path has a problem: {report}. Fix the file, or enter the path of another profiles file.",
+      "same_station": "Home and work must be different stations.",
+      "days_clash": "Your profile {other} already runs on one of these days. Pick other days, or change {other} first."
     },
     "create_entry": {
       "guided": "Add more commutes later under Configure > Add or edit profiles."
@@ -479,7 +481,10 @@
       "arrival_acknowledgement": "Confirm your personal arrival only after reviewing the destination, time and plan.",
       "arrival_time": "Choose a valid Amsterdam date and time. For a repeated autumn hour, select its offset.",
       "settings_changed": "The settings changed while this form was open. Review the current settings and try again.",
-      "unknown_station": "Pick a station from the list."
+      "unknown_station": "Pick a station from the list.",
+      "same_station": "Home and work must be different stations.",
+      "days_clash": "Your profile {other} already runs on one of these days. Pick other days, or change {other} first.",
+      "file_broken": "The file at this path has a problem: {report}. Fix the file, or enter the path of another profiles file."
     },
     "abort": {
       "validated": "Checked. Nothing was changed.",

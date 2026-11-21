@@ -25,7 +25,7 @@ Never delete the state file to force a downgrade.
 
 Add more commutes later under Configure > Add or edit profiles.
 
-Already have a profiles file? Turn on **Use an existing YAML file** next to the key, then enter the file's full path. If a profiles file is already in the config folder at `train_commute_companion/profiles.yaml`, setup asks for the path and fills it in. It never writes over that file. If that file has a problem, the form says what it is. Fix it, or enter the path of another file.
+Already have a profiles file? Turn on **Use an existing YAML file** next to the key, then enter the file's full path. If a profiles file is already in the config folder at `train_commute_companion/profiles.yaml`, setup asks for the path and fills it in. It never writes over that file. If the file you enter has a problem, the form says what it is and does not go on. Fix it, or enter the path of another file. Configure > Settings checks a new path the same way.
 
 Only one NS key is set up per Home Assistant instance.
 
