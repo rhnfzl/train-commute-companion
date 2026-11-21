@@ -310,13 +310,11 @@ def _agreed_signature(
     complete: bool,
 ) -> tuple[Signature | None, str | None]:
     """A new signature needs full coverage. A changed pattern is visible in whole journeys."""
-    if not expected or any(sd not in wholes for sd in expected):
+    if not complete or not expected or any(sd not in wholes for sd in expected):
         return None, None
     first = wholes[expected[0]]
     if first.other_pattern and all(wholes[sd].head == first.head for sd in expected):
         return None, "NS now offers your usual journey only with other changes; update your profile"
-    if not complete:
-        return None, None
     rs = [r for r in results if r.service_date in expected]
     sigs = {
         signature_of(c, wholes[sd].service_date)

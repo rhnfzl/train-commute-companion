@@ -3,7 +3,9 @@ from dataclasses import replace
 from datetime import date, time, timedelta
 
 import pytest
-from lookahead_fixtures import CLEAR, MON, NOW, OUT, TUE, UNKNOWN, YAML, confirmed, day_answers
+import runtime_seam as seam
+from builders import make_connection, make_leg
+from lookahead_fixtures import CLEAR, MON, NOW, OUT, TUE, UNKNOWN, YAML, ans, confirmed, day_answers
 from runtime_rig import DAY, Rig, at, every_day
 
 from train_commute_companion.lookahead import run_lookahead
@@ -12,6 +14,7 @@ from train_commute_companion.lookahead_probe import (
     probe_dates,
     probe_queries,
     service_date,
+    signature_of,
 )
 from train_commute_companion.lookahead_run import apply_run, directions_due, probe_direction
 from train_commute_companion.model import (
@@ -325,3 +328,149 @@ async def test_custom_background_pacing_leaves_live_poll_free_and_obeys_backoff(
         resume.set()
         await asyncio.wait_for(background, 1)
     assert future_calls == [at("07:50") + timedelta(seconds=n) for n in (0, 2, 4)]
+
+
+def test_nearby_train_on_previous_date_cannot_complete_or_adopt_timetable():
+    p = configured("calendar_days", 1)
+    p = replace(p, outbound=replace(p.outbound, first_train=time(23, 30)))
+    base = confirmed(l1=("23:30", "23:55"), l2=("00:05", "00:45"))
+    history = BaselineHistory((base,))
+    answers = day_answers(TUE, l1=("23:33", "23:58"), l2=("00:08", "00:48"))
+    previous = make_connection([make_leg("UT", "RTD", "23:57", "00:45", day=TUE, number="9999")])
+    answers[1] = replace(answers[1], connections=(previous,))
+    results = evaluate(p, OUT, TUE, answers, CLEAR, base)
+    new_history, ledger, events = run_lookahead(
+        p,
+        OUT,
+        history,
+        LookAheadLedger({}, (), None, 1, 1),
+        results,
+        revision=1,
+        today=MON,
+        now=NOW,
+        others=(),
+        bases={},
+    )
+    assert new_history == history
+    assert ledger.last_run is None
+    assert not any(event.kind is EventKind.TIMETABLE_ADOPTED for event in events)
+
+
+def test_partial_detour_warns_for_date_without_claiming_profile_is_invalid():
+    p = configured("calendar_days", 1)
+    base = confirmed()
+    history = BaselineHistory((base,))
+    answers = day_answers(TUE)
+    detour = make_connection(
+        [
+            make_leg("AAA", "BBB", "08:12", "08:50", day=TUE, number="3000"),
+            make_leg("BBB", "RTD", "08:55", "09:30", day=TUE, number="4000"),
+        ]
+    )
+    answers = [replace(a, connections=(detour,) if i == 2 else ()) for i, a in enumerate(answers)]
+    results = evaluate(p, OUT, TUE, answers, CLEAR, base)
+    new_history, ledger, events = run_lookahead(
+        p,
+        OUT,
+        history,
+        LookAheadLedger({}, (), None, 1, 1),
+        results,
+        revision=1,
+        today=MON,
+        now=NOW,
+        others=(),
+        bases={},
+    )
+    assert new_history == history and ledger.last_run is None
+    assert any(event.kind is EventKind.WORKS_AHEAD for event in events)
+    assert not any(event.kind is EventKind.PROFILE_REFUSED for event in events)
+
+
+def test_candidate_date_is_filtered_before_ranking_and_transfer_checks():
+    p = configured("calendar_days", 1)
+    p = replace(p, outbound=replace(p.outbound, first_train=time(23, 30)))
+    base = confirmed(l1=("23:30", "23:55"), l2=("00:05", "00:45"))
+    history = BaselineHistory((base,))
+    answers = day_answers(TUE, l1=("23:33", "23:58"), l2=("00:13", "00:53"))
+    previous = make_connection([make_leg("UT", "RTD", "23:59", "00:45", day=TUE, number="9999")])
+    answers[1] = replace(answers[1], connections=(previous, *answers[1].connections))
+    results = evaluate(p, OUT, TUE, answers, CLEAR, base)
+    assert all(result.transfer_ok for result in results)
+    _, ledger, _ = run_lookahead(
+        p,
+        OUT,
+        history,
+        LookAheadLedger({}, (), None, 1, 1),
+        results,
+        revision=1,
+        today=MON,
+        now=NOW,
+        others=(),
+        bases={},
+    )
+    assert ledger.last_run == NOW
+
+
+def test_direct_custom_probe_requires_expected_date_in_whole_journey_answer():
+    p = configured("calendar_days", 1)
+    p = replace(p, outbound=replace(p.outbound, first_train=time(0, 5), transfers=()))
+    normal = make_connection([make_leg("AAA", "RTD", "00:05", "00:45", day=MON, number="1000")])
+    history = BaselineHistory((replace(confirmed(), signature=signature_of(normal, TUE)),))
+    previous = make_connection([make_leg("AAA", "RTD", "23:58", "00:38", day=MON, number="2000")])
+    results = evaluate(p, OUT, TUE, [ans("AAA", "RTD", previous)], CLEAR, history.versions[0])
+    new_history, ledger, events = run_lookahead(
+        p,
+        OUT,
+        history,
+        LookAheadLedger({}, (), None, 1, 1),
+        results,
+        revision=1,
+        today=MON,
+        now=NOW,
+        others=(),
+        bases={},
+    )
+    assert ledger.last_run is None and new_history == history
+    assert not any(event.kind is EventKind.PROFILE_REFUSED for event in events)
+
+
+@pytest.mark.parametrize("phase", ["request", "pacing"])
+async def test_reload_stops_obsolete_horizon_requests_before_next_trip(tmp_path, phase):
+    rig = Rig(tmp_path, "05:40")
+    text = (
+        YAML
+        + "\n    alerts: {custom_timetable_horizon: true, timetable_horizon_unit: commute_dates, timetable_horizon_count: 14}\n"
+    )
+    rig.write(text=text)
+    rig.provider.world = every_day()
+    await rig.rt.start()
+    calls = []
+    changed = False
+    original_sleep = rig.clock.sleep
+
+    async def edit():
+        nonlocal changed
+        if not changed:
+            changed = True
+            rig.write(
+                text=text.replace(
+                    "custom_timetable_horizon: true", "custom_timetable_horizon: false"
+                )
+            )
+            await rig.rt.reload()
+
+    async def request(query):
+        calls.append(query)
+        if phase == "request":
+            await edit()
+
+    async def pacing(seconds):
+        if phase == "pacing":
+            await edit()
+        await original_sleep(seconds)
+
+    rig.provider.hook = request
+    rig.clock.sleep = pacing
+    await seam.lookahead_direction(rig.rt, rig.rt.config.profiles[0], OUT, CLEAR)
+    assert changed
+    assert len(calls) == 1

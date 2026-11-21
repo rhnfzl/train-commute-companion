@@ -550,7 +550,9 @@ def _select_whole(
     return usual or near, None
 
 
-def _select_leg(answer: ProviderAnswer | None, a: str, b: str, ref: datetime) -> Connection | None:
+def _select_leg(
+    answer: ProviderAnswer | None, a: str, b: str, ref: datetime, *, same_date: bool = False
+) -> Connection | None:
     """The direct train nearest the leg's baseline departure."""
     direct = (
         []
@@ -558,7 +560,13 @@ def _select_leg(answer: ProviderAnswer | None, a: str, b: str, ref: datetime) ->
         else [
             c
             for c in answer.connections
-            if len(c.legs) == 1 and c.is_train_only and (c.origin, c.destination) == (a, b)
+            if len(c.legs) == 1
+            and c.is_train_only
+            and (c.origin, c.destination) == (a, b)
+            and (
+                not same_date
+                or planned_departure(c.legs[0]).astimezone(TZ).date() == ref.astimezone(TZ).date()
+            )
         ]
     )
     return _nearest(direct, ref)
@@ -703,6 +711,15 @@ def evaluate(
     first = present(deps[0])  # a journey's first departure is always known
 
     whole_ans = by_route.get((st[0], st[-1]))
+    if p.alerts.custom_timetable_horizon and whole_ans is not None:
+        whole_ans = replace(
+            whole_ans,
+            connections=tuple(
+                c
+                for c in whole_ans.connections
+                if planned_departure(c.legs[0]).astimezone(TZ).date() == first.astimezone(TZ).date()
+            ),
+        )
     whole, pattern = (
         (None, None)
         if whole_ans is None
@@ -719,7 +736,14 @@ def evaluate(
         None
         if ref is None
         else _snapshot(
-            answers, _select_leg(by_route.get((st[i], st[i + 1])), st[i], st[i + 1], ref)
+            answers,
+            _select_leg(
+                by_route.get((st[i], st[i + 1])),
+                st[i],
+                st[i + 1],
+                ref,
+                same_date=p.alerts.custom_timetable_horizon,
+            ),
         )
         for i, ref in enumerate(refs)
     ]

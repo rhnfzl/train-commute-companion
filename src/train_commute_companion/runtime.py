@@ -193,6 +193,10 @@ LOOKAHEAD_TRIP_INTERVAL = timedelta(seconds=2)
 _APP = "app"  # profile name on application warnings, which belong to no profile
 
 
+class _ObsoleteLookahead(Exception):
+    """A profile reload ends a background run before its next request."""
+
+
 def _reasons(errors: Sequence[ProfileProblem]) -> str:
     return "; ".join(f"{e.path}: {e.message}" for e in errors)
 
@@ -2361,14 +2365,26 @@ class Runtime:
 
     async def _lookahead_direction(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
         start = self._clock.now()
+        config = self._writer.st.config
+        if config is None:
+            return
+
+        async def before_trip() -> None:
+            if p.alerts.custom_timetable_horizon:
+                await self._pace_lookahead_trip()
+            current = self._writer.st.config
+            if current is None or current.revision != config.revision:
+                raise _ObsoleteLookahead
 
         async def probe(queries: Sequence[Query]) -> tuple[ProviderAnswer, ...] | PollFailure:
-            pace = self._pace_lookahead_trip if p.alerts.custom_timetable_horizon else None
-            got = await self._gate.all_trips(queries, False, None, before_trip=pace)
+            got = await self._gate.all_trips(queries, False, None, before_trip=before_trip)
             self._track_key_rejection(got if isinstance(got, str) else None, "lookahead", start)
             return got
 
-        run = await probe_direction(self._writer.st, p, d, works, start, probe)
+        try:
+            run = await probe_direction(self._writer.st, p, d, works, start, probe)
+        except _ObsoleteLookahead:
+            return
         st = None if run is None else apply_run(self._writer.st, self._queue, p, d, run)
         if st is not None:
             self._writer.commit(st, Change.LOOKAHEAD)
