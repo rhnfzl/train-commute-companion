@@ -52,6 +52,15 @@ def decode(tp: Any, v: Any) -> Any:
         if v is None and NoneType in args:
             return None
         rest = [a for a in args if a is not NoneType]
+        if all(
+            get_origin(a) is Literal or isinstance(a, type) and issubclass(a, Enum) for a in rest
+        ):
+            values = [
+                get_args(a) if get_origin(a) is Literal else tuple(m.value for m in a) for a in rest
+            ]
+            matches = [a for a, choices in zip(rest, values, strict=True) if v in choices]
+            if len(matches) == 1:
+                return decode(matches[0], v)
         if len(rest) != 1:
             raise TypeError(f"ambiguous union {tp}")
         return decode(rest[0], v)

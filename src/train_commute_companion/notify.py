@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Literal, Protocol, TypedDict
 
 from train_commute_companion.calendar import to_utc
-from train_commute_companion.model import AlertEvent
+from train_commute_companion.model import AlertEvent, EventKind
 
 
 class DestinationPhase(StrEnum):
@@ -66,6 +66,19 @@ class Notifier(Protocol):
         """True when the message got through. False or an exception is a failed attempt, which
         the runtime retries. NotificationPaused defers. NotificationSuppressed drops the alert."""
         ...
+
+
+class RoutedDelivery(Protocol):
+    @property
+    def destination(self) -> str | None: ...
+
+    @property
+    def wake_destination(self) -> str | None: ...
+
+    def routes(self, profile_id: str, kind: EventKind | None = None) -> bool: ...
+    async def refresh(self) -> None: ...
+    async def wake_ready(self) -> bool: ...
+    async def send_to(self, event: AlertEvent, destination: str | None) -> bool: ...
 
 
 class WebhookPort(Protocol):

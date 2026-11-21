@@ -41,17 +41,46 @@ def build_tools(read: Dispatch, travel: Dispatch | None = None) -> MCPServer:
     async def get_status(profile: str) -> dict[str, Any]:
         return await _call(read, {"tool": "get_status", "profile": profile})
 
-    @server.tool(
-        description="The next connections of one profile's outbound or return journey.",
-        annotations=READ_ONLY,
-        structured_output=True,
-    )
-    async def get_next_connections(
-        profile: str, direction: Literal["outbound", "return"]
-    ) -> dict[str, Any]:
-        return await _call(
-            read, {"tool": "get_next_connections", "profile": profile, "direction": direction}
+    if travel is None:
+
+        @server.tool(
+            description="The next connections of one profile's outbound or return journey.",
+            annotations=READ_ONLY,
+            structured_output=True,
         )
+        async def get_next_connections(
+            profile: str, direction: Literal["outbound", "return"]
+        ) -> dict[str, Any]:
+            return await _call(
+                read, {"tool": "get_next_connections", "profile": profile, "direction": direction}
+            )
+    else:
+
+        @server.tool(
+            name="get_next_connections",
+            description=(
+                "Read current connections by regular profile ID or name. To preview a saved "
+                "travel plan, send its ID as plan_id or profile. Find IDs with list_travel_plans. "
+                "An optional date (YYYY-MM-DD) selects the outbound occurrence in the Netherlands. "
+                "Next-day returns use that occurrence's following day. If you omit the date, "
+                "the tool checks the next scheduled journey. Lookahead covers the next 30 days."
+            ),
+            annotations=READ_ONLY.model_copy(update={"open_world_hint": True}),
+            structured_output=True,
+        )
+        async def get_next_connections_or_preview(
+            direction: Literal["outbound", "return"],
+            profile: str | None = None,
+            plan_id: str | None = None,
+            date: str | None = None,
+        ) -> dict[str, Any]:
+            request = {"tool": "get_next_connections", "direction": direction}
+            request.update(
+                (key, value)
+                for key, value in (("profile", profile), ("plan_id", plan_id), ("date", date))
+                if value is not None
+            )
+            return await _call(travel, request)
 
     @server.tool(
         description="Planned works ahead on one profile's journeys, with how fresh the check is.",
@@ -69,7 +98,10 @@ def build_tools(read: Dispatch, travel: Dispatch | None = None) -> MCPServer:
 
 def add_travel_tools(server: MCPServer, dispatch: Dispatch) -> None:
     @server.tool(
-        description="List saved one-off, temporary and ongoing travel plans.",
+        description=(
+            "List regular commute profiles and saved one-off, temporary and ongoing travel plans. "
+            "Use profile_id for a regular commute or plan_id for a saved plan in get_next_connections."
+        ),
         annotations=READ_ONLY,
         structured_output=True,
     )

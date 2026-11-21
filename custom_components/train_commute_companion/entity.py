@@ -14,7 +14,7 @@ from train_commute_companion.messages import ATTRIBUTION
 from train_commute_companion.model import Direction
 from train_commute_companion.view import OccurrenceView, RuntimeView
 
-from .const import CONF_PROFILES_PATH, DOMAIN
+from .const import CONF_PROFILES_PATH, CONF_REMOTE_URL, DOMAIN
 from .coordinator import TccCoordinator
 from .profile_subentries import excluded_profile_ids, profile_subentries
 from .reconciliation import ViewPhase, view_phase
@@ -63,6 +63,13 @@ class TccEntity(CoordinatorEntity[TccCoordinator]):
             entry_type=DeviceEntryType.SERVICE,
         )
 
+    @property
+    def available(self) -> bool:
+        return super().available and (
+            not self.coordinator.remote
+            or any(d.profile_id == self.profile_id for d in self.coordinator.data.directions)
+        )
+
 
 def shown_and_others(
     view: RuntimeView, profile_id: str, direction: Direction
@@ -107,6 +114,7 @@ def sync_entities(
 ) -> Callable[[], None]:
     """Adds entities whose unique ID is new and removes this entry's no longer wanted ones."""
     entry = coordinator.config_entry
+    remote = bool(entry.options.get(CONF_REMOTE_URL))
     path = entry.options.get(
         CONF_PROFILES_PATH, coordinator.hass.config.path(DOMAIN, "profiles.yaml")
     )
@@ -121,7 +129,7 @@ def sync_entities(
         }:
             groups: dict[str | None, list[tuple[str, TccEntity]]] = {}
             subentries = profile_subentries(entry)
-            excluded = excluded_profile_ids(entry, path)
+            excluded = frozenset() if remote else excluded_profile_ids(entry, path)
             for uid, make in new.items():
                 entity = make()
                 if entity.profile_id in excluded:
@@ -137,7 +145,7 @@ def sync_entities(
                 )
                 states.update({uid: EntityPhase.PRESENT for uid, _ in entities})
         # a view read before the runtime has a config would otherwise delete every entity
-        if view_phase(view) is not ViewPhase.READY:
+        if remote or view_phase(view) is not ViewPhase.READY:
             return
         # not from the registry: a removed device already took its entries (5.4)
         for uid in states.keys() - want.keys():

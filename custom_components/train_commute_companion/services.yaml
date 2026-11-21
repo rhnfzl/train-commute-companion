@@ -69,6 +69,12 @@ not_travelling:
         boolean:
 reload_profiles:
   fields: {}
+sync_schedule:
+  fields:
+    profile: {required: true, selector: {text: {}}}
+    extra_dates: {required: true, selector: {object: {}}}
+    outbound_buffer_min: {required: true, selector: {number: {min: 0, mode: box}}}
+    return_buffer_min: {required: true, selector: {number: {min: 0, mode: box}}}
 travelling:
   fields:
     profile: {required: true, selector: {text: {}}}

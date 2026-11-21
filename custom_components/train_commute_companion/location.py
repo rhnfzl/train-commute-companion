@@ -38,6 +38,7 @@ from train_commute_companion.view import in_station_circle, still_due, track_fix
 
 from .coordinator import TccCoordinator
 from .host import RuntimeHost, RuntimeNotRunning
+from .remote import RemoteRuntime, invoke
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ class LocationTracker:
         hass: HomeAssistant,
         entry: ConfigEntry,
         coordinator: TccCoordinator,
-        host: RuntimeHost,
+        host: RuntimeHost | RemoteRuntime,
     ) -> None:
         self._hass = hass
         self._entry = entry
@@ -244,14 +245,20 @@ class LocationTracker:
                 event = LocationEvent(zone, "still", at, ev)
                 if key.endswith("|leave_by"):
                     source = profile.location
-                    accepted = await self._host.run(
-                        lambda rt: rt.confirm_departure_presence(pid, event, source, epoch)
+                    accepted = await invoke(
+                        self._host,
+                        Runtime.confirm_departure_presence,
+                        pid=pid,
+                        event=event,
+                        source=source,
+                        epoch=epoch,
                     )
                 else:
                     accepted = await self._send(pid, gen, event, profile.location, epoch)
                 if not accepted:
                     self._still_sent.get(pid, set()).discard(key)
             except RuntimeNotRunning:
+                self._still_sent.get(pid, set()).discard(key)
                 _LOGGER.debug("location event dropped: the runtime is not running")
             except Exception:
                 _LOGGER.exception("location event for %s failed", pid)
@@ -356,11 +363,15 @@ class LocationTracker:
         if self._gen.get(pid) is not gen:  # checked with no await before the dispatch
             return True  # an old source is owed nothing, so its timer stays as it is
 
-        def send(rt: Runtime) -> Coroutine[Any, Any, bool]:
-            # the core rechecks the source after its own request, before any write
-            return rt.report_location(pid, event, source, epoch=epoch)
-
-        return await self._host.run(send)
+        # The core rechecks the source after its own request, before any write.
+        return await invoke(
+            self._host,
+            Runtime.report_location,
+            profile_id=pid,
+            event=event,
+            source=source,
+            epoch=epoch,
+        )
 
     def _lift_timer(self, pid: str) -> None:
         if pid in self._tracks:  # a source change meanwhile has dropped this track

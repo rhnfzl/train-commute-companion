@@ -608,7 +608,8 @@
         "invalid_location_entity": "Kies een geschikte entiteit of laat het veld leeg."
       },
       "abort": {
-        "not_loaded": "Laad de integratie opnieuw voordat je een profiel bewerkt."
+        "not_loaded": "Laad de integratie opnieuw voordat je een profiel bewerkt.",
+        "managed_by_docker": "Bewerk profielen in de verbonden Docker-companion."
       }
     }
   },
@@ -623,7 +624,8 @@
           "profiles": "Profielen toevoegen of wijzigen",
           "recovery": "Vervangende reizen en bevestigingen",
           "arrival": "Aankomst bevestigen of corrigeren",
-          "weather": "Weer"
+          "weather": "Weer",
+          "runtime_connection": "Verbinding met Docker-companion"
         }
       },
       "validate": {
@@ -989,6 +991,22 @@
       "profile_preview": {
         "title": "Bekijk je volgende treinreis",
         "description": "NS-dienstregeling voor {departure}, lokale tijd.\n\n{route}\n\nVertrekspoor: {platform} (? betekent onbekend).\n\nDe reis kan nog veranderen. Bij een flexibel tijdvenster toont dit een mogelijke trein."
+      },
+      "runtime_connection": {
+        "title": "Verbinding met Docker-companion",
+        "description": "Verbind de bestaande integratie met een Docker-companion. Beheer profielen, weer en webhooks dan in Docker. Laat de URL leeg om de lokale companion te gebruiken.",
+        "data": {
+          "remote_url": "HTTPS-adres van Docker",
+          "remote_token": "Bearer-token",
+          "remote_ca": "Pad naar CA-bestand",
+          "remote_profile_sync": "Synchroniseer lokale reisdagen en buffers bij herladen"
+        },
+        "data_description": {
+          "remote_url": "Gebruik het HTTPS-adres zonder pad.",
+          "remote_token": "Gebruik het aparte token van de Docker Home Assistant-bridge.",
+          "remote_ca": "Optioneel. Gebruik een vertrouwd PEM-bestand voor een eigen CA.",
+          "remote_profile_sync": "Bij herladen worden alleen extra reisdagen en beide vertrekbuffers gesynchroniseerd voor gedeelde profiel-ID's."
+        }
       }
     },
     "error": {
@@ -1018,7 +1036,9 @@
       "file_broken": "Het bestand op dit pad heeft een probleem: {report}. Herstel het bestand of vul het pad naar een ander profielenbestand in.",
       "invalid_location_person": "Kies een beschikbare persoon of schakel locatie via Home Assistant uit.",
       "invalid_partner_phone": "Kies een beschikbare telefoon met de Home Assistant-app.",
-      "invalid_location_entity": "Kies een geschikte entiteit of laat het veld leeg."
+      "invalid_location_entity": "Kies een geschikte entiteit of laat het veld leeg.",
+      "remote_settings_invalid": "Controleer het HTTPS-adres, het token en het optionele CA-bestand.",
+      "remote_unreachable": "De Docker-companion reageert niet. Controleer het adres, de TLS-instellingen en het token."
     },
     "abort": {
       "validated": "Gecontroleerd. Er is niets gewijzigd.",
@@ -1028,7 +1048,8 @@
       "recovery_selected": "Vervangende reis gekozen. Gebruik de bijbehorende knoppen om instappen en aankomst te bevestigen. Er zijn geen profielinstellingen gewijzigd.",
       "recovery_action_saved": "Reisactie opgeslagen. De volgende stap heeft een eigen bevestiging. Er zijn geen profielinstellingen gewijzigd.",
       "arrival_unavailable": "Er is geen opgeslagen reis beschikbaar of de companion is niet actief.",
-      "arrival_saved": "Aankomst opgeslagen. {result}"
+      "arrival_saved": "Aankomst opgeslagen. {result}",
+      "managed_by_docker": "Beheer deze instellingen in de verbonden Docker-companion."
     }
   },
   "selector": {
@@ -1194,6 +1215,24 @@
         "destination": {
           "name": "Aankomststation",
           "description": "NS-stationscode of volledige stationsnaam."
+        }
+      }
+    },
+    "sync_schedule": {
+      "name": "Synchroniseer reisschema",
+      "description": "Stuur extra reisdagen en vertrekbuffers naar een profiel in de verbonden Docker-companion.",
+      "fields": {
+        "profile": {
+          "name": "Profiel"
+        },
+        "extra_dates": {
+          "name": "Extra reisdagen"
+        },
+        "outbound_buffer_min": {
+          "name": "Vertrekbuffer heenreis"
+        },
+        "return_buffer_min": {
+          "name": "Vertrekbuffer terugreis"
         }
       }
     }

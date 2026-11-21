@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 import os
+import ssl
 import traceback
 from collections.abc import Awaitable, Callable, Mapping
 from http import HTTPStatus
@@ -16,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from train_commute_companion.calendar_export import CalendarExportError, export_ics, export_id
+from train_commute_companion.home_assistant_bridge import PATH as HOME_ASSISTANT_PATH
+from train_commute_companion.home_assistant_bridge import InvalidCommand
 from train_commute_companion.model import SentAlert
 from train_commute_companion.route_export import export_preview
 from train_commute_companion.view import RuntimeView
@@ -193,6 +196,9 @@ async def start_web(
     calendar_token: str | None = None,
     calendar: Callable[[], bytes] | None = None,
     delivery: NtfyProof | None = None,
+    home_assistant_token: str | None = None,
+    home_assistant: Callable[[object], Awaitable[dict[str, Any]]] | None = None,
+    ssl_context: ssl.SSLContext | None = None,
 ) -> asyncio.Server:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -304,6 +310,25 @@ async def start_web(
                                         + f'\r\nContent-Disposition: attachment; filename="{filename}"',
                                     )
                                 )
+                elif (
+                    method == "POST"
+                    and path == HOME_ASSISTANT_PATH
+                    and home_assistant_token
+                    and home_assistant
+                ):
+                    if not _bearer_authorized(headers.get("authorization"), home_assistant_token):
+                        writer.write(_response(401, extra="WWW-Authenticate: Bearer"))
+                    else:
+                        try:
+                            reply = await home_assistant(json.loads(body))
+                        except (InvalidCommand, json.JSONDecodeError, UnicodeDecodeError):
+                            writer.write(_response(400))
+                        else:
+                            writer.write(
+                                _response(
+                                    200, json.dumps(reply).encode(), extra="Cache-Control: no-store"
+                                )
+                            )
                 elif method == "POST" and path in ("/delivery/test", "/delivery/confirm"):
                     if delivery is None or not health_token:
                         writer.write(_response(404))
@@ -341,7 +366,7 @@ async def start_web(
         finally:
             writer.close()
 
-    return await asyncio.start_server(handle, host, port, limit=HEAD_LIMIT)
+    return await asyncio.start_server(handle, host, port, limit=HEAD_LIMIT, ssl=ssl_context)
 
 
 def state_dir(env: Mapping[str, str]) -> Path:

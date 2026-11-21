@@ -259,6 +259,7 @@ async def open_webhooks(hass, entry):
         "weather",
         "recovery",
         "arrival",
+        "runtime_connection",
     ]
     r = await hass.config_entries.options.async_configure(
         r["flow_id"], {"next_step_id": "webhooks"}

@@ -608,7 +608,8 @@
         "invalid_location_entity": "Choose a compatible entity or leave this field empty."
       },
       "abort": {
-        "not_loaded": "Load the integration before editing commute profiles."
+        "not_loaded": "Load the integration before editing commute profiles.",
+        "managed_by_docker": "Edit profiles in the connected Docker companion."
       }
     }
   },
@@ -623,7 +624,8 @@
           "profiles": "Add or edit profiles",
           "recovery": "Recovery journeys and confirmations",
           "arrival": "Confirm or correct arrival",
-          "weather": "Weather"
+          "weather": "Weather",
+          "runtime_connection": "Docker companion connection"
         }
       },
       "validate": {
@@ -989,6 +991,22 @@
       "profile_preview": {
         "title": "Preview your next commute",
         "description": "NS timetable for {departure}, local time.\n\n{route}\n\nDeparture platform: {platform} (? means unknown).\n\nThe journey can change. For a flexible window, this shows one possible train."
+      },
+      "runtime_connection": {
+        "title": "Docker companion connection",
+        "description": "Connect the existing integration to a Docker companion. Manage profiles, weather and webhooks in Docker when connected. Clear the URL to switch to the local companion.",
+        "data": {
+          "remote_url": "Docker HTTPS address",
+          "remote_token": "Bearer token",
+          "remote_ca": "CA file path",
+          "remote_profile_sync": "Sync local travel dates and buffers when reloading"
+        },
+        "data_description": {
+          "remote_url": "Enter the HTTPS address without a path.",
+          "remote_token": "Use the dedicated token for the Docker Home Assistant bridge.",
+          "remote_ca": "Optional. Use a trusted PEM file for a private CA.",
+          "remote_profile_sync": "Reloading syncs extra travel dates and both departure buffers for matching profile IDs."
+        }
       }
     },
     "error": {
@@ -1018,7 +1036,9 @@
       "file_broken": "The file at this path has a problem: {report}. Fix the file, or enter the path of another profiles file.",
       "invalid_location_person": "Choose an available person or disable Home Assistant location.",
       "invalid_partner_phone": "Select an available Home Assistant app registration.",
-      "invalid_location_entity": "Choose a compatible entity or leave this field empty."
+      "invalid_location_entity": "Choose a compatible entity or leave this field empty.",
+      "remote_settings_invalid": "Check the HTTPS address, token and optional CA file.",
+      "remote_unreachable": "The Docker companion did not respond. Check the address, TLS settings and token."
     },
     "abort": {
       "validated": "Checked. Nothing was changed.",
@@ -1028,7 +1048,8 @@
       "recovery_selected": "Recovery selected. Use the bound recovery buttons to confirm boarding and arrival. No profile settings were changed.",
       "recovery_action_saved": "Recovery action saved. The next step has its own confirmation. No profile settings were changed.",
       "arrival_unavailable": "No saved journey is available, or the companion is not running.",
-      "arrival_saved": "Arrival saved. {result}"
+      "arrival_saved": "Arrival saved. {result}",
+      "managed_by_docker": "Manage these settings in the connected Docker companion."
     }
   },
   "selector": {
@@ -1502,6 +1523,24 @@
         "destination": {
           "name": "Destination",
           "description": "NS station code or full station name."
+        }
+      }
+    },
+    "sync_schedule": {
+      "name": "Sync travel schedule",
+      "description": "Send extra travel dates and departure buffers to a profile in the connected Docker companion.",
+      "fields": {
+        "profile": {
+          "name": "Profile"
+        },
+        "extra_dates": {
+          "name": "Extra travel dates"
+        },
+        "outbound_buffer_min": {
+          "name": "Outbound departure buffer"
+        },
+        "return_buffer_min": {
+          "name": "Return departure buffer"
         }
       }
     }

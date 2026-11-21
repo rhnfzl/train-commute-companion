@@ -26,6 +26,7 @@ from .const import (
     CONF_NOTIFICATIONS_QUIET_ENTITY,
     CONF_NOTIFY,
     CONF_PROFILES_PATH,
+    CONF_REMOTE_URL,
     CONF_STARTED,
     CONF_WEBHOOK_SECRET,
     CONF_WEBHOOK_TOKEN,
@@ -40,6 +41,7 @@ from .data import TccConfigEntry, TccData
 from .location import LocationTracker
 from .notifier import HaNotifier
 from .profile_subentries import async_setup_profile_subentries, excluded_profile_ids
+from .remote import RemoteRuntime, open_remote
 from .services import async_setup_services
 from .store import EntryMarkedStore, file_lock
 
@@ -48,6 +50,10 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async_setup_services(hass)
+    if hass.http is not None:
+        from .remote_alert import RemoteAlertView
+
+        hass.http.register_view(RemoteAlertView(hass))
     return True
 
 
@@ -64,21 +70,43 @@ def _closing_client(
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
+    notify_service: str = entry.options[CONF_NOTIFY]
+    loud_style: LoudStyle = entry.options.get(CONF_LOUD_STYLE, DEFAULT_LOUD_STYLE)
+    entry_id = entry.entry_id
+    retired = threading.Event()
+    connected = bool(entry.options.get(CONF_REMOTE_URL))
+    profiles_path: str = entry.options.get(
+        CONF_PROFILES_PATH, hass.config.path(DOMAIN, "profiles.yaml")
+    )
+    notifier = HaNotifier(
+        hass,
+        entry_id,
+        notify_service,
+        loud_style,
+        retired,
+        enabled_entity=entry.options.get(CONF_NOTIFICATIONS_ENABLED_ENTITY),
+        quiet_entity=entry.options.get(CONF_NOTIFICATIONS_QUIET_ENTITY),
+        profile_allowed=None
+        if connected
+        else lambda pid: pid not in excluded_profile_ids(entry, profiles_path),
+        timetable_actions=not connected,
+    )
+    if connected:
+        try:
+            remote = await open_remote(hass, entry.options)
+        except (OSError, ValueError) as err:
+            raise ConfigEntryNotReady("The Docker connection could not be opened.") from err
+        return await _setup_platforms(hass, entry, remote, notifier)
+
     await hass.async_add_executor_job(partial(os.makedirs, hass.config.path(DOMAIN), exist_ok=True))
     # plain values read here on hass.loop; build runs on the runtime thread and touches only these
     state_path = Path(hass.config.path(DOMAIN, f"state-{entry.entry_id}.json"))
     api_key: str = entry.data[CONF_API_KEY]
     knmi_key: str | None = entry.options.get(CONF_KNMI_API_KEY) or None
     started = bool(entry.data.get(CONF_STARTED, False))
-    profiles_path: str = entry.options.get(
-        CONF_PROFILES_PATH, hass.config.path(DOMAIN, "profiles.yaml")
-    )
-    notify_service: str = entry.options[CONF_NOTIFY]
-    loud_style: LoudStyle = entry.options.get(CONF_LOUD_STYLE, DEFAULT_LOUD_STYLE)
     webhook_urls = tuple(entry.options.get(CONF_WEBHOOK_URLS, ()))
     webhook_secret: str = entry.options.get(CONF_WEBHOOK_SECRET, "")
     webhook_token: str = entry.options.get(CONF_WEBHOOK_TOKEN, "")
-    entry_id = entry.entry_id
 
     @callback
     def set_started() -> None:
@@ -90,18 +118,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         hass.loop.call_soon_threadsafe(set_started)
 
     lock = file_lock(state_path)
-    retired = threading.Event()
-    # built here on hass.loop: an HA object, and unload needs it to cancel its pending pushes
-    notifier = HaNotifier(
-        hass,
-        entry_id,
-        notify_service,
-        loud_style,
-        retired,
-        enabled_entity=entry.options.get(CONF_NOTIFICATIONS_ENABLED_ENTITY),
-        quiet_entity=entry.options.get(CONF_NOTIFICATIONS_QUIET_ENTITY),
-        profile_allowed=lambda pid: pid not in excluded_profile_ids(entry, profiles_path),
-    )
 
     def build() -> host_mod.Parts:
         clock = host_mod.make_clock()
@@ -139,22 +155,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         return host_mod.Parts(rt, clock, close)
 
     host = host_mod.RuntimeHost(build, retired=retired)
+    return await _setup_platforms(hass, entry, host, notifier, profiles_path)
 
+
+async def _setup_platforms(
+    hass: HomeAssistant,
+    entry: TccConfigEntry,
+    host: host_mod.RuntimeHost | RemoteRuntime,
+    notifier: HaNotifier,
+    profiles_path: str | None = None,
+) -> bool:
     tracker: LocationTracker | None = None
 
     async def stop() -> None:
         if tracker is not None:
             await tracker.stop()  # before the host, so no event is sent to a retired runtime
-        retired.set()  # first, so no push or write starts while the thread is being stopped
+        notifier.retired.set()
         await notifier.async_stop()
         await host.stop()
 
     # one guard from the first await on, so a cancelled setup also stops the thread it started
     try:
-        try:
-            await host.start()
-        except Exception as err:
-            raise ConfigEntryNotReady(f"the runtime did not start: {err}") from err
+        if isinstance(host, host_mod.RuntimeHost):
+            try:
+                await host.start()
+            except Exception as err:
+                raise ConfigEntryNotReady(f"the runtime did not start: {err}") from err
 
         coordinator = TccCoordinator(
             hass,
@@ -168,13 +194,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: TccConfigEntry) -> bool:
         # HA polls a coordinator only while it has a listener; monitoring must not wait for entities
         entry.async_on_unload(coordinator.async_add_listener(lambda: None))
         tracker = LocationTracker(hass, entry, coordinator, host)
-        entry.runtime_data = TccData(host, coordinator, stop, tracker)
-        async_setup_profile_subentries(entry, profiles_path)
+        entry.runtime_data = TccData(host, coordinator, stop, tracker, notifier)
         from .arrival_controls import listen_for_arrival
         from .timetable_controls import listen_for_timetable
 
         listen_for_arrival(entry.runtime_data, notifier)
-        listen_for_timetable(entry.runtime_data, notifier, Path(profiles_path))
+        if profiles_path is not None:
+            async_setup_profile_subentries(entry, profiles_path)
+            listen_for_timetable(entry.runtime_data, notifier, Path(profiles_path))
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         tracker.start()
 
