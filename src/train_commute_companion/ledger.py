@@ -60,7 +60,6 @@ from train_commute_companion.model import (
 from train_commute_companion.news import all_good
 from train_commute_companion.notification_policy import (
     CHANNELS,
-    channel_enabled,
     channels_for,
     enabled,
     routing_ready,
@@ -337,9 +336,13 @@ class LiveLedger:
         now: Callable[[], datetime],
         available_channels: Callable[[], frozenset[NotificationChannel]] = lambda: CHANNELS,
         format_event: Callable[[AlertEvent], AlertEvent] = lambda event: event,
+        primary_enabled: Callable[[AlertSettings], bool] = lambda settings: True,
+        requires_adoption_receipt: Callable[[str], bool] = lambda destination: False,
     ) -> None:
         self._available_channels = available_channels
         self._format_event = format_event
+        self._primary_enabled = primary_enabled
+        self._requires_adoption_receipt = requires_adoption_receipt
         self._written, self._judged, self._memory, self._now = written, judged, memory, now
 
     @property
@@ -357,12 +360,23 @@ class LiveLedger:
         return AlertSettings() if p is None else p.alerts
 
     def selected_channels(self, o: Obligation) -> frozenset[NotificationChannel]:
-        return channels_for(self._alerts(o), o.event.kind, look_ahead=o.look_ahead is not None)
+        settings = self._alerts(o)
+        pending = (
+            *self._state.obligations,
+            *(x for ledger in self._state.lookahead.values() for x in ledger.pending),
+        )
+        suppressed = o.primary_suppressed or any(
+            x.id == o.id and x.primary_suppressed for x in pending
+        )
+        return channels_for(
+            settings,
+            o.event.kind,
+            look_ahead=o.look_ahead is not None,
+            primary_enabled=not suppressed and self._primary_enabled(settings),
+        )
 
     def channel_enabled(self, o: Obligation, channel: NotificationChannel) -> bool:
-        return channel_enabled(
-            self._alerts(o), o.event.kind, channel, look_ahead=o.look_ahead is not None
-        )
+        return channel in self.selected_channels(o)
 
     def routing_ready(self, o: Obligation) -> bool:
         return routing_ready(
@@ -650,8 +664,10 @@ class LiveLedger:
         p = routing_profile(self._state, profile_id)
         return p is not None and _in_quiet(p.alerts.quiet_hours, now)
 
-    def current(self, o: Obligation) -> AlertEvent:
-        event = self._current(o)
+    def current(self, o: Obligation, destination: str | None = None) -> AlertEvent | None:
+        event = self._current(o, destination)
+        if event is None:
+            return None
         state = None if o.occurrence is None else self._occurrence(o.occurrence)
         if (
             state is not None
@@ -670,12 +686,29 @@ class LiveLedger:
             event = replace(event, text="Original train monitoring: " + event.text)
         return self._format_event(event)
 
-    def _current(self, o: Obligation) -> AlertEvent:
+    def _current(self, o: Obligation, destination: str | None) -> AlertEvent | None:
         if o.look_ahead is not None:
-            # rule 5(b): a bundle names only its facts that still hold, from the current profile
-            live, p = self._live_facts(o), find_profile(self._state.config, o.look_ahead[0])
+            pid, direction, day = o.look_ahead
+            # A correction belongs only to destinations that received its adoption.
+            live = self._live_facts(o)
+            if destination is not None:
+                ledger = self._state.lookahead.get(direction_key(pid, direction))
+                receipts = {} if ledger is None else ledger.adoption_receipts
+                legacy_allowed = not self._requires_adoption_receipt(destination)
+                if live is not None:
+                    live = tuple(
+                        f
+                        for f in live
+                        if not f.cancels
+                        or (destination in receipts[f.key] if f.key in receipts else legacy_allowed)
+                    )
+                    if not live:
+                        return None
+                elif not legacy_allowed and re.search(r"(?:^|;)cancel:\d+(?:;|$)", o.fact_key):
+                    return None
+            p = find_profile(self._state.config, pid)
             if live and p is not None and len(live) < len(self._stored_facts(o)):
-                kind, text = render_message(p, o.look_ahead[2], live)
+                kind, text = render_message(p, day, live)
                 return replace(o.event, kind=kind, text=text, profile_name=p.name)
         e = self._regenerated(o, self._relocked(o, o.event))
         p = find_profile(self._state.config, e.profile_id)

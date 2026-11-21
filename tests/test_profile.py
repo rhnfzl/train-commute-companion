@@ -171,6 +171,22 @@ def test_active_lead_min_is_optional_and_at_least_buffer():
 
 
 @pytest.mark.parametrize("value", ["true", "false"])
+def test_ntfy_switch_defaults_true_and_accepts_booleans(value):
+    profiles, errors = parse_profiles(one(), None)
+    assert not errors and profiles[0].alerts.ntfy_enabled is True
+    text = one().replace("    outbound:", f"    alerts: {{ntfy_enabled: {value}}}\n    outbound:")
+    profiles, errors = parse_profiles(text, None)
+    assert not errors and profiles[0].alerts.ntfy_enabled is (value == "true")
+
+
+@pytest.mark.parametrize("value", ["1", "null", '"false"'])
+def test_ntfy_switch_rejects_non_booleans(value):
+    text = one().replace("    outbound:", f"    alerts: {{ntfy_enabled: {value}}}\n    outbound:")
+    _, errors = parse_profiles(text, None)
+    assert [e.path for e in errors] == ["profiles[0].alerts.ntfy_enabled"]
+
+
+@pytest.mark.parametrize("value", ["true", "false"])
 def test_leave_by_switch_defaults_true_and_accepts_booleans(value):
     profiles, errors = parse_profiles(one(), None)
     assert not errors and profiles[0].alerts.leave_by is True

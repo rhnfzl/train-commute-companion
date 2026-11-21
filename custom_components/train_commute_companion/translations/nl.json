@@ -143,7 +143,8 @@
           "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen",
           "weather_allowance": "Extra reistijd bij weersverwachting voorstellen",
           "live_today": "Vandaag automatisch vernieuwen",
-          "telegram_status_pin": "Ritstatus vastzetten in Telegram"
+          "telegram_status_pin": "Ritstatus vastzetten in Telegram",
+          "ntfy_enabled": "ntfy-meldingen op je telefoon"
         },
         "data_description": {
           "delay_min": "Standaard 3. Hele minuten van 1 tot 1440. Vóór het actieve moment geldt minimaal 5. Meldingen over uitval, aansluitingen en je uiterste aankomsttijd blijven aan.",
@@ -162,7 +163,8 @@
           "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer.",
           "weather_allowance": "Stel extra minuten voor bij regen, mist, sneeuw of mogelijke gladheid in de verwachting bij het vertrekstation. Alleen advies, wijzigt geen treinen of timers. Vereist weer en vertrek uiterlijk. Standaard aan.",
           "live_today": "Vernieuw de privépagina Vandaag in Docker automatisch en bied een snelkoppeling voor het beginscherm aan. Alle getoonde profielen moeten dit toestaan. Standaard aan.",
-          "telegram_status_pin": "Neem dit profiel op in het stille, vastgezette statusbericht in het bevestigde privégesprek in Telegram. Alleen voor Docker. Standaard aan."
+          "telegram_status_pin": "Neem dit profiel op in het stille, vastgezette statusbericht in het bevestigde privégesprek in Telegram. Alleen voor Docker. Standaard aan.",
+          "ntfy_enabled": "Stuur meldingen van dit profiel via ntfy wanneer ntfy in de Docker-app is ingesteld. Standaard aan. E-mail, webhooks en Home Assistant-meldingen blijven hun eigen instellingen gebruiken."
         }
       },
       "profile_error": {
@@ -382,7 +384,8 @@
           "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen",
           "weather_allowance": "Extra reistijd bij weersverwachting voorstellen",
           "live_today": "Vandaag automatisch vernieuwen",
-          "telegram_status_pin": "Ritstatus vastzetten in Telegram"
+          "telegram_status_pin": "Ritstatus vastzetten in Telegram",
+          "ntfy_enabled": "ntfy-meldingen op je telefoon"
         },
         "data_description": {
           "delay_min": "Standaard 3. Hele minuten van 1 tot 1440. Vóór het actieve moment geldt minimaal 5. Meldingen over uitval, aansluitingen en je uiterste aankomsttijd blijven aan.",
@@ -401,7 +404,8 @@
           "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer.",
           "weather_allowance": "Stel extra minuten voor bij regen, mist, sneeuw of mogelijke gladheid in de verwachting bij het vertrekstation. Alleen advies, wijzigt geen treinen of timers. Vereist weer en vertrek uiterlijk. Standaard aan.",
           "live_today": "Vernieuw de privépagina Vandaag in Docker automatisch en bied een snelkoppeling voor het beginscherm aan. Alle getoonde profielen moeten dit toestaan. Standaard aan.",
-          "telegram_status_pin": "Neem dit profiel op in het stille, vastgezette statusbericht in het bevestigde privégesprek in Telegram. Alleen voor Docker. Standaard aan."
+          "telegram_status_pin": "Neem dit profiel op in het stille, vastgezette statusbericht in het bevestigde privégesprek in Telegram. Alleen voor Docker. Standaard aan.",
+          "ntfy_enabled": "Stuur meldingen van dit profiel via ntfy wanneer ntfy in de Docker-app is ingesteld. Standaard aan. E-mail, webhooks en Home Assistant-meldingen blijven hun eigen instellingen gebruiken."
         }
       },
       "profile_error": {

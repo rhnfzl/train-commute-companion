@@ -27,9 +27,11 @@ from train_commute_companion.compensation import ArrivalError, arrival_text, con
 from train_commute_companion.compensation_state import JourneyRecord
 from train_commute_companion.delivery import (
     BindingPhase,
+    DeliveryVerdict,
     binding_phase,
     deliver,
     pending_journey_warnings,
+    revalidate,
 )
 from train_commute_companion.disruptions import (
     LEGACY_PRIMARY,
@@ -38,6 +40,7 @@ from train_commute_companion.disruptions import (
     disruptions_received,
     disruptions_told,
     notice_events,
+    suppress_disruption_destinations,
     update_disruptions,
 )
 from train_commute_companion.health import (
@@ -84,9 +87,12 @@ from train_commute_companion.location import LocationEvent
 from train_commute_companion.lookahead import forget_pending, rebase_on_edit, reset_on_edit
 from train_commute_companion.lookahead_probe import service_date
 from train_commute_companion.lookahead_run import (
+    ProbedRun,
+    adoption_correction,
     apply_run,
     directions_due,
     lookahead_done,
+    lookahead_received,
     probe_direction,
 )
 from train_commute_companion.match import usual_connection
@@ -130,7 +136,13 @@ from train_commute_companion.model import (
 )
 from train_commute_companion.news import all_good, forget_ended, news_of, severity
 from train_commute_companion.notification_policy import channels_for, routing_ready
-from train_commute_companion.notify import NotificationPaused, Notifier, WebhookPort, destination_id
+from train_commute_companion.notify import (
+    NotificationPaused,
+    NotificationSuppressed,
+    Notifier,
+    WebhookPort,
+    destination_id,
+)
 from train_commute_companion.profile import load_config
 from train_commute_companion.providers.base import (
     ActiveDisruptions,
@@ -251,7 +263,7 @@ class _LoggingNotifier:
     async def send(self, event: AlertEvent) -> bool:
         try:
             ok = await self._inner.send(event)
-        except NotificationPaused:
+        except (NotificationPaused, NotificationSuppressed):
             raise
         except Exception:  # a raising shell is a failed attempt, retried by the watchdog
             log.exception("notifier failed")
@@ -393,9 +405,15 @@ class Runtime:
         webhooks: WebhookPort | None = None,
         primary_destination: Callable[[], str | None] | None = None,
         weather: WeatherProvider | None = None,
+        primary_destination_scope: Callable[[str], bool] = lambda destination: False,
+        park_primary_pin: Callable[[str], bool] = lambda destination: False,
     ) -> None:
         # Omitted only for legacy clients and replay rigs. Shells supply actual recipient IDs.
         self._primary_destination = primary_destination or (lambda: LEGACY_PRIMARY)
+        self._primary_destination_scope = primary_destination_scope
+        self._park_primary_pin = park_primary_pin
+        self._primary_in_flight: Obligation | None = None
+        self._in_flight_opted_out = False
         self._target_pins: dict[str, Obligation] = {}
         self._path = profile_path
         self._queue = CopyQueue(
@@ -406,7 +424,9 @@ class Runtime:
             lambda held: self._held_ledger if held else self._ledger,
             lambda copy: self._writer.copy_audience_written(copy),
         )
-        self._writer = StateWriter(store, self._queue, self._storage_note)
+        self._writer = StateWriter(
+            store, self._queue, self._storage_note, self._suppress_primary, self._latch_optout
+        )
         self._lookahead_at = lookahead_at
         self._reload = ReloadControl()
         self._same_station_warnings: set[tuple[str, str]] = set()
@@ -438,6 +458,12 @@ class Runtime:
         def read() -> PersistedState:
             return self._writer.st
 
+        def requires_adoption_receipt(destination: str) -> bool:
+            # Older state can imply a phone send, but cannot identify an auxiliary recipient.
+            return destination != self._primary_destination() or self._primary_destination_scope(
+                destination
+            )
+
         self._ledger = LiveLedger(
             read,
             read,
@@ -445,6 +471,8 @@ class Runtime:
             clock.now,
             lambda: self.available_channels,
             format_event=self._weather_event,
+            primary_enabled=self._primary_enabled,
+            requires_adoption_receipt=requires_adoption_receipt,
         )
         self._held_ledger = LiveLedger(
             read,
@@ -453,6 +481,8 @@ class Runtime:
             clock.now,
             lambda: self.available_channels,
             format_event=self._weather_event,
+            primary_enabled=self._primary_enabled,
+            requires_adoption_receipt=requires_adoption_receipt,
         )
         # an edit waiting for the station list retries it under the shared budget
         self._require_stations = require_stations
@@ -937,6 +967,83 @@ class Runtime:
 
     # --- the serialised writer: state, ledger and obligations in one save (rule 5, 22) ---
 
+    def _primary_is_scoped(self) -> bool:
+        destination = self._primary_destination()
+        return destination is not None and self._primary_destination_scope(destination)
+
+    def _primary_enabled(self, settings: AlertSettings) -> bool:
+        return settings.ntfy_enabled or not self._primary_is_scoped()
+
+    def _suppress_primary(self, st: PersistedState, old: PersistedState) -> PersistedState:
+        disabled = {
+            p.id
+            for p in (() if st.config is None else st.config.profiles)
+            if not p.alerts.ntfy_enabled
+        }
+        blocked = {
+            o.id
+            for o in (
+                *old.obligations,
+                *(o for ledger in old.lookahead.values() for o in ledger.pending),
+            )
+            if o.primary_suppressed
+        }
+        primary = self._primary_destination()
+        scoped = primary is not None and self._primary_destination_scope(primary)
+        st = suppress_disruption_destinations(
+            st, old, disabled, primary if scoped else None, self._primary_destination_scope
+        )
+        if not disabled and not blocked:
+            return st
+
+        def suppress(o: Obligation) -> Obligation:
+            targets = o.target_ids or frozenset()
+            if any(
+                not self._primary_destination_scope(d)
+                and (d == primary or self._park_primary_pin(d))
+                for d in targets
+            ):
+                # A Telegram pin is unaffected by the ntfy switch, including earlier saved flags.
+                return replace(o, primary_suppressed=False) if o.primary_suppressed else o
+            if o.primary_suppressed:
+                return o
+            opted_out = o.event.profile_id in disabled and (
+                any(self._primary_destination_scope(d) for d in targets)
+                or (scoped and binding_phase(o) is not BindingPhase.BOUND)
+            )
+            return replace(o, primary_suppressed=True) if opted_out or o.id in blocked else o
+
+        obligations = tuple(suppress(o) for o in st.obligations)
+        ledgers = dict(st.lookahead)
+        for key, ledger in st.lookahead.items():
+            pending = tuple(suppress(o) for o in ledger.pending)
+            if pending != ledger.pending:
+                ledgers[key] = replace(ledger, pending=pending)
+        if obligations == st.obligations and ledgers == st.lookahead:
+            return st
+        return replace(st, obligations=obligations, lookahead=ledgers)
+
+    def _latch_optout(self, st: PersistedState) -> None:
+        if self._primary_in_flight is not None:
+            profile = find_profile(st.config, self._primary_in_flight.event.profile_id)
+            if profile is not None and not self._primary_enabled(profile.alerts):
+                self._in_flight_opted_out = True
+
+    def primary_send_allowed(self, event: AlertEvent) -> bool:
+        """An app warning has no profile. A saved opt-out stays with the current send."""
+        if not event.profile_id:
+            return True
+        st = self._writer.st
+        profile = find_profile(st.config, event.profile_id)
+        if profile is None or not self._primary_enabled(profile.alerts):
+            return False
+        active = self._primary_in_flight
+        if active is None:
+            return True
+        return not self._in_flight_opted_out and any(
+            o.id == active.id and not o.primary_suppressed for o in st.obligations
+        )
+
     def _obligation(self, e: AlertEvent, s: OccurrenceState | None, now: datetime) -> Obligation:
         # a LEAVE_NOW has no fixed expiry: still_advised checks its current departure minus
         # buffer at send time (check_good), so a delayed escape train still catchable goes out
@@ -1110,6 +1217,7 @@ class Runtime:
             (o, target)
             for o, target in accepted
             if o.event.kind in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED)
+            or adoption_correction(o) is not None
         )
         self._record_delivery(set(), {}, (), True, accepted=accepted)
 
@@ -1191,6 +1299,7 @@ class Runtime:
         told: list[tuple[Obligation, bool]] = []  # finished advice/context, sent (else dropped)
         accepted: list[tuple[Obligation, str]] = []
         copies = False  # the webhook copies changed
+
         try:
             for o, held in self._writer.pending():
                 if self._waits(o):
@@ -1213,20 +1322,38 @@ class Runtime:
                     copies = False
                 # a fresh clock per message: a slow send must not leave the next one judged early
                 destination = self._primary_destination()
-                r, sent = await deliver(
-                    o,
-                    v,
-                    self._notifier,
-                    self._clock.now(),
-                    destination,
-                    audience_written=self._writer.audience_written(o),
-                )
+                now = self._clock.now()
+                r: Obligation | None
+                if (
+                    not o.primary_suppressed
+                    and any(self._park_primary_pin(d) for d in (o.target_ids or ()))
+                    and revalidate(o, v, now) is not DeliveryVerdict.DROP
+                ):
+                    r, sent = o, False
+                else:
+                    self._primary_in_flight = o
+                    self._in_flight_opted_out = False
+                    try:
+                        r, sent = await deliver(
+                            o,
+                            v,
+                            self._notifier,
+                            now,
+                            destination,
+                            audience_written=self._writer.audience_written(o),
+                        )
+                    finally:
+                        self._primary_in_flight = None
                 if sent and o.event.kind is EventKind.CANNOT_SEE_TRAIN and o.occurrence is not None:
                     self._memory.told_blind.add(okey(o.occurrence))  # Q5: told, so recovery is too
+                adoption_accepted = sent and adoption_correction(o) is not None
                 if (
                     sent
                     and destination is not None
-                    and o.event.kind in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED)
+                    and (
+                        o.event.kind in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED)
+                        or adoption_accepted
+                    )
                 ):
                     accepted.append((o, destination))
                 if r is not None:
@@ -1272,9 +1399,12 @@ class Runtime:
             st = _advice_told(st, told)
             st = disruptions_told(st, told)
             st = disruptions_received(st, accepted)
+            ledgers = lookahead_received(ledgers, accepted, track_adoptions=True)
             obligations = _survivors(st.obligations, finished, kept, marks)
             st = replace(st, obligations=obligations, lookahead=ledgers)
-            return self._receipt_followups(st, receipt_time) if accepted else st
+            if any(o.occurrence is not None for o, _ in accepted):
+                return self._receipt_followups(st, receipt_time)
+            return st
 
         st = self._archived(outcome(self._writer.st), self._clock.now())
         self._writer.commit_delivery(st, outcome, finished)
@@ -1300,7 +1430,9 @@ class Runtime:
         return replace(st, occurrences=occurrences, obligations=tuple(obligations))
 
     def _disruption_audience(self, settings: AlertSettings) -> frozenset[str]:
-        selected = channels_for(settings, EventKind.DISRUPTION)
+        selected = channels_for(
+            settings, EventKind.DISRUPTION, primary_enabled=self._primary_enabled(settings)
+        )
         primary = self._primary_destination()
         return frozenset(
             () if "primary" not in selected else (primary or PENDING_PRIMARY,)
@@ -2577,9 +2709,29 @@ class Runtime:
             run = await probe_direction(snapshot, p, d, works, start, probe)
         except _ObsoleteLookahead:
             return
-        st = None if run is None else apply_run(self._writer.st, self._queue, p, d, run)
-        if st is not None:
-            self._writer.commit(st, Change.LOOKAHEAD)
+        if run is not None:
+            self._apply_lookahead_run(p, d, run)
+
+    def _apply_lookahead_run(self, p: Profile, d: Direction, run: ProbedRun) -> None:
+        st = self._writer.st
+        waiting = self._writer.judged_state()
+        pending = waiting.lookahead.get(direction_key(p.id, d))
+        same_profile = find_profile(waiting.config, p.id)
+        applied = apply_run(
+            st,
+            self._queue,
+            p,
+            d,
+            run,
+            track_adoptions=True,
+            pending_receipts=(
+                pending.adoption_receipts
+                if pending is not None and same_profile is not None and same_route(p, same_profile)
+                else None
+            ),
+        )
+        if applied is not None:
+            self._writer.commit(applied, Change.LOOKAHEAD)
 
     async def _pace_lookahead_trip(self) -> None:
         # Background trips share one cadence across profiles. Live polls never wait on this lock.

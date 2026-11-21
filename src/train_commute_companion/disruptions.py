@@ -1,7 +1,7 @@
 """Route context from active incidents, without treating station overlap as train failure."""
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -228,6 +228,13 @@ def notice_events(state: OccurrenceState, ctx: Ctx) -> tuple[AlertEvent, ...]:
             )
             if notice.audience is None and notice.announced and not notice.notified:
                 targets |= {LEGACY_PRIMARY}
+        key = notice_key(notice, state.key.service_date.isoformat())
+        if targets is not None and not notice.active:
+            key += ":" + hashlib.sha256("|".join(sorted(targets)).encode()).hexdigest()[:16]
+        if targets and notice.suppressed_destinations:
+            targets -= notice.suppressed_destinations
+            if not targets:
+                continue
         item = notice.item
         if phase is NoticePhase.ACTIVE_PENDING:
             text = _active_text(item, ctx)
@@ -243,9 +250,6 @@ def notice_events(state: OccurrenceState, ctx: Ctx) -> tuple[AlertEvent, ...]:
             disruption_instance=notice.instance,
             disruption_targets=targets,
         )
-        key = notice_key(notice, state.key.service_date.isoformat())
-        if targets is not None and not notice.active:
-            key += ":" + hashlib.sha256("|".join(sorted(targets)).encode()).hexdigest()[:16]
         events.append(
             make_event(
                 ctx,
@@ -298,6 +302,7 @@ def update_disruptions(
                     revision=previous.revision + 1,
                     notified=True,
                     relevant=False,
+                    suppressed_destinations=frozenset(),
                 )
             continue
         if previous is None:
@@ -314,6 +319,7 @@ def update_disruptions(
                 relevant=True,
                 audience=audience,
                 announced=previous.active and previous.relevant and previous.announced,
+                suppressed_destinations=frozenset(),
             )
         else:
             notices[item.id] = replace(previous, item=item)
@@ -325,6 +331,7 @@ def update_disruptions(
                     active=False,
                     revision=previous.revision + 1,
                     notified=not previous.relevant or not previous.announced,
+                    suppressed_destinations=frozenset(),
                 )
     coverage = "unknown" if uncertain_scope else feed.coverage
     updated = replace(
@@ -375,10 +382,49 @@ def disruptions_told(
     return replace(state, occurrences=occurrences)
 
 
+def suppress_disruption_destinations(
+    state: PersistedState,
+    previous: PersistedState,
+    disabled_profiles: set[str],
+    destination: str | None,
+    primary_scope: Callable[[str], bool],
+) -> PersistedState:
+    """Keep an opt-out with its source revision after an outbox obligation is gone."""
+    changed = {}
+    for key, occurrence in state.occurrences.items():
+        old = previous.occurrences.get(key)
+        disabled = occurrence.key.profile_id in disabled_profiles
+        notices = {}
+        for ident, notice in occurrence.disruptions.items():
+            targets = notice.suppressed_destinations
+            if disabled:
+                pinned = (notice.audience or frozenset()) | notice.receipts.keys()
+                targets |= {d for d in pinned if primary_scope(d)}
+                if destination is not None:
+                    targets |= {destination}
+            prior = None if old is None else old.disruptions.get(ident)
+            if (
+                prior is not None
+                and prior.instance == notice.instance
+                and prior.revision == notice.revision
+            ):
+                targets |= prior.suppressed_destinations
+            if targets != notice.suppressed_destinations:
+                notices[ident] = replace(notice, suppressed_destinations=targets)
+        if notices:
+            changed[key] = replace(occurrence, disruptions={**occurrence.disruptions, **notices})
+    return replace(state, occurrences={**state.occurrences, **changed}) if changed else state
+
+
 def destination_allowed(notice: DisruptionNotice, event: AlertEvent, destination: str) -> bool:
     """Source truth is shared; acceptance and clearance eligibility belong to one recipient."""
     facts = alert_facts(event)
     if facts.disruption_instance != notice.instance:
+        return False
+    if (
+        facts.disruption_revision == notice.revision
+        and destination in notice.suppressed_destinations
+    ):
         return False
     targets = facts.disruption_targets
     if targets is not None and destination not in targets:

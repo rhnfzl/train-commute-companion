@@ -86,6 +86,18 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
     path.write_text(fixture.read_text())
     store = JsonFileStore(path)
     state = store.load()
+
+    def obligation_defaults(value):
+        if isinstance(value, dict):
+            if {"fact_key", "event", "target_ids"} <= value.keys():
+                value["primary_suppressed"] = False
+            for child in value.values():
+                obligation_defaults(child)
+        elif isinstance(value, list):
+            for child in value:
+                obligation_defaults(child)
+
+    obligation_defaults(raw["state"])
     for occurrence in raw["state"]["occurrences"].values():
         occurrence["skipped_direction_state"] = None
         occurrence["moved_at"] = None  # Q12 defaults for an older store
@@ -132,6 +144,7 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
                 "timetable_horizon_count": 7,
             }
             profile["alerts"] |= {"live_today": True, "telegram_status_pin": True}
+            profile["alerts"]["ntfy_enabled"] = True
             if profile["location"] is not None:  # Q12 defaults
                 profile["location"] |= {"wifi": {}, "activity_entity": None}
                 profile["location"] |= {  # 0.3.0 other boarding station defaults
@@ -139,6 +152,8 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
                     "other_station_dwell_min": 0,
                     "ask_to_remember_station": True,
                 }
+    for ledger in raw["state"]["lookahead"].values():
+        ledger["adoption_receipts"] = {}
     assert encode(state) == raw["state"]
     store.save(state)
     assert JsonFileStore(path).load() == state

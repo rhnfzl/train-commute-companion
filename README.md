@@ -48,9 +48,10 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
 | --- | --- | --- |
 | Home Assistant (HACS) | Alerts on your phone through the companion app, sensors and buttons | [docs/home-assistant.md](docs/home-assistant.md) |
 | Docker | Alerts and guided travel plans in a private Telegram chat (amd64 and arm64) | [docs/docker.md](docs/docker.md) |
+| ntfy | One-way phone push without Home Assistant or Telegram; your own private topic and access token | [docs/ntfy.md](docs/ntfy.md) |
 | Household | A separate Docker companion and private bot for each traveller | [docs/household.md](docs/household.md) |
 | Webhooks | Each alert as signed JSON to your own URL, from Docker or Home Assistant | [docs/webhooks.md](docs/webhooks.md) |
-| Email | Optional encrypted SMTP copies alongside Telegram in Docker | [docs/email.md](docs/email.md) |
+| Email | Optional encrypted SMTP copies alongside ntfy or Telegram in Docker | [docs/email.md](docs/email.md) |
 | Today | Private journey and service status that refreshes in your browser or opens from your home screen | [docs/docker.md](docs/docker.md#today-web-status) |
 | MCP | Journey status and optional plan management for local or private-network agents | [docs/mcp.md](docs/mcp.md) |
 

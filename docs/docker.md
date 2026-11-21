@@ -1,20 +1,27 @@
 # Run with Docker
 
-The Docker app follows your usual NS train journey and sends alerts to a private Telegram chat. Alerts that matter ring; quiet ones arrive without sound (Telegram has no time-sensitive or critical tier). Buttons on the alerts and a few commands let you pick a train, say you are leaving, or skip a day.
+The Docker app follows your usual NS train journey and sends phone alerts through ntfy or Telegram.
+ntfy needs no bot setup. Telegram adds buttons and commands to pick a train, say you are leaving, or skip a day.
+Loud and quiet delivery requests depend on your phone settings. Neither transport provides guaranteed critical alerts.
 
 Data: NS.
 
 [Commute weather](weather.md) uses keyless station forecasts. Set the optional `KNMI_API_KEY` in `.env` for official warnings.
 
-For multiple travellers, use the [separate household companions](household.md) recipe. Each companion has its own bot, location endpoint and stored data.
+For multiple travellers, use the [separate household companions](household.md) recipe.
+Each companion needs its own private phone destination, location endpoint, and stored data.
 
 ## What you need
 
 - Docker with Compose. The image runs on amd64 and arm64, so a Raspberry Pi with a 64-bit OS works too.
 - Your own NS API key. None is bundled. [Get an NS API key](ns-api-key.md) shows how.
-- A Telegram bot token. Create a bot with BotFather and copy the token.
+- Your own [ntfy topic and access token](ntfy.md), or a Telegram bot token from BotFather.
 
 ## First run
+
+For phone alerts without Telegram or Home Assistant, follow [ntfy phone push](ntfy.md) after downloading the files below.
+With ntfy configured, leave `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` blank. It needs no Telegram setup link.
+The steps below describe Telegram setup.
 
 You need no clone and no build. Download the compose file, settings template and example profile:
 
@@ -148,11 +155,15 @@ Everything comes from the environment (`.env`):
 | Variable | Meaning |
 | --- | --- |
 | `NS_API_KEY` | required, the primary key of the NS-App product; see [NS API key](ns-api-key.md) |
-| `TELEGRAM_BOT_TOKEN` | the bot token |
+| `TELEGRAM_BOT_TOKEN` | the bot token; optional when ntfy is configured |
 | `TELEGRAM_CHAT_ID` | optional manual override; blank uses the saved private claim or prints a one-time setup link and QR |
 | `OWNTRACKS_SECRET` | optional, 16+ printable ASCII characters without spaces; turns on the OwnTracks endpoint |
 | `TCC_HEALTH_TOKEN` | optional override, 16+ printable ASCII characters without spaces; otherwise generated and saved in `/data/health-token`; grants full `/health` and Today access |
 | `TCC_LOOKAHEAD_AT` | when the planned-works look-ahead runs, `HH:MM`, default `06:00` |
+| `TCC_NTFY_TOPIC` | optional random private topic, 32-64 letters, digits, `_` or `-`; requires your access token |
+| `TCC_NTFY_TOKEN` | your ntfy user access token; required with the topic |
+| `TCC_NTFY_SERVER` | optional HTTPS server root, default `https://ntfy.sh`; no path, credentials, query or fragment |
+| `TCC_NTFY_ENABLED` | `true` by default when configured; `false` disables ntfy while retaining valid settings; another phone transport is required |
 | `TCC_PROFILES` | profile file path inside the container, default `/config/profiles.yaml` |
 | `TCC_STATE_DIR` | writable persistent state directory, default `/data`; also holds the generated health token |
 | `TCC_WEBHOOK_URLS` | optional; webhook URLs separated by spaces or commas, for example `http://localhost:8644/webhooks/commute` |
@@ -264,9 +275,9 @@ Add [holiday pause ranges](holiday-pauses.md) to the shared profile file to susp
 
 ## Email copies
 
-The Docker app can send native email copies alongside Telegram through certificate-verified SMTP SSL or STARTTLS. Configure `SMTP_HOST`, `SMTP_SECURITY`, `SMTP_FROM`, and `SMTP_TO`; add `SMTP_PORT`, `SMTP_USERNAME`, and `SMTP_PASSWORD` when required. [Email copies](email.md) explains setup, privacy, retries, and the separate email test command.
+The Docker app can send native email copies alongside ntfy or Telegram through certificate-verified SMTP SSL or STARTTLS. Configure `SMTP_HOST`, `SMTP_SECURITY`, `SMTP_FROM`, and `SMTP_TO`; add `SMTP_PORT`, `SMTP_USERNAME`, and `SMTP_PASSWORD` when required. [Email copies](email.md) explains setup, privacy, retries, and the separate email test command.
 
-Individual notification categories can use email only. Telegram remains required for setup and phone delivery confirmation.
+Individual notification categories can use email only. Confirm phone delivery through ntfy's local test or Telegram's `/test`.
 
 ### Follow a recovery journey
 

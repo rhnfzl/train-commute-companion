@@ -2,6 +2,10 @@
 
 Each traveller gets a separate companion, private Telegram bot and stored journey data. Their commands and location fixes reach only their companion.
 
+For one-way alerts without bots, use a separate [ntfy destination](ntfy.md) for each companion instead.
+Keep topics, access tokens, health tokens, and data volumes separate. Confirm each destination through its own local delivery test.
+The recipe below uses Telegram for commands and answers.
+
 This deployment uses the existing single-traveller app. It does not add shared-runtime accounts or a shared household interface. Keep `traveller: me`, or omit it, in each private profile file.
 
 The names `alice` and `bob` below are example service labels. They do not identify actual people.

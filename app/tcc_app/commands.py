@@ -294,7 +294,7 @@ def warning_lines(view: RuntimeView, confirmed: bool) -> list[str]:
         *_warnings(view),
         *(m.text for m in view.moved),
         *_check_lines(view),
-        *([] if confirmed else ["Delivery not confirmed yet: send /test."]),
+        *([] if confirmed else ["Delivery not confirmed yet. Complete your phone delivery test."]),
     ]
 
 
@@ -340,7 +340,7 @@ def render_status(view: RuntimeView, confirmed: bool, *, for_pin: bool = False) 
     # State storage sorts mapping keys, so its order can change across a restart.
     lines += sorted(works) + sorted(checks) if for_pin else works + checks
     if not confirmed:
-        lines.append("Delivery not confirmed yet: send /test.")
+        lines.append("Delivery not confirmed yet. Complete your phone delivery test.")
     if not pending:
         lines.append("No journey is being followed now.")
     lines.append("Data: NS")
