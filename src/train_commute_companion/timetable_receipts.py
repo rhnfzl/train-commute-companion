@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import date
 
+from train_commute_companion.disruptions import LEGACY_PRIMARY
 from train_commute_companion.lookahead_probe import adopt_key, bundle_names, cancel_key, day_key
 from train_commute_companion.model import Obligation, direction_key, split_direction_key
 from train_commute_companion.revisions import find_profile
@@ -130,9 +131,16 @@ def restore_adoptions(st: PersistedState, today: date, primary: str | None) -> P
                 (ids[key],) = owners
             owner = ids.get(key)
             if key not in receipts and (marked or owner is not None):
-                receipts[key] = frozenset(
-                    {primary} if primary is not None and owner not in pending else ()
-                )
+                pins = [o.target_ids for o in queued if o.id == owner and o.target_ids is not None]
+                receipts[key] = frozenset()
+                # Current phone confirmation cannot establish an older adoption's recipient.
+                if (
+                    primary is not None
+                    and owner not in pending
+                    and (primary == LEGACY_PRIMARY or bool(pins))
+                    and all(primary in targets for targets in pins)
+                ):
+                    receipts[key] = frozenset({primary})
             for c in st.webhook_copies:
                 if (
                     c.obligation.id == owner

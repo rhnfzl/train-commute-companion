@@ -1064,23 +1064,44 @@ async def test_late_adoption_acceptance_does_not_prove_recreated_profile(tmp_pat
     assert not any("ignore the earlier change" in message for message in messages)
 
 
-@pytest.mark.parametrize("continuity", ["same", "replacement", "unknown"])
+@pytest.mark.parametrize(
+    "continuity", ["same", "same_pinned", "replacement", "reconfirmed", "repinned", "unknown"]
+)
 async def test_legacy_telegram_correction_requires_saved_continuity(tmp_path, tg, continuity):
     clock = TickClock(NOW)
-    app = make_app(tmp_path, tg, clock)
+    pinned = continuity in ("same_pinned", "repinned")
+    if pinned:
+        tg.other = lambda _: httpx.Response(500)
+    app = make_app(
+        tmp_path,
+        tg,
+        clock,
+        webhook_urls=("https://owed.example.test/hook",) if pinned else (),
+        webhook_secret="test-secret" if pinned else "",
+    )
     app.settings.profiles.write_text(YAML)
     await app.rt.start()
     history, old = adoption(app.rt)
     await seam.deliver(app.rt)
+    await app.rt.webhooks_idle()
     assert old.event in app.rt.events_log
+    if pinned:
+        (copy,) = seam.store(app.rt).load().webhook_copies
+        assert copy.obligation.id == old.id
+        assert any(x.startswith("telegram:") for x in copy.obligation.target_ids)
     legacy_adoption_file(app)
     if continuity != "unknown":
+        confirmed_chat = (
+            STRANGER if continuity in ("reconfirmed", "repinned") else app.settings.chat_id
+        )
         save_state(
             tmp_path / "telegram.json",
-            ShellState(bot_id="123", confirmed_for=f"123:{app.settings.chat_id}"),
+            ShellState(bot_id="123", confirmed_for=f"123:{confirmed_chat}"),
         )
     settings = (
-        replace(app.settings, chat_id=STRANGER) if continuity == "replacement" else app.settings
+        replace(app.settings, chat_id=STRANGER)
+        if continuity in ("replacement", "reconfirmed", "repinned")
+        else app.settings
     )
     clock.jump(25)
     resumed = build(settings, clock=clock, provider=seam.provider(app.rt), client=tg.client())
@@ -1089,7 +1110,7 @@ async def test_legacy_telegram_correction_requires_saved_continuity(tmp_path, tg
     await seam.deliver(resumed.rt)
     corrections = [x for x in tg.sent if "ignore the earlier change" in x["text"]]
     assert [x["chat_id"] for x in corrections] == (
-        [app.settings.chat_id] if continuity == "same" else []
+        [app.settings.chat_id] if continuity == "same_pinned" else []
     )
 
 
