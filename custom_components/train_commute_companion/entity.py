@@ -6,7 +6,7 @@ from enum import StrEnum
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from train_commute_companion.health import FAILED_POLLS
@@ -14,8 +14,9 @@ from train_commute_companion.messages import ATTRIBUTION
 from train_commute_companion.model import Direction
 from train_commute_companion.view import OccurrenceView, RuntimeView
 
-from .const import DOMAIN
+from .const import CONF_PROFILES_PATH, DOMAIN
 from .coordinator import TccCoordinator
+from .profile_subentries import excluded_profile_ids, profile_subentries
 from .reconciliation import ViewPhase, view_phase
 
 
@@ -101,11 +102,14 @@ def health_state(view: RuntimeView, profile_id: str, *, notifications_paused: bo
 def sync_entities(
     coordinator: TccCoordinator,
     platform: str,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
     wanted: Callable[[RuntimeView], dict[str, Callable[[], TccEntity]]],
 ) -> Callable[[], None]:
     """Adds entities whose unique ID is new and removes this entry's no longer wanted ones."""
     entry = coordinator.config_entry
+    path = entry.options.get(
+        CONF_PROFILES_PATH, coordinator.hass.config.path(DOMAIN, "profiles.yaml")
+    )
     states: dict[str, EntityPhase] = {}
 
     @callback
@@ -115,9 +119,23 @@ def sync_entities(
         if new := {
             uid: make for uid, make in want.items() if states.get(uid) is not EntityPhase.PRESENT
         }:
-            states.update(dict.fromkeys(new, EntityPhase.PENDING))
-            async_add_entities([make() for make in new.values()])
-            states.update(dict.fromkeys(new, EntityPhase.PRESENT))
+            groups: dict[str | None, list[tuple[str, TccEntity]]] = {}
+            subentries = profile_subentries(entry)
+            excluded = excluded_profile_ids(entry, path)
+            for uid, make in new.items():
+                entity = make()
+                if entity.profile_id in excluded:
+                    continue
+                subentry = subentries.get(entity.profile_id)
+                groups.setdefault(subentry.subentry_id if subentry else None, []).append(
+                    (uid, entity)
+                )
+                states[uid] = EntityPhase.PENDING
+            for subentry_id, entities in groups.items():
+                async_add_entities(
+                    [entity for _, entity in entities], config_subentry_id=subentry_id
+                )
+                states.update({uid: EntityPhase.PRESENT for uid, _ in entities})
         # a view read before the runtime has a config would otherwise delete every entity
         if view_phase(view) is not ViewPhase.READY:
             return

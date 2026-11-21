@@ -5,7 +5,7 @@ from collections.abc import Callable
 from homeassistant.components.button import ButtonEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from train_commute_companion.calendar import TZ
 from train_commute_companion.model import Direction, DirectionState, present
@@ -89,7 +89,7 @@ def wanted(
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: TccConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant, entry: TccConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
     data = entry.runtime_data
     coordinator = data.coordinator

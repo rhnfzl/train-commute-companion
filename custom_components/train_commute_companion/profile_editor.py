@@ -65,8 +65,11 @@ def validate_text(
     available_channels: frozenset[NotificationChannel] | None = None,
     *,
     profile_index: int | None = None,
+    allow_empty: bool = False,
 ) -> Config:
-    config, errors = load_config(text, known, None, today, available_channels=available_channels)
+    config, errors = load_config(
+        text, known, None, today, available_channels=available_channels, allow_empty=allow_empty
+    )
     if config is None or errors:
         paths = [error.path.split(".") for error in errors]
         override_days: frozenset[tuple[str, str]] = frozenset()
@@ -88,7 +91,13 @@ def validate_text(
 
 
 def read_document(
-    path: Path, roots: tuple[Path, ...], known: frozenset[str], today: date, *, create: bool = False
+    path: Path,
+    roots: tuple[Path, ...],
+    known: frozenset[str],
+    today: date,
+    *,
+    create: bool = False,
+    allow_empty: bool = False,
 ) -> ProfileDocument:
     resolved = _allowed(path, roots)
     try:
@@ -103,7 +112,7 @@ def read_document(
         raise EditorError("file_changed")
     try:
         text = content.decode("utf-8-sig")
-        validate_text(text, known, today)
+        validate_text(text, known, today, allow_empty=allow_empty)
         data = yaml.safe_load(text)
     except (UnicodeError, yaml.YAMLError):
         raise EditorError("invalid_profile") from None

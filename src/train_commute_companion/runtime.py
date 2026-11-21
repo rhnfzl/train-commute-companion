@@ -515,6 +515,7 @@ class Runtime:
         legacy_adoption_destination: Callable[[], str | None] = lambda: LEGACY_PRIMARY,
         profile_setup: bool = False,
         send_partner_eta: Callable[[str, str, Callable[[], bool]], Awaitable[None]] | None = None,
+        excluded_profiles: Callable[[], frozenset[str]] = frozenset,
     ) -> None:
         # Omitted only for legacy clients and replay rigs. Shells supply actual recipient IDs.
         self._primary_destination = primary_destination or (lambda: LEGACY_PRIMARY)
@@ -531,6 +532,7 @@ class Runtime:
         self._path = profile_path
         self._profile_setup = profile_setup
         self._send_partner_eta = send_partner_eta
+        self._excluded_profiles = excluded_profiles
         self._queue = CopyQueue(
             webhooks,
             clock.now,
@@ -755,6 +757,8 @@ class Runtime:
         return profile_for(self._writer.st, s)
 
     def _ctx(self, s: OccurrenceState, now: datetime) -> Ctx | None:
+        if s.key.profile_id in self._excluded_profiles():
+            return None
         p = self._profile_for(s)
         if p is None or p.home_station == p.work_station:
             return None
@@ -1239,7 +1243,10 @@ class Runtime:
         if config is None or self._writer.waiting:
             return
         for profile in config.profiles:
-            if profile.home_station == profile.work_station:
+            if (
+                profile.home_station == profile.work_station
+                or profile.id in self._excluded_profiles()
+            ):
                 continue
             start = self._clock.now()
             decision = works_digest.digest_decision(
@@ -1256,9 +1263,15 @@ class Runtime:
             deadline = to_utc(start) + timedelta(seconds=works_digest.TIME_LIMIT_S)
 
             async def fetch(
-                queries: Sequence[Query], bound: datetime = deadline
+                queries: Sequence[Query], bound: datetime = deadline, pid: str = profile.id
             ) -> tuple[ProviderAnswer, ...] | PollFailure:
-                return await self._gate.all_trips(queries, False, None, deadline=bound)
+                async def before_trip() -> None:
+                    if pid in self._excluded_profiles():
+                        raise _ObsoleteLookahead
+
+                return await self._gate.all_trips(
+                    queries, False, None, deadline=bound, before_trip=before_trip
+                )
 
             try:
                 rows = await works_digest.check_week(
@@ -1268,6 +1281,7 @@ class Runtime:
                 now = self._clock.now()
                 if (
                     current is None
+                    or profile.id in self._excluded_profiles()
                     or works_digest.profile_token(current) != token
                     or works_digest.due_week(
                         current, now, self._writer.st.works_digest_weeks.get(profile.id)
@@ -1285,6 +1299,8 @@ class Runtime:
                 )
                 if self._writer.commit_strict(candidate):
                     await self._deliver()
+            except _ObsoleteLookahead:
+                continue
             except Exception:
                 log.exception("optional weekly planned-works digest failed")
 
@@ -1885,9 +1901,13 @@ class Runtime:
     def _waits(self, o: Obligation) -> bool:
         """Not judged yet: written before this start (judged once the reconcile ran, rule 11),
         or judged on observations while its occurrence has no healthy answer (rule 5b)."""
-        if self._writer.correction_waits(o) or (
-            not self._routing_ready_in(self._writer.st, o)
-            and (o.event.kind is not EventKind.DAILY_BRIEF or self._ledger.fact_holds(o))
+        if (
+            o.event.profile_id in self._excluded_profiles()
+            or self._writer.correction_waits(o)
+            or (
+                not self._routing_ready_in(self._writer.st, o)
+                and (o.event.kind is not EventKind.DAILY_BRIEF or self._ledger.fact_holds(o))
+            )
         ):
             return True
         if self._lifecycle.holds(o.event.created_at):
@@ -2273,7 +2293,11 @@ class Runtime:
         occs = dict(st.occurrences)
         active = Config(
             cfg.revision if cfg else 0,
-            tuple(p for p in (cfg.profiles if cfg else ()) if p.home_station != p.work_station),
+            tuple(
+                p
+                for p in (cfg.profiles if cfg else ())
+                if p.home_station != p.work_station and p.id not in self._excluded_profiles()
+            ),
         )
         snaps = dict(st.config_snapshots)
         for sch in schedules_active(active, {}, now, first):
@@ -2337,6 +2361,7 @@ class Runtime:
             ctx = self._ctx(state, self.now())
             if (
                 profile is None
+                or pid in self._excluded_profiles()
                 or not profile.alerts.partner_eta
                 or not (partner := profile.alerts.partner_phone)
                 or key in st.partner_eta_days
@@ -2382,6 +2407,7 @@ class Runtime:
                 if (
                     p is None
                     or s is None
+                    or profile.id in self._excluded_profiles()
                     or not p.alerts.partner_eta
                     or p.alerts.partner_phone != partner
                     or not same_route(profile, p)
@@ -2764,7 +2790,8 @@ class Runtime:
         slots = [
             slot
             for slot in wake_slots(st, now)
-            if "primary" in channels_for(slot.context.profile.alerts, EventKind.WAKE_ALARM)
+            if slot.context.profile.id not in self._excluded_profiles()
+            and "primary" in channels_for(slot.context.profile.alerts, EventKind.WAKE_ALARM)
         ]
         keys = {slot.sample_key for slot in slots}
         self._wake_attempts = {k: v for k, v in self._wake_attempts.items() if k in keys}
@@ -2813,6 +2840,7 @@ class Runtime:
         now = self._clock.now()
         return (
             self._wake_destination() == recipient
+            and key.profile_id not in self._excluded_profiles()
             and not self._writer.waiting
             and not self._ledger.in_quiet_hours(key.profile_id, now)
             and any(
@@ -3654,6 +3682,7 @@ class Runtime:
     async def reload(self, *, just_saved: str | None = None) -> Refused | None:
         request = self._reload.begin()
         now = self._clock.now()
+        self._drop_excluded_profiles(now)
         applied: Config | None = None
         try:
             if just_saved is None:
@@ -3720,6 +3749,11 @@ class Runtime:
                 if errors:
                     self._refuse(errors, now)
                 if cfg is not None and cfg is not old:
+                    excluded = self._excluded_profiles()
+                    if excluded:
+                        cfg = replace(
+                            cfg, profiles=tuple(p for p in cfg.profiles if p.id not in excluded)
+                        )
                     self._apply_config(cfg, now)
                     applied = cfg
         self._apply({})
@@ -3769,6 +3803,32 @@ class Runtime:
         self.known_stations = stations
         if self._on_stations is not None:
             self._on_stations(stations)
+
+    def _drop_excluded_profiles(self, now: datetime) -> None:
+        excluded = self._excluded_profiles()
+        st = self._writer.st
+        if not excluded or st.config is None:
+            return
+        active = tuple(p for p in st.config.profiles if p.id not in excluded)
+        occurrences = {}
+        for key, occurrence in st.occurrences.items():
+            if occurrence.key.profile_id in excluded:
+                self._memory.forget(key)
+                self._navigation_answers.pop(key, None)
+            else:
+                occurrences[key] = occurrence
+        for copy_id, copy in tuple(self._queue.copies.items()):
+            if copy.obligation.event.profile_id in excluded:
+                self._queue.drop(copy_id)
+        self._writer.propose(
+            replace(
+                st,
+                occurrences=occurrences,
+                obligations=tuple(o for o in st.obligations if o.event.profile_id not in excluded),
+            )
+        )
+        if active != st.config.profiles:
+            self._apply_config(Config(st.config.revision + 1, active), now)
 
     def _apply_config(self, new: Config, now: datetime) -> None:
         self._recovery.invalidate()
@@ -3869,7 +3929,8 @@ class Runtime:
     # --- look-ahead (7.10, rule 21) ---
 
     async def lookahead_once(self, *, since: datetime | None = None) -> None:
-        due = directions_due(self._writer.st, since)
+        excluded = self._excluded_profiles()
+        due = [(pid, d) for pid, d in directions_due(self._writer.st, since) if pid not in excluded]
         if not due:
             return
         works = await self._fetch_works()
@@ -4033,7 +4094,7 @@ class Runtime:
         start = self._clock.now()
         starting_state = self._writer.st
         config = starting_state.config
-        if config is None:
+        if config is None or p.id in self._excluded_profiles():
             return None
 
         async def before_trip() -> None:
@@ -4042,6 +4103,7 @@ class Runtime:
             current = self._writer.st
             if (
                 current.config is None
+                or p.id in self._excluded_profiles()
                 or current.config.revision != config.revision
                 or current.travel_revision != starting_state.travel_revision
             ):
@@ -4085,6 +4147,8 @@ class Runtime:
                 evening=evening,
                 snapshot=snapshot,
             )
+            if p.id in self._excluded_profiles():
+                return None
             return replace(run, probe_finished=False) if partial and run is not None else run
         except _ObsoleteLookahead:
             return None
@@ -4208,7 +4272,12 @@ class Runtime:
         config = st.config
         now = self._clock.now()
         day = now.astimezone(TZ).date()
-        batch = daily_brief.due(st, now, self._lookahead_at)
+        excluded = self._excluded_profiles()
+        batch = [
+            due
+            for due in daily_brief.due(st, now, self._lookahead_at)
+            if due.profile.id not in excluded
+        ]
         if config is None or not batch:
             return
         works = await self._fetch_works()
