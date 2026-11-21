@@ -124,6 +124,8 @@
           "edit_weekday_times": "Set different departure times by weekday",
           "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
           "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
+          "delay_min": "First delay alert in minutes",
+          "delay_step_min": "Delay change for another update in minutes",
           "edit_day_overrides": "Set a different mode, window, train choice or stay for some days",
           "outbound_other_stations": "Other outbound boarding stations",
           "return_other_stations": "Other return boarding stations",
@@ -132,6 +134,8 @@
           "ask_to_remember_station": "Offer to remember a new boarding station"
         },
         "data_description": {
+          "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
+          "delay_step_min": "Default 3. Whole minutes from 1 to 1440, measured from the last stated delay in either direction. Recovery to 1 minute or less still counts.",
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
           "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently.",
           "outbound_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",
@@ -338,6 +342,8 @@
           "edit_weekday_times": "Set different departure times by weekday",
           "compensation_reminder": "Remind me to check NS compensation after a confirmed delay",
           "quiet_repeat_misses": "Silent missed-train message after the first one of the day",
+          "delay_min": "First delay alert in minutes",
+          "delay_step_min": "Delay change for another update in minutes",
           "edit_day_overrides": "Set a different mode, window, train choice or stay for some days",
           "outbound_other_stations": "Other outbound boarding stations",
           "return_other_stations": "Other return boarding stations",
@@ -346,6 +352,8 @@
           "ask_to_remember_station": "Offer to remember a new boarding station"
         },
         "data_description": {
+          "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
+          "delay_step_min": "Default 3. Whole minutes from 1 to 1440, measured from the last stated delay in either direction. Recovery to 1 minute or less still counts.",
           "compensation_reminder": "Optional saved-plan comparison after you explicitly confirm arrival. Uses routine notification routing and category controls. This does not determine claim eligibility.",
           "quiet_repeat_misses": "When you stay at home or work past several trains, only the first \"you missed\" makes a sound. The later ones still arrive, silently.",
           "outbound_other_stations": "TCC follows a train from these stations by itself when your phone is there and no train is followed yet.",

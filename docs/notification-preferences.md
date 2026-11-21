@@ -2,6 +2,34 @@
 
 A traveller can choose notification channels or disable alert categories for one profile. This reduces phone interruptions while keeping selected updates in email or webhooks.
 
+## Delay thresholds
+
+Choose when a train counts as delayed and how much its delay must change before another update:
+
+```yaml
+alerts:
+  delay_min: 10
+  delay_step_min: 5
+```
+
+Both settings default to 3 minutes. Each must be a positive whole number from 1 to 1440 minutes, matching the daily minute controls. Fractions, quoted numbers, booleans and null are rejected in YAML. The Home Assistant profile details form provides both controls.
+
+`delay_min` applies to departure and arrival classification for that profile. At 10, a 9-minute delay sends no first delay alert. A 10-minute delay does. `delay_step_min` measures changes from the last stated delay in either direction. With a step of 5, a stated 10-minute delay updates at 15 minutes, but not at 14. Recovery to 1 minute or less still produces a recovery update.
+
+Before the active point, a first delay alert requires at least `max(delay_min, 5)` minutes. Updates and recovery for a delay already stated retain their normal rules.
+
+These settings do not suppress cancellations, cut-short journeys, broken or at-risk transfers, arrival-limit warnings, authentication failures or storage warnings. Other category and channel preferences still apply. Journey selection, catchability and transfer checks continue to use actual train times.
+
+Delivery checks the current thresholds before retrying held delay alerts or auxiliary copies. Raising a threshold can drop a pending delay update. Accepted messages cannot be recalled. Existing stored profiles without either setting retain the three-minute defaults after restart.
+
+Repeat updates below the first-alert threshold still use the repeat step. Held recovery updates also use the current step, except recovery to 1 minute or less.
+
+Older held alerts do not record whether they protect an arrival deadline. When a deadline is configured, these alerts retain protection. This can also retain an older routine delay alert below the new threshold. Newly created alerts record the distinction.
+
+Older pending recovery alerts also lack the previous delay. They remain eligible because the repeat step cannot be checked. Current alerts record that delay and use the current step.
+
+## Disable categories
+
 ```yaml
 alerts:
   disabled_categories: [crowding, routine]
@@ -42,7 +70,7 @@ With `quiet_repeat_misses: true`, only the first of these messages that day make
 
 ## Quiet early watch
 
-The usual train is locked as soon as the window opens, with no extra NS requests. Until the active point, only unusual news is sent: a cancellation, a broken change, a train cut short, a changed route, a platform change, no connection found, a restored train, and a delay of 5 min or more. A delay you already heard about keeps its usual updates, so a change or a recovery is still told, and it is not repeated at the active point. Delays under 5 min, crowd forecasts, a transfer at risk, unclear NS data, a train missing from NS data, earlier-train advice and the "on time per NS" check-in wait for the active point. "Cannot see your train" can only start there too. A usual train that is not in NS data when the window opens is told at once, and the next good train is followed instead.
+The usual train is locked as soon as the window opens, with no extra NS requests. Until the active point, only unusual news is sent: a cancellation, a broken change, a train cut short, a changed route, a platform change, no connection found, a restored train, and a delay of at least `max(delay_min, 5)` minutes. A delay you already heard about keeps its usual updates, so a change or a recovery is still told, and it is not repeated at the active point. Smaller first delays, crowd forecasts, a transfer at risk, unclear NS data, a train missing from NS data, earlier-train advice and the "on time per NS" check-in wait for the active point. "Cannot see your train" can only start there too. A usual train that is not in NS data when the window opens is told at once, and the next good train is followed instead.
 
 The active point is `active_lead_min` minutes before your first train, set per direction. The default is `buffer_min + 15`, when following used to start, so the check-in comes at the same time as before. It must be at least `buffer_min`. A value longer than the window's opening turns the quiet phase off. Messages from your location, such as a missed train at the station, are never held.
 

@@ -432,10 +432,19 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "channels",
             "compensation_reminder",
             "quiet_repeat_misses",
+            "delay_min",
+            "delay_step_min",
         ),
         "alerts",
     )
     d = AlertSettings()
+    delays = {}
+    for key in ("delay_min", "delay_step_min"):
+        value = raw.get(key, getattr(d, key))
+        if type(value) is not int or not 1 <= value <= 1440:
+            c.err(f"alerts.{key}", "must be a whole number of minutes from 1 to 1440")
+        else:
+            delays[key] = value
     compensation = raw.get("compensation_reminder", False)
     if not isinstance(compensation, bool):
         c.err("alerts.compensation_reminder", "must be true or false")
@@ -504,6 +513,8 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         channels,
         compensation,
         repeat,
+        delay_min=delays["delay_min"],
+        delay_step_min=delays["delay_step_min"],
     )
 
 

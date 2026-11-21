@@ -132,6 +132,36 @@ def test_quiet_repeat_misses_is_written_only_once_chosen(tmp_path):
         edit_profile(doc, "p1", {**VALUES, "quiet_repeat_misses": "yes"}, KNOWN, TODAY)
 
 
+def test_delay_controls_roundtrip_without_changing_another_profile(tmp_path):
+    doc = document(tmp_path)
+    original = copy.deepcopy(doc.data["profiles"][1])
+    text = edit_profile(doc, "p1", {**VALUES, "delay_min": 10.0, "delay_step_min": 5.0}, KNOWN, TODAY)
+    profiles, errors = parse_profiles(text, KNOWN)
+    assert not errors
+    assert (profiles[0].alerts.delay_min, profiles[0].alerts.delay_step_min) == (10, 5)
+    saved = yaml.safe_load(text)
+    assert type(saved["profiles"][0]["alerts"]["delay_min"]) is int
+    assert saved["profiles"][1] == original
+
+
+def test_unchanged_delay_defaults_keep_an_older_profile_shape(tmp_path):
+    doc = document(tmp_path)
+    before = yaml.safe_load(edit_profile(doc, "p1", VALUES, KNOWN, TODAY))
+    text = edit_profile(doc, "p1", {**VALUES, "delay_min": 3.0, "delay_step_min": 3.0}, KNOWN, TODAY)
+    assert yaml.safe_load(text) == before
+
+
+@pytest.mark.parametrize("field", ["delay_min", "delay_step_min"])
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "3", None, 1441])
+def test_invalid_delay_control_does_not_write(tmp_path, field, value):
+    doc = document(tmp_path)
+    with pytest.raises(EditorError) as error:
+        edit_profile(doc, "p1", {**VALUES, field: value}, KNOWN, TODAY)
+    assert f"alerts.{field}" in error.value.report
+    assert "1440" in error.value.report
+    assert doc.path.read_text() == PROFILE
+
+
 def test_channel_editor_preserves_aliased_settings_and_can_restore_defaults(tmp_path):
     data = yaml.safe_load(PROFILE)
     shared = {
