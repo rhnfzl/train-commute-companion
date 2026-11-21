@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Follow your regular NS commute and get alerts when a delay, cancellation or missed connection changes your plan.">
+  <title>Train Commute Companion</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="site-name" href="index.html">Train Commute Companion</a>
+    <nav aria-label="Main">
+      <a href="#how">How it works</a>
+      <a href="#setup">Setup</a>
+      <a href="https://github.com/rhnfzl/train-commute-companion">GitHub</a>
+    </nav>
+  </header>
+  <main>
+    <section class="hero" aria-labelledby="intro">
+      <div>
+        <h1 id="intro">Know when to leave for your usual train.</h1>
+        <p>Follow your regular NS commute and get an alert when delays, cancellations or a missed connection change your plan.</p>
+        <a class="button" href="#setup">Choose your setup</a>
+      </div>
+      <aside class="example" aria-labelledby="example-label">
+        <h2 id="example-label">Example alert</h2>
+        <p class="alert-title"><time datetime="08:12">08:12</time> train cancelled</p>
+        <p class="next-train">Next train <time datetime="08:25">08:25</time></p>
+        <p>Leave by <time datetime="08:15">08:15</time></p>
+      </aside>
+    </section>
+    <section class="detail" id="how" aria-labelledby="how-title">
+      <h2 id="how-title">How it works</h2>
+      <div class="columns">
+        <div>
+          <h3>Set your commute</h3>
+          <p>Choose your stations, travel days and departure times.</p>
+        </div>
+        <div>
+          <h3>Get a heads-up</h3>
+          <p>Get an alert when a change affects your journey.</p>
+        </div>
+        <div>
+          <h3>Check your options</h3>
+          <p>See the next train and when to leave, when NS has enough data.</p>
+        </div>
+      </div>
+    </section>
+    <section class="detail" id="setup" aria-labelledby="setup-title">
+      <h2 id="setup-title">Choose your setup</h2>
+      <div class="columns">
+        <div>
+          <h3>Home Assistant</h3>
+          <p>Use the Home Assistant Companion app for alerts and actions.</p>
+          <a href="https://github.com/rhnfzl/train-commute-companion/blob/main/docs/home-assistant.md">Home Assistant guide</a>
+        </div>
+        <div>
+          <h3>Docker and Telegram</h3>
+          <p>Run with Docker and get alerts in a private Telegram chat.</p>
+          <a href="https://github.com/rhnfzl/train-commute-companion/blob/main/docs/docker.md">Docker guide</a>
+        </div>
+        <div>
+          <h3>ntfy phone push</h3>
+          <p>Run with Docker and get one-way alerts through your own private ntfy topic.</p>
+          <a href="https://github.com/rhnfzl/train-commute-companion/blob/main/docs/ntfy.md">ntfy guide</a>
+        </div>
+      </div>
+    </section>
+    <section class="detail" aria-labelledby="compare-title">
+      <h2 id="compare-title">Which tool fits your trip?</h2>
+      <table aria-labelledby="compare-title">
+        <thead>
+          <tr>
+            <td></td>
+            <th scope="col">Journey planner</th>
+            <th scope="col">Train Commute Companion</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">What it does</th>
+            <td>Plans a trip and shows current travel advice.</td>
+            <td>Follows your regular commute and alerts you to changes.</td>
+          </tr>
+          <tr>
+            <th scope="row">When to use it</th>
+            <td>When you want to plan a trip.</td>
+            <td>When you want alerts for a journey you take often.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+  <footer>
+    <p>Uses NS data. Bring your own <a href="https://github.com/rhnfzl/train-commute-companion/blob/main/docs/ns-api-key.md">NS API key</a>.</p>
+    <a href="https://github.com/rhnfzl/train-commute-companion">Open source on GitHub</a>
+  </footer>
+</body>
+</html>
