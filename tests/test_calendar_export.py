@@ -121,6 +121,7 @@ async def test_subscription_includes_replacement_plan_and_omits_replaced_commute
         "alert_history",
         "quick_trip",
         "daily_brief",
+        "location_leave_now",
     ],
 )
 async def test_non_routing_settings_do_not_change_flexible_trip_defaults(tmp_path, field):
@@ -146,7 +147,13 @@ async def test_non_routing_settings_do_not_change_flexible_trip_defaults(tmp_pat
     )
     assert plan.profile.outbound.buffer_min == 22
     assert plan.profile.alerts.disabled_categories == frozenset({"routine"})
-    if field in {"commute_stats", "weekly_recap", "after_trip_note", "alert_history"}:
+    if field in {
+        "commute_stats",
+        "weekly_recap",
+        "after_trip_note",
+        "alert_history",
+        "location_leave_now",
+    }:
         assert not getattr(plan.profile.alerts, field)
     if field != "calendar_feed":
         assert not plan.profile.alerts.calendar_feed

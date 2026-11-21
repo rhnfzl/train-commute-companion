@@ -39,6 +39,7 @@ _GROUPS: dict[NotificationCategory, frozenset[EventKind]] = {
     "advice": frozenset(
         {
             EventKind.LEAVE_NOW,
+            EventKind.DEPARTURE_REMINDER,
             EventKind.EARLIER_TRAIN_WITHDRAWN,
             EventKind.NEXT_CONNECTION,
         }

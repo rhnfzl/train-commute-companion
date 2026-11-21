@@ -242,7 +242,14 @@ class LocationTracker:
                 )
                 ev = evidence(self._hass, profile.location, zone, self._since, None, inside)
                 event = LocationEvent(zone, "still", at, ev)
-                if not await self._send(pid, gen, event, profile.location, epoch):
+                if key.endswith("|leave_by"):
+                    source = profile.location
+                    accepted = await self._host.run(
+                        lambda rt: rt.confirm_departure_presence(pid, event, source, epoch)
+                    )
+                else:
+                    accepted = await self._send(pid, gen, event, profile.location, epoch)
+                if not accepted:
                     self._still_sent.get(pid, set()).discard(key)
             except RuntimeNotRunning:
                 _LOGGER.debug("location event dropped: the runtime is not running")

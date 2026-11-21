@@ -76,7 +76,23 @@ def effective_profile(
 
 
 def profile_for(st: PersistedState, s: OccurrenceState) -> Profile | None:
-    return effective_profile(st.config_snapshots, st.config, s)
+    p = effective_profile(st.config_snapshots, st.config, s)
+    return None if p is None else inherited_location(st, p)
+
+
+def inherited_location(st: PersistedState, p: Profile) -> Profile:
+    """An inherited source can revoke tracking and departure reminders for its travel plan."""
+    plan = st.travel_plans.get(p.id) if p.travel_plan else None
+    if plan is None or plan.inherits is None:
+        return p
+    source = find_profile(st.config, plan.inherits)
+    location = p.location if source is not None and p.location == source.location else None
+    reminder = p.alerts.location_leave_now and (
+        source is not None and source.alerts.location_leave_now
+    )
+    if location == p.location and reminder == p.alerts.location_leave_now:
+        return p
+    return replace(p, location=location, alerts=replace(p.alerts, location_leave_now=reminder))
 
 
 def routing_profile(st: PersistedState, pid: str, revision: int | None = None) -> Profile | None:
@@ -85,9 +101,9 @@ def routing_profile(st: PersistedState, pid: str, revision: int | None = None) -
         return regular
     stored = find_profile(st.config_snapshots.get(revision), pid) if revision is not None else None
     if stored is not None and stored.travel_plan:
-        return stored
+        return inherited_location(st, stored)
     plan = st.travel_plans.get(pid)
-    return plan.profile if plan is not None else None
+    return inherited_location(st, plan.profile) if plan is not None else None
 
 
 def commute_day_for(p: Profile, d: Direction, service_day: date) -> date:

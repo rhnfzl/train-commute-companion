@@ -43,6 +43,7 @@ def test_daily_brief_settings_keep_the_identity_of_saved_weekly_digests():
         "after_trip_note",
         "alert_history",
         "calendar_feed",
+        "location_leave_now",
     ):
         data["alerts"].pop(key)
     legacy = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
@@ -167,6 +168,7 @@ async def test_old_pending_digest_survives_upgrade_to_recurring_profiles(tmp_pat
     legacy.pop("brief")
     legacy["alerts"].pop("daily_brief")
     legacy["alerts"].pop("quick_trip")
+    legacy["alerts"].pop("location_leave_now")
     token = hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
     obligations = tuple(
         replace(o, digest_token=token) if o.id == queued.id else o for o in rig.rt.state.obligations

@@ -91,6 +91,7 @@ async def test_guided_profile_waits_for_phone_confirmation_before_writing(hass, 
         hass, flow, {**VALUES, "require_accessible": True, "disabled_categories": ["crowding"]}
     )
     assert shown(flow)["custom_timetable_horizon"] is True
+    assert shown(flow)["location_leave_now"] is True
     assert shown(flow)["timetable_horizon_unit"] == "calendar_days"
     assert shown(flow)["timetable_horizon_count"] == 7
     assert shown(flow)["daily_brief"] is True
@@ -867,6 +868,7 @@ async def test_options_profile_edit_preserves_advanced_settings(
     assert shown(flow)["ntfy_enabled"] is True
     assert shown(flow)["alert_history"] is bool(saved_history)
     assert shown(flow)["calendar_feed"] is True
+    assert shown(flow)["location_leave_now"] is True
     flow = await hass.config_entries.options.async_configure(
         flow["flow_id"],
         {
@@ -886,6 +888,7 @@ async def test_options_profile_edit_preserves_advanced_settings(
             "brief_at": "",
             "brief_evening_at": "21:00",
             "brief_only_if_something": False,
+            "location_leave_now": False,
         },
     )
     assert flow["type"] is FlowResultType.ABORT and flow["reason"] == "profile_saved"
@@ -905,6 +908,7 @@ async def test_options_profile_edit_preserves_advanced_settings(
         "ntfy_enabled": False,
         "alert_history": not saved_history,
         "calendar_feed": False,
+        "location_leave_now": False,
         **({"live_today": False} if not live_today else {}),
         **({"telegram_status_pin": False} if not telegram_status_pin else {}),
         "daily_brief": True,

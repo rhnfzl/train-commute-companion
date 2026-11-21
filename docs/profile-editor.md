@@ -59,7 +59,7 @@ The editor preserves advanced location settings, advice thresholds, extra dates,
 
 Each direction has **Check-in, minutes before your train** (`active_lead_min`). This ends quiet early watch and allows the existing check-in message.
 Leave it blank for the travel buffer plus 15 minutes. It must be a whole number, at least the direction's travel buffer.
-Clearing a saved value restores that default. No extra reminder is scheduled.
+Clearing a saved value restores that default.
 
 The travel buffer (`buffer_min`) remains the minutes from your door to the platform.
 Leave-by time uses the earlier of planned and NS-expected departure, minus that buffer.
@@ -71,6 +71,10 @@ Turn off **Show leave-by time** to hide leave-by text and the status sensor's ti
 **Suggest extra time for weather** controls `alerts.weather_allowance` and defaults to on.
 It adjusts leave-by text only when weather and leave-by text are enabled. See the [weather allowance table](weather.md#suggested-extra-time-before-departure).
 See [Notification preferences](notification-preferences.md).
+
+**Remind me to leave if I am still home or at work** controls `alerts.location_leave_now` and defaults to on.
+With location and leave-by enabled, it sends one silent alert per journey when a recent report places you at the departure end.
+It uses any cached weather allowance and keeps the followed train.
 
 **Automatically refresh Today** and **Pin journey status in Telegram** edit `alerts.live_today` and `alerts.telegram_status_pin`. Both default to on and apply when the profiles file runs in Docker.
 

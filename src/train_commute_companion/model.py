@@ -80,6 +80,7 @@ class EventKind(StrEnum):
     MISSED_FIRST_TRAIN = "missed_first_train"
     MISSED_TRANSFER = "missed_transfer"
     LEAVE_NOW = "leave_now"
+    DEPARTURE_REMINDER = "departure_reminder"
     PLATFORM_CHANGE = "platform_change"
     CUT_SHORT = "cut_short"
     ROUTE_CHANGED = "route_changed"
@@ -544,6 +545,7 @@ class AlertSettings:
     calendar_feed: bool = True
     quick_trip: bool = True
     daily_brief: bool = True
+    location_leave_now: bool = True
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]
