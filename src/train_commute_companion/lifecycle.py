@@ -38,6 +38,7 @@ from train_commute_companion.messages import (
     ON_TIME_MAX_MIN,
     crowd_text,
     data_unclear_text,
+    leave_by_text,
     status_text,
 )
 from train_commute_companion.model import (
@@ -1157,13 +1158,18 @@ def _relock(
     late_now = classify_leg(c.legs[0], c.legs[0].alight.code).dep_delay_min
     moved = how == "new_route" and usual is not None  # no usual route to move from
     route, crowd = (f", new route via {via}" if moved else ""), crowd_text(c.legs)
+    buffer = p.journey(d).buffer_min if p.alerts.leave_by else None
+    leave = (
+        leave_by_text(c.legs[0], buffer) if j == 0 and not s.travelling and not s.at_station else ""
+    )
     if cut.at_station:
         clause = f" Next: {status_text(c.legs, late_now)}."
     elif cut.leave_by:  # the crowd note stays last: the ledger strips and re-appends it there
-        leave = hhmm(_departure(c) - timedelta(minutes=p.journey(d).buffer_min))
-        clause = f" Next you can catch: {hhmm(_departure(c))}{route}. Leave by {leave}{crowd}."
+        clause = f" Next you can catch: {hhmm(_departure(c))}{route}"
+        clause += ("." + leave if leave else "") + crowd + "."
     else:
-        clause = f" Next good connection: {hhmm(_departure(c))}{route}{crowd}."
+        clause = f" Next good connection: {hhmm(_departure(c))}{route}"
+        clause += ("." + leave if leave else "") + crowd + "."
     written = _write(s, _journey(lock, legs[:j], c.legs, cut.source))
     if history is not None and history.train not in {y.train for y in s.cancellation_history}:
         written = replace(written, cancellation_history=(*s.cancellation_history, history))

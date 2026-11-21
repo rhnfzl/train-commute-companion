@@ -13,7 +13,7 @@ from train_commute_companion.classify import (
 )
 from train_commute_companion.lifecycle import catch_from_state, make_event
 from train_commute_companion.match import current_arrival, train_only_now, usual_connection
-from train_commute_companion.messages import crowd_text
+from train_commute_companion.messages import crowd_text, leave_by_text
 from train_commute_companion.model import (
     AdvicePhase,
     AdviceRecord,
@@ -294,13 +294,14 @@ def _savings(
     return found
 
 
-def leave_now_text(c: Connection, tz: tzinfo | None) -> str:
+def leave_now_text(c: Connection, tz: tzinfo | None, buffer_min: int | None = None) -> str:
     first = c.legs[0]
     dep_t = first.board.departure.value if first.board.departure else None
     shown = (dep_t or first.train.planned_departure).astimezone(tz)
     return (
         f"leave now, an earlier train {first.board.code} to {c.legs[-1].alight.code}"
         f" leaves at {shown:%H:%M} and gets you there sooner than your usual journey"
+        + ("." + leave_by_text(first, buffer_min) if buffer_min is not None else "")
         + crowd_text(c.legs)
     )
 
@@ -325,7 +326,10 @@ def advise(
         if advised == train and record.active:
             return record, []  # already told
         # renewed after a withdrawal: a new episode with its own delivery identity (7.6)
-        text = leave_now_text(best[1], ctx.now.tzinfo)
+        buffer = (
+            ctx.profile.journey(ctx.direction).buffer_min if ctx.profile.alerts.leave_by else None
+        )
+        text = leave_now_text(best[1], ctx.now.tzinfo, buffer)
         event = make_event(
             ctx, EventKind.LEAVE_NOW, Severity.LOUD, text, train, ctx.now.isoformat()
         )

@@ -36,7 +36,23 @@ Valid edits become active through the existing profile reload. Invalid edits do 
 
 The details form includes a default-on weather switch. Configure > Weather accepts your own optional KNMI warning key. See [Commute weather](weather.md).
 
-The editor preserves settings it does not display: location, advice thresholds, quiet hours, extra dates, explicit monitoring windows, active leads (`active_lead_min`), overnight return offsets and unused transfer minimums. Other profiles stay unchanged.
+The editor preserves settings it does not display: location, advice thresholds, quiet hours, extra dates, overnight return offsets and unused transfer minimums. Other profiles stay unchanged.
+
+## Check-in and leave-by times
+
+Each direction has **Check-in, minutes before your train** (`active_lead_min`). This ends quiet early watch and allows the existing check-in message.
+Leave it blank for the travel buffer plus 15 minutes. It must be a whole number, at least the direction's travel buffer.
+Clearing a saved value restores that default. No extra reminder is scheduled.
+
+The travel buffer (`buffer_min`) remains the minutes from your door to the platform.
+Leave-by time uses the earlier of planned and NS-expected departure, minus that buffer.
+A delayed train never moves leave-by later. The followed train determines this time, including a train you choose instead of your usual train.
+
+**Show leave-by time** in the details form controls `alerts.leave_by` and defaults to on.
+Turn it off to hide leave-by text and the status sensor's timestamp. Other check-in and advice wording stays available.
+See [Notification preferences](notification-preferences.md).
+
+Docker and Telegram profiles use the same per-direction `active_lead_min` setting in YAML.
 
 ## Window mode and settings by day
 

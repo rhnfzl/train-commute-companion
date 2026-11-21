@@ -285,6 +285,7 @@ class ProfileEditorFlow:
                     ("time", "first_train", "08:00" if direction == "outbound" else "17:00"),
                     ("transfers", "transfers", []),
                     ("buffer", "buffer_min", 10),
+                    ("active_lead", "active_lead_min", None),
                 )
             },
             **schedule,  # last: a window profile's blank first train wins
@@ -354,6 +355,13 @@ class ProfileEditorFlow:
             elif name in defaults:
                 schema[vol.Required(name, description={"suggested_value": defaults[name]})] = value
         for direction in ("outbound", "return"):
+            key = f"{direction}_active_lead"
+            saved = defaults.get(key)
+            schema[
+                vol.Optional(
+                    key, description={"suggested_value": saved} if saved is not None else None
+                )
+            ] = NumberSelector(NumberSelectorConfig(min=0, step=1, mode=NumberSelectorMode.BOX))
             # blank text comes back as no key: a window day needs no first train
             for name in _OPTIONAL_TEXT:
                 key = f"{direction}_{name}"
@@ -391,6 +399,10 @@ class ProfileEditorFlow:
             # the form keeps names; everything after this step works with codes
             coded_values = {
                 **values,
+                **{
+                    f"{d}_active_lead": values.get(f"{d}_active_lead")
+                    for d in ("outbound", "return")
+                },
                 **{k: self._station_code(values.get(k)) for k in _SINGLE_STATIONS},
             }
             errors = {k: "unknown_station" for k in _SINGLE_STATIONS if coded_values[k] is None}
@@ -468,16 +480,18 @@ class ProfileEditorFlow:
         for key in ("edit_weekday_times", "edit_day_overrides"):
             fields[vol.Optional(key, default=values.get(key, False))] = BooleanSelector()
         for key in ("delay_min", "delay_step_min"):
-            fields[vol.Optional(
-                key, default=values.get(key, existing.get("alerts", {}).get(key, 3))
-            )] = NumberSelector(
+            fields[
+                vol.Optional(key, default=values.get(key, existing.get("alerts", {}).get(key, 3)))
+            ] = NumberSelector(
                 NumberSelectorConfig(min=1, max=1440, step=1, mode=NumberSelectorMode.BOX)
             )
-        for key in ("compensation_reminder", "quiet_repeat_misses", "weather"):
+        for key in ("compensation_reminder", "quiet_repeat_misses", "weather", "leave_by"):
             fields[
                 vol.Optional(
                     key,
-                    default=values.get(key, existing.get("alerts", {}).get(key, key == "weather")),
+                    default=values.get(
+                        key, existing.get("alerts", {}).get(key, key in ("weather", "leave_by"))
+                    ),
                 )
             ] = BooleanSelector()
         location = existing.get("location")

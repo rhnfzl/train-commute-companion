@@ -1,6 +1,7 @@
 """What a held message is judged on right before it goes (7.12 rule 5): the stored state and the
 latest healthy answers, read through an explicit view. Pure apart from reading them."""
 
+import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
@@ -34,7 +35,7 @@ from train_commute_companion.lookahead_probe import (
     latest_mark,
     split_fact_key,
 )
-from train_commute_companion.messages import crowd_text
+from train_commute_companion.messages import crowd_text, leave_by
 from train_commute_companion.model import (
     DELAY_NEWS,
     AlertEvent,
@@ -46,6 +47,7 @@ from train_commute_companion.model import (
     NotificationChannel,
     Obligation,
     OccurrenceKey,
+    Provenance,
     Severity,
     TrainId,
     alert_facts,
@@ -262,12 +264,16 @@ def _named_crowd_now(
     return ""
 
 
-def _with_crowd_note(event: AlertEvent, note: str) -> AlertEvent:
+def _with_crowd_note(event: AlertEvent, note: str, leave_note: str | None = None) -> AlertEvent:
     facts = alert_facts(event)
     if not facts.next_clause:
         return event
     head = event.text.removesuffix(facts.twin_note).removesuffix(facts.next_clause)
-    clause = facts.next_clause.removesuffix(".").removesuffix(facts.crowd_note) + note + "."
+    clause = facts.next_clause.removesuffix(".").removesuffix(facts.crowd_note)
+    if leave_note is not None:
+        # Refresh only our rendered departure sentence, keeping route and station details.
+        clause = re.sub(r"\. Leave by [0-9]{2}:[0-9]{2}$", "", clause) + leave_note
+    clause += note + "."
     return replace(
         event,
         text=head + clause + facts.twin_note,
@@ -289,7 +295,10 @@ def _current_body(
             if origin is None
             else still_advised(s, ctx, origin, train, usual_arrival(s, ctx, origin))
         )
-        return None if c is None else leave_now_text(c, ctx.now.tzinfo)
+        buffer = (
+            ctx.profile.journey(ctx.direction).buffer_min if ctx.profile.alerts.leave_by else None
+        )
+        return None if c is None else leave_now_text(c, ctx.now.tzinfo, buffer)
     if e.kind is EventKind.NEXT_CONNECTION:
         pool = merged_pool(answers)
         for j in (*((s.lock,) if s.lock else ()), *s.retained):
@@ -696,12 +705,29 @@ class LiveLedger:
             return e
         return replace(e, text=f"{display_name(e.profile_name)}: {body}{alert_facts(e).twin_note}")
 
+    def _leave_note(
+        self, s: OccurrenceState, answers: Sequence[ProviderAnswer], first: LegProgress
+    ) -> str:
+        ctx = self._ctx(s)
+        if (
+            ctx is None
+            or not ctx.profile.alerts.leave_by
+            or s.travelling
+            or s.at_station
+            or first.state not in (LegState.PENDING, LegState.BOARDING)
+        ):
+            return ""
+        run = current_run(answers, first.train, first.board_station, first.intended_alight)
+        obs = None if run is None else run[1].leg.board.departure
+        expected = obs.value if obs is not None and obs.provenance is Provenance.REPORTED else None
+        leave = leave_by(
+            first.train.planned_departure, expected, ctx.profile.journey(ctx.direction).buffer_min
+        )
+        return f". Leave by {hhmm(leave)}"
+
     def _relocked(self, o: Obligation, e: AlertEvent) -> AlertEvent:
-        """Rule 5(a): a journey warning names the current lock, not the replacement frozen at
-        write time. Kept as written while the lock still holds the warned train (nothing better
-        to name) or still ends in the whole replacement the text names. Otherwise the stale
-        clause is replaced: the lock's first train as the next good connection while nothing
-        of it has left, else the train now followed and every onward leg still ahead."""
+        """Rule 5(a): name the current replacement and refresh its departure advice.
+        Keep unchanged route and station details while refreshing their optional notes."""
         s = None if o.occurrence is None else self._state.occurrences.get(okey(o.occurrence))
         if e.kind not in _NAMES_LOCK or e.train is None or s is None:
             return e
@@ -716,13 +742,19 @@ class LiveLedger:
             return e
         if f.named and tuple(train_ident(x.train) for x in live)[-len(f.named) :] == f.named:
             note = _crowd_now(answers, live[-len(f.named) :], self._now())
-            return _with_crowd_note(e, note)
+            leave_note = (
+                self._leave_note(s, answers, live[0])
+                if f.named[0] == train_ident(live[0].train)
+                else None
+            )
+            return _with_crowd_note(e, note, leave_note)
         head = e.text.removesuffix(f.twin_note).removesuffix(f.next_clause)
         answers = self._memory.boards.get(okey(s.key), ())
         ahead = [x for x in live if x.state in (LegState.PENDING, LegState.BOARDING)]
         left = [x for x in live if x not in ahead]
         if not left:
-            nxt = "Next good connection: {}{}.".format(*leg_now(answers, ahead[0]))
+            nxt = "Next good connection: {}{}".format(*leg_now(answers, ahead[0]))
+            nxt += self._leave_note(s, answers, ahead[0]) + "."
         else:
             now = hhmm(left[-1].train.planned_departure)
             onward = "".join(

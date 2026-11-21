@@ -1204,8 +1204,60 @@ async def test_held_cancellation_names_the_current_lock_when_sent(tmp_path):
     await rig.rt.watchdog_once()
     told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
     assert told and all(
-        "08:25." not in t and t.endswith("Next good connection: 08:40.") for t in told
+        "08:25." not in t and t.endswith("Next good connection: 08:40. Leave by 08:30.")
+        for t in told
     )
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+@pytest.mark.parametrize("detour", [False, True])
+async def test_held_cancellation_refreshes_leave_by_without_a_different_replacement(
+    tmp_path, disabled, detour
+):
+    rig = await started(tmp_path)
+    rig.notifier.fails = lambda e: e.kind is EventKind.CANCELLED
+    rig.clock.set("07:52")
+    replacement = (
+        conn(
+            make_leg("AAA", "BBB", "08:25", "08:53", number="1300"),
+            make_leg("BBB", "RTD", "09:05", "09:50", number="9400"),
+        )
+        if detour
+        else LATER
+    )
+    rig.provider.world = [make_connection([L1X, L2]), replacement]
+    await rig.rt.poll_once()
+    assert "Leave by 08:15" in rig.notifier.attempts[-1].text
+    first = replacement.legs[0]
+    early = replace(
+        first,
+        stops=(
+            replace(first.board, departure=replace(first.board.departure, value=at("08:20"))),
+            *first.stops[1:],
+        ),
+    )
+    rig.provider.world = [make_connection([L1X, L2]), conn(early, replacement.legs[1])]
+    rig.clock.set("07:54")
+    if disabled:
+        rig.write(
+            text=rig.path.read_text().replace(
+                "    name:", "    alerts: {leave_by: false}\n    name:", 1
+            )
+        )
+        await rig.rt.reload_if_changed()
+    await rig.rt.poll_once()
+    assert rig.occ().lock.legs[0].train == first.train
+    rig.notifier.fails = lambda e: False
+    await rig.rt.watchdog_once()
+    told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
+    assert len(told) == 1
+    if detour:
+        assert "new route via BBB" in told[0]
+    if disabled:
+        assert "Leave by" not in told[0]
+    else:
+        assert "Leave by 08:10" in told[0]
+        assert "Leave by 08:15" not in told[0]
 
 
 async def test_held_warning_names_the_journey_followed_once_the_locks_first_leg_is_past(tmp_path):
@@ -1233,12 +1285,12 @@ async def test_held_warning_names_the_journey_followed_once_the_locks_first_leg_
     await rig.rt.watchdog_once()
     told = [e.text for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
     assert told and all("connection: 08:25" not in t and "connection: 09:20" not in t for t in told)
-    # the obsolete 08:25 replacement is not named; the train now followed and its onward leg
-    # are, while the warning that already named the whole 08:40 journey stays as written
-    assert sorted(t.rsplit(". ", 1)[-1] for t in told) == [
+    # Unchanged route wording stays, but neither warning keeps departure advice after boarding.
+    assert sorted(t.split(". ", 1)[-1] for t in told) == [
         "Next good connection: 08:40.",
         "Now following your 08:40 train, then the 09:20 from UT.",
     ]
+    assert all("Leave by" not in t for t in told)
     assert len(held) == 2
 
 

@@ -90,7 +90,9 @@
           "return_window_start": "Tijdvak terug: vroegste vertrek (UU:MM)",
           "return_window_end": "Tijdvak terug: laatste vertrek (UU:MM)",
           "return_pick": "Treinkeuze binnen het tijdvak terug",
-          "return_min_stay": "Minimale verblijfsduur voor de terugreis in minuten, 0 voor geen"
+          "return_min_stay": "Minimale verblijfsduur voor de terugreis in minuten, 0 voor geen",
+          "outbound_active_lead": "Check-in, minuten voor je trein (heen)",
+          "return_active_lead": "Check-in, minuten voor je trein (terug)"
         },
         "data_description": {
           "outbound_mode": "Vast volgt je gebruikelijke trein. Tijdvak volgt de vroegste geschikte trein tussen de twee tijden.",
@@ -102,7 +104,9 @@
           "return_window_start": "Bij een tijdvak is dit het vroegste vertrek. Bij een vaste trein begint hier het volgen. Laat beide tijden leeg voor de standaardinstelling bij een vaste trein.",
           "return_window_end": "Bij een tijdvak is dit het laatste vertrek. Deze tijd is altijd nodig bij een tijdvak.",
           "return_pick": "Kiezen wanneer ik vertrek volgt pas een trein als je vertrekt. Daarna kiest het de eerstvolgende trein die je kunt halen. Zonder locatie gebruikt het de vroegste trein met stille meldingen bij gemiste treinen.",
-          "return_min_stay": "Alleen bij een tijdvak. Het tijdvak begint niet eerder dan je aankomst op de andere reis plus dit aantal minuten. Bijvoorbeeld 480 voor 8 uur op het werk."
+          "return_min_stay": "Alleen bij een tijdvak. Het tijdvak begint niet eerder dan je aankomst op de andere reis plus dit aantal minuten. Bijvoorbeeld 480 voor 8 uur op het werk.",
+          "outbound_active_lead": "Laat leeg voor je reistijd naar het perron plus 15 minuten. Beëindigt het vroege stille volgen. Moet minstens je reistijd naar het perron zijn.",
+          "return_active_lead": "Laat leeg voor je reistijd naar het perron plus 15 minuten. Beëindigt het vroege stille volgen. Moet minstens je reistijd naar het perron zijn."
         }
       },
       "profile_details": {
@@ -132,6 +136,7 @@
           "other_station_radius_m": "Afstand tot een ander station in meters",
           "other_station_dwell_min": "Minuten op een ander station voordat dit meetelt",
           "ask_to_remember_station": "Aanbieden om een nieuw instapstation te onthouden",
+          "leave_by": "Vertrek uiterlijk tonen",
           "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen"
         },
         "data_description": {
@@ -144,6 +149,7 @@
           "other_station_radius_m": "Hoe dicht je telefoon bij een station moet zijn. Standaard 500.",
           "other_station_dwell_min": "0 betekent dat één locatiebepaling genoeg is. Standaard 0.",
           "ask_to_remember_station": "Nadat je Ja zegt bij een nieuw station, vraagt TCC één keer of het dit station moet onthouden.",
+          "leave_by": "Toon wanneer je uiterlijk moet vertrekken in de check-in, het vertrekadvies en de statussensor. Gebruikt je reistijd naar het perron. Standaard aan.",
           "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer."
         }
       },
@@ -311,7 +317,9 @@
           "return_window_start": "Tijdvak terug: vroegste vertrek (UU:MM)",
           "return_window_end": "Tijdvak terug: laatste vertrek (UU:MM)",
           "return_pick": "Treinkeuze binnen het tijdvak terug",
-          "return_min_stay": "Minimale verblijfsduur voor de terugreis in minuten, 0 voor geen"
+          "return_min_stay": "Minimale verblijfsduur voor de terugreis in minuten, 0 voor geen",
+          "outbound_active_lead": "Check-in, minuten voor je trein (heen)",
+          "return_active_lead": "Check-in, minuten voor je trein (terug)"
         },
         "data_description": {
           "outbound_mode": "Vast volgt je gebruikelijke trein. Tijdvak volgt de vroegste geschikte trein tussen de twee tijden.",
@@ -323,7 +331,9 @@
           "return_window_start": "Bij een tijdvak is dit het vroegste vertrek. Bij een vaste trein begint hier het volgen. Laat beide tijden leeg voor de standaardinstelling bij een vaste trein.",
           "return_window_end": "Bij een tijdvak is dit het laatste vertrek. Deze tijd is altijd nodig bij een tijdvak.",
           "return_pick": "Kiezen wanneer ik vertrek volgt pas een trein als je vertrekt. Daarna kiest het de eerstvolgende trein die je kunt halen. Zonder locatie gebruikt het de vroegste trein met stille meldingen bij gemiste treinen.",
-          "return_min_stay": "Alleen bij een tijdvak. Het tijdvak begint niet eerder dan je aankomst op de andere reis plus dit aantal minuten. Bijvoorbeeld 480 voor 8 uur op het werk."
+          "return_min_stay": "Alleen bij een tijdvak. Het tijdvak begint niet eerder dan je aankomst op de andere reis plus dit aantal minuten. Bijvoorbeeld 480 voor 8 uur op het werk.",
+          "outbound_active_lead": "Laat leeg voor je reistijd naar het perron plus 15 minuten. Beëindigt het vroege stille volgen. Moet minstens je reistijd naar het perron zijn.",
+          "return_active_lead": "Laat leeg voor je reistijd naar het perron plus 15 minuten. Beëindigt het vroege stille volgen. Moet minstens je reistijd naar het perron zijn."
         }
       },
       "profile_details": {
@@ -353,6 +363,7 @@
           "other_station_radius_m": "Afstand tot een ander station in meters",
           "other_station_dwell_min": "Minuten op een ander station voordat dit meetelt",
           "ask_to_remember_station": "Aanbieden om een nieuw instapstation te onthouden",
+          "leave_by": "Vertrek uiterlijk tonen",
           "weather": "Weersverwachting, praktische tips en KNMI-waarschuwingen"
         },
         "data_description": {
@@ -365,6 +376,7 @@
           "other_station_radius_m": "Hoe dicht je telefoon bij een station moet zijn. Standaard 500.",
           "other_station_dwell_min": "0 betekent dat één locatiebepaling genoeg is. Standaard 0.",
           "ask_to_remember_station": "Nadat je Ja zegt bij een nieuw station, vraagt TCC één keer of het dit station moet onthouden.",
+          "leave_by": "Toon wanneer je uiterlijk moet vertrekken in de check-in, het vertrekadvies en de statussensor. Gebruikt je reistijd naar het perron. Standaard aan.",
           "weather": "Standaard aan. Gebruikt stationscoördinaten, nooit je telefoonlocatie. Voor de verwachting is geen sleutel nodig. Officiële waarschuwingen vereisen je eigen KNMI-sleutel via Configureren > Weer."
         }
       },

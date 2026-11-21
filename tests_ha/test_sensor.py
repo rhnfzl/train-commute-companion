@@ -4,6 +4,7 @@ from datetime import date, datetime
 
 import pytest
 import runtime_seam as seam
+import yaml
 from builders import AMS, ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from ha_rig import B_ONLY, PROFILE, PROFILES, drive, jump, rebound, setup_tcc, write_profiles
 from homeassistant.helpers import device_registry as dr
@@ -43,6 +44,19 @@ async def test_boarding_metadata_is_exposed_without_accessibility_guarantees(has
     assert attributes["boarding_notes"] == ("Book assistance",)
     assert attributes["exit_side"] == "right"
     assert "accessible" not in attributes
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_status_sensor_leave_by_uses_shared_view(hass, enabled):
+    raw = yaml.safe_load(PROFILE)
+    raw["profiles"][0].setdefault("alerts", {})["leave_by"] = enabled
+    h = await setup_tcc(hass, yaml.safe_dump(raw))
+    await drive(h, "08:00")
+    value = attr(hass, "sensor.office_a_outbound_status", "leave_by")
+    if enabled:
+        assert datetime.fromisoformat(value) == at("08:02")
+    else:
+        assert value is None
 
 
 def profile(name: str) -> str:

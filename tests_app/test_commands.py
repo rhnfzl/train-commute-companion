@@ -36,6 +36,14 @@ from train_commute_companion.view import (
 from train_commute_companion.webhook import WebhookTestResult
 
 
+@pytest.mark.parametrize("leave", [None, "08:02"])
+def test_shared_status_renders_the_current_leave_by(leave):
+    v = view(occ(leave_by=at(leave) if leave else None))
+    text = render_status(v, True)
+    assert ("Leave by 08:02" in text) is (leave is not None)
+    assert answer(v, True, {"tool": "get_status", "profile": "p1"})["text"] == text
+
+
 @pytest.mark.parametrize("args, want", [
     ([], Target("p1", "office_a")),
     (["return", "08:44", "1234", "2026-10-27"],

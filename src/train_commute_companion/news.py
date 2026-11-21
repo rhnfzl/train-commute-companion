@@ -337,7 +337,10 @@ def all_good(s: OccurrenceState, poll: PollAnswers, ctx: Ctx) -> AlertEvent | No
     if not _changes_proven(seen, s.lock.legs, poll.answers, ctx.profile.transfer_min):
         return None
     legs = [c.leg for c in seen]
-    return make_event(ctx, EventKind.ALL_GOOD, Severity.SILENT, all_good_text(legs), legs[0].train)
+    buffer = ctx.profile.journey(ctx.direction).buffer_min if ctx.profile.alerts.leave_by else None
+    return make_event(
+        ctx, EventKind.ALL_GOOD, Severity.SILENT, all_good_text(legs, buffer), legs[0].train
+    )
 
 
 def forget_ended(keys: dict[str, str], events: Sequence[AlertEvent]) -> None:

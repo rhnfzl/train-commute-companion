@@ -120,6 +120,19 @@ async def test_home_wifi_at_departure_is_an_immediate_miss_with_leave_by(tmp_pat
     assert EventKind.NEXT_CONNECTION not in kinds_of(rig)
 
 
+async def test_delayed_replacement_does_not_move_leave_by_later(tmp_path):
+    rig = await started(tmp_path)
+    delayed = make_leg("AAA", "UT", "08:44", "09:08", number="1236", delay_dep=5)
+    onward = ONE_TRANSFER[1].legs[1]
+    rig.provider.world = [ONE_TRANSFER[0], make_connection([delayed, onward])]
+    await rig.run_until("08:05")
+    await report(rig, "home", "report", "08:05")
+    await rig.run_until("08:12")
+    await report(rig, "home", "still", "08:12:10", Evidence(wifi=True))
+    text, _ = missed(rig)[0]
+    assert "Next you can catch: 08:49" in text and "Leave by 08:34" in text
+
+
 async def test_station_bounce_after_departure_is_still_a_miss_at_twelve_minutes(tmp_path):
     rig = await started(tmp_path)
     rig.provider.world = list(ONE_TRANSFER)

@@ -27,6 +27,7 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
 - **Follows your trains.** You describe your usual trips once, in a small YAML file, with station names such as `Utrecht Centraal` or NS codes such as `UT`. On a travel day it picks your train and watches it.
 - **Tells you what changed.** Delays, cancellations, platform changes, a train cut short, a new route, a transfer at risk or broken, and a train you missed.
 - **Suggests what to do.** When your train no longer works, it names the best train you can still catch.
+- **Shows when to leave.** Check-in and pre-trip advice use your travel buffer; a delayed train never moves leave-by later. [Settings](docs/profile-editor.md#check-in-and-leave-by-times).
 - **Looks ahead.** Before the day, it warns you about planned works on your route.
 - **Summarizes the week.** An optional [works digest](docs/weekly-works-digest.md) checks seven calendar days and labels unknown coverage.
 - **Tracks replacement transport.** Follow reviewed bus, walk and metro plans with explicit boarding and arrival confirmations. [Replacement transport](docs/replacement-transport.md).
