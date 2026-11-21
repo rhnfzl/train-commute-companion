@@ -2,6 +2,7 @@
   "domain": "train_commute_companion",
   "name": "Train Commute Companion",
   "after_dependencies": ["mobile_app"],
+  "categories": ["vehicles_transport.public_transport"],
   "codeowners": ["@rhnfzl"],
   "config_flow": true,
   "documentation": "https://github.com/rhnfzl/train-commute-companion",

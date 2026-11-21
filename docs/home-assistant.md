@@ -6,8 +6,12 @@ It needs Home Assistant 2026.10 or newer and the Home Assistant companion app on
 
 ## Install
 
+[![Open Train Commute Companion in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=rhnfzl&repository=train-commute-companion&category=integration)
+[![Add Train Commute Companion to Home Assistant.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=train_commute_companion)
+
 1. In HACS, open the menu, choose Custom repositories, and add `https://github.com/rhnfzl/train-commute-companion` as an Integration.
 2. Download Train Commute Companion in HACS and restart Home Assistant.
+3. Use the second button above to start setup after the integration is installed.
 
 ### Upgrades
 

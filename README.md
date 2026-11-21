@@ -13,6 +13,7 @@ Follows your train journey, a fixed train or any train in a time window, and tel
 Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. This project is not made by or linked to NS.
 
 [![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=rhnfzl&repository=train-commute-companion&category=integration)
+[![Add Train Commute Companion to Home Assistant.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=train_commute_companion)
 
 ## What it does
 
