@@ -19,6 +19,7 @@ from train_commute_companion.calendar_export import CalendarExportError, export_
 from train_commute_companion.route_export import export_preview
 from train_commute_companion.view import RuntimeView
 
+from .today import ICONS, MANIFEST, MANIFEST_PATH, PAUSED_PATH, TODAY_PATH
 from .today import render as render_today
 
 log = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ TODAY_HEADERS = (
     "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; "
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
+TODAY_PAGE_HEADERS = TODAY_HEADERS + "; manifest-src 'self'; img-src 'self'"
 
 
 def health_report(
@@ -186,8 +188,25 @@ async def start_web(
             except _Refused as e:
                 writer.write(_response(e.status))
             else:
-                if method == "GET" and (
-                    path == "/today" or path.startswith(("/calendar/", "/preview/"))
+                if method == "GET" and (path == MANIFEST_PATH or path in ICONS):
+                    if not health_token or today is None:
+                        writer.write(_response(404, extra=TODAY_HEADERS))
+                    elif path == MANIFEST_PATH:
+                        writer.write(
+                            _response(
+                                200,
+                                json.dumps(MANIFEST).encode(),
+                                "application/manifest+json",
+                                TODAY_HEADERS,
+                            )
+                        )
+                    else:
+                        writer.write(
+                            _response(200, ICONS[path].read_bytes(), "image/png", TODAY_HEADERS)
+                        )
+                elif method == "GET" and (
+                    path in (TODAY_PATH, PAUSED_PATH)
+                    or path.startswith(("/calendar/", "/preview/"))
                 ):
                     if not health_token or today is None:
                         writer.write(_response(404, extra=TODAY_HEADERS))
@@ -202,13 +221,15 @@ async def start_web(
                         )
                     else:
                         view, confirmed = today()
-                        if path == "/today":
+                        if path in (TODAY_PATH, PAUSED_PATH):
                             writer.write(
                                 _response(
                                     200,
-                                    render_today(view, confirmed).encode(),
+                                    render_today(
+                                        view, confirmed, paused=path == PAUSED_PATH
+                                    ).encode(),
                                     "text/html; charset=utf-8",
-                                    TODAY_HEADERS,
+                                    TODAY_PAGE_HEADERS,
                                 )
                             )
                         else:
@@ -249,7 +270,11 @@ async def start_web(
                                 )
                 elif method == "GET" and path == "/health":
                     status, report = health_for(headers, *health(), health_token)
-                    writer.write(_response(status, json.dumps(report).encode()))
+                    writer.write(
+                        _response(
+                            status, json.dumps(report).encode(), extra="Cache-Control: no-store"
+                        )
+                    )
                 elif method == "POST" and path == "/owntracks" and owntracks and secret:
                     if not _authorized(headers.get("authorization"), secret):
                         writer.write(_response(401, extra='WWW-Authenticate: Basic realm="tcc"'))

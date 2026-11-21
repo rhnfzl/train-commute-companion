@@ -2388,7 +2388,7 @@ class Runtime:
                 text, self.known_stations, old, today, available_channels=self.available_channels
             )
             unchecked = self._require_stations and self.known_stations is None
-            if unchecked and cfg is not None and cfg is not old:
+            if unchecked and cfg is not None and cfg is not old and cfg.profiles:
                 # 5.3: an edit (or a first configuration, even one with a refused profile) whose
                 # codes cannot be checked waits; the last valid configuration keeps running (5.2)
                 reason = (

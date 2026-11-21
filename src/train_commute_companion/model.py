@@ -510,6 +510,8 @@ class AlertSettings:
     custom_timetable_horizon: bool = True
     timetable_horizon_unit: TimetableHorizonUnit = "calendar_days"
     timetable_horizon_count: int = 7
+    live_today: bool = True
+    telegram_status_pin: bool = True
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]

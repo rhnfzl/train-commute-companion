@@ -178,7 +178,13 @@ A machine that is off cannot warn about itself, so point an external uptime chec
 
 ## Today web status
 
-Open `http://127.0.0.1:8080/today` to read current journeys, NS data freshness and service warnings. Unselected replacement plans remain proposals. Followed recovery shows explicit user-confirmed progress. Refresh the page manually for a new snapshot.
+Open `http://127.0.0.1:8080/today` to read current journeys, NS data freshness and service warnings. Unselected replacement plans remain proposals. Followed recovery shows progress you explicitly confirmed.
+
+Today refreshes once a minute while open. It reads the companion's current snapshot and makes no extra NS requests. Select **Refresh status** to update now or **Pause auto-refresh** to stop automatic updates.
+
+In a browser with home screen support, sign in to Today and choose **Add to Home Screen** or **Install app**. The shortcut opens the same private page. Your browser may ask you to sign in again. The shortcut needs a connection to your companion. [Web App Manifest specification](https://www.w3.org/TR/appmanifest/)
+
+`alerts.live_today` defaults to `true`. If any profile on the page sets it to `false`, Today offers manual refresh and omits the home screen manifest link for the whole page.
 
 The generated health token enables the page automatically. You can override it with `TCC_HEALTH_TOKEN` in `.env`.
 Apply an override with `docker compose up -d --force-recreate tcc`.
@@ -213,6 +219,21 @@ Choose **Download a route preview to share** beside a usable journey on Today. O
 The preview includes only that journey's station codes, train numbers, planned dates and times, and export time. It excludes profile names, identifiers, phone locations, credentials, alerts and other journeys. It contains no scripts, remote images or live requests.
 
 Anyone with the downloaded file can read its travel route and dates without a login. Share it deliberately. The preview is a saved timetable, not live status or proof of travel. The private download URL still requires your Today login. The companion does not publish an anonymous URL.
+
+## Pinned Telegram status
+
+After you confirm the loud and quiet tests, the companion adds one status pin in the bound private Telegram chat. It silently sends and pins the first message, then edits it when journey details change. The pin includes train numbers, times, platforms, delays and service warnings. Send `/status` for the full report.
+
+```yaml
+alerts:
+  telegram_status_pin: false
+```
+
+`alerts.telegram_status_pin` defaults to `true`. Set it to `false` to omit a profile from the pin. When every profile is off or removed, the companion clears its own status text and unpins it, without creating a new one. If Telegram refuses the edit, the companion still tries to unpin its message. Other pins stay in place. [Telegram Bot API](https://core.telegram.org/bots/api#pinchatmessage)
+
+To remove all profiles from a running app, replace the file contents with `profiles: []`. After reload, the next status update clears the pin. Invalid profile edits keep the previous configuration active.
+
+If you change the bot or chat, confirm delivery again for the new destination. Remove an old pin from a previous destination in Telegram if you no longer want it there.
 
 ## Webhooks
 

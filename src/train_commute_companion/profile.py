@@ -442,6 +442,8 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "custom_timetable_horizon",
             "timetable_horizon_unit",
             "timetable_horizon_count",
+            "live_today",
+            "telegram_status_pin",
         ),
         "alerts",
     )
@@ -472,6 +474,10 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
     leave = c.boolean(raw.get("leave_by", d.leave_by), "alerts.leave_by")
     allowance = c.boolean(
         raw.get("weather_allowance", d.weather_allowance), "alerts.weather_allowance"
+    )
+    live_today = c.boolean(raw.get("live_today", d.live_today), "alerts.live_today")
+    pin = c.boolean(
+        raw.get("telegram_status_pin", d.telegram_status_pin), "alerts.telegram_status_pin"
     )
     compensation = raw.get("compensation_reminder", False)
     if not isinstance(compensation, bool):
@@ -537,6 +543,8 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         or leave is None
         or allowance is None
         or custom_horizon is None
+        or live_today is None
+        or pin is None
     ):
         return None
     return AlertSettings(
@@ -556,6 +564,8 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         custom_timetable_horizon=custom_horizon,
         timetable_horizon_unit=cast(TimetableHorizonUnit, horizon_unit),
         timetable_horizon_count=horizon_count,
+        live_today=live_today,
+        telegram_status_pin=pin,
     )
 
 
@@ -864,6 +874,10 @@ def _load_yaml(text: str) -> tuple[Any, list[ProfileProblem]]:
         return None, [ProfileProblem(None, "file", f"{where}{problem}{tab}", "fix the YAML syntax")]
     except ValueError as e:  # an explicit tag such as !!int on text that is not one
         return None, [ProfileProblem(None, "file", f"invalid value: {e}", "fix the YAML syntax")]
+    except (KeyError, IndexError):
+        return None, [
+            ProfileProblem(None, "file", "invalid tagged YAML value", "fix the YAML syntax")
+        ]
     except RecursionError:
         return None, [ProfileProblem(None, "file", "nested too deeply", "fix the YAML syntax")]
 
@@ -899,17 +913,37 @@ def _duplicates(items: Sequence[object]) -> list[ProfileProblem]:
     return problems
 
 
+def _explicit_empty_profiles(text: str) -> bool:
+    # A profile reset must come from the file itself, before YAML merges and tag conversion.
+    root = yaml.compose(text.lstrip("\ufeff"), Loader=_Loader)
+    if not isinstance(root, yaml.MappingNode) or root.tag != "tag:yaml.org,2002:map":
+        return False
+    if len(root.value) != 1:
+        return False
+    key, value = root.value[0]
+    return (
+        key.tag == "tag:yaml.org,2002:str"
+        and key.value == "profiles"
+        and isinstance(value, yaml.SequenceNode)
+        and value.tag == "tag:yaml.org,2002:seq"
+        and not value.value
+    )
+
+
 def parse_profiles(
     text: str,
     known_stations: frozenset[str] | None,
     *,
     available_channels: frozenset[NotificationChannel] | None = None,
+    allow_empty: bool = False,
 ) -> tuple[list[Profile], list[ProfileProblem]]:
     data, errors = _load_yaml(text)
     if errors:
         return [], errors
     items = data.get("profiles") if isinstance(data, dict) else None
-    if not isinstance(items, list) or not items:
+    if not isinstance(items, list) or (
+        not items and not (allow_empty and _explicit_empty_profiles(text))
+    ):
         return [], [
             ProfileProblem(
                 None,
@@ -957,7 +991,12 @@ def load_config(
     *,
     available_channels: frozenset[NotificationChannel] | None = None,
 ) -> tuple[Config | None, list[ProfileProblem]]:
-    profiles, errors = parse_profiles(text, known_stations, available_channels=available_channels)
+    profiles, errors = parse_profiles(
+        text,
+        known_stations,
+        available_channels=available_channels,
+        allow_empty=previous is not None,
+    )
     pairs = overlap_pairs(profiles, today)
     errors = errors + [e for _, _, e in pairs]
     if previous is not None:

@@ -51,7 +51,7 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
 | Household | A separate Docker companion and private bot for each traveller | [docs/household.md](docs/household.md) |
 | Webhooks | Each alert as signed JSON to your own URL, from Docker or Home Assistant | [docs/webhooks.md](docs/webhooks.md) |
 | Email | Optional encrypted SMTP copies alongside Telegram in Docker | [docs/email.md](docs/email.md) |
-| Today | Private read-only journey and service status in a browser, from Docker | [docs/docker.md](docs/docker.md#today-web-status) |
+| Today | Private journey and service status that refreshes in your browser or opens from your home screen | [docs/docker.md](docs/docker.md#today-web-status) |
 | MCP | Journey status and optional plan management for local or private-network agents | [docs/mcp.md](docs/mcp.md) |
 
 Location (optional) helps it know when you leave and where you are. See [Where you are](#where-you-are) below.
@@ -59,6 +59,8 @@ Location (optional) helps it know when you leave and where you are. See [Where y
 Profiles can request [accessible journeys](docs/accessibility.md) and disable [notification categories](docs/notification-preferences.md). These settings also appear in the Home Assistant profile form.
 
 Save an [explicit arrival](docs/compensation-reminders.md) to compare it with the original plan and optionally check NS compensation rules. The companion does not decide eligibility. Today also offers deliberate calendar and offline route-preview downloads.
+
+Docker can keep one silent [journey status pin](docs/docker.md#pinned-telegram-status) up to date in your confirmed private Telegram chat.
 
 ## Quick start (Home Assistant)
 

@@ -1,6 +1,7 @@
 """A private, read-only page showing the same journey information as Telegram status."""
 
 from html import escape
+from pathlib import Path
 
 from train_commute_companion.calendar import TZ
 from train_commute_companion.calendar_export import CalendarExportError, export_id, planned_bounds
@@ -8,6 +9,25 @@ from train_commute_companion.model import display_name
 from train_commute_companion.view import RuntimeView
 
 from .commands import render_status
+
+TODAY_PATH = "/today"
+PAUSED_PATH = "/today/paused"
+MANIFEST_PATH = "/today/manifest.webmanifest"
+ICONS = {
+    f"/today/icon-{size}.png": Path(__file__).with_name(f"icon-{size}.png") for size in (192, 512)
+}
+MANIFEST = {
+    "name": "Train Commute Companion",
+    "short_name": "Commute Today",
+    "start_url": TODAY_PATH,
+    "scope": TODAY_PATH,
+    "display": "standalone",
+    "background_color": "#eef2f7",
+    "icons": [
+        {"src": path, "sizes": f"{size}x{size}", "type": "image/png"}
+        for path, size in zip(ICONS, (192, 512), strict=True)
+    ],
+}
 
 _STYLE = """
 :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.6; }
@@ -32,7 +52,7 @@ footer { font-size: .9rem; }
 """
 
 
-def render(view: RuntimeView, confirmed: bool) -> str:
+def render(view: RuntimeView, confirmed: bool, *, paused: bool = False) -> str:
     """Escape every value from the read model. Download links use opaque occurrence hashes and contain no credentials."""
     freshness = []
     downloads = []
@@ -82,12 +102,25 @@ def render(view: RuntimeView, confirmed: bool) -> str:
     status = escape(render_status(view, confirmed))
     service = "Ready" if view.started else "Starting"
     delivery = "Confirmed" if confirmed else "Not confirmed"
+    live = bool(view.profiles) and all(p.alerts.live_today for p in view.profiles)
+    metadata = controls = ""
+    refresh_path = PAUSED_PATH if paused else TODAY_PATH
+    if live:
+        metadata = (
+            f'<link rel="manifest" href="{MANIFEST_PATH}">\n'
+            '<link rel="apple-touch-icon" href="/today/icon-192.png">\n'
+        )
+        if paused:
+            controls = f' <a href="{TODAY_PATH}">Resume auto-refresh</a>.'
+        else:
+            metadata += f'<meta http-equiv="refresh" content="60; url={TODAY_PATH}">\n'
+            controls = f' Updates every minute. <a href="{PAUSED_PATH}">Pause auto-refresh</a>.'
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Today | Train Commute Companion</title>
+{metadata}<title>Today | Train Commute Companion</title>
 <style>{_STYLE}</style>
 </head>
 <body>
@@ -95,7 +128,7 @@ def render(view: RuntimeView, confirmed: bool) -> str:
 <header>
 <h1>Today</h1>
 <p>Your current journeys and service health. This page is read-only.</p>
-<p>Snapshot: <time datetime="{snapshot_iso}">{snapshot}</time>. <a href="/today">Refresh status</a></p>
+<p>Snapshot: <time datetime="{snapshot_iso}">{snapshot}</time>. <a href="{refresh_path}">Refresh status</a>.{controls}</p>
 </header>
 <section aria-labelledby="journeys-heading">
 <h2 id="journeys-heading">Journeys and service health</h2>
