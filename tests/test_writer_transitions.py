@@ -143,6 +143,8 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
         for journey in (occurrence["lock"], *occurrence["retained"]):
             if journey is not None:
                 journey["unproven"] = False  # 0.3.0 other-station guess default
+                if journey["plan"] is not None:
+                    journey["plan"] |= {"origin": None, "train_numbers": []}
     raw["state"]["remembered_stations"] = {}
     raw["state"]["commute_history"] = {}
     raw["state"]["commute_recap_weeks"] = {}
@@ -192,6 +194,10 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
                 "timetable_horizon_unit": "calendar_days",
                 "timetable_horizon_count": 7,
                 "daily_brief": True,
+                "arrival_prompt": True,
+                "compensation_details": True,
+                "navigate": True,
+                "timetable_update": True,
             }
             profile["alerts"] |= {"live_today": True, "telegram_status_pin": True}
             profile["alerts"]["ntfy_enabled"] = True
@@ -209,6 +215,9 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
                 }
     for ledger in raw["state"]["lookahead"].values():
         ledger |= {"adoption_ids": {}, "adoption_receipts": {}}
+    for history in raw["state"]["baselines"].values():
+        for version in history["versions"]:
+            version["update_nonce"] = None
     assert encode(state) == raw["state"]
     store.save(state)
     assert JsonFileStore(path).load() == state

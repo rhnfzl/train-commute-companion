@@ -26,6 +26,34 @@ def profile(text=TEXT):
     return config.profiles[0]
 
 
+def test_arrival_reminder_options_preserve_the_old_digest_token():
+    original = profile()
+    old = encode(original)
+    old.pop("repeat")
+    old.pop("brief")
+    for key in (
+        "arrival_prompt",
+        "navigate",
+        "compensation_details",
+        "timetable_update",
+        "location_leave_now",
+        "daily_brief",
+        "quick_trip",
+        "commute_stats",
+        "weekly_recap",
+        "after_trip_note",
+        "alert_history",
+        "calendar_feed",
+    ):
+        old["alerts"].pop(key)
+    token = hashlib.sha256(json.dumps(old, sort_keys=True).encode()).hexdigest()
+    assert profile_token(original) == token
+    edited = profile(
+        TEXT + "    alerts: {arrival_prompt: false, navigate: false, compensation_details: false}\n"
+    )
+    assert profile_token(edited) == token
+
+
 def digests(rig):
     return [event for event in rig.notifier.attempts if event.kind is EventKind.WORKS_DIGEST]
 
@@ -44,6 +72,10 @@ def test_daily_brief_settings_keep_the_identity_of_saved_weekly_digests():
         "alert_history",
         "calendar_feed",
         "location_leave_now",
+        "arrival_prompt",
+        "navigate",
+        "compensation_details",
+        "timetable_update",
     ):
         data["alerts"].pop(key)
     legacy = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
@@ -169,6 +201,8 @@ async def test_old_pending_digest_survives_upgrade_to_recurring_profiles(tmp_pat
     legacy["alerts"].pop("daily_brief")
     legacy["alerts"].pop("quick_trip")
     legacy["alerts"].pop("location_leave_now")
+    for key in ("arrival_prompt", "navigate", "compensation_details", "timetable_update"):
+        legacy["alerts"].pop(key)
     token = hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
     obligations = tuple(
         replace(o, digest_token=token) if o.id == queued.id else o for o in rig.rt.state.obligations

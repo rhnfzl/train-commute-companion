@@ -31,7 +31,7 @@ from train_commute_companion.vehicle import render_snapshot, snapshot_payload
 from train_commute_companion.view import LegView, OccurrenceView, RecoveryPlanView, RuntimeView
 from train_commute_companion.webhook import WebhookTestResult
 
-from .telegram import callback_data
+from .telegram import callback_data, map_buttons
 
 LOOKAHEAD_STALE = timedelta(hours=25)  # a daily run missed or failed
 TOOLS = ("get_status", "get_next_connections", "get_works_ahead")
@@ -533,6 +533,8 @@ def status_buttons(view: RuntimeView, confirmed: bool = True) -> dict[str, Any] 
         if row:
             rows.append(row)
         if confirmed and not o.not_travelling:
+            if o.navigation:
+                rows.append(map_buttons(o.navigation))
             if o.selected_recovery is not None and o.selected_recovery.status == "active":
                 rows.extend(recovery_progress_buttons(o.selected_recovery)["inline_keyboard"])
             else:

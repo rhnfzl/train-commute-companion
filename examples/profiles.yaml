@@ -35,6 +35,9 @@ profiles:
       # other_stations: [GV]        # board here too, see docs/other-boarding-station.md
     transfer_min: { UT: 4 }   # minutes you need to change trains, for every transfer station
     alerts:
+      compensation_reminder: false    # opt in to reminders after a confirmed arrival
+      arrival_prompt: true            # ask about NS arrival only when reminders are enabled
+      navigate: true                  # open the boarding station in Maps
       leave_by: true          # show leave-by time in check-in, pre-trip advice and HA status
       weather: true                    # station forecasts and tips; warnings need your own KNMI key
       weather_allowance: true          # suggest extra minutes in leave-by text for forecast hazards

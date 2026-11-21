@@ -12,13 +12,14 @@ from types import ModuleType
 from typing import Any, cast
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventOrigin, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from train_commute_companion.calendar import to_utc
 from train_commute_companion.model import AlertEvent, Direction, EventKind, Severity, alert_facts
+from train_commute_companion.navigation import MAP_LABELS
 from train_commute_companion.notify import NotificationPaused, event_fields
 
 from .const import (
@@ -112,6 +113,8 @@ def notify_payload(
 
 
 ACTION_PREFIX = "TCC_ANSWER"
+ARRIVAL_PREFIX = "TCC_ARRIVAL|"
+TIMETABLE_PREFIX = "TCC_TIMETABLE|"
 
 
 def event_data(event: AlertEvent, entry_id: str, device_id: str | None) -> dict[str, Any]:
@@ -128,6 +131,17 @@ def event_data(event: AlertEvent, entry_id: str, device_id: str | None) -> dict[
 def answer_actions(event: AlertEvent) -> list[dict[str, str]]:
     """Companion app buttons for a question: TCC_ANSWER|<prompt_id>|<answer>."""
     facts = alert_facts(event)
+    if event.kind in (EventKind.TIMETABLE_ADOPTED, EventKind.WORKS_AHEAD) and facts.prompt_id:
+        return [{"action": TIMETABLE_PREFIX + facts.prompt_id, "title": "Update timetable"}]
+    if event.kind is EventKind.ARRIVAL_PROMPT:
+        return [
+            {"action": ARRIVAL_PREFIX + facts.prompt_id, "title": "Yes"},
+            {
+                "action": "URI",
+                "title": "Other time",
+                "uri": f"/config/integrations/integration/{DOMAIN}",
+            },
+        ]
     return [
         {"action": f"{ACTION_PREFIX}|{facts.prompt_id}|{a}", "title": label}
         for a, label in facts.choices
@@ -376,6 +390,31 @@ class HaNotifier:
             return None
         return "ha-mobile:" + hashlib.sha256(f"{self.entry_id}:{target}".encode()).hexdigest()
 
+    def action_recipient(self, event: Event) -> str | None:
+        target = mobile_target(self.hass, self.service)
+        if (
+            target is None
+            or target != self._receipt_target
+            or event.origin is not EventOrigin.remote
+        ):
+            return None
+        registration = self.hass.data[MOBILE_APP]["config_entries"][target]
+        user = registration.data.get("user_id")
+        if user is None or event.context.user_id != user:
+            return None
+        # The iOS action does not include a device ID. Its random action key goes only to
+        # this registration's push, and the webhook supplies the authenticated HA user.
+        device = event.data.get("device_id")
+        if device is not None:
+            registered = dr.async_get(self.hass).async_get_device(
+                identifiers={(MOBILE_APP, registration.data.get("device_id"))}
+            )
+            if device != registration.data.get("device_id") and (
+                registered is None or device != registered.id
+            ):
+                return None
+        return self.destination_id
+
     async def send(self, event: AlertEvent) -> bool:
         """Runs on the runtime thread; the work happens on `hass.loop`."""
         if self.retired.is_set():
@@ -417,7 +456,7 @@ class HaNotifier:
             return False  # A remapped service needs a new runtime and its own receipt identity.
         # the key names neither profile nor direction: two profiles on one train are two facts
         fact = (event.profile_id, event.direction, event.key, event.severity, event.created_at)
-        if fact not in self._fired:
+        if event.kind is not EventKind.ARRIVAL_PROMPT and fact not in self._fired:
             # shortcut: bounded by clearing, a repeat bus event after 1000 facts is harmless
             if len(self._fired) > _MEMORY_CAP:
                 self._fired.clear()
@@ -429,10 +468,18 @@ class HaNotifier:
                 EVENT_ALERT, event_data(event, self.entry_id, device.id if device else None)
             )
         if self.phase is not NotifierPhase.READY:
+            if event.kind is EventKind.ARRIVAL_PROMPT:
+                raise NotificationPaused
             return False
         severity = Severity.SILENT if self.quiet else event.severity
         payload = notify_payload(severity, event.text, self.loud_style)
-        if actions := answer_actions(event):
+        actions: list[dict[str, Any]] = list(answer_actions(event))
+        if maps := alert_facts(event).navigation:
+            actions.extend(
+                {"action": "URI", "title": label, "uri": url}
+                for label, url in zip(MAP_LABELS, maps, strict=True)
+            )
+        if actions:
             payload["data"]["actions"] = actions
         # Retries replace the same displayed alert, including after a runtime restart.
         identity = (

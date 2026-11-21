@@ -26,7 +26,7 @@ from train_commute_companion.calendar import TZ, Clock, hhmm, resolve_local, to_
 from train_commute_companion.choice import ChoiceTarget, choice_target, named_connections
 from train_commute_companion.classify import current_run, evidence, expected_departure, find_leg
 from train_commute_companion.compensation import ArrivalError, arrival_text, confirm
-from train_commute_companion.compensation_state import JourneyRecord
+from train_commute_companion.compensation_state import ArrivalPrompt, JourneyRecord
 from train_commute_companion.delivery import (
     APP_WARNINGS,
     BindingPhase,
@@ -34,6 +34,7 @@ from train_commute_companion.delivery import (
     binding_phase,
     deliver,
     pending_journey_warnings,
+    primary_delivery_verdict,
     revalidate,
 )
 from train_commute_companion.disruptions import (
@@ -96,7 +97,12 @@ from train_commute_companion.lifecycle import (
     unproven_station,
     whole_day_keys,
 )
-from train_commute_companion.lifecycle_end import arrival_evidence, may_archive, on_tick
+from train_commute_companion.lifecycle_end import (
+    arrival_evidence,
+    may_archive,
+    on_tick,
+    reported_destination_arrival,
+)
 from train_commute_companion.lifecycle_lock import unfinished_leg
 from train_commute_companion.location import DEPARTURE_REMINDER_WINDOW, LocationEvent
 from train_commute_companion.lookahead import forget_pending, rebase_on_edit, reset_on_edit
@@ -149,8 +155,14 @@ from train_commute_companion.model import (
     okey,
     present,
 )
+from train_commute_companion.navigation import boarding_station, station_links
 from train_commute_companion.news import all_good, forget_ended, news_of, severity
-from train_commute_companion.notification_policy import channels_for, enabled, routing_ready
+from train_commute_companion.notification_policy import (
+    arrival_prompt_enabled,
+    channels_for,
+    enabled,
+    routing_ready,
+)
 from train_commute_companion.notify import (
     NotificationPaused,
     NotificationSuppressed,
@@ -170,13 +182,17 @@ from train_commute_companion.providers.base import (
 from train_commute_companion.providers.weather import WeatherProvider, WeatherView, weather_text
 from train_commute_companion.quick_trip import resolve_station, trip_result
 from train_commute_companion.recovery_runtime import RecoveryController
-from train_commute_companion.recovery_state import ORIGINAL_ROUTINE, RecoveryOffer, SelectedRecovery
+from train_commute_companion.recovery_state import (
+    ORIGINAL_ROUTINE,
+    RecoveryOffer,
+    SelectedRecovery,
+)
 from train_commute_companion.revisions import (
     baseline_on,
     effective_profile,
     find_profile,
     frozen,
-    inherited_location,
+    inherited_preferences,
     occurrence_ctx,
     profile_for,
     routing_profile,
@@ -251,6 +267,8 @@ _NO_HISTORY = (
         EventKind.AT_STATION,
         EventKind.STATION_ASK,
         EventKind.STATION_REMEMBER,
+        EventKind.STATION_NAVIGATION,
+        EventKind.ARRIVAL_PROMPT,
     }
 )
 
@@ -459,6 +477,7 @@ class Runtime:
         lookahead_at: time = LOOKAHEAD_AT,
         webhooks: WebhookPort | None = None,
         primary_destination: Callable[[], str | None] | None = None,
+        arrival_recipient: Callable[[], str | None] | None = None,
         weather: WeatherProvider | None = None,
         primary_destination_scope: Callable[[str], bool] = lambda destination: False,
         park_primary_pin: Callable[[str], bool] = lambda destination: False,
@@ -472,7 +491,9 @@ class Runtime:
         self._legacy_adoption_destination = legacy_adoption_destination
         self._primary_in_flight: Obligation | None = None
         self._in_flight_opted_out = False
+        self._arrival_recipient = arrival_recipient or primary_destination or (lambda: None)
         self._target_pins: dict[str, Obligation] = {}
+        self._navigation_answers: dict[str, tuple[ProviderAnswer, ...]] = {}
         self._path = profile_path
         self._profile_setup = profile_setup
         self._queue = CopyQueue(
@@ -531,7 +552,7 @@ class Runtime:
             self._memory,
             clock.now,
             lambda: self.available_channels,
-            format_event=self._weather_event,
+            format_event=self._notification_event,
             primary_enabled=self._primary_enabled,
             departure_weather=self._station_weather,
         )
@@ -541,7 +562,7 @@ class Runtime:
             self._memory,
             clock.now,
             lambda: self.available_channels,
-            format_event=self._weather_event,
+            format_event=self._notification_event,
             primary_enabled=self._primary_enabled,
             departure_weather=self._station_weather,
         )
@@ -684,6 +705,7 @@ class Runtime:
             return {"status": "retry", "text": "The change was not saved. Try again."}
         for key in prepared.remove_occurrences:
             self._memory.forget(key)
+            self._navigation_answers.pop(key, None)
         self._recovery.invalidate()
         return receipt.result(request_id)
 
@@ -740,6 +762,7 @@ class Runtime:
                         o,
                         recovery_offer=self._recovery.offer_for(o.key),
                         replacement_plans=self._recovery.plans_for(o.key) or o.replacement_plans,
+                        navigation=self._navigation(self.state.occurrences[okey(o.key)], now)[1],
                     ),
                     snapshot.profiles,
                     now,
@@ -838,6 +861,71 @@ class Runtime:
             and o.legs
             and o.legs[0].progress in (LegState.PENDING, LegState.BOARDING)
             and not (o.selected_recovery is not None and o.selected_recovery.status == "active")
+        )
+
+    def _navigation(
+        self, state: OccurrenceState, now: datetime, event: AlertEvent | None = None
+    ) -> tuple[str, tuple[str, str] | None]:
+        profile = routing_profile(self.state, state.key.profile_id, state.route_revision)
+        if profile is None or not profile.alerts.navigate:
+            return "", None
+        key = okey(state.key)
+        answers = self._navigation_answers.get(key, self._memory.boards.get(key, ()))
+        ctx = (
+            self._ctx(state, now)
+            if event is not None and event.kind is EventKind.LEAVE_NOW
+            else None
+        )
+        code = boarding_station(state, answers, now, event, ctx)
+        return code, station_links(self._provider.positions, code)
+
+    def _navigation_event(
+        self, state: OccurrenceState, ctx: Ctx, *, train: TrainId | None = None
+    ) -> AlertEvent | None:
+        if self._primary_destination() in (None, LEGACY_PRIMARY):
+            return None
+        station, maps = self._navigation(state, ctx.now)
+        if maps is None:
+            return None
+        selected = state.selected_recovery if train is None else None
+        facts = AlertFacts(
+            recovery_selection=selected.id if selected else "",
+            recovery_revision=selected.revision if selected else 0,
+        )
+        return make_event(
+            ctx,
+            EventKind.STATION_NAVIGATION,
+            Severity.SILENT,
+            f"Open your boarding station ({station}) in Maps.",
+            train,
+            key_facts=f"{facts.recovery_selection}:{facts.recovery_revision}:{train}",
+            stated=facts,
+        )
+
+    def _notification_event(self, event: AlertEvent) -> AlertEvent:
+        event = self._weather_event(event)
+        if (
+            event.kind
+            not in (
+                EventKind.ALL_GOOD,
+                EventKind.LEAVE_NOW,
+                EventKind.DELAYED,
+                EventKind.PLATFORM_CHANGE,
+                EventKind.STATION_NAVIGATION,
+            )
+            or event.direction is None
+            or event.service_date is None
+        ):
+            return event
+        key = OccurrenceKey(event.profile_id, event.direction, event.service_date)
+        state = self._writer.judged_state().occurrences.get(okey(key))
+        if state is None:
+            return event
+        _, maps = self._navigation(state, self.now(), event)
+        return (
+            event
+            if maps is None
+            else replace(event, facts=replace(alert_facts(event), navigation=maps))
         )
 
     def _weather_event(self, event: AlertEvent) -> AlertEvent:
@@ -1259,6 +1347,8 @@ class Runtime:
     ) -> None:
         now = self._clock.now()
         st = self._writer.st
+        previous_occurrences = st.occurrences
+        pending_records = self._writer.judged_state().journey_records
         occs = dict(st.occurrences)
         obligations = list(st.obligations)
         for k, (s, events) in changes.items():
@@ -1283,17 +1373,120 @@ class Runtime:
             elif previous.plan is None and state.original_plan is not None:
                 records[k] = replace(previous, plan=state.original_plan)
             record = records[k]
+            pending = pending_records.get(k)
+            if (
+                record.prompt is None
+                and pending is not None
+                and pending.prompt is not None
+                and (pending.route_revision, pending.revision, pending.destination)
+                == (record.route_revision, record.revision, record.destination)
+            ):
+                # The held notification still refers to the first prompt's ID.
+                record = replace(record, prompt=pending.prompt)
             seen, train = arrival_evidence(state, profile)
             if (record.seen_at is None and seen) or (train and train != record.train_arrival):
                 # the phone's first arrival is kept, though zone_reports later moves on; the
                 # train's follows NS, so a revised arrival moves the minimum stay with it
-                records[k] = replace(
+                record = replace(
                     record,
                     seen_at=record.seen_at or seen,
                     train_arrival=train or record.train_arrival,
                 )
-        st = replace(st, journey_records=records)
+            reported = reported_destination_arrival(state, record.destination)
+            matches_report = (
+                self._arrival_report_matches(state, record.destination, reported, now)
+                if polled and k in changes and reported is not None
+                else None
+            )
+            verified = None if reported is None else to_utc(reported)
+            if matches_report is False or (
+                matches_report is None and verified != record.reported_train_arrival
+            ):
+                verified = None
+            record = replace(record, reported_train_arrival=verified)
+            if record.prompt is not None:
+                if (
+                    reported is None
+                    or to_utc(reported) != to_utc(record.prompt.at)
+                    or matches_report is False
+                ):
+                    record = replace(record, prompt=replace(record.prompt, closed=True))
+            elif polled and k in changes and verified is not None:
+                previous_state = previous_occurrences.get(k)
+                if (
+                    previous_state is None
+                    or reported_destination_arrival(previous_state, record.destination) is None
+                ):
+                    record, prompt = self._arrival_question(record, profile, verified, now)
+                    if prompt is not None:
+                        obligations.append(prompt)
+            records[k] = record
+        st = replace(st, journey_records=records, obligations=tuple(obligations))
         self._writer.commit(self._archived(st, now), kind)
+
+    def _arrival_report_matches(
+        self, state: OccurrenceState, destination: str, accepted: datetime, now: datetime
+    ) -> bool | None:
+        last = present(state.lock).legs[-1]
+        answers = self._memory.boards.get(okey(state.key), ())
+        run = current_run(answers, last.train, last.board_station, destination)
+        if run is None or not timedelta(0) <= to_utc(now) - to_utc(run[0]) < FRESH_FOR:
+            return None
+        reports = [
+            to_utc(arrival.value)
+            for stop in run[1].leg.stops[1:]
+            if stop.code == destination
+            and (arrival := stop.arrival) is not None
+            and arrival.provenance is Provenance.REPORTED
+            and arrival.value is not None
+        ]
+        return all(value == to_utc(accepted) for value in reports) if reports else None
+
+    def _arrival_question(
+        self, record: JourneyRecord, profile: Profile, at: datetime, now: datetime
+    ) -> tuple[JourneyRecord, Obligation | None]:
+        target = self._arrival_recipient()
+        expires = to_utc(at) + timedelta(hours=2)
+        if (
+            target is None
+            or not arrival_prompt_enabled(profile.alerts)
+            or record.arrived_at is not None
+            or record.plan is None
+            or record.plan.source != "ns"
+            or not to_utc(at) <= to_utc(now) < expires
+            or to_utc(at) - to_utc(record.plan.planned_arrival) < timedelta(minutes=30)
+        ):
+            return record, None
+        prompt = ArrivalPrompt(uuid4().hex, at, expires, target)
+        key = record.key
+        local = at.astimezone(TZ).isoformat(timespec="minutes")
+        event = AlertEvent(
+            profile.id,
+            profile.name,
+            key.direction,
+            key.service_date,
+            None,
+            EventKind.ARRIVAL_PROMPT,
+            Severity.SILENT,
+            None,
+            f"{display_name(profile.name)}: NS reported your train at {record.destination} "
+            f"at {local}. Did you arrive about then?",
+            f"arrival-prompt:{okey(key)}",
+            now,
+            AlertFacts(
+                arrival_record=okey(key),
+                arrival_revision=record.revision,
+                prompt_id=prompt.id,
+                choices=(("yes", "Yes"), ("other", "Other time")),
+            ),
+        )
+        obligation = replace(
+            self._obligation(event, None, now),
+            expires_at=expires,
+            target_ids=frozenset({target}),
+            route_revision=record.route_revision,
+        )
+        return replace(record, prompt=prompt), obligation
 
     def _archived(self, st: PersistedState, now: datetime) -> PersistedState:
         """Rule 6: an occurrence leaves the store once it ended and its pending journey warnings
@@ -1309,6 +1502,7 @@ class Runtime:
             closed = ctx is None or to_utc(now) >= to_utc(ctx.schedule.window_end)
             if closed and may_archive(s, now, pending_journey_warnings(st.obligations, s.key)):
                 self._memory.forget(k)
+                self._navigation_answers.pop(k, None)
                 profile = routing_profile(st, s.key.profile_id, s.route_revision)
                 record = st.journey_records.get(k)
                 last = s.lock.legs[-1] if s.lock is not None else None
@@ -1576,6 +1770,9 @@ class Runtime:
                 if self._waits(o):
                     continue
                 v = self._held_ledger if held else self._ledger
+                if o.event.kind is EventKind.ARRIVAL_PROMPT:
+                    await self._deliver_arrival_question(o, v)
+                    continue
                 pinned = self._pin_targets(o, v)
                 staged = self._queue.stage(pinned, held)
                 copies |= staged
@@ -1672,6 +1869,36 @@ class Runtime:
         finally:  # each acknowledged send is recorded, also when shutdown cancels the pass
             self._record_delivery(finished, kept, told, copies, accepted=accepted, history=history)
 
+    async def _deliver_arrival_question(self, o: Obligation, ledger: LiveLedger) -> None:
+        target = self._arrival_recipient()
+        verdict = primary_delivery_verdict(
+            o, ledger, self._clock.now(), target, self._writer.audience_written(o)
+        )
+        if verdict is DeliveryVerdict.DROP:
+            self._record_delivery({o.id}, {}, ())
+        if verdict is not DeliveryVerdict.SEND or target is None:
+            return
+        event = ledger.current(o)
+        if event is None:
+            self._record_delivery({o.id}, {}, ())
+            return
+        # Telegram cannot deduplicate a send after a lost response. Reserve the only attempt
+        # before contacting the phone, so a restart cannot send a second question.
+        st = self._writer.st
+        if not self._writer.commit_strict(
+            replace(st, obligations=tuple(x for x in st.obligations if x.id != o.id))
+        ):
+            return
+        try:
+            sent = await self._notifier.send(event)
+        except NotificationPaused:
+            # The adapter did not start a send. It is safe to make the question pending again.
+            st = self._writer.st
+            self._writer.commit_strict(replace(st, obligations=(*st.obligations, o)))
+            return
+        if sent:
+            self._record_delivery(set(), {}, (), accepted=((o, target),))
+
     def _record_delivery(
         self,
         finished: set[str],
@@ -1700,6 +1927,28 @@ class Runtime:
             st = _advice_told(st, told)
             st = disruptions_told(st, told)
             st = disruptions_received(st, accepted)
+            for obligation, target in accepted:
+                if obligation.event.kind is not EventKind.ARRIVAL_PROMPT:
+                    continue
+                facts = alert_facts(obligation.event)
+                record = st.journey_records.get(facts.arrival_record)
+                prompt = None if record is None else record.prompt
+                if (
+                    record is not None
+                    and prompt is not None
+                    and not prompt.closed
+                    and record.revision == facts.arrival_revision
+                    and (prompt.id, prompt.recipient) == (facts.prompt_id, target)
+                ):
+                    st = replace(
+                        st,
+                        journey_records={
+                            **st.journey_records,
+                            facts.arrival_record: replace(
+                                record, prompt=replace(prompt, delivered=True)
+                            ),
+                        },
+                    )
             ledgers = lookahead_received(ledgers, accepted)
             obligations = _survivors(st.obligations, finished, kept, marks)
             st = replace(st, obligations=obligations, lookahead=ledgers)
@@ -1978,6 +2227,7 @@ class Runtime:
                 record = replace(record, usual_arrival=arrival)
             st, events = replace(st, advice=record), [*events, *more]
         if answers:
+            self._navigation_answers.pop(k, None)
             self._remember(k, st, answers)
             self._memory.boards[k] = answers
         return st, events
@@ -2170,42 +2420,58 @@ class Runtime:
     ) -> PersistedState:
         if selected.status != "active":
             return stored
+        key = okey(state.key)
+        record = stored.journey_records.get(key)
+        if record is not None and record.prompt is not None and not record.prompt.closed:
+            stored = replace(
+                stored,
+                journey_records={
+                    **stored.journey_records,
+                    key: replace(record, prompt=replace(record.prompt, closed=True)),
+                },
+            )
+        context = self._ctx(state, self._clock.now())
+        if context is None:
+            return stored
+        navigation = (
+            self._navigation_event(state, context)
+            if old is None or (old.id, old.index) != (selected.id, selected.index)
+            else None
+        )
+        events = [] if navigation is None else [navigation]
         changed = old is None or (old.monitoring_issue, old.revision) != (
             selected.monitoring_issue,
             selected.revision,
         )
-        if not changed or (
-            selected.monitoring_issue == "current"
-            and (old is None or old.monitoring_issue == "current")
+        if changed and (
+            selected.monitoring_issue != "current"
+            or (old is not None and old.monitoring_issue != "current")
         ):
-            return stored
-        context = self._ctx(state, self._clock.now())
-        if context is None:
-            return stored
-        kind = (
-            EventKind.RECOVERY_UPDATE
-            if selected.monitoring_issue == "changed"
-            else EventKind.RECOVERY_MONITORING
-        )
-        text = (
-            selected.monitoring_error
-            or "NS recovery monitoring is current again. Progress still needs your confirmations."
-        )
-        event = make_event(
-            context,
-            kind,
-            Severity.SILENT if selected.monitoring_issue == "current" else Severity.LOUD,
-            text,
-            key_facts=f"recovery:{selected.id}:{selected.revision}:{selected.monitoring_issue}:{selected.monitoring_revision}",
-            stated=AlertFacts(
-                recovery_selection=selected.id,
-                recovery_revision=selected.revision,
-                recovery_issue=f"{selected.monitoring_issue}:{selected.monitoring_revision}",
-            ),
-        )
-        recorded, obligations = self._record(
-            state, (event,), self._clock.now(), False, stored.occurrences
-        )
+            kind = (
+                EventKind.RECOVERY_UPDATE
+                if selected.monitoring_issue == "changed"
+                else EventKind.RECOVERY_MONITORING
+            )
+            text = (
+                selected.monitoring_error
+                or "NS recovery monitoring is current again. "
+                "Progress still needs your confirmations."
+            )
+            events.append(
+                make_event(
+                    context,
+                    kind,
+                    Severity.SILENT if selected.monitoring_issue == "current" else Severity.LOUD,
+                    text,
+                    key_facts=f"recovery:{selected.id}:{selected.revision}:{selected.monitoring_issue}:{selected.monitoring_revision}",
+                    stated=AlertFacts(
+                        recovery_selection=selected.id,
+                        recovery_revision=selected.revision,
+                        recovery_issue=f"{selected.monitoring_issue}:{selected.monitoring_revision}",
+                    ),
+                )
+            )
+        recorded, obligations = self._record(state, events, context.now, False, stored.occurrences)
         return replace(
             stored,
             occurrences={**stored.occurrences, okey(state.key): recorded},
@@ -2224,6 +2490,46 @@ class Runtime:
                 ),
                 reverse=True,
             )
+        )
+
+    async def answer_arrival_prompt(
+        self, prompt_id: str, answer: str, recipient: str
+    ) -> JourneyRecord | Refused:
+        st = self._writer.st
+        for k, record in st.journey_records.items():
+            prompt = record.prompt
+            if prompt is None or prompt.id != prompt_id:
+                continue
+            profile = routing_profile(st, record.key.profile_id, record.route_revision)
+            if (
+                not prompt.delivered
+                or prompt.closed
+                or record.arrived_at is not None
+                or profile is None
+                or not arrival_prompt_enabled(profile.alerts)
+                or prompt.recipient != recipient
+                or self._arrival_recipient() != recipient
+                or to_utc(self._clock.now()) >= to_utc(prompt.expires_at)
+            ):
+                break
+            if answer == "yes":
+                return await self.confirm_arrival(
+                    record.key,
+                    record.destination,
+                    prompt.at,
+                    expected_revision=record.revision,
+                    action_id=f"arrival-prompt:{prompt.id}",
+                )
+            if answer == "other":
+                updated = replace(record, prompt=replace(prompt, closed=True))
+                if self._writer.commit_strict(
+                    replace(st, journey_records={**st.journey_records, k: updated})
+                ):
+                    return updated
+                return Refused("The answer was not saved. Free storage and try again.")
+            break
+        return Refused(
+            "This arrival question is no longer available. Review your arrival manually."
         )
 
     async def confirm_arrival(
@@ -2254,6 +2560,8 @@ class Runtime:
             return Refused(str(error))
         if updated == record:
             return record
+        if updated.prompt is not None:
+            updated = replace(updated, prompt=replace(updated.prompt, closed=True))
         obligations = stored.obligations
         profile = routing_profile(stored, key.profile_id, record.route_revision)
         if profile is not None and updated.reminder_due(profile.alerts.compensation_reminder):
@@ -2373,6 +2681,14 @@ class Runtime:
             if ctx is not None:
                 t = apply_action(s, ctx, action)
                 changed = t.state
+                events = t.events
+                if isinstance(action, Choose) and changed.lock is not s.lock:
+                    self._navigation_answers[k] = action.answers
+                    nav = self._navigation_event(
+                        changed, ctx, train=action.connection.legs[0].train
+                    )
+                    if nav is not None:
+                        events = (*events, nav)
                 if isinstance(action, NotTravelling):
                     self._recovery.invalidate(key)
                     recovery = changed.selected_recovery
@@ -2386,7 +2702,7 @@ class Runtime:
                                 revision=recovery.revision + 1,
                             ),
                         )
-                changes[k] = (changed, t.events)
+                changes[k] = (changed, events)
         self._apply(changes, kind=Change.ACTION)
         await self._deliver()
         return None
@@ -2850,13 +3166,18 @@ class Runtime:
         self._reload.announced = reason
         self._app_warning(EventKind.PROFILE_REFUSED, f"profile change refused: {reason}.", now)
 
-    async def reload(self) -> Refused | None:
+    async def reload(self, *, just_saved: str | None = None) -> Refused | None:
         request = self._reload.begin()
         now = self._clock.now()
         applied: Config | None = None
         try:
-            # off the loop (rule 12); a view taken during the read keeps the old refusal
-            text = await asyncio.to_thread(self._path.read_text, encoding="utf-8")
+            if just_saved is None:
+                text = await asyncio.to_thread(self._path.read_text, encoding="utf-8")
+            else:
+                # A timetable button must commit the adoption before a probe can retire it.
+                text = self._path.read_text(encoding="utf-8")
+                if text != just_saved:
+                    return Refused("The profile file changed. Review it and try again.")
         except (OSError, UnicodeDecodeError) as e:
             if not self._reload.current(request):
                 return Refused(
@@ -2972,8 +3293,8 @@ class Runtime:
         now_loc = {p.id: p.location for p in new.profiles}
         next_state = replace(state, config=new)
         for plan in state.travel_plans.values():
-            was[plan.id] = inherited_location(state, plan.profile).location
-            now_loc[plan.id] = inherited_location(next_state, plan.profile).location
+            was[plan.id] = inherited_preferences(state, plan.profile).location
+            now_loc[plan.id] = inherited_preferences(next_state, plan.profile).location
         for pid in was.keys() | now_loc.keys():
             if was.get(pid) != now_loc.get(pid):
                 self._loc_epoch[pid] = self._loc_epoch.get(pid, 0) + 1
@@ -2984,8 +3305,8 @@ class Runtime:
             s = frozen(self._writer.st, s)
             route = find_profile(snaps.get(s.route_revision) or old, s.key.profile_id)
             if route is not None and route.travel_plan:
-                prior = inherited_location(state, route)
-                changed = inherited_location(next_state, route)
+                prior = inherited_preferences(state, route)
+                changed = inherited_preferences(next_state, route)
                 if prior.location != changed.location:
                     s = self._clear_origin_presence(s, prior, changed)
                     s = replace(s, generation=s.generation + 1)
@@ -3003,6 +3324,7 @@ class Runtime:
                 rev = s.route_revision  # locked or riding: runs on its route revision (rule 10)
             else:  # not locked yet: created again from the new route when its window opens
                 self._memory.forget(k)  # what was seen of the old route is no evidence for it
+                self._navigation_answers.pop(k, None)
                 continue
             moved = replace(s, route_revision=rev, settings_revision=new.revision)
             if route is not None and p is not None and was.get(p.id) != p.location:
@@ -3012,9 +3334,23 @@ class Runtime:
                 moved = replace(moved, generation=s.generation + 1)  # in-flight results are stale
             occs[k] = moved
         baselines, ledgers = _rebased(self._writer.st, old, new, today)
+        st = self._writer.st
+        records = dict(st.journey_records)
+        for k, record in records.items():
+            if record.prompt is None or record.prompt.closed:
+                continue
+            profile = routing_profile(
+                replace(st, config=new), record.key.profile_id, record.route_revision
+            )
+            if (
+                profile is None
+                or not arrival_prompt_enabled(profile.alerts)
+                or (k in st.occurrences and k not in occs)
+            ):
+                records[k] = replace(record, prompt=replace(record.prompt, closed=True))
         self._writer.propose(replace(
-            self._writer.st, config=new, config_snapshots=snaps, occurrences=occs,
-            baselines=baselines, lookahead=ledgers,
+            st, config=new, config_snapshots=snaps, occurrences=occs,
+            baselines=baselines, lookahead=ledgers, journey_records=records,
             brief_days={pid: day for pid, day in self._writer.st.brief_days.items() if pid in now_loc},
         ))  # fmt: skip
 

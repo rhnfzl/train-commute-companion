@@ -59,7 +59,7 @@ from .commands import (
 from .follow import FUTURE_LIMIT, Follower, stamp
 from .setup_wizard import SetupWizard
 from .status_pin import INTERVAL_S, StatusPin, StatusPins, load_pins
-from .telegram import TelegramApi, TelegramError, split_text
+from .telegram import TelegramApi, TelegramError, split_text, telegram_recipient
 from .travel_actions import POLICY_LABELS, TravelActions
 from .travel_chat import TravelChat, TravelReply, buttons, plan_receipt
 from .travel_language import TravelLanguage
@@ -119,7 +119,7 @@ BUTTON_LABELS = {
     "tm": "Travel preference",
 }
 # exclusive one-time choices: a used one takes its whole keyboard; any other used button goes alone
-WHOLE_KEYBOARD = frozenset({"ok", "av", "q", "ra", "tp", "ta", "ag", "tm", "setup"})
+WHOLE_KEYBOARD = frozenset({"ok", "av", "ap", "q", "ra", "tp", "ta", "ag", "tm", "setup"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,6 +315,12 @@ class Bot:
                 self._chat == chat and self.state.confirmed_for == proof and eligible() == enabled
             ),
         )
+
+    @property
+    def arrival_recipient(self) -> str | None:
+        if not self.confirmed or self._chat is None or self._chat <= 0:
+            return None
+        return telegram_recipient(self._api.bot_id, self._chat)
 
     async def _setup_claim(self) -> None:
         if self._chat is not None or self._claim is not None or not self._state_safe:
@@ -531,6 +537,16 @@ class Bot:
             return
         try:
             if cb:
+                action = cb.get("data")
+                if (
+                    isinstance(action, str)
+                    and action.startswith("ap|")
+                    and (
+                        _obj(cb.get("from")).get("id") != chat
+                        or _obj(_obj(cb.get("message")).get("chat")).get("type") != "private"
+                    )
+                ):
+                    return
                 await self._button(cb)
             elif msg and isinstance(msg.get("text"), str):
                 await self._message(msg)
@@ -836,6 +852,8 @@ class Bot:
             return await self._arrival_confirm(parts[1])
         if parts[:1] == ["stats"] and len(parts) == 2:
             return self._statistics_delete(parts[1])
+        if parts[:1] == ["ap"] and len(parts) == 3:
+            return await self._arrival_answer(parts[1], parts[2])
         if parts[:1] == ["q"] and len(parts) == 3:
             return await self._answer(parts[1], parts[2])
         if parts[:1] == ["ok"] and len(parts) == 2:
@@ -963,6 +981,26 @@ class Bot:
         )
         if isinstance(result, Refused):
             return Outcome(result.text)
+        return Outcome("Arrival saved. " + arrival_text(result), done=True)
+
+    async def _arrival_answer(self, nonce: str, answer: str) -> Outcome:
+        recipient = self.arrival_recipient
+        if recipient is None:
+            return Outcome("Confirm phone delivery with /test before recording an arrival.")
+        result = await self._call_runtime(self._rt.answer_arrival_prompt(nonce, answer, recipient))
+        if isinstance(result, Refused):
+            return Outcome(result.text)
+        if answer == "other":
+            key = result.key
+            command = (
+                f"/arrived {key.profile_id} {key.direction.value} "
+                f"{key.service_date} {result.destination} "
+            )
+            return Outcome(
+                "Enter your actual arrival as a full date and time with UTC offset:\n"
+                f"{command}<arrival-time>\nThen review and confirm it.",
+                done=True,
+            )
         return Outcome("Arrival saved. " + arrival_text(result), done=True)
 
     async def _confirm(self, nonce: str) -> Outcome:

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from train_commute_companion.model import AlertEvent, Severity
+from train_commute_companion.model import AlertEvent, Severity, alert_facts
 from train_commute_companion.notify import DestinationReservations, NotificationSuppressed
 from train_commute_companion.webhook import check_token
 
@@ -139,9 +139,11 @@ class NtfyNotifier:
         async with self._sending:
             key = (event.profile_id, event.direction.value if event.direction else "", event.key)
             loud = event.severity is Severity.LOUD
-            payload = (event.text, not loud, "")
+            links = alert_facts(event).navigation or ()
+            text = "\n".join((event.text, *links))
+            payload = (text, not loud, "")
             # ntfy's limit is bytes. Each Python character needs at most four UTF-8 bytes.
-            parts = split_text(event.text, limit=1000)
+            parts = split_text(text, limit=1000)
             progress = self._parts.get(key)
             if progress is None or progress.payload != payload:
                 progress = MessageProgress(payload, len(parts))

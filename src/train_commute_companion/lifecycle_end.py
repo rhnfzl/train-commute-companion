@@ -181,6 +181,15 @@ def arrival_evidence(s: OccurrenceState, p: Profile) -> tuple[datetime | None, d
     return (min(seen, key=to_utc) if seen else None), train
 
 
+def reported_destination_arrival(s: OccurrenceState, destination: str) -> datetime | None:
+    if s.not_travelling or s.lock is None or s.selected_recovery is not None:
+        return None
+    last = s.lock.legs[-1]
+    if last.state is LegState.DONE and last.alight_stop == last.intended_alight == destination:
+        return last.accept_value
+    return None
+
+
 def _never_boarded(s: OccurrenceState, ctx: Ctx, j: Journey, *, retained: bool) -> bool:
     """2026-11-18: with location on, the user was never at the station `j` starts from nor at
     any station it changes at. A train that only NS saw leave and arrive was a guess (Q12 rule

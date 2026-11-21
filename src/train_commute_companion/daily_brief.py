@@ -410,6 +410,10 @@ def current_text(
                 live_today=then.alerts.live_today,
                 telegram_status_pin=then.alerts.telegram_status_pin,
                 quick_trip=then.alerts.quick_trip,
+                navigate=then.alerts.navigate,
+                timetable_update=then.alerts.timetable_update,
+                arrival_prompt=then.alerts.arrival_prompt,
+                compensation_details=then.alerts.compensation_details,
             ),
         )
         != then

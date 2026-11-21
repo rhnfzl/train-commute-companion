@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.core import Event, HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
@@ -17,7 +17,8 @@ from train_commute_companion.serde import encode
 
 from .const import DOMAIN
 from .data import TccData
-from .services import _call_runtime, _refresh_or_refuse, resolve_profile
+from .notifier import ARRIVAL_PREFIX, HaNotifier
+from .services import MOBILE_ACTION, _call_runtime, _refresh_or_refuse, resolve_profile
 
 
 def aware_timestamp(value: object) -> datetime:
@@ -105,7 +106,9 @@ async def _confirm_arrival(call: ServiceCall) -> dict[str, Any]:
         action_id=values["action_id"],
         original_planned_arrival=values.get("original_planned_arrival"),
     )
-    return {"record": encode(result), "text": arrival_text(result)}
+    record = encode(result)
+    record.pop("prompt", None)
+    return {"record": record, "text": arrival_text(result)}
 
 
 def async_setup_arrival_services(hass: HomeAssistant) -> None:
@@ -116,3 +119,24 @@ def async_setup_arrival_services(hass: HomeAssistant) -> None:
         CONFIRM_ARRIVAL,
         supports_response=SupportsResponse.OPTIONAL,
     )
+
+
+def listen_for_arrival(data: TccData, notifier: HaNotifier) -> None:
+    async def answer(event: Event) -> None:
+        action = event.data.get("action")
+        if not isinstance(action, str) or not action.startswith(ARRIVAL_PREFIX):
+            return
+        recipient = notifier.action_recipient(event)
+        if recipient is None:
+            return
+        result = await _call_runtime(
+            data,
+            lambda rt: rt.answer_arrival_prompt(
+                action.removeprefix(ARRIVAL_PREFIX), "yes", recipient
+            ),
+        )
+        if isinstance(result, JourneyRecord):
+            await data.coordinator.async_request_refresh()
+
+    entry = data.coordinator.config_entry
+    entry.async_on_unload(notifier.hass.bus.async_listen(MOBILE_ACTION, answer))

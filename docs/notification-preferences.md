@@ -92,6 +92,18 @@ alerts:
 
 Set `quick_trip: false` in any configured profile to disable checks for the whole running companion, including checks for other station pairs. The setting accepts YAML booleans `true` and `false`. The Home Assistant profile details form has the same **Allow quick trip checks** switch.
 
+## Open the boarding station in Maps
+
+Tap **Apple Maps** or **Google Maps** on a pre-trip phone alert or in Telegram `/status`.
+With ntfy, the map links appear in the notification text.
+The buttons open the NS station your current itinerary boards, including a different station you choose and supported train stations in a selected recovery.
+Links contain only public coordinates from the NS station catalogue. The companion omits them when it cannot verify a current boarding station.
+Set `alerts.navigate: false` to hide the buttons from new alerts and status messages.
+An older message keeps the station shown when it was sent. Check the latest journey before using its map button.
+
+Both `alerts.navigate` and `alerts.arrival_prompt` default to `true` and require Boolean values.
+The [arrival question](compensation-reminders.md#confirm-a-suggested-arrival-time) also requires opt-in compensation reminders and primary delivery for the routine category.
+
 ## Repeated missed trains
 
 When you stay at home (at work on the way back) past your train, the companion says "you missed" with the next train you can catch, and follows that one. Stay longer and each next train gets its own "you missed" message. By default every one of them makes a sound.

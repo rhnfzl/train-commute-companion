@@ -15,7 +15,14 @@ async def test_pre_refactor_runtime_state_resumes_without_rebinding_receipts(tmp
     fixture = Path(__file__).parent / "data/state/pre-explicit-runtime-v2.json"
     original = json.loads(fixture.read_text())["state"]
     expected_records = {  # 0.3.0: no arrival seen yet in these saved journeys
-        k: {**r, "seen_at": None, "train_arrival": None}
+        k: {
+            **r,
+            "plan": {**r["plan"], "origin": None, "train_numbers": []} if r["plan"] else None,
+            "seen_at": None,
+            "train_arrival": None,
+            "prompt": None,
+            "reported_train_arrival": None,
+        }
         for k, r in original["journey_records"].items()
     }
     old_alerts = {o["event"]["key"] for o in original["obligations"]}

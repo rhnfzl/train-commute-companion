@@ -74,6 +74,7 @@ from train_commute_companion.state import (
     LookAheadFact,
     LookAheadLedger,
 )
+from train_commute_companion.timetable_update import timetable_edit
 
 # ---- the run
 
@@ -430,12 +431,17 @@ def _adopt(
     tag = adopt_key(adopted.version)
     draft.add_entry(day_key(expected[0], None), tag)
     when = f"{expected[0]:%A} {expected[0].day} {expected[0]:%b}"
+    edit = timetable_edit(p, d, draft.history(), adopted.version)
+    text = (
+        f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} from {when};"
+        " I follow the new time."
+    )
+    text += "\n" + edit.yaml_hint.removesuffix(".") if edit is not None else " Update your profile?"
     draft.add_fact(
         expected[0],
         LookAheadFact(
             tag,
-            f"NS moved your {_clock_text(old_first)} to {_clock_text(new_first)} from {when};"
-            " I follow the new time. Update your profile?",
+            text,
             loud=False,
             warning=False,
         ),

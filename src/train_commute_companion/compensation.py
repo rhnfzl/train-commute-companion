@@ -3,7 +3,7 @@
 from dataclasses import replace
 from datetime import datetime, time
 
-from train_commute_companion.calendar import resolve_local, to_utc
+from train_commute_companion.calendar import TZ, resolve_local, to_utc
 from train_commute_companion.compensation_state import (
     ArrivalConfirmation,
     JourneyRecord,
@@ -42,7 +42,17 @@ def reference_from_connection(
         or (checked_at is not None and not _aware(checked_at))
     ):
         return None
-    return PlannedJourney(last.alight.code, dep, arr, "ns", checked_at)
+    return PlannedJourney(
+        last.alight.code,
+        dep,
+        arr,
+        "ns",
+        checked_at,
+        origin=first.board.code or None,
+        train_numbers=tuple(
+            leg.train.train_number for leg in connection.legs if leg.train.train_number
+        ),
+    )
 
 
 def confirm(
@@ -128,3 +138,25 @@ def arrival_text(record: JourneyRecord) -> str:
         "Check current NS compensation rules. Adjusted timetables and other conditions may affect your claim. "
         "This comparison does not decide eligibility. " + NS_COMPENSATION
     )
+
+
+def reminder_text(record: JourneyRecord, *, include_details: bool) -> str:
+    text = arrival_text(record)
+    if not include_details or record.plan is None or record.arrived_at is None:
+        return text
+    plan = record.plan
+    lines = ["Journey details", f"Travel date: {record.key.service_date}"]
+    if plan.origin is not None:
+        lines.append(f"Planned origin: {plan.origin}")
+    lines.append(f"Destination: {plan.destination}")
+    if plan.train_numbers:
+        lines.append(f"Planned trains: {', '.join(plan.train_numbers)}")
+    for label, value in (
+        ("Planned departure", plan.planned_departure),
+        ("Planned arrival", plan.planned_arrival),
+        ("NS-reported train arrival", record.reported_train_arrival),
+        ("Your confirmed arrival", record.arrived_at),
+    ):
+        if value is not None:
+            lines.append(f"{label}: {value.astimezone(TZ).isoformat(timespec='minutes')}")
+    return text + "\n\n" + "\n".join(lines)
