@@ -1,15 +1,19 @@
 """Weekly digests persist one current, recipient-pinned summary with explicit coverage gaps."""
 
 import asyncio
+import hashlib
+import json
+from dataclasses import replace
 from datetime import date, time, timedelta
 
 import pytest
+import runtime_seam as seam
 from runtime_rig import DAY, PROFILE, Rig, at
 
 from train_commute_companion.model import EventKind, WorksDigestSettings
 from train_commute_companion.profile import load_config
 from train_commute_companion.providers.base import PlannedWorks, ProviderAnswer
-from train_commute_companion.serde import dumps, loads
+from train_commute_companion.serde import dumps, encode, loads
 from train_commute_companion.store import PersistedState
 from train_commute_companion.works_digest import check_week, due_week
 
@@ -117,6 +121,31 @@ async def test_real_runtime_once_per_week_restart_and_durable_audience(tmp_path)
     await rig.restart()
     await rig.rt.works_digest_idle()
     assert len(digests(rig)) == 1
+
+
+async def test_old_pending_digest_survives_upgrade_to_recurring_profiles(tmp_path):
+    rig = Rig(tmp_path, "07:55")
+    rig.write(text=TEXT)
+    rig.notifier.fails = lambda e: e.kind is EventKind.WORKS_DIGEST
+    await rig.rt.start()
+    await rig.rt.works_digest_idle()
+    (queued,) = [o for o in rig.rt.state.obligations if o.event.kind is EventKind.WORKS_DIGEST]
+    legacy = encode(profile())
+    legacy.pop("repeat")
+    token = hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
+    obligations = tuple(
+        replace(o, digest_token=token) if o.id == queued.id else o for o in rig.rt.state.obligations
+    )
+    seam.seed_state(rig.rt, obligations=obligations)
+    seam.save_state(rig.rt)
+
+    rig.clock.jump(2)
+    rig.notifier.fails = lambda _: False
+    await rig.restart()
+    await rig.rt.works_digest_idle()
+    await rig.rt.watchdog_once()
+    assert [e.key for e in digests(rig)] == [queued.event.key, queued.event.key]
+    assert not any(o.id == queued.id for o in rig.rt.state.obligations)
 
 
 async def test_unknown_feed_never_means_all_clear_and_queries_cover_seven_days(tmp_path):

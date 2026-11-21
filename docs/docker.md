@@ -147,7 +147,7 @@ A recovery step removes both old progress and stop controls for that step. The r
 
 ## Plan a trip in Telegram
 
-Send `/plan`, then choose **New plan**. Enter the stations and the first travel date. To repeat the trip, choose the weekdays, the interval in weeks and any dates to skip. Set a last date for a temporary plan, or choose **Ongoing**.
+Send `/plan`, then choose **New plan**. Enter the stations and the first travel date. For a weekly plan, choose the weekdays and the interval in weeks. For a monthly plan, choose a weekday of the month, such as the first Monday. Set a last date, choose **After N trips** (1 to 366), or choose **Ongoing**. Skipped dates do not count toward the trip limit. A return belongs to its outbound commute date, even when it leaves after midnight.
 
 Choose an exact outbound train, a departure window, an arrival deadline or **When I leave**. A deadline by itself searches the three hours leading up to it. Use a departure window to search earlier. You can add a same-day or next-day return. Use **I'm leaving** to start a **When I leave** journey.
 

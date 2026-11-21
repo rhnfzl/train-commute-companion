@@ -117,6 +117,15 @@ A question (`kind` `station_ask` or `station_remember`) also has `prompt_id` (10
 
 When copies of your train in one NS answer disagree, for example on a time or a platform, you get one loud alert with `kind` `data_unclear` that shows each copy's values; check the NS app or the station boards. It comes once per train per day, again only when the values change; the look-ahead may also tell it once ahead of the day.
 
+### Flash a light or speak a reminder
+
+Import the blueprint and create an automation for your commute profile ID.
+Copy the `id` under `profiles` in your saved profiles YAML.
+Choose a light that supports flashing, or select both a speaker and a text-to-speech engine.
+You can use both actions. The speaker reads a fixed reminder and leaves trip details on your phone.
+
+[![Import the loud alert blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Frhnfzl%2Ftrain-commute-companion%2Fblob%2Fmain%2Fcustom_components%2Ftrain_commute_companion%2Fblueprints%2Floud_alert.yaml)
+
 ### Repairs
 
 - Profile file refused: your last edit or start-up file was not used.

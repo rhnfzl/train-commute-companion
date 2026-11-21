@@ -3,7 +3,7 @@
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 
-from train_commute_companion.calendar import TZ, is_commute_day, to_utc
+from train_commute_companion.calendar import TZ, to_utc
 from train_commute_companion.lifecycle import whole_day_keys
 from train_commute_companion.messages import Refused, no_journey
 from train_commute_companion.model import Ctx, Direction, DirectionState, okey
@@ -52,9 +52,7 @@ def resume(
             continue
         for back in (-1, 0, 1, 2):
             day = today - timedelta(days=back)
-            if not is_commute_day(
-                day, profile.days, profile.extra_dates, profile.skip_public_holidays
-            ):
+            if not profile.commutes_on(day):
                 continue
             sd = day + timedelta(days=profile.journey(d).day_offset)
             if service_date not in (None, sd) or profile.paused_on(sd):

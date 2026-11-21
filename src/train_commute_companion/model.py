@@ -9,6 +9,9 @@ from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 from typing import Literal, Self
 
+from train_commute_companion.calendar import is_commute_day
+from train_commute_companion.recurrence import RepeatSchedule
+
 FOLLOW_LIMIT = timedelta(minutes=150)
 
 
@@ -582,6 +585,17 @@ class Profile:
     accessibility: AccessibilitySettings = field(default_factory=AccessibilitySettings)
     works_digest: WorksDigestSettings | None = None
     travel_plan: bool = False
+    repeat: RepeatSchedule | None = None
+
+    def repeats_on(self, day: date) -> bool:
+        if self.repeat is None:
+            return day.isoweekday() in self.days
+        return self.repeat.matches(day, self.days)
+
+    def commutes_on(self, day: date) -> bool:
+        return is_commute_day(day, self.days, self.extra_dates, self.skip_public_holidays) and (
+            day in self.extra_dates or self.repeats_on(day)
+        )
 
     def paused_on(self, service_date: date) -> bool:
         return any(start <= service_date <= end for start, end in self.pauses)

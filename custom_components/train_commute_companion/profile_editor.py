@@ -26,6 +26,8 @@ from train_commute_companion.transfer import FALLBACK_MIN
 
 from .store import file_lock
 
+REPEAT_FIELDS = ("start_date", "end_date", "every_weeks", "monthly", "end_after")
+
 
 class EditorError(ValueError):
     def __init__(
@@ -128,6 +130,18 @@ def edit_profile(
         data["profiles"][index] = profile
     for key in ("name", "days", "home_station", "work_station", "skip_public_holidays"):
         profile[key] = values[key]
+    if any(f"repeat_{key}" in values for key in REPEAT_FIELDS):
+        repeat = {}
+        for key in REPEAT_FIELDS:
+            value = values.get(f"repeat_{key}")
+            if value is not None and value != "":
+                repeat[key] = (
+                    int(value) if isinstance(value, float) and value.is_integer() else value
+                )
+        if repeat:
+            profile["repeat"] = repeat
+        else:
+            profile.pop("repeat", None)
     if "require_accessible" in values:
         profile["accessibility"] = {
             **copy.deepcopy(profile.get("accessibility", {})),
