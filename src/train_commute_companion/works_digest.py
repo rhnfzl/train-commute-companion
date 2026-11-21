@@ -41,7 +41,10 @@ def profile_token(profile: Profile) -> str:
     route = replace(
         profile, alerts=replace(profile.alerts, channels={}, disabled_categories=frozenset())
     )
-    return hashlib.sha256(json.dumps(encode(route), sort_keys=True).encode()).hexdigest()
+    data = encode(route)
+    if profile.repeat is None:
+        data.pop("repeat")
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
 class DigestPhase(StrEnum):
