@@ -1,16 +1,59 @@
 import asyncio
 import base64
+import json
 from contextlib import asynccontextmanager
 from dataclasses import replace
 
 import pytest
-from app_rig import occ, view
+from app_rig import ONE_PROFILE, occ, view
 from tcc_app.today import render
 from tcc_app.web import start_web
 
+from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import ActiveDisruption
 
 TOKEN = "example-test-today-token"
+
+
+async def test_today_refresh_and_manifest_remain_on_the_private_origin():
+    profiles, errors = parse_profiles(ONE_PROFILE, None)
+    assert not errors
+    snapshot = view(occ(), profiles=tuple(profiles))
+    async with served(snapshot=snapshot) as (port, calls):
+        auth = "Basic " + base64.b64encode(("viewer:" + TOKEN).encode()).decode()
+        status, headers, body = await request(port, authorization=auth)
+        assert status == 200
+        assert '<meta http-equiv="refresh" content="60; url=/today">' in body
+        assert '<link rel="manifest" href="/today/manifest.webmanifest">' in body
+        assert "manifest-src 'self'" in headers["Content-Security-Policy"]
+        status, headers, body = await request(port, "/today/manifest.webmanifest")
+        assert status == 200 and calls == [True]
+        assert headers["Content-Type"] == "application/manifest+json"
+        assert headers["Cache-Control"] == "no-store"
+        manifest = json.loads(body)
+        assert manifest["start_url"] == manifest["scope"] == "/today"
+        assert manifest["display"] == "standalone"
+        assert TOKEN not in body and "office" not in body.lower()
+        assert all(i["src"].startswith("/today/") for i in manifest["icons"])
+        for icon in manifest["icons"]:
+            status, headers, png = await request(port, icon["src"])
+            assert status == 200 and headers["Content-Type"] == "image/png"
+            assert png.startswith(b"\x89PNG\r\n\x1a\n")
+        assert (await request(port, manifest["start_url"]))[0] == 401
+        assert (await request(port, "/today/paused"))[0] == 401 and calls == [True]
+        status, _, body = await request(port, "/today/paused", authorization=auth)
+        assert status == 200 and 'http-equiv="refresh"' not in body
+        assert 'href="/today/paused">Refresh status' in body
+
+
+def test_today_is_manual_with_mixed_settings_or_without_profiles():
+    profiles, errors = parse_profiles(ONE_PROFILE, None)
+    assert not errors
+    disabled = replace(profiles[0], alerts=replace(profiles[0].alerts, live_today=False))
+    for items in ((), (disabled,), (profiles[0], replace(disabled, id="p2"))):
+        body = render(view(occ(), profiles=items), True)
+        assert 'http-equiv="refresh"' not in body and 'rel="manifest"' not in body
+        assert 'href="/today">Refresh status' in body and "Office A" in body
 
 
 async def request(port, path="/today", authorization=None, method="GET"):
@@ -23,7 +66,12 @@ async def request(port, path="/today", authorization=None, method="GET"):
     await writer.wait_closed()
     head, _, body = raw.partition(b"\r\n\r\n")
     lines = head.decode().split("\r\n")
-    return int(lines[0].split()[1]), dict(line.split(": ", 1) for line in lines[1:]), body.decode()
+    headers = dict(line.split(": ", 1) for line in lines[1:])
+    return (
+        int(lines[0].split()[1]),
+        headers,
+        body if headers["Content-Type"] == "image/png" else body.decode(),
+    )
 
 
 @asynccontextmanager
@@ -81,10 +129,17 @@ async def test_today_serves_private_read_only_html_for_both_auth_methods(authori
 async def test_today_is_disabled_without_token_and_never_uses_query_credentials():
     async with served(None) as (port, calls):
         assert (await request(port, authorization="Bearer " + TOKEN))[0] == 404
+        assert (await request(port, "/today/manifest.webmanifest"))[0] == 404
         assert calls == []
     async with served() as (port, calls):
         status, _, body = await request(port, "/today?token=" + TOKEN)
         assert status == 401 and calls == [] and TOKEN not in body
+
+
+async def test_token_protected_health_is_not_cacheable():
+    async with served() as (port, calls):
+        status, headers, _ = await request(port, "/health", authorization="Bearer " + TOKEN)
+        assert status == 200 and headers["Cache-Control"] == "no-store" and not calls
 
 
 def test_today_escapes_profile_ns_and_refusal_text():

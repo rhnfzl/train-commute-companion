@@ -381,7 +381,12 @@ async def test_an_empty_catalogue_is_a_clear_error_and_does_not_write(hass):
     assert not profiles_path(hass).exists()
 
 
-async def test_options_profile_edit_preserves_advanced_settings(hass):
+@pytest.mark.parametrize(
+    "live_today, telegram_status_pin", [(True, True), (False, True), (True, False)]
+)
+async def test_options_profile_edit_preserves_advanced_settings(
+    hass, live_today, telegram_status_pin
+):
     raw = yaml.safe_load(PROFILE)
     raw["profiles"][0]["pauses"] = [{"start": "2027-04-01", "end": "2027-04-07"}]
     raw["profiles"][0]["alerts"] = {
@@ -431,6 +436,8 @@ async def test_options_profile_edit_preserves_advanced_settings(hass):
     for invalid in (True, False, "7", None, 7.5):
         with pytest.raises(vol.Invalid):
             count_selector(invalid)
+    assert shown(flow)["live_today"] is True
+    assert shown(flow)["telegram_status_pin"] is True
     flow = await hass.config_entries.options.async_configure(
         flow["flow_id"],
         {
@@ -441,6 +448,8 @@ async def test_options_profile_edit_preserves_advanced_settings(hass):
             "custom_timetable_horizon": True,
             "timetable_horizon_unit": "calendar_days",
             "timetable_horizon_count": 10.0,
+            "live_today": live_today,
+            "telegram_status_pin": telegram_status_pin,
         },
     )
     assert flow["type"] is FlowResultType.ABORT and flow["reason"] == "profile_saved"
@@ -457,6 +466,8 @@ async def test_options_profile_edit_preserves_advanced_settings(hass):
         "custom_timetable_horizon": True,
         "timetable_horizon_unit": "calendar_days",
         "timetable_horizon_count": 10,
+        **({"live_today": False} if not live_today else {}),
+        **({"telegram_status_pin": False} if not telegram_status_pin else {}),
     }
     assert saved["profiles"][1] == raw["profiles"][1]
 

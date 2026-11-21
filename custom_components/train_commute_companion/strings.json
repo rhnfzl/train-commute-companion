@@ -141,7 +141,9 @@
           "other_station_dwell_min": "Minutes at another station before it counts",
           "ask_to_remember_station": "Offer to remember a new boarding station",
           "weather": "Weather forecasts, practical tips and KNMI warnings",
-          "weather_allowance": "Suggest extra time for weather"
+          "weather_allowance": "Suggest extra time for weather",
+          "live_today": "Automatically refresh Today",
+          "telegram_status_pin": "Pin journey status in Telegram"
         },
         "data_description": {
           "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
@@ -158,7 +160,9 @@
           "other_station_dwell_min": "0 means one location fix is enough. Default 0.",
           "ask_to_remember_station": "After you say Yes at a new station, TCC asks once whether to remember it.",
           "weather": "On by default. Uses station coordinates, never phone location. Forecasts need no key. Official warnings need your own KNMI key under Configure > Weather.",
-          "weather_allowance": "Suggest extra minutes for forecast rain, fog, snow or possible ice at the departure station. Advice only, changes no trains or timers. Requires weather and leave-by text. Enabled by default."
+          "weather_allowance": "Suggest extra minutes for forecast rain, fog, snow or possible ice at the departure station. Advice only, changes no trains or timers. Requires weather and leave-by text. Enabled by default.",
+          "live_today": "Refresh the private Docker Today page and offer a home screen shortcut. Every profile on the page must allow it. Enabled by default.",
+          "telegram_status_pin": "Include this profile in the silent status pin in the confirmed private Telegram chat. Docker only. Enabled by default."
         }
       },
       "profile_error": {
@@ -376,7 +380,9 @@
           "other_station_dwell_min": "Minutes at another station before it counts",
           "ask_to_remember_station": "Offer to remember a new boarding station",
           "weather": "Weather forecasts, practical tips and KNMI warnings",
-          "weather_allowance": "Suggest extra time for weather"
+          "weather_allowance": "Suggest extra time for weather",
+          "live_today": "Automatically refresh Today",
+          "telegram_status_pin": "Pin journey status in Telegram"
         },
         "data_description": {
           "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
@@ -393,7 +399,9 @@
           "other_station_dwell_min": "0 means one location fix is enough. Default 0.",
           "ask_to_remember_station": "After you say Yes at a new station, TCC asks once whether to remember it.",
           "weather": "On by default. Uses station coordinates, never phone location. Forecasts need no key. Official warnings need your own KNMI key under Configure > Weather.",
-          "weather_allowance": "Suggest extra minutes for forecast rain, fog, snow or possible ice at the departure station. Advice only, changes no trains or timers. Requires weather and leave-by text. Enabled by default."
+          "weather_allowance": "Suggest extra minutes for forecast rain, fog, snow or possible ice at the departure station. Advice only, changes no trains or timers. Requires weather and leave-by text. Enabled by default.",
+          "live_today": "Refresh the private Docker Today page and offer a home screen shortcut. Every profile on the page must allow it. Enabled by default.",
+          "telegram_status_pin": "Include this profile in the silent status pin in the confirmed private Telegram chat. Docker only. Enabled by default."
         }
       },
       "profile_error": {

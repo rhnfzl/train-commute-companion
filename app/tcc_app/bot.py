@@ -11,7 +11,7 @@ import secrets
 import stat
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, time, timedelta
 from io import StringIO
 from pathlib import Path
@@ -53,8 +53,10 @@ from .commands import (
     render_webhook_tests,
     stations_text,
     status_buttons,
+    view_for_profiles,
 )
 from .follow import FUTURE_LIMIT, Follower, stamp
+from .status_pin import INTERVAL_S, StatusPin, StatusPins, load_pins
 from .telegram import TelegramApi, TelegramError, split_text
 from .travel_actions import POLICY_LABELS, TravelActions
 from .travel_chat import TravelChat, TravelReply, buttons, plan_receipt
@@ -131,14 +133,22 @@ class ShellState:
     # the "I got both" nonce that proved it, saved with it; None in an older file: unknown
     accepted_nonce: str | None = None
     claimed_for: str | None = None  # "<bot id>:<private chat id>"; never the setup code
+    status_pins: dict[str, StatusPin] = field(default_factory=dict)
 
 
 def load_state(path: Path) -> ShellState | None:
     try:
-        if not stat.S_ISREG(path.lstat().st_mode):
+        mode = path.lstat().st_mode
+        if not stat.S_ISREG(mode):
             raise ValueError("not a regular state file")
         raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise TypeError("invalid Telegram state")
+        pins = load_pins(raw.pop("status_pins", {}))
+        if pins and mode & 0o077:
+            raise ValueError("status pin storage must be private")
         s = ShellState(**raw)
+        s.status_pins = pins
         if (
             isinstance(s.offset, bool)
             or not isinstance(s.offset, int)
@@ -224,11 +234,12 @@ class Bot:
         self._cursor = UpdateCursor(CursorPhase.READY if trusted else CursorPhase.UNTRUSTED)
         if loaded is not None and trusted:
             self.state = loaded
-        elif loaded is not None:  # another bot's cursor: only the confirmation (it names its bot)
+        elif loaded is not None:  # binding records carry their own bot IDs
             self.state = ShellState(
                 confirmed_for=loaded.confirmed_for,
                 accepted_nonce=loaded.accepted_nonce,
                 claimed_for=loaded.claimed_for,
+                status_pins=loaded.status_pins,
             )
         else:
             self.state = ShellState()
@@ -257,11 +268,42 @@ class Bot:
         self.writes: set[asyncio.Task[bool]] = set()
         self._tasks: set[asyncio.Task[None]] = set()  # handlers, cancelled by close()
         self._core: set[asyncio.Task[Any]] = set()  # runtime calls, never cancelled here
+        self._status_pins = StatusPins(api, self.state.status_pins, self._save, rt.now)
 
     @property
     def confirmed(self) -> bool:
         return self._chat is not None and self.state.confirmed_for == (
             f"{self._api.bot_id}:{self._chat}"
+        )
+
+    async def _run_status(self) -> None:
+        while not self._cursor.closed:
+            await self.refresh_status_pin()
+            await asyncio.sleep(INTERVAL_S)
+
+    async def refresh_status_pin(self) -> None:
+        chat, proof = self._chat, self.state.confirmed_for
+        if chat is None or chat <= 0 or not self.confirmed or not self._rt.started:
+            return
+
+        def eligible() -> set[str]:
+            config = self._rt.config
+            return (
+                {p.id for p in config.profiles if p.alerts.telegram_status_pin} if config else set()
+            )
+
+        enabled = eligible()
+        text = (
+            render_status(view_for_profiles(self._rt.view(), enabled), True, for_pin=True)
+            if enabled
+            else None
+        )
+        await self._status_pins.refresh(
+            chat,
+            text,
+            lambda: (
+                self._chat == chat and self.state.confirmed_for == proof and eligible() == enabled
+            ),
         )
 
     async def _setup_claim(self) -> None:
@@ -313,6 +355,14 @@ class Bot:
     # --- polling ---
 
     async def run(self) -> None:
+        async with asyncio.TaskGroup() as tasks:
+            status = tasks.create_task(self._run_status(), name="telegram-status")
+            try:
+                await self._poll()
+            finally:
+                status.cancel()
+
+    async def _poll(self) -> None:
         while not self._cursor.closed:
             try:
                 if self._cursor.phase is CursorPhase.UNTRUSTED:
@@ -401,7 +451,7 @@ class Bot:
                 )
             ):
                 return False
-            snap = replace(self.state)  # the worker writes this copy, never a state being changed
+            snap = replace(self.state, status_pins=self.state.status_pins.copy())
             if confirmed_for is not None:
                 snap.confirmed_for, snap.accepted_nonce = confirmed_for, nonce
             if claimed_chat is not None:
