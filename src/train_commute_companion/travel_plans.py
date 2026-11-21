@@ -290,7 +290,7 @@ def parse_plan(
         p for p in profiles if p.home_station == origin and p.work_station == destination
     ) or tuple(p for p in profiles if p.home_station == origin)
 
-    # Sharing or recording choices do not change how the train is selected or alerts are routed.
+    # Readout and scheduled-profile options do not change flexible-trip routing.
     def defaults(p: Profile) -> tuple[object, ...]:
         return (
             p.traveller,
@@ -301,6 +301,8 @@ def parse_plan(
                 weekly_recap=False,
                 after_trip_note=False,
                 alert_history=False,
+                quick_trip=True,
+                daily_brief=True,
             ),
             p.accessibility,
             p.transfer_min,

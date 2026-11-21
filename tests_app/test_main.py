@@ -251,17 +251,18 @@ def test_settings_refuse_a_chat_that_is_not_private(chat):
     assert chat not in str(e.value)
 
 
-async def test_build_passes_the_lookahead_time(tmp_path, tg):
+async def test_build_passes_the_lookahead_time(tmp_path, tg, monkeypatch):
     clock = TickClock(at("05:20"))
     app = make_app(tmp_path, tg, clock, lookahead_at=time(5, 30))
     calls = []
-    real = app.rt.lookahead_once
+    provider = seam.provider(app.rt)
+    real = provider.planned_works
 
-    async def spy(*, since=None):
+    async def spy():
         calls.append(clock.now())
-        await real(since=since)
+        return await real()
 
-    app.rt.lookahead_once = spy
+    monkeypatch.setattr(provider, "planned_works", spy)
     task = asyncio.create_task(app.rt.run_forever())
     try:
         await until(lambda: calls)

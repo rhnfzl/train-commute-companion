@@ -28,12 +28,14 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
 - **Tells you what changed.** Delays, cancellations, platform changes, a train cut short, a new route, a transfer at risk or broken, and a train you missed.
 - **Suggests what to do.** When your train no longer works, it names the best train you can still catch.
 - **Shows when to leave.** Check-in and pre-trip advice use your travel buffer; a delayed train never moves leave-by later. [Settings](docs/profile-editor.md#check-in-and-leave-by-times).
+- **Sends a morning commute brief.** See today's trips and when to leave. The evening check alerts you if tomorrow's usual train needs attention. [Daily brief settings](docs/profile-editor.md#daily-commute-brief).
 - **Looks ahead.** It warns you about planned works on your route. Choose how many calendar days or upcoming commute dates to check. [Timetable lookahead](docs/profile-editor.md#timetable-lookahead).
 - **Summarizes the week.** An optional [works digest](docs/weekly-works-digest.md) checks seven calendar days and labels unknown coverage.
 - **Shows how your commute went.** See your on-time rate and delays in [local commute statistics](docs/commute-statistics.md).
 - **Tracks replacement transport.** Follow reviewed bus, walk and metro plans with explicit boarding and arrival confirmations. [Replacement transport](docs/replacement-transport.md).
 - **Shows crowd forecasts.** NS forecasts appear with your trains and alternatives; changed forecasts can send silent updates. [Crowd forecasts](docs/crowd-forecasts.md).
 - **Changes plans and alerts.** Resume a skipped journey and control quiet or paused notifications in [Home Assistant](docs/home-assistant.md).
+- **Checks any station pair.** See up to three upcoming train options in [Telegram](docs/docker.md#quick-trip-checks) or [Home Assistant](docs/home-assistant.md#quick-trip-checks).
 - **Pauses for holidays.** Set an inclusive date range and monitoring resumes afterward. [Holiday pauses](docs/holiday-pauses.md).
 - **Uses weekday departure times.** Set different first trains within one profile while preserving already-followed journeys. [Schedules](docs/weekday-schedules.md).
 - **Follows any train in a time window.** No usual train needed, with an optional minimum stay and settings per day. [Schedules](docs/weekday-schedules.md#window-mode).
@@ -98,7 +100,7 @@ Activity counts only when reported after the departure and at most 5 minutes ago
 2. **Motion (optional, recommended).** iOS: the app does not ask by itself. In the app open Settings, Companion App, Sensors, tap the blue **Motion** link and allow access, then enable **Activity**. Android: enable Detected activity. [Details](docs/location-ha.md#phone-setup).
 3. **Check it.** In Home Assistant, Developer tools, States: your phone tracker has `latitude` and `longitude`, and the activity sensor is not `unavailable`.
 
-Then add the `location` block to your profile. Steps and the optional Wi-Fi tracker: [Location with Home Assistant](docs/location-ha.md).
+Then select your person and zones in the profile editor. The same settings are available in YAML. [Location with Home Assistant](docs/location-ha.md).
 
 ## The Python core
 

@@ -162,6 +162,8 @@ def revalidate(o: Obligation, ledger: Ledger, now: datetime) -> DeliveryVerdict:
         return DeliveryVerdict.SEND
     if not ledger.notification_enabled(o):
         return DeliveryVerdict.DROP
+    if kind is EventKind.DAILY_BRIEF and not ledger.fact_holds(o):
+        return DeliveryVerdict.DROP
     if not ledger.routing_ready(o):
         return DeliveryVerdict.HOLD
     if kind in JOURNEY_WARNINGS:
@@ -172,7 +174,7 @@ def revalidate(o: Obligation, ledger: Ledger, now: datetime) -> DeliveryVerdict:
         )
     if o.expires_at is not None and now.astimezone() >= o.expires_at.astimezone():
         return DeliveryVerdict.DROP
-    if ledger.newer_covers(o) or not ledger.fact_holds(o):
+    if ledger.newer_covers(o) or (kind is not EventKind.DAILY_BRIEF and not ledger.fact_holds(o)):
         return DeliveryVerdict.DROP
     if o.occurrence is not None and not ledger.revision_live(o.occurrence, o.route_revision):
         return DeliveryVerdict.DROP

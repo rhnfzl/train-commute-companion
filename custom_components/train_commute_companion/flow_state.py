@@ -7,6 +7,7 @@ from enum import StrEnum
 class ReviewPhase(StrEnum):
     SELECTING = "selecting"
     EDITING = "editing"
+    PREVIEWING = "previewing"
     REVIEWING = "reviewing"
     COMMITTING = "committing"
     COMPLETE = "complete"

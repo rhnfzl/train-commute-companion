@@ -4,6 +4,10 @@ clear_commute_history:
       required: true
       selector:
         boolean:
+check_trip:
+  fields:
+    origin: {required: true, selector: {text: {}}}
+    destination: {required: true, selector: {text: {}}}
 choose:
   fields:
     profile:

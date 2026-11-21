@@ -124,6 +124,87 @@ def test_repeating_profile_roundtrips_and_can_return_to_plain_weekdays(tmp_path)
     assert "repeat" not in saved
 
 
+def test_alert_fields_set_and_clear_without_changing_alias_targets(tmp_path):
+    raw = yaml.safe_load(PROFILE)
+    first, second = raw["profiles"]
+    first["alerts"] = second["alerts"] = {"quiet_hours": ["21:00", "06:00"], "delay_min": 7}
+    first["works_digest"] = second["works_digest"] = {"day": "fri", "time": "18:00"}
+    doc = document(tmp_path, yaml.safe_dump(raw))
+    values = {
+        **VALUES,
+        "quiet_start": "22:30",
+        "quiet_end": "08:00",
+        "works_digest_day": "sun",
+        "works_digest_time": "19:30",
+    }
+    saved = yaml.safe_load(edit_profile(doc, "p1", values, KNOWN, TODAY))["profiles"]
+    assert saved[0]["alerts"] == {"quiet_hours": ["22:30", "08:00"], "delay_min": 7}
+    assert saved[0]["works_digest"] == {"day": "sun", "time": "19:30"}
+    assert saved[1] == second
+
+    clear = {**VALUES, "quiet_start": "", "quiet_end": "", "works_digest_day": "off"}
+    saved = yaml.safe_load(edit_profile(doc, "p1", clear, KNOWN, TODAY))["profiles"]
+    assert saved[0]["alerts"] == {"delay_min": 7}
+    assert "works_digest" not in saved[0]
+    assert saved[1] == second
+
+
+def test_alert_schedule_can_replace_a_null_alerts_block(tmp_path):
+    raw = yaml.safe_load(PROFILE)
+    raw["profiles"][0]["alerts"] = None
+    doc = document(tmp_path, yaml.safe_dump(raw))
+    text = edit_profile(
+        doc,
+        "p1",
+        {**VALUES, "disabled_categories": [], "quiet_start": "22:00", "quiet_end": "07:00"},
+        KNOWN,
+        TODAY,
+    )
+    assert yaml.safe_load(text)["profiles"][0]["alerts"]["quiet_hours"] == ["22:00", "07:00"]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"quiet_start": "21:00"},
+        {"quiet_start": "21:00", "quiet_end": "21:00"},
+        {"quiet_start": "9:00", "quiet_end": "10:00"},
+        {"quiet_start": "24:00", "quiet_end": "08:00"},
+        {"quiet_start": True, "quiet_end": "08:00"},
+        {"works_digest_day": "fri"},
+        {"works_digest_day": "Friday", "works_digest_time": "18:00"},
+        {"works_digest_day": "fri", "works_digest_time": "18:00:01"},
+    ],
+)
+def test_invalid_alert_fields_reject_the_edit(tmp_path, fields):
+    doc = document(tmp_path)
+    with pytest.raises(EditorError, match="invalid_profile"):
+        edit_profile(doc, "p1", {**VALUES, **fields}, KNOWN, TODAY)
+    assert doc.path.read_text() == PROFILE
+
+
+def test_disabled_ha_location_retains_advanced_fields_and_other_stations(tmp_path):
+    raw = yaml.safe_load(PROFILE)
+    first, second = raw["profiles"]
+    first["location"] = second["location"] = {
+        "source": "ha",
+        "entity": "person.legacy",
+        "station_radius_m": 200,
+        "zones": {"home": "zone.home", "work": "zone.office", "other": "zone.extra"},
+        "wifi": {"home": "device_tracker.legacy_wifi"},
+    }
+    first["outbound"]["other_stations"] = ["BBB"]
+    doc = document(tmp_path, yaml.safe_dump(raw))
+    text = edit_profile(doc, "p1", {**VALUES, "disable_ha_location": True}, KNOWN, TODAY)
+    saved = yaml.safe_load(text)["profiles"]
+    profiles, problems = parse_profiles(text, KNOWN)
+    assert not problems and profiles[0].location is None
+    assert profiles[1].location is not None
+    assert saved[0]["location"] == {**first["location"], "enabled": False}
+    assert saved[0]["id"] == "p1" and saved[0]["outbound"]["other_stations"] == ["BBB"]
+    assert saved[1] == second
+
+
 def test_check_in_times_roundtrip_and_can_return_to_default(tmp_path):
     doc = document(tmp_path)
     values = {**VALUES, "outbound_active_lead": 40.0, "return_active_lead": 25, "leave_by": False}

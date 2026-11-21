@@ -57,6 +57,7 @@ _GROUPS: dict[NotificationCategory, frozenset[EventKind]] = {
             EventKind.COMPENSATION_REMINDER,
             EventKind.WEEKLY_RECAP,
             EventKind.AFTER_TRIP_NOTE,
+            EventKind.DAILY_BRIEF,
         }
     ),
 }
@@ -68,6 +69,8 @@ def category_for(kind: EventKind) -> NotificationCategory | None:
 
 
 def enabled(settings: AlertSettings, kind: EventKind, *, look_ahead: bool = False) -> bool:
+    if kind is EventKind.DAILY_BRIEF and not settings.daily_brief:
+        return False
     category = "planned_works" if look_ahead and kind is EventKind.RESTORED else category_for(kind)
     return category is None or category not in settings.disabled_categories
 
@@ -85,7 +88,7 @@ def channels_for(
     category = "planned_works" if look_ahead and kind is EventKind.RESTORED else category_for(kind)
     if category is None:
         selected = CHANNELS
-    elif category in settings.disabled_categories:
+    elif not enabled(settings, kind, look_ahead=look_ahead):
         selected = frozenset()
     else:
         selected = settings.channels.get(category, CHANNELS)

@@ -148,6 +148,17 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
     raw["state"]["commute_recap_weeks"] = {}
     raw["state"]["alert_history"] = []
     raw["state"] |= {"travel_plans": {}, "travel_receipts": {}, "travel_revision": 0}
+    raw["state"]["brief_days"] = {}
+    obligations = [*raw["state"]["obligations"]]
+    obligations.extend(copy["obligation"] for copy in raw["state"]["webhook_copies"])
+    for ledger in raw["state"]["lookahead"].values():
+        ledger["last_evening"] = None
+        ledger["last_evening_attempt"] = None
+        ledger["evening_failures"] = 0
+        obligations.extend(ledger["pending"])
+    for obligation in obligations:
+        obligation["brief_directions"] = []
+        obligation["brief_rows"] = []
     for cfg in (raw["state"]["config"], *raw["state"]["config_snapshots"].values()):
         for profile in cfg["profiles"]:
             profile["travel_plan"] = False
@@ -170,6 +181,7 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
             profile["alerts"] |= {"delay_min": 3, "delay_step_min": 3}
             profile["alerts"]["leave_by"] = True
             profile["alerts"]["weather_allowance"] = True
+            profile["alerts"]["quick_trip"] = True
             profile["alerts"] |= {
                 "commute_stats": True,
                 "weekly_recap": True,
@@ -179,12 +191,14 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
                 "custom_timetable_horizon": True,
                 "timetable_horizon_unit": "calendar_days",
                 "timetable_horizon_count": 7,
+                "daily_brief": True,
             }
             profile["alerts"] |= {"live_today": True, "telegram_status_pin": True}
             profile["alerts"]["ntfy_enabled"] = True
             profile["alerts"]["arrive_by"] = True
             profile["alerts"]["alert_history"] = False
             profile["alerts"]["calendar_feed"] = True
+            profile["brief"] = {"at": None, "evening_at": "20:00:00", "only_if_something": False}
             if profile["location"] is not None:  # Q12 defaults
                 profile["location"] |= {"wifi": {}, "activity_entity": None}
                 profile["location"] |= {  # 0.3.0 other boarding station defaults

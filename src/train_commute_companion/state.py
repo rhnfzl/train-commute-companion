@@ -467,3 +467,6 @@ class LookAheadLedger:
     adoption_receipts: Mapping[str, frozenset[str]] = field(default_factory=dict)
     # Correction fact key -> ID of the original adoption obligation.
     adoption_ids: Mapping[str, str] = field(default_factory=dict)
+    last_evening: datetime | None = None
+    last_evening_attempt: datetime | None = None
+    evening_failures: int = 0

@@ -3,6 +3,7 @@
 import contextlib
 import copy
 import os
+import re
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from train_commute_companion.calendar import WEEKDAYS
 from train_commute_companion.model import (
     DEFAULT_PREFER_DIRECT_MIN,
     AlertSettings,
+    Config,
     NotificationChannel,
 )
 from train_commute_companion.notification_policy import CATEGORIES
@@ -62,7 +64,7 @@ def validate_text(
     available_channels: frozenset[NotificationChannel] | None = None,
     *,
     profile_index: int | None = None,
-) -> None:
+) -> Config:
     config, errors = load_config(text, known, None, today, available_channels=available_channels)
     if config is None or errors:
         paths = [error.path.split(".") for error in errors]
@@ -81,6 +83,7 @@ def validate_text(
             "\n".join(f"{e.path}: {e.message}" for e in errors),
             override_days,
         )
+    return config
 
 
 def read_document(
@@ -128,6 +131,8 @@ def edit_profile(
         # YAML aliases must not let this edit change another profile or section.
         profile = coded(data["profiles"][index], known)
         data["profiles"][index] = profile
+        if "alerts" in profile and profile["alerts"] is None:
+            profile["alerts"] = {}
     for key in ("name", "days", "home_station", "work_station", "skip_public_holidays"):
         profile[key] = values[key]
     if any(f"repeat_{key}" in values for key in REPEAT_FIELDS):
@@ -176,6 +181,7 @@ def edit_profile(
         "after_trip_note",
         "alert_history",
         "calendar_feed",
+        "quick_trip",
     ):
         if key not in values:
             continue
@@ -194,6 +200,28 @@ def edit_profile(
             default = getattr(defaults, key)
             if type(value) is not type(default) or value != default or key in alerts:
                 profile["alerts"] = {**alerts, key: value}
+    if "daily_brief" in values:
+        value = values["daily_brief"]
+        alerts = profile.get("alerts", {})
+        if type(value) is not bool:
+            raise EditorError("invalid_profile")
+        if value is not defaults.daily_brief or "daily_brief" in alerts:
+            profile["alerts"] = {**alerts, "daily_brief": value}
+    brief = dict(profile.get("brief", {}))
+    for key in ("at", "evening_at", "only_if_something"):
+        field = f"brief_{key}"
+        if field in values:
+            value = values[field]
+            if key == "only_if_something" and type(value) is not bool:
+                raise EditorError("invalid_profile")
+            if value == "" or value is False:
+                brief.pop(key, None)
+            else:
+                brief[key] = value
+    if brief:
+        profile["brief"] = brief
+    else:
+        profile.pop("brief", None)
     if any(f"channel_{category}" in values for category in CATEGORIES):
         alerts = copy.deepcopy(profile.get("alerts", {}))
         channels = copy.deepcopy(alerts.get("channels", {}))
@@ -256,6 +284,8 @@ def edit_profile(
         for station in journey["transfers"]:
             minimum.setdefault(station, FALLBACK_MIN)
     minimum.update(values.get("transfer_min", {}))
+    _write_alert_schedule(profile, values)
+    _write_ha_location(profile, values)
     _write_other_stations(profile, values)
     action = values.get("pause_action", "keep")
     if action not in ("keep", "add", "replace", "clear"):
@@ -295,6 +325,59 @@ def coded(profile: Mapping[str, Any], known: frozenset[str]) -> dict[str, Any]:
 
 def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def _form_time(value: object, path: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value):
+        raise EditorError("invalid_profile", f"{path}: use HH:MM from 00:00 to 23:59")
+    return value
+
+
+def _write_alert_schedule(profile: dict[str, Any], values: Mapping[str, Any]) -> None:
+    if "quiet_start" in values or "quiet_end" in values:
+        start, end = values.get("quiet_start", ""), values.get("quiet_end", "")
+        alerts = dict(profile.get("alerts") or {})
+        if start == end == "":
+            alerts.pop("quiet_hours", None)
+        else:
+            quiet = [_form_time(t, "alerts.quiet_hours") for t in (start, end)]
+            if quiet[0] == quiet[1]:
+                raise EditorError("invalid_profile", "alerts.quiet_hours: use two different times")
+            alerts["quiet_hours"] = quiet
+        if alerts or "alerts" in profile:
+            profile["alerts"] = alerts
+    if "works_digest_day" in values or "works_digest_time" in values:
+        day = values.get("works_digest_day")
+        if day == "off":
+            profile.pop("works_digest", None)
+        elif day in WEEKDAYS:
+            at = _form_time(values.get("works_digest_time"), "works_digest.time")
+            profile["works_digest"] = {"day": day, "time": at}
+        else:
+            raise EditorError("invalid_profile", "works_digest.day: choose a weekday or Off")
+
+
+def _write_ha_location(profile: dict[str, Any], values: Mapping[str, Any]) -> None:
+    location = dict(profile.get("location") or {})
+    if "ha_location" in values:
+        selected = values["ha_location"]
+        location.update(source="ha", entity=selected["entity"])
+        location.pop("enabled", None)
+        zones = dict(location.get("zones", {}))
+        for role in ("home", "work"):
+            zones.pop(role, None)
+        for key, selection in (
+            ("zones", {**zones, **selected["zones"]}),
+            ("wifi", selected["wifi"]),
+            ("activity_entity", selected["activity_entity"]),
+        ):
+            if selection:
+                location[key] = selection
+            else:
+                location.pop(key, None)
+        profile["location"] = location
+    elif values.get("disable_ha_location") is True and location.get("source") == "ha":
+        profile["location"] = {**location, "enabled": False}
 
 
 def _write_schedule(journey: dict[str, Any], direction: str, values: Mapping[str, Any]) -> None:
