@@ -30,6 +30,7 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
 - **Shows when to leave.** Check-in and pre-trip advice use your travel buffer; a delayed train never moves leave-by later. [Settings](docs/profile-editor.md#check-in-and-leave-by-times).
 - **Looks ahead.** It warns you about planned works on your route. Choose how many calendar days or upcoming commute dates to check. [Timetable lookahead](docs/profile-editor.md#timetable-lookahead).
 - **Summarizes the week.** An optional [works digest](docs/weekly-works-digest.md) checks seven calendar days and labels unknown coverage.
+- **Shows how your commute went.** See your on-time rate and delays in [local commute statistics](docs/commute-statistics.md).
 - **Tracks replacement transport.** Follow reviewed bus, walk and metro plans with explicit boarding and arrival confirmations. [Replacement transport](docs/replacement-transport.md).
 - **Shows crowd forecasts.** NS forecasts appear with your trains and alternatives; changed forecasts can send silent updates. [Crowd forecasts](docs/crowd-forecasts.md).
 - **Changes plans and alerts.** Resume a skipped journey and control quiet or paused notifications in [Home Assistant](docs/home-assistant.md).
@@ -53,7 +54,7 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
 | Household | A separate Docker companion and private bot for each traveller | [docs/household.md](docs/household.md) |
 | Webhooks | Each alert as signed JSON to your own URL, from Docker or Home Assistant | [docs/webhooks.md](docs/webhooks.md) |
 | Email | Optional encrypted SMTP copies alongside ntfy or Telegram in Docker | [docs/email.md](docs/email.md) |
-| Today | Private journey and service status that refreshes in your browser or opens from your home screen | [docs/docker.md](docs/docker.md#today-web-status) |
+| Today | Private journey and service status with browser refresh, a home screen shortcut and optional sent-alert history | [docs/docker.md](docs/docker.md#today-web-status) |
 | MCP | Journey status and optional plan management for local or private-network agents | [docs/mcp.md](docs/mcp.md) |
 
 Location (optional) helps it know when you leave and where you are. See [Where you are](#where-you-are) below.

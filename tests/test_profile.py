@@ -170,20 +170,22 @@ def test_active_lead_min_is_optional_and_at_least_buffer():
         assert [e.path for e in errs] == ["profiles[0].outbound.active_lead_min"]
 
 
+@pytest.mark.parametrize("key, default", [("ntfy_enabled", True), ("alert_history", False)])
 @pytest.mark.parametrize("value", ["true", "false"])
-def test_ntfy_switch_defaults_true_and_accepts_booleans(value):
+def test_alert_switch_defaults_and_accepts_booleans(key, default, value):
     profiles, errors = parse_profiles(one(), None)
-    assert not errors and profiles[0].alerts.ntfy_enabled is True
-    text = one().replace("    outbound:", f"    alerts: {{ntfy_enabled: {value}}}\n    outbound:")
+    assert not errors and getattr(profiles[0].alerts, key) is default
+    text = one().replace("    outbound:", f"    alerts: {{{key}: {value}}}\n    outbound:")
     profiles, errors = parse_profiles(text, None)
-    assert not errors and profiles[0].alerts.ntfy_enabled is (value == "true")
+    assert not errors and getattr(profiles[0].alerts, key) is (value == "true")
 
 
+@pytest.mark.parametrize("key", ["ntfy_enabled", "alert_history"])
 @pytest.mark.parametrize("value", ["1", "null", '"false"'])
-def test_ntfy_switch_rejects_non_booleans(value):
-    text = one().replace("    outbound:", f"    alerts: {{ntfy_enabled: {value}}}\n    outbound:")
+def test_alert_switch_rejects_non_booleans(key, value):
+    text = one().replace("    outbound:", f"    alerts: {{{key}: {value}}}\n    outbound:")
     _, errors = parse_profiles(text, None)
-    assert [e.path for e in errors] == ["profiles[0].alerts.ntfy_enabled"]
+    assert [e.path for e in errors] == [f"profiles[0].alerts.{key}"]
 
 
 @pytest.mark.parametrize("value", ["true", "false"])

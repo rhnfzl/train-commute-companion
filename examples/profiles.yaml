@@ -39,6 +39,8 @@ profiles:
       weather: true                    # station forecasts and tips; warnings need your own KNMI key
       weather_allowance: true          # suggest extra minutes in leave-by text for forecast hazards
       live_today: true                 # Docker: refresh private Today and offer a home screen shortcut
+      alert_history: false             # save recent sent alerts locally and show them on private Today
+      calendar_feed: true              # Docker: include planned trips when the calendar token is set
       telegram_status_pin: true        # Docker: include this profile in the confirmed chat's silent pin
       earlier_train_threshold_min: 10   # advise an earlier train from this much delay
       earlier_train_min_saving_min: 5   # only if it saves at least this much

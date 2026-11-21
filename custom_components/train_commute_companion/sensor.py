@@ -6,8 +6,8 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Any
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
-from homeassistant.const import EntityCategory
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
@@ -276,6 +276,20 @@ TRANSFER_SPEC: Spec[str, Direction, int] = (
 HEALTH_SPEC: Spec[str] = (health_state, _health_attrs, None)
 
 
+def _on_time(view: RuntimeView, profile_id: str) -> float | None:
+    stats = view.commute_statistics.get(profile_id)
+    return None if stats is None else stats.on_time_percent
+
+
+def _average_delay(view: RuntimeView, profile_id: str) -> float | None:
+    stats = view.commute_statistics.get(profile_id)
+    return None if stats is None else stats.average_delay_min
+
+
+ON_TIME_SPEC: Spec[str] = (_on_time, lambda _, _pid: {"days": 30}, None)
+COMMUTE_DELAY_SPEC: Spec[str] = (_average_delay, lambda _, _pid: {"days": 30}, None)
+
+
 def _bind[*Where](spec: Spec[*Where], *where: *Where) -> Bound:
     value_fn, attrs_fn, device_class = spec
     return lambda v: value_fn(v, *where), lambda v: attrs_fn(v, *where), device_class
@@ -297,6 +311,11 @@ class TccSensor(TccEntity, SensorEntity):
         self._attr_device_class = device_class
         if key == "health":
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        if key in ("commute_on_time_30d", "commute_delay_30d"):
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+            self._attr_native_unit_of_measurement = (
+                PERCENTAGE if key == "commute_on_time_30d" else UnitOfTime.MINUTES
+            )
 
     @property
     def native_value(self) -> Value:
@@ -337,6 +356,10 @@ def wanted(coordinator: TccCoordinator, view: RuntimeView) -> dict[str, Callable
             add(pid, name, "transfer", _bind(TRANSFER_SPEC, pid, d, n), d, n)
         # once per profile: the same ID from both directions
         add(pid, name, "health", _bind(HEALTH_SPEC, pid))
+    for p in view.profiles:
+        if p.alerts.commute_stats:
+            add(p.id, p.name, "commute_on_time_30d", _bind(ON_TIME_SPEC, p.id))
+            add(p.id, p.name, "commute_delay_30d", _bind(COMMUTE_DELAY_SPEC, p.id))
     return out
 
 

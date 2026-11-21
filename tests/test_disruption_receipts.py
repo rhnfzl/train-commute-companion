@@ -1,16 +1,18 @@
 """Disruption receipts belong to the exact recipient and source instance that was sent."""
 
 import asyncio
+import json
 from collections import defaultdict
 from dataclasses import replace
 from datetime import timedelta
 
 import pytest
+import runtime_seam as seam
 from lifecycle_fixtures import at, ctx, usual_locked
-from runtime_rig import Rig
+from runtime_rig import PROFILE, Rig
 
 from train_commute_companion.disruptions import disruptions_received, update_disruptions
-from train_commute_companion.model import EventKind, Obligation, okey
+from train_commute_companion.model import AlertFacts, EventKind, Obligation, okey
 from train_commute_companion.providers.base import ActiveDisruption, ActiveDisruptions
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.serde import dumps, loads
@@ -94,6 +96,136 @@ class World:
 
     def notice(self):
         return self.rig.occ().disruptions["incident"]
+
+
+def history_setting(world, value="true"):
+    world.rig.write(
+        text=PROFILE.replace("NAME", "office_a").replace(
+            "    outbound:", f"    alerts: {{alert_history: {value}}}\n    outbound:", 1
+        )
+    )
+
+
+def start_rows(world):
+    return tuple(row for row in world.rig.rt.recent_alerts() if row.kind is START)
+
+
+@pytest.mark.parametrize("first", ["phone", "email"])
+async def test_history_preserves_first_accepted_text_across_recipient_retries(tmp_path, first):
+    world = World(tmp_path)
+    history_setting(world)
+    world.rig.notifier.fails = lambda e: first == "email" and e.kind is START
+    world.port.fail = {OTHER} if first == "email" else {EMAIL, OTHER}
+    await world.start()
+    (row,) = start_rows(world)
+    receipt = world.records[EMAIL] if first == "email" else world.rig.rt.events_log
+    assert row.text == next(e.text for e in receipt if e.kind is START)
+    assert row.accepted_at == world.rig.clock.now()
+
+    world.rig.path.write_text(world.rig.path.read_text().replace("office_a", "renamed"))
+    world.rig.clock.jump(2)
+    world.rig.notifier.fails = lambda e: False
+    world.build()
+    await world.start()
+    assert world.kinds(OTHER) == [START, START]
+    assert "Renamed" in world.records[OTHER][-1].text
+    assert start_rows(world) == (row,)
+    assert world.rig.store.load().alert_history == world.rig.rt.state.alert_history
+
+
+async def test_history_is_off_by_default_and_hides_rows_without_backfilling(tmp_path):
+    world = World(tmp_path)
+    await world.start()
+    assert world.kinds() == [START]
+    assert not world.rig.store.load().alert_history
+
+    history_setting(world)
+    assert await world.rig.rt.reload() is None
+    assert not world.rig.rt.recent_alerts()
+    await world.poll(title="Expanded fault")
+    (row,) = start_rows(world)
+
+    history_setting(world, "false")
+    assert await world.rig.rt.reload() is None
+    await world.poll(title="Changed again")
+    assert world.kinds() == [START, START, START]
+    assert world.rig.store.load().alert_history == (row,)
+    assert not world.rig.rt.recent_alerts()
+    history_setting(world)
+    assert await world.rig.rt.reload() is None
+    assert start_rows(world) == (row,)
+
+
+async def test_history_persists_only_user_facing_fields_and_omits_station_and_app_alerts(
+    tmp_path,
+):
+    world = World(tmp_path)
+    history_setting(world)
+    await world.start()
+    before = {r.text for r in world.rig.rt.recent_alerts()}
+    start = next(e for e in world.rig.rt.events_log if e.kind is START)
+    messages = {
+        EventKind.AT_STATION: "private detected station",
+        EventKind.STATION_ASK: "private station question",
+        EventKind.STATION_REMEMBER: "private station confirmation",
+        EventKind.KEY_REJECTED: "private app warning",
+        EventKind.CANCELLED: "Your train was cancelled.",
+    }
+    current = world.rig.rt.state.obligations
+    obligations = tuple(
+        seam.obligation(
+            world.rig.rt,
+            replace(
+                start,
+                profile_id="" if kind is EventKind.KEY_REJECTED else start.profile_id,
+                kind=kind,
+                key=text,
+                text=text,
+                facts=AlertFacts(prompt_id="private-button-callback"),
+            ),
+            None,
+            world.rig.clock.now(),
+        )
+        for kind, text in messages.items()
+    )
+    seam.seed_state(world.rig.rt, obligations=(*current, *obligations))
+    await seam.deliver(world.rig.rt)
+    await world.rig.rt.webhooks_idle()
+    assert {e.text for e in world.rig.rt.events_log} >= set(messages.values())
+    saved = json.loads(world.rig.store.text)["alert_history"]
+    assert len(saved) == len(before) + 1
+    assert {r["text"] for r in saved} == before | {messages[EventKind.CANCELLED]}
+    assert all(
+        r.keys() == {"id", "profile_id", "kind", "created_at", "accepted_at", "text"} for r in saved
+    )
+    assert "private-" not in json.dumps(saved) and world.primary not in json.dumps(saved)
+
+
+async def test_history_caps_rows_without_resurrecting_evicted_alerts_and_expires(tmp_path):
+    world = World(tmp_path)
+    history_setting(world)
+    world.port.fail = {EMAIL}
+    await world.start()
+    (first,) = start_rows(world)
+    world.rig.clock.jump(2)
+    now = world.rig.clock.now()
+    newer = tuple(
+        replace(first, id=f"row-{i:03}", created_at=now, accepted_at=now) for i in range(100)
+    )
+    rt = world.rig.rt
+    seam.seed_state(rt, alert_history=(first, *newer))
+    seam.save_state(rt)
+    assert rt.recent_alerts() == newer[::-1]
+
+    world.port.fail.clear()
+    await rt.watchdog_once()
+    await rt.webhooks_idle()
+    assert world.kinds() == [START, START]
+    assert rt.recent_alerts() == newer[::-1]
+    world.rig.clock.jump(30 * 24 * 60)
+    assert not rt.recent_alerts()
+    await rt.watchdog_once()
+    assert all(row.created_at > now for row in world.rig.store.load().alert_history)
 
 
 async def test_primary_failure_does_not_prevent_email_start_and_clear(tmp_path):
@@ -229,20 +361,28 @@ def test_receipt_merges_latest_source_without_recreating_or_acknowledging_new_re
 
 async def test_receipt_and_copy_progress_recover_together_after_failed_write(tmp_path):
     world = World(tmp_path)
+    history_setting(world)
     world.port.gate = asyncio.Event()
+    world.port.fail = {OTHER}
+    world.rig.notifier.fails = lambda e: e.kind is START
     await world.rig.rt.start()
     await asyncio.wait_for(world.port.entered.wait(), 2)
     world.rig.store.fail = True
     world.port.gate.set()
     await world.rig.rt.webhooks_idle()
     assert not world.rig.rt.view().store_ok
+    assert not start_rows(world)
+    assert all(row.kind is not START for row in world.rig.store.load().alert_history)
     world.rig.store.fail = False
     await world.rig.rt.watchdog_once()
     await world.rig.rt.webhooks_idle()
     assert world.notice().receipts[url_id(EMAIL)].needs_clear
+    (row,) = start_rows(world)
+    assert row.text == next(e.text for e in world.records[EMAIL] if e.kind is START)
     world.build()
     await world.start()
     assert world.kinds() == [START]
+    assert start_rows(world) == (row,)
     await world.poll(False)
     assert world.kinds() == [START, CLEAR]
 

@@ -51,7 +51,13 @@ _GROUPS: dict[NotificationCategory, frozenset[EventKind]] = {
     ),
     "disruptions": frozenset({EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED}),
     "routine": frozenset(
-        {EventKind.ALL_GOOD, EventKind.AT_STATION, EventKind.COMPENSATION_REMINDER}
+        {
+            EventKind.ALL_GOOD,
+            EventKind.AT_STATION,
+            EventKind.COMPENSATION_REMINDER,
+            EventKind.WEEKLY_RECAP,
+            EventKind.AFTER_TRIP_NOTE,
+        }
     ),
 }
 

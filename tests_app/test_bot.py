@@ -35,9 +35,10 @@ from tcc_app.commands import render_status, render_webhook_tests, status_buttons
 from tcc_app.telegram import TelegramApi
 from webhook_receiver import Receiver
 
+from train_commute_companion.history import JourneyHistory
 from train_commute_companion.location import LocationEvent
 from train_commute_companion.messages import RefusalKind, Refused
-from train_commute_companion.model import Direction, DirectionState, LegState
+from train_commute_companion.model import Direction, DirectionState, LegState, OccurrenceKey, okey
 from train_commute_companion.state import Commitment, LockSource
 from train_commute_companion.webhook import WebhookTestResult
 
@@ -79,6 +80,32 @@ def tap(data: str, uid: int = 1, chat: int = CHAT, markup: Any = None) -> dict[s
     if markup is not None:
         message["reply_markup"] = markup
     return {"update_id": uid, "callback_query": {"id": f"q{uid}", "data": data, "message": message}}
+
+
+async def test_stats_and_clear_confirmation_stay_in_the_bound_chat(app):
+    save_state(app.path, ShellState(bot_id="123", confirmed_for=f"123:{CHAT}"))
+    app.bot = app.new_bot()
+    day = app.rt.now().date()
+    key = OccurrenceKey("p1", Direction.OUTBOUND, day)
+    row = JourneyHistory(
+        key, at("08:12", day), at("09:20", day), at("09:28", day), False, False, False
+    )
+    seam.seed_state(app.rt, commute_history={okey(key): row})
+    seam.save_state(app.rt)
+    await app.bot.handle(app.msg("/stats year", uid=21))
+    assert "Last 365 days" in app.texts()[-1]
+    assert "Average delay 8 minutes" in app.texts()[-1]
+
+    await app.bot.handle(app.msg("/clearstats", uid=22))
+    assert "Delete all 1 local commute statistics rows" in app.texts()[-1]
+    markup = app.tg.sent[-1]["reply_markup"]
+    data = markup["inline_keyboard"][0][0]["callback_data"]
+    await app.bot.handle(tap(data, uid=23, chat=STRANGER))
+    assert app.rt.state.commute_history
+
+    await app.bot.handle(tap(data, uid=24, markup=markup))
+    assert not app.rt.state.commute_history
+    assert "Local commute statistics and their queued notes were deleted" in app.texts()[-1]
 
 
 @pytest.fixture

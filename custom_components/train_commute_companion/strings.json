@@ -160,9 +160,14 @@
           "weather": "Weather forecasts, practical tips and KNMI warnings",
           "weather_allowance": "Suggest extra time for weather",
           "live_today": "Automatically refresh Today",
+          "calendar_feed": "Include this commute in the private calendar",
           "telegram_status_pin": "Pin journey status in Telegram",
           "ntfy_enabled": "ntfy phone alerts",
-          "arrive_by": "Choose trains by arrival time"
+          "arrive_by": "Choose trains by arrival time",
+          "commute_stats": "Record commute statistics",
+          "weekly_recap": "Send a silent weekly recap",
+          "after_trip_note": "Send a silent note after a journey",
+          "alert_history": "Keep sent alert history"
         },
         "data_description": {
           "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
@@ -181,9 +186,11 @@
           "weather": "On by default. Uses station coordinates, never phone location. Forecasts need no key. Official warnings need your own KNMI key under Configure > Weather.",
           "weather_allowance": "Suggest extra minutes for forecast rain, fog, snow or possible ice at the departure station. Advice only, changes no trains or timers. Requires weather and leave-by text. Enabled by default.",
           "live_today": "Refresh the private Docker Today page and offer a home screen shortcut. Every profile on the page must allow it. Enabled by default.",
+          "calendar_feed": "Include planned journeys in the private Docker calendar. The calendar requires its own token. Enabled by default.",
           "telegram_status_pin": "Include this profile in the silent status pin in the confirmed private Telegram chat. Docker only. Enabled by default.",
           "ntfy_enabled": "Send this profile’s alerts through ntfy when configured in the Docker app. Enabled by default. Email, webhooks and Home Assistant phone alerts keep their own settings.",
-          "arrive_by": "On by default. Off uses the earliest catchable train in the departure window and ignores the arrival target."
+          "arrive_by": "On by default. Off uses the earliest catchable train in the departure window and ignores the arrival target.",
+          "alert_history": "Save recent sent alerts locally and show them on the private Docker Today page. Off by default."
         }
       },
       "profile_error": {
@@ -426,9 +433,14 @@
           "weather": "Weather forecasts, practical tips and KNMI warnings",
           "weather_allowance": "Suggest extra time for weather",
           "live_today": "Automatically refresh Today",
+          "calendar_feed": "Include this commute in the private calendar",
           "telegram_status_pin": "Pin journey status in Telegram",
           "ntfy_enabled": "ntfy phone alerts",
-          "arrive_by": "Choose trains by arrival time"
+          "arrive_by": "Choose trains by arrival time",
+          "commute_stats": "Record commute statistics",
+          "weekly_recap": "Send a silent weekly recap",
+          "after_trip_note": "Send a silent note after a journey",
+          "alert_history": "Keep sent alert history"
         },
         "data_description": {
           "delay_min": "Default 3. Whole minutes from 1 to 1440. Before the active point, the minimum is at least 5. Cancellations, transfers and arrival-limit warnings stay enabled.",
@@ -447,9 +459,11 @@
           "weather": "On by default. Uses station coordinates, never phone location. Forecasts need no key. Official warnings need your own KNMI key under Configure > Weather.",
           "weather_allowance": "Suggest extra minutes for forecast rain, fog, snow or possible ice at the departure station. Advice only, changes no trains or timers. Requires weather and leave-by text. Enabled by default.",
           "live_today": "Refresh the private Docker Today page and offer a home screen shortcut. Every profile on the page must allow it. Enabled by default.",
+          "calendar_feed": "Include planned journeys in the private Docker calendar. The calendar requires its own token. Enabled by default.",
           "telegram_status_pin": "Include this profile in the silent status pin in the confirmed private Telegram chat. Docker only. Enabled by default.",
           "ntfy_enabled": "Send this profile’s alerts through ntfy when configured in the Docker app. Enabled by default. Email, webhooks and Home Assistant phone alerts keep their own settings.",
-          "arrive_by": "On by default. Off uses the earliest catchable train in the departure window and ignores the arrival target."
+          "arrive_by": "On by default. Off uses the earliest catchable train in the departure window and ignores the arrival target.",
+          "alert_history": "Save recent sent alerts locally and show them on the private Docker Today page. Off by default."
         }
       },
       "profile_error": {
@@ -728,6 +742,12 @@
   },
   "entity": {
     "sensor": {
+      "commute_on_time_30d": {
+        "name": "On time (30 days)"
+      },
+      "commute_delay_30d": {
+        "name": "Average delay (30 days)"
+      },
       "status": {
         "name": "{direction} status"
       },
@@ -769,6 +789,15 @@
     }
   },
   "services": {
+    "clear_commute_history": {
+      "name": "Clear commute statistics",
+      "description": "Delete all local commute statistics and queued recap or trip notes.",
+      "fields": {
+        "confirm": {
+          "name": "Delete the local statistics"
+        }
+      }
+    },
     "choose": {
       "name": "Choose a train",
       "description": "Follow the train that leaves at this time.",

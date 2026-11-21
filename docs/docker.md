@@ -184,6 +184,7 @@ Everything comes from the environment (`.env`):
 | `TELEGRAM_CHAT_ID` | optional manual override; blank uses the saved private claim or prints a one-time setup link and QR |
 | `OWNTRACKS_SECRET` | optional, 16+ printable ASCII characters without spaces; turns on the OwnTracks endpoint |
 | `TCC_HEALTH_TOKEN` | optional override, 16+ printable ASCII characters without spaces; otherwise generated and saved in `/data/health-token`; grants full `/health` and Today access |
+| `TCC_CALENDAR_TOKEN` | optional, separate 64-character lowercase hex token for the private calendar subscription |
 | `TCC_LOOKAHEAD_AT` | when the planned-works look-ahead runs, `HH:MM`, default `06:00` |
 | `TCC_NTFY_TOPIC` | optional random private topic, 32-64 letters, digits, `_` or `-`; requires your access token |
 | `TCC_NTFY_TOKEN` | your ntfy user access token; required with the topic |
@@ -234,6 +235,14 @@ Use TLS for remote browser access. The token grants administrator access to ever
 
 For separate household companions, use each owner's local port from the [household guide](household.md). Docker host administrators can access both companions. A shared Home Assistant instance also remains a shared trust boundary.
 
+### Recent alerts
+
+Set `alerts.alert_history` to `true` for a profile to see its sent alerts on Today. The setting defaults to `false`. Today reads the local state and makes no extra NS requests.
+
+The companion adds one row when the phone, email server or configured webhook first accepts the alert while history is on. Each row keeps the message text, profile ID, alert type and timestamps. History excludes setup messages, app-wide warnings, phone-based station check-ins, station prompts, weekly recaps and after-trip notes. Access to Today grants access to history from all opted-in profiles on this installation.
+
+The local state keeps the 100 newest alerts across all profiles for up to 30 days from creation. Turning history off stops new rows and hides existing rows. Removing a profile also hides its rows. Rows can reappear if you enable history again for the same profile ID before they expire. History is read-only on Today. The companion removes expired rows from its saved state while it runs. Backups can retain older copies.
+
 ### Save one journey to a calendar
 
 Today shows **Download this journey to calendar** for each usable selected journey with complete planned times. Click that link to download one `.ics` file, then open it in your calendar app.
@@ -247,6 +256,20 @@ Cancelled, skipped, uncertain or incomplete journeys have no download link. A re
 Downloads use the same token and browser login as Today. URLs contain an opaque journey identifier and never contain credentials. The companion does not contact a calendar account or publish the file. This is a manual snapshot, not calendar synchronization.
 
 The file uses UTC event dates and RFC 5545 text escaping and line folding. See the [iCalendar specification](https://www.rfc-editor.org/rfc/rfc5545.txt).
+
+### Subscribe to planned commutes
+
+Use the private calendar feed to see upcoming planned departures over fourteen Amsterdam calendar dates, including today. It uses your saved schedules, flexible trips, and any known timetable warnings. Paused and skipped trips are omitted. Every event is tentative.
+
+1. Generate a token with `openssl rand -hex 32`. Set `TCC_CALENDAR_TOKEN` in your private `.env`.
+2. Apply the setting with `docker compose up -d --force-recreate tcc`.
+3. In your calendar app, subscribe to `https://your-private-host/calendar/subscription/<calendar-token>.ics`.
+
+On iPhone, open **Calendars**, then **Add Calendar** and **Add Subscription Calendar**. The device or calendar provider must be able to reach your private HTTPS address. For the current menu, see [Apple's calendar subscription instructions](https://support.apple.com/guide/iphone/use-multiple-calendars-iph3d1110d4/ios).
+
+The subscription URL grants read access to the planned routes and times of all included profiles. Keep it private and exclude the subscription path from proxy access logs. Use a local calendar subscription if you want to keep the plans off cloud calendar services. Change the token and recreate the container to revoke the old URL.
+
+Set `alerts.calendar_feed: false` to omit a profile and the flexible trips that inherit from it. Fetching the feed adds no NS requests. The calendar app decides when to refresh. Check Today or NS for live train status.
 
 ### Share a saved route preview
 

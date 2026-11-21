@@ -9,6 +9,7 @@ from typing import Literal, NamedTuple
 
 from train_commute_companion.calendar import to_utc
 from train_commute_companion.compensation_state import PlannedJourney
+from train_commute_companion.history import HistoryFlag
 from train_commute_companion.model import (
     FOLLOW_LIMIT,
     AdviceRecord,
@@ -269,6 +270,7 @@ class OccurrenceState:
     released: bool = False
     # a train was already missed from the origin place today (`quiet_repeat_misses`)
     missed_from_origin: bool = False
+    history_flags: frozenset[HistoryFlag] = frozenset()
     # other boarding station: where this occurrence boards when not at the profile origin (a
     # confirmed or known station; None is the origin), the open question to the user, the
     # stations already asked about (once per station per direction per day), and the first

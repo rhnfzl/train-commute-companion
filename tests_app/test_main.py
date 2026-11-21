@@ -223,6 +223,20 @@ def test_settings_health_token_optional_and_checked():
         assert bad not in str(e.value)
 
 
+def test_settings_calendar_token_is_optional_and_scope_checked():
+    token = "0a" * 32
+    assert Settings.from_env(ENV).calendar_token is None
+    settings = Settings.from_env({**ENV, "TCC_CALENDAR_TOKEN": token})
+    assert settings.calendar_token == token and token not in repr(settings)
+    for env in (
+        {"TCC_CALENDAR_TOKEN": "bad token"},
+        {"TCC_CALENDAR_TOKEN": token, "TCC_HEALTH_TOKEN": token},
+    ):
+        with pytest.raises(ValueError, match="TCC_CALENDAR_TOKEN") as error:
+            Settings.from_env({**ENV, **env})
+        assert env["TCC_CALENDAR_TOKEN"] not in str(error.value)
+
+
 def test_settings_owntracks_secret_checked():
     for bad in ["short", "tést-owntracks-secret", "test-owntracks secret-01"]:
         with pytest.raises(ValueError, match="OWNTRACKS_SECRET must be at least 16") as e:

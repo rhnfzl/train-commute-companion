@@ -1,3 +1,9 @@
+clear_commute_history:
+  fields:
+    confirm:
+      required: true
+      selector:
+        boolean:
 choose:
   fields:
     profile:

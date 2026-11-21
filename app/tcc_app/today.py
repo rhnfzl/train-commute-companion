@@ -5,7 +5,8 @@ from pathlib import Path
 
 from train_commute_companion.calendar import TZ
 from train_commute_companion.calendar_export import CalendarExportError, export_id, planned_bounds
-from train_commute_companion.model import display_name
+from train_commute_companion.history import stats_text
+from train_commute_companion.model import SentAlert, display_name
 from train_commute_companion.view import RuntimeView
 
 from .commands import render_status
@@ -52,7 +53,9 @@ footer { font-size: .9rem; }
 """
 
 
-def render(view: RuntimeView, confirmed: bool, *, paused: bool = False) -> str:
+def render(
+    view: RuntimeView, confirmed: bool, *, paused: bool = False, alerts: tuple[SentAlert, ...] = ()
+) -> str:
     """Escape every value from the read model. Download links use opaque occurrence hashes and contain no credentials."""
     freshness = []
     downloads = []
@@ -97,8 +100,32 @@ def render(view: RuntimeView, confirmed: bool, *, paused: bool = False) -> str:
         if freshness
         else "<p>No current journey has a provider freshness report.</p>"
     )
+    history = ""
+    if any(p.alerts.alert_history for p in view.profiles):
+        items = []
+        for alert in alerts:
+            sent = alert.accepted_at.astimezone(TZ)
+            items.append(
+                f'<li><time datetime="{sent.isoformat(timespec="seconds")}">'
+                f"{sent:%a %d %b %Y, %H:%M %Z}</time><pre>{escape(alert.text)}</pre></li>"
+            )
+        history = (
+            '<section aria-labelledby="history-heading"><h2 id="history-heading">Recent alerts</h2>'
+            + ("<ul>" + "".join(items) + "</ul>" if items else "<p>No recent alerts saved.</p>")
+            + "</section>"
+        )
     snapshot = escape(view.at.astimezone(TZ).strftime("%a %d %b %Y, %H:%M %Z"))
     snapshot_iso = escape(view.at.isoformat(timespec="seconds"))
+    statistics = (
+        "<section><h2>Commute statistics</h2>"
+        + "".join(
+            f"<h3>Last {days} days</h3><p>{escape(stats_text(stats))}</p>"
+            for days, stats in view.commute_totals.items()
+        )
+        + "</section>"
+        if view.commute_totals
+        else ""
+    )
     status = escape(render_status(view, confirmed))
     service = "Ready" if view.started else "Starting"
     delivery = "Confirmed" if confirmed else "Not confirmed"
@@ -139,7 +166,9 @@ def render(view: RuntimeView, confirmed: bool, *, paused: bool = False) -> str:
 <h2 id="freshness-heading">Data freshness</h2>
 {data}
 </section>
+{history}
 {calendar}
+{statistics}
 <footer>
 <p>Unselected replacement plans are proposals, not followed journeys. Followed recovery progress uses your explicit confirmations. A timetable does not confirm boarding or arrival.</p>
 <p>Use your private Telegram chat for journey actions. Data: NS.</p>

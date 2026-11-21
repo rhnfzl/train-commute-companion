@@ -1,13 +1,153 @@
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+import runtime_seam as seam
 from lifecycle_fixtures import L1, L2, ans, at, conn, ctx, usual_locked
+from runtime_rig import DAY, PROFILE, Rig
 
-from train_commute_companion.calendar_export import CalendarExportError, export_ics, export_id
-from train_commute_companion.model import LegKind
+from train_commute_companion.calendar_export import (
+    CalendarExportError,
+    calendar_feed,
+    export_ics,
+    export_id,
+)
+from train_commute_companion.lookahead_probe import day_key, warn_mark
+from train_commute_companion.model import Direction, LegKind, OccurrenceKey
+from train_commute_companion.state import LookAheadLedger
+from train_commute_companion.travel_plans import TravelPlan, parse_plan
 from train_commute_companion.view import occurrence_view
+
+
+async def test_subscription_is_read_only_and_reflects_local_service_dates(tmp_path):
+    rig = Rig(tmp_path, now="07:50")
+    rig.write(
+        text=PROFILE.replace(
+            '    name: "office_b"', '    name: "office_b"\n    alerts: {calendar_feed: false}'
+        ).replace("    days: [mon, tue, wed, thu, fri]", "    days: [tue]")
+    )
+    await rig.rt.start()
+    assert await rig.rt.not_travelling("p1", DAY, Direction.OUTBOUND) is None
+    next_tuesday = DAY + timedelta(days=7)
+    seam.seed_state(
+        rig.rt,
+        lookahead={
+            "p1|outbound": LookAheadLedger(
+                {day_key(next_tuesday, None): (warn_mark("works"),)}, (), None, 1, None
+            )
+        },
+    )
+
+    before = len(rig.provider.calls)
+    ics = calendar_feed(rig.rt.state, at("07:50")).decode().replace("\r\n ", "")
+    assert len(rig.provider.calls) == before
+    assert ics.count("BEGIN:VEVENT") == 3
+    assert "DTSTART:20261027T071200Z" not in ics
+    assert "DTSTART:20261027T165200Z" in ics
+    assert "DTSTART:20261103T071200Z" in ics
+    assert "DTSTART:20261110" not in ics
+    uid = export_id(OccurrenceKey("p1", Direction.OUTBOUND, next_tuesday))
+    assert f"UID:{uid}@train-commute-companion.invalid" in ics
+    assert ics.count("NS timetable warning") == 1
+    assert "office_b" not in ics
+
+
+async def test_subscription_respects_pauses_and_next_day_returns(tmp_path):
+    rig = Rig(tmp_path, now="07:50")
+    rig.write(
+        text=PROFILE.split('  - id: "p2"')[0]
+        .replace("days: [mon, tue, wed, thu, fri]", "days: [mon]")
+        .replace(
+            'name: "NAME"', 'name: "NAME"\n    pauses: [{start: "2026-11-02", end: "2026-11-03"}]'
+        )
+        .replace('first_train: "17:52"', 'first_train: "08:00", day_offset: 1')
+    )
+    await rig.rt.start()
+    ics = unfolded(calendar_feed(rig.rt.state, at("07:50")))
+    uid = export_id(OccurrenceKey("p1", Direction.RETURN, DAY))
+    assert ics.count("BEGIN:VEVENT") == 2
+    assert f"UID:{uid}@train-commute-companion.invalid" in ics
+    assert "DTSTART:20261027T070000Z" in ics
+    assert "DTSTART:20261109T071200Z" in ics
+    assert all(f"DTSTART:202611{day}" not in ics for day in ("02", "03", "10"))
+
+
+async def test_subscription_includes_replacement_plan_and_omits_replaced_commute(tmp_path):
+    rig = Rig(tmp_path, now="07:50")
+    rig.write(text=PROFILE.split('  - id: "p2"')[0])
+    await rig.rt.start()
+    (profile,) = rig.rt.config.profiles
+    borrowed = replace(profile, id="travel-1", name="Appointment", work_station="BBB")
+    prior = TravelPlan(
+        replace(borrowed, id="travel-old", name="Old Appointment"),
+        1,
+        DAY,
+        DAY,
+        frozenset(),
+        1,
+        frozenset(),
+        False,
+        None,
+    )
+    plan = TravelPlan(
+        borrowed, 2, DAY, DAY, frozenset(), 1, frozenset(), False, "p1", ("p1", prior.id)
+    )
+    seam.seed_state(rig.rt, travel_plans={prior.id: prior, plan.id: plan})
+
+    ics = unfolded(calendar_feed(rig.rt.state, at("07:50")))
+    usual_uid = export_id(OccurrenceKey("p1", Direction.OUTBOUND, DAY))
+    replacement_uid = export_id(OccurrenceKey(plan.id, Direction.OUTBOUND, DAY))
+    assert f"UID:{replacement_uid}@train-commute-companion.invalid" in ics
+    assert f"UID:{usual_uid}@train-commute-companion.invalid" not in ics
+    assert "SUMMARY:Appointment: AAA to BBB" in ics
+    assert "Old Appointment" not in ics
+    assert "DTSTART:20261027T165200Z" not in ics
+
+    cfg = rig.rt.config
+    off = replace(profile, alerts=replace(profile.alerts, calendar_feed=False))
+    seam.seed_state(rig.rt, config=replace(cfg, profiles=(off,)))
+    ics = unfolded(calendar_feed(rig.rt.state, at("07:50")))
+    assert "BEGIN:VEVENT" not in ics
+
+
+@pytest.mark.parametrize(
+    "field", ["calendar_feed", "commute_stats", "weekly_recap", "after_trip_note", "alert_history"]
+)
+async def test_readout_settings_do_not_change_flexible_trip_defaults(tmp_path, field):
+    rig = Rig(tmp_path)
+    text = PROFILE.split('  - id: "p2"')[0].replace("buffer_min: 10", "buffer_min: 22")
+    rig.write(text=text + "    alerts: {disabled_categories: [routine]}\n")
+    await rig.rt.start()
+    (profile,) = rig.rt.config.profiles
+    profile = replace(profile, alerts=replace(profile.alerts, **{field: True}))
+    other = replace(profile, id="p2", alerts=replace(profile.alerts, **{field: False}))
+    plan = parse_plan(
+        {
+            "origin": "AAA",
+            "destination": "RTD",
+            "start_date": DAY.isoformat(),
+            "outbound": {"mode": "exact", "departure": "08:30"},
+        },
+        "travel-calendar",
+        1,
+        (profile, other),
+        None,
+        at("07:50"),
+    )
+    assert plan.profile.outbound.buffer_min == 22
+    assert plan.profile.alerts.disabled_categories == frozenset({"routine"})
+    if field != "calendar_feed":
+        assert not getattr(plan.profile.alerts, field)
+
+
+async def test_subscription_is_valid_when_no_profiles_are_included(tmp_path):
+    rig = Rig(tmp_path, now="07:50")
+    rig.write(text="profiles: []")
+    await rig.rt.start()
+    ics = unfolded(calendar_feed(rig.rt.state, at("07:50")))
+    assert "BEGIN:VEVENT" not in ics
+    assert "BEGIN:X-TCC-EMPTY\r\nCOMMENT:No planned journeys\r\nEND:X-TCC-EMPTY\r\n" in ics
 
 
 def journey():

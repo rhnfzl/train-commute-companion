@@ -2,7 +2,7 @@
 
 import re
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from itertools import islice
 from typing import Any
@@ -290,11 +290,18 @@ def parse_plan(
         p for p in profiles if p.home_station == origin and p.work_station == destination
     ) or tuple(p for p in profiles if p.home_station == origin)
 
-    # If several routes can supply defaults, inherit only if their travel settings agree.
+    # Sharing or recording choices do not change how the train is selected or alerts are routed.
     def defaults(p: Profile) -> tuple[object, ...]:
         return (
             p.traveller,
-            p.alerts,
+            replace(
+                p.alerts,
+                calendar_feed=True,
+                commute_stats=False,
+                weekly_recap=False,
+                after_trip_note=False,
+                alert_history=False,
+            ),
             p.accessibility,
             p.transfer_min,
             p.location,
@@ -311,6 +318,15 @@ def parse_plan(
     base = next((p for p in profiles if p.id == base_id), None) if base_id else match or fallback
     if base_id is not None and base is None:
         raise ValueError("The profile whose preferences should apply was not found.")
+    alerts = base.alerts if base else AlertSettings()
+    if base_id is None and match is not None:
+        alerts = replace(
+            alerts,
+            commute_stats=all(p.alerts.commute_stats for p in matching),
+            weekly_recap=all(p.alerts.weekly_recap for p in matching),
+            after_trip_note=all(p.alerts.after_trip_note for p in matching),
+            alert_history=all(p.alerts.alert_history for p in matching),
+        )
     outbound = _journey(d.get("outbound"), "Outbound", base.outbound if base else None)
     has_return = d.get("return") is not None
     back = (
@@ -333,7 +349,7 @@ def parse_plan(
         outbound,
         back,
         base.transfer_min if base else {},
-        base.alerts if base else AlertSettings(),
+        alerts,
         base.location
         if base and base.home_station == origin and base.work_station == destination
         else None,
