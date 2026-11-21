@@ -9,56 +9,16 @@ It needs Home Assistant 2026.10 or newer and the Home Assistant companion app on
 1. In HACS, open the menu, choose Custom repositories, and add `https://github.com/rhnfzl/train-commute-companion` as an Integration.
 2. Download Train Commute Companion in HACS and restart Home Assistant.
 
-### Upgrade to 0.2.3
+### Upgrades
 
-Update through HACS and restart Home Assistant. The integration installs the matching `train-commute-companion==0.2.3` core automatically.
-Existing profiles and settings remain valid. `active_lead_min` is a new optional setting.
+Update through HACS and restart Home Assistant. The integration installs the matching core automatically. Existing profiles, settings and saved state remain valid, and new profile keys are optional.
 
-Back up the integration and its state before upgrading. The older 0.2.2 core cannot read any state saved by 0.2.3, even without at-station messages or an explicit `active_lead_min`.
-A downgrade requires a compatible pre-upgrade backup. Restoring it removes later journey decisions and arrival confirmations, so preserve newer history first.
+Back up the integration and its state before upgrading. An older core cannot read state saved by a newer one, so a downgrade needs that pre-upgrade backup. Restoring it removes later journey decisions and arrival confirmations, so preserve newer history first.
 Never delete the state file to force a downgrade.
-
-Version 0.2.4 also resolves numeric station identifiers through the station catalogue before requesting NS journeys.
-This prevents HTTP 400 failures when an intermediate stop supplies a numeric identifier instead of the station code.
-Returned stops keep the queried identifier so saved boarding and recovery state still match.
-It reuses the catalogue loaded at startup and does not add requests to each poll.
-
-### Upgrade to 0.2.5
-
-Update through HACS and restart Home Assistant. The integration installs the matching `train-commute-companion==0.2.5` core automatically.
-Existing profiles, settings and saved state remain valid.
-
-A position at your boarding station or at home after your train left no longer counts as a missed train by itself, because phones often report positions late. A miss now needs proof: still there 12 minutes after the departure with no sign of riding, or one of the new optional signals. See [Location with Home Assistant](location-ha.md#missed-trains).
-The profile `location` block takes two new optional keys: `wifi` (a Wi-Fi tracker per place) and `activity_entity` (the phone's motion activity sensor). Without them nothing needs to change.
-Messages now name a station that NS gives only by number, for example "runs only to Eindhoven Centraal".
-
-Back up the integration and its state before upgrading. The older 0.2.4 core cannot read any state saved by 0.2.5, even without the new keys. A downgrade needs that pre-upgrade backup, as described above.
-
-### Upgrade to 0.2.6
-
-Update through HACS and restart Home Assistant. The integration installs the matching `train-commute-companion==0.2.6` core automatically.
-Existing profiles, settings and saved state remain valid.
-
-With location on, a train you were never seen boarding now ends quietly. You get no "I stopped following" message for it, and the companion waits until you reach the station, leave your origin or choose a train. See [Location with Home Assistant](location-ha.md#missed-trains).
-The profile `alerts` block takes a new optional key, `quiet_repeat_misses`. Set it to `true` to make every "you missed" message after the first one from the same place that day silent. It is also a switch in the profile form. See [Notification preferences](notification-preferences.md#repeated-missed-trains).
-An NS disruption that shares only an end station with your journey, but not a stretch of track you travel, no longer sends a notice. "Fewer stopping trains" now counts as Sprinter-only, so it stays quiet on an Intercity.
-A platform change now turns loud exactly 15 minutes before the expected departure, not up to a minute earlier.
-
-Back up the integration and its state before upgrading. The older 0.2.5 core cannot read any state saved by 0.2.6, even without the new key. A downgrade needs that pre-upgrade backup, as described above.
-
-### Upgrade to 0.3.0
-
-Update through HACS and restart Home Assistant. The integration installs the matching `train-commute-companion==0.3.0` core automatically.
-Existing profiles, settings and saved state remain valid. Every new profile key is optional, and a profile without them works as before.
-
-A direction can follow any train in a time window, with an optional minimum stay and settings per day. See [Schedules](weekday-schedules.md#window-mode).
-With location on, boarding at another station is noticed. A known station is followed by itself, and a new one gets one question with buttons. See [Other boarding station](other-boarding-station.md). New services: `answer_prompt` and `forget_station`.
-
-Back up the integration and its state before upgrading. The older 0.2.6 core cannot read any state saved by 0.3.0, even on a day with no window and no other station. Its decoder rejects the new saved fields: `remembered_stations`; per trip `boarding_station`, `prompt`, `asked_stations` and `station_seen`; and per journey record `seen_at` and `train_arrival`. A downgrade needs that pre-upgrade backup, as described above.
 
 ## Set up
 
-1. Get an NS API key from the NS API portal.
+1. Get an NS API key from the NS API portal. See [Get an NS API key](ns-api-key.md).
 2. For guided setup, use an unused profiles-file path inside the config folder. For existing YAML, select your configured file.
 3. Add Train Commute Companion under Settings, Devices and services. Enter the key and file path. Enable guided setup to create a profile.
 4. Pick your phone and the loud alert style (below). Two test notifications go out, one loud and one silent. Confirm that both arrived.

@@ -13,7 +13,8 @@ def test_household_services_have_separate_configuration_state_and_local_ports():
     paths = set()
     for index, person in enumerate(("alice", "bob")):
         app, relay = services[person], services[f"{person}-mcp"]
-        assert app["build"] == ".."
+        assert app["image"] == "ghcr.io/rhnfzl/train-commute-companion:latest" == relay["image"]
+        assert "build" not in app  # a failed pull must not fall back to a missing Dockerfile
         assert app["env_file"] == [f"./config/household/{person}/.env"]
         assert app["volumes"] == [
             f"./config/household/{person}/profiles:/config:ro",

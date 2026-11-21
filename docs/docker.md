@@ -8,30 +8,59 @@ For multiple travellers, use the [separate household companions](household.md) r
 
 ## What you need
 
-- An NS API key. You bring your own; none is bundled.
+- Docker with Compose. The image runs on amd64 and arm64, so a Raspberry Pi with a 64-bit OS works too.
+- Your own NS API key. None is bundled. [Get an NS API key](ns-api-key.md) shows how.
 - A Telegram bot token. Create a bot with BotFather and copy the token.
 
 ## First run
 
-Run every command below from the `examples/` directory of this checkout, where the compose file builds the image from the checkout above it. Your `.env` and `config/` stay in `examples/` and are never committed.
+You need no clone and no build. Make a folder and download the compose file and the example profile into it:
 
-1. Create `examples/.env` holding `NS_API_KEY` and `TELEGRAM_BOT_TOKEN`. Leave `TELEGRAM_CHAT_ID` out for now. Then copy the example profile:
+```
+mkdir tcc && cd tcc
+mkdir config
+curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/rhnfzl/train-commute-companion/main/examples/docker-compose.yml
+curl -fsSL -o config/profiles.yaml https://raw.githubusercontent.com/rhnfzl/train-commute-companion/main/examples/profiles.yaml
+```
 
-   ```
-   cd examples
-   mkdir config
-   cp profiles.yaml config/
-   ```
+Run every command below from this folder. Keep `.env` and `config/` private.
 
-2. Start it with `docker compose up -d --build`, then send the bot a message from a **private chat**. A group is refused at startup: every member could act and share location.
+1. Create `.env` holding `NS_API_KEY` and `TELEGRAM_BOT_TOKEN`. Leave `TELEGRAM_CHAT_ID` out for now.
+2. Start it with `docker compose up -d`, then send the bot a message from a **private chat**. A group is refused at startup: every member could act and share location.
 3. The log (`docker compose logs tcc`) shows a line with the chat id. Put it in `.env` as `TELEGRAM_CHAT_ID` and apply it with `docker compose up -d --force-recreate tcc` (a plain `restart` keeps the old environment).
-4. In `config/profiles.yaml`, replace `AAA` with your own station codes and check the file:
+4. In `config/profiles.yaml`, replace `AAA` and the example stations with your own and check the file:
 
    ```
    docker compose run --rm tcc tcc check-profile /config/profiles.yaml
    ```
 
 5. Send `/start` to the bot and confirm both test alerts (one loud, one silent). Setup is complete only then, and `/health` stays 503 until you do.
+
+## Update or pin a version
+
+The compose file uses the `latest` image. Update with `docker compose pull` and then `docker compose up -d`.
+
+For a stable setup, pin a version instead. In `docker-compose.yml`, replace `latest` in the `image:` line with a release number without the `v`, such as `X.Y.Z`. Change it when you choose to update.
+
+## Build from source
+
+To build the image yourself, clone the repository and run every command from the checkout's `examples/` directory:
+
+```
+git clone https://github.com/rhnfzl/train-commute-companion.git
+cd train-commute-companion
+cd examples
+mkdir config
+cp profiles.yaml config/
+```
+
+Git ignores `.env` and `config/` there. Build the image under the name the compose file uses:
+
+```
+docker build -t ghcr.io/rhnfzl/train-commute-companion:latest ..
+```
+
+Then follow the first run from step 1. After each update of the checkout, build again and run `docker compose up -d`. Do not run `docker compose pull`: it replaces your build with the ready-made image.
 
 ## Commands and buttons
 

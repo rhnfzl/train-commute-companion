@@ -19,6 +19,7 @@ from train_commute_companion.model import (
     CrowdForecast,
     Leg,
     Provenance,
+    Stations,
     Stop,
     TimeObs,
     TrainId,
@@ -592,6 +593,23 @@ def map_station_names(payload: object) -> dict[str, str]:
     return names
 
 
+def map_station_index(payload: object) -> Stations:
+    """Station codes with their long, middle and short names and synonyms, long name first."""
+    labels: dict[str, list[str]] = {code: [] for code in map_stations(payload)}
+    for station in _items(payload) or ():
+        if not isinstance(station, dict):
+            continue
+        names = station.get("namen")
+        names = names if isinstance(names, dict) else {}
+        synonyms = station.get("synoniemen")
+        found = [names.get(k) for k in ("lang", "middel", "kort")]
+        found += synonyms if isinstance(synonyms, list) else []
+        code = str(station.get("code") or station.get("stationCode") or "")
+        if code in labels:
+            labels[code] += [n for n in found if isinstance(n, str) and n.strip()]
+    return Stations(labels)
+
+
 BASE_URL = "https://gateway.apiportal.ns.nl/reisinformatie-api/api"
 
 
@@ -663,9 +681,6 @@ class NsProvider:
         self.positions: dict[str, tuple[float, float]] = {}
         self._station_codes: dict[str, str] = {}
         self.station_labels: dict[str, str] = {}  # station number -> its name, for messages
-
-    async def station_names(self) -> dict[str, str]:
-        return map_station_names(await self._get("/v2/stations"))
 
     async def _get(
         self, path: str, params: dict[str, str] | None = None, *, optional_context: bool = False
@@ -776,9 +791,9 @@ class NsProvider:
             return ActiveDisruptions((), "unknown")
         return map_active_disruptions(payload)
 
-    async def stations(self) -> frozenset[str]:
+    async def stations(self) -> Stations:
         payload = await self._get("/v2/stations")
-        codes = map_stations(payload)
+        codes = map_station_index(payload)
         self.positions = map_station_positions(payload)  # same payload, no extra request
         # NS's station planner rejects UIC identifiers that can occur on intermediate stops.
         self._station_codes = {

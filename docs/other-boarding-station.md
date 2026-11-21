@@ -1,6 +1,6 @@
 # Other boarding station
 
-Sometimes you board somewhere else. For example, you take the train at Venlo instead of your usual station. With location on, the companion notices this and follows your train from there.
+Sometimes you board somewhere else. For example, you take the train at Den Haag HS instead of your usual station. With location on, the companion notices this and follows your train from there.
 
 It needs a location source: [Home Assistant](location-ha.md), [OwnTracks](location-owntracks.md) or [Telegram live location](location-telegram.md).
 
@@ -30,10 +30,10 @@ location:
 return:
   first_train: "17:36"
   buffer_min: 2
-  other_stations: [VL]            # follow a train from these by itself
+  other_stations: [GV]            # follow a train from these by itself
 ```
 
-The defaults come from real trips. At a usual station the phone was 40 to 115 m from the station point, often with only one or two fixes before boarding. At Venlo the only fix was about 400 m away, 16 minutes before the train left. Set a smaller distance if a station near your walk causes a question you do not want.
+The defaults come from real trips. At a usual station the phone was 40 to 115 m from the station point, often with only one or two fixes before boarding. At another station the only fix was about 400 m away, 16 minutes before the train left. Set a smaller distance if a station near your walk causes a question you do not want.
 
 The [profile editor](profile-editor.md) has the same settings.
 
@@ -47,7 +47,7 @@ While TCC still holds its own guess of a train from your usual station, a known 
 
 ## Other stations
 
-At any other station you get one quiet question: "are you taking the 20:06 from Venlo to 's-Hertogenbosch?" with three buttons.
+At any other station you get one quiet question: "are you taking the 20:06 from Den Haag HS to Rotterdam Centraal?" with three buttons.
 
 - **Yes**: that train is followed from that station.
 - **Other train**: you get the next trains from there as buttons. Tap one to follow it. Until you tap one, nothing changes.

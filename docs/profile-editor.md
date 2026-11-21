@@ -45,6 +45,14 @@ A fixed profile keeps its YAML shape. The editor writes `mode`, `pick` and `min_
 
 When the profile has a location block, the details form shows the [other boarding station](other-boarding-station.md) settings: other stations per direction, the distance, the minutes at a station before it counts, and whether to offer to remember a new station. A default is written only when it is already in the file.
 
+## Station names in YAML
+
+In the YAML file a station can be a code (`UT`) or a name (`Utrecht Centraal`). For a name, case, accents and punctuation do not matter, and NS short names and synonyms such as `Utrecht` also work. TCC turns each name into its code when it reads the file, so names and codes run the same. A code must be written exactly, such as `UT`.
+
+A name that fits more than one station is refused. The error lists the matching codes, so use one of them. An unknown name gets a close suggestion.
+
+Names need the NS station list. When it cannot be fetched, a file with names waits like any edit, and the last valid configuration keeps running. When the form saves a profile that uses names, that profile is written with codes. Other profiles keep their names.
+
 ## Weekday departure times
 
 Turn on **Edit weekday departure times** in the details form to set different outbound and return times for each weekday. Blank fields use the direction's default time. An overnight return uses the weekday when the commute starts.

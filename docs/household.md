@@ -8,10 +8,17 @@ The names `alice` and `bob` below are example service labels. They do not identi
 
 ## Prepare each companion
 
-Run these commands from this checkout's `examples/` directory:
+You need Docker with Compose, on amd64 or arm64 (a Raspberry Pi with a 64-bit OS works too). You need no clone and no build. Make a folder and download the compose file, the settings template and the example profile into it:
 
 ```sh
-cd examples
+mkdir tcc-household && cd tcc-household
+base=https://raw.githubusercontent.com/rhnfzl/train-commute-companion/main/examples
+curl -fsSL -O "$base/compose.household.yaml" -O "$base/household.env.example" -O "$base/profiles.yaml"
+```
+
+Then make each companion's private files:
+
+```sh
 mkdir -p config/household/alice/profiles config/household/bob/profiles
 cp household.env.example config/household/alice/.env
 cp household.env.example config/household/bob/.env
@@ -21,9 +28,9 @@ chmod 700 config/household config/household/alice config/household/bob
 chmod 600 config/household/alice/.env config/household/bob/.env
 ```
 
-The existing `examples/config/` ignore rule excludes these private files from Git. Do not commit them.
+Keep these private files out of Git. In a checkout's `examples/` folder, the existing ignore rule already excludes them.
 
-Create two separate Telegram bots with BotFather. Edit each `.env` with its own bot token and NS API key. The NS key can be shared only when its owner permits that use and its quota covers both companions.
+Create two separate Telegram bots with BotFather. Edit each `.env` with its own bot token and NS API key ([get an NS API key](ns-api-key.md)). The NS key can be shared only when its owner permits that use and its quota covers both companions.
 
 Never reuse a bot token. Two pollers for one bot can consume each other's updates and cause Telegram conflicts.
 
@@ -33,7 +40,7 @@ Validate and start the apps:
 
 ```sh
 docker compose -f compose.household.yaml config --quiet
-docker compose -f compose.household.yaml build alice bob
+docker compose -f compose.household.yaml pull alice bob
 docker compose -f compose.household.yaml run --rm --no-deps alice tcc check-profile /config/profiles.yaml
 docker compose -f compose.household.yaml run --rm --no-deps bob tcc check-profile /config/profiles.yaml
 docker compose -f compose.household.yaml up -d alice bob
@@ -53,6 +60,14 @@ docker compose -f compose.household.yaml up -d --force-recreate alice bob
 ```
 
 Each traveller sends `/start` to their own bot and confirms its loud and silent test alerts. Confirmation is separate for each companion. `/status`, buttons and live location work only through that companion's configured private chat.
+
+## Image version
+
+Both companions and both MCP relays use the `latest` image. Update with the `pull` command above, then `docker compose -f compose.household.yaml up -d alice bob`.
+
+For a stable setup, pin a version. In `compose.household.yaml`, replace `latest` in the `image:` line of `alice` with a release number without the `v`, such as `X.Y.Z`. The other services follow that line.
+
+To build from source instead, build the image in a checkout's `examples/` directory as in [Build from source](docker.md#build-from-source). Then skip the `pull` command.
 
 ## Health and location
 
@@ -78,8 +93,8 @@ Email and webhook copies are off in the template. Add them only to the intended 
 Each relay mounts only its owner's data volume. Configure separate MCP clients with the corresponding command, using an absolute compose path:
 
 ```sh
-docker compose -f /absolute/path/to/examples/compose.household.yaml run --rm --no-deps -T alice-mcp
-docker compose -f /absolute/path/to/examples/compose.household.yaml run --rm --no-deps -T bob-mcp
+docker compose -f /absolute/path/to/compose.household.yaml run --rm --no-deps -T alice-mcp
+docker compose -f /absolute/path/to/compose.household.yaml run --rm --no-deps -T bob-mcp
 ```
 
 Each relay provides the existing read-only status, connection and planned-works tools. It has no HTTP port, network access, bot credentials or access to the other data volume. The corresponding app must run for current answers. See [MCP](mcp.md) for client configuration.

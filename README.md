@@ -10,15 +10,15 @@
 
 Follows your train journey, a fixed train or any train in a time window, and tells you when something changes: a delay, a cancelled train, a platform change or a transfer you can no longer make.
 
-Data: NS. You bring your own NS API key; none is bundled. This project is not made by or linked to NS.
+Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. This project is not made by or linked to NS.
 
 [![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=rhnfzl&repository=train-commute-companion&category=integration)
 
 ## What it does
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/how-it-works-dark.svg">
-  <img src="docs/images/how-it-works-light.svg" alt="You plan a fixed train, a time window or a minimum stay. It watches live train data, your phone and planned works. It rings for what matters, stays quiet for small changes and asks with one tap at another station.">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/rhnfzl/train-commute-companion/main/docs/images/how-it-works-dark.svg">
+  <img src="https://raw.githubusercontent.com/rhnfzl/train-commute-companion/main/docs/images/how-it-works-light.svg" alt="You plan a fixed train, a time window or a minimum stay. It watches live train data, your phone and planned works. It rings for what matters, stays quiet for small changes and asks with one tap at another station.">
 </picture>
 
 - **Follows your trains.** You describe your usual trips once, in a small YAML file. On a travel day it picks your train and watches it.
@@ -76,8 +76,8 @@ A timetable app knows your train. It does not know where you are. With location 
 Phones often report a position minutes late. A position just after the departure does not prove a miss. The companion also checks movement, Wi-Fi, activity and time:
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/where-you-are-dark.svg">
-  <img src="docs/images/where-you-are-light.svg" alt="When your train leaves: any sign you ride keeps the train followed. Still at home, work or the station with proof means you missed it, with the next train and when to leave. Without proof you get a quiet note. With no train followed near another station: a listed or remembered station is followed by itself, a new one asks Yes, Other train or No, then whether to remember it.">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/rhnfzl/train-commute-companion/main/docs/images/where-you-are-dark.svg">
+  <img src="https://raw.githubusercontent.com/rhnfzl/train-commute-companion/main/docs/images/where-you-are-light.svg" alt="When your train leaves: any sign you ride keeps the train followed. Still at home, work or the station with proof means you missed it, with the next train and when to leave. Without proof you get a quiet note. With no train followed near another station: a listed or remembered station is followed by itself, a new one asks Yes, Other train or No, then whether to remember it.">
 </picture>
 
 Activity counts only when reported after the departure and at most 5 minutes ago. Without proof the train stays followed, and you may get a quiet "has left. If you are not on it, next train" note. Regular train alerts still apply. Full rules: [Missed trains](docs/location-ha.md#missed-trains) and [Other boarding station](docs/other-boarding-station.md). Other sources: [OwnTracks](docs/location-owntracks.md), [Telegram](docs/location-telegram.md).

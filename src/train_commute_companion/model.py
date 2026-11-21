@@ -1,10 +1,13 @@
 """Core value types. All times are timezone-aware (Europe/Amsterdam)."""
 
-from collections.abc import Mapping
+import difflib
+import re
+import unicodedata
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, Self
 
 FOLLOW_LIMIT = timedelta(minutes=150)
 
@@ -602,6 +605,59 @@ def resolve_day(journey: UsualJourney, weekday: str, has_location: bool) -> Usua
 
 def display_name(name: str) -> str:
     return name.replace("_", " ").title()
+
+
+def station_key(text: str, *, accents: bool = True) -> str:
+    """A station name for lookup: case and punctuation ignored, accents optionally too."""
+    folded = unicodedata.normalize("NFC" if accents else "NFKD", text.casefold())
+    if not accents:
+        folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    return re.sub(r"[\W_]+", " ", folded).strip()
+
+
+class Stations(frozenset[str]):
+    """Known station codes that also carry each station's names, so a profile may name a
+    station instead of giving its code. Any provider can fill it; a plain frozenset of codes
+    still works everywhere and simply knows no names."""
+
+    labels: Mapping[str, tuple[str, ...]]  # code -> its names, the display name first
+    _exact: dict[str, tuple[str, ...]]
+    _loose: dict[str, tuple[str, ...]]
+
+    def __new__(cls, labels: Mapping[str, Sequence[str]]) -> Self:
+        self = super().__new__(cls, labels)
+        self.labels = {code: tuple(names) for code, names in labels.items()}
+        self._exact = self._index(accents=True)
+        self._loose = self._index(accents=False)
+        return self
+
+    def __reduce__(self) -> tuple[type["Stations"], tuple[dict[str, tuple[str, ...]]]]:
+        return Stations, (dict(self.labels),)  # a copy keeps the names
+
+    def _index(self, *, accents: bool) -> dict[str, tuple[str, ...]]:
+        out: dict[str, tuple[str, ...]] = {}
+        for code, names in self.labels.items():
+            for key in dict.fromkeys(station_key(n, accents=accents) for n in names):
+                if key:
+                    out[key] = (*out.get(key, ()), code)
+        return out
+
+    def name(self, code: str) -> str:
+        return next(iter(self.labels.get(code, ())), code)
+
+    def lookup(self, text: str) -> tuple[str, ...]:
+        """Codes for a name: a code itself first, then the name as written with accents, then
+        without them. More than one code means the name is ambiguous; it is never guessed."""
+        if text in self:
+            return (text,)
+        return self._exact.get(station_key(text)) or self._loose.get(
+            station_key(text, accents=False), ()
+        )
+
+    def closest(self, text: str) -> str | None:
+        """A station name close to `text`, only ever offered as a suggestion."""
+        close = difflib.get_close_matches(station_key(text, accents=False), self._loose, 1)
+        return self.name(self._loose[close[0]][0]) if close else None
 
 
 @dataclass(frozen=True, slots=True)

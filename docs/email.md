@@ -6,7 +6,7 @@ Telegram remains required for setup, interaction, and phone delivery confirmatio
 
 ## Configure SMTP
 
-Set these variables in `examples/.env`, then recreate the container:
+Set these variables in the `.env` next to your compose file, then recreate the container:
 
 | Variable | Meaning |
 | --- | --- |
@@ -22,7 +22,7 @@ The server must offer AUTH PLAIN when credentials are configured. Authentication
 
 Keep credentials in your private environment file. Never commit that file. The app does not save SMTP credentials in its state file.
 
-Run from `examples/`:
+Run from the folder with your compose file:
 
 ```sh
 docker compose up -d --force-recreate tcc

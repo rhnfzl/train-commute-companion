@@ -1,9 +1,9 @@
-# Run from examples/ with: docker compose -f compose.household.yaml up -d --build
+# Run with: docker compose -f compose.household.yaml up -d alice bob (docs/household.md)
+# Every service uses the image on alice; put a version in place of latest there to pin it.
 # Each app owns one traveller. Never share a bot token or a data volume.
 services:
   alice:
-    build: ..
-    image: train-commute-companion:local
+    image: &image ghcr.io/rhnfzl/train-commute-companion:latest
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
@@ -18,8 +18,7 @@ services:
     ports: ["127.0.0.1:8081:8080"]
     networks: [alice]
   bob:
-    build: ..
-    image: train-commute-companion:local
+    image: *image
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
@@ -35,7 +34,7 @@ services:
     networks: [bob]
   # A local MCP client starts its own traveller's relay. Neither relay reads app secrets.
   alice-mcp:
-    image: train-commute-companion:local
+    image: *image
     profiles: [mcp]
     read_only: true
     cap_drop: [ALL]
@@ -48,7 +47,7 @@ services:
       disable: true
     command: [python, -m, tcc_app.mcp_server]
   bob-mcp:
-    image: train-commute-companion:local
+    image: *image
     profiles: [mcp]
     read_only: true
     cap_drop: [ALL]

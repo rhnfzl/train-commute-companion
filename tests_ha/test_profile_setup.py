@@ -9,9 +9,12 @@ from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.train_commute_companion.const import DOMAIN
+from train_commute_companion.model import Stations
 from train_commute_companion.providers.base import ProviderError
 
-CATALOGUE = {"AAA": "Home station", "UT": "Utrecht Centraal", "RTD": "Rotterdam Centraal"}
+CATALOGUE = Stations(
+    {"AAA": ["Home station"], "UT": ["Utrecht Centraal", "Utrecht"], "RTD": ["Rotterdam Centraal"]}
+)
 CHECK = "custom_components.train_commute_companion.config_flow.check_key"
 CATALOGUE_CALL = "custom_components.train_commute_companion.profile_flow.station_catalogue"
 VALUES = {
@@ -63,7 +66,11 @@ async def test_guided_profile_waits_for_phone_confirmation_before_writing(hass, 
     flow = await guided(hass)
     assert flow["step_id"] == "profile"
     selector = next(v for k, v in flow["data_schema"].schema.items() if str(k) == "home_station")
-    assert {o["label"] for o in selector.config["options"]} == set(CATALOGUE.values())
+    assert {o["label"] for o in selector.config["options"]} == {
+        "Home station",
+        "Utrecht Centraal",
+        "Rotterdam Centraal",
+    }
     flow = await configure(
         hass, flow, {**VALUES, "require_accessible": True, "disabled_categories": ["crowding"]}
     )
@@ -350,7 +357,7 @@ async def test_editing_a_located_profile_shows_and_saves_other_stations_and_day_
         options={"profiles_path": str(profiles_path(hass)), "notify_service": NOTIFY},
     )
     entry.add_to_hass(hass)
-    catalogue = {**CATALOGUE, "BBB": "Other station"}
+    catalogue = Stations({**CATALOGUE.labels, "BBB": ["Other station"]})
 
     async def edit():
         flow = await hass.config_entries.options.async_init(entry.entry_id)
@@ -450,3 +457,44 @@ async def test_editing_a_located_profile_shows_and_saves_other_stations_and_day_
     flow = await step(flow, {**again, "edit_day_overrides": True})
     assert flow["step_id"] == "profile_day_pick"
     assert "return Friday" in flow["description_placeholders"]["overrides"]
+
+
+async def test_a_profile_that_names_its_stations_opens_filled_and_saves_codes(hass):
+    """Names fill the station fields as codes; the edited profile is saved with codes and one
+    transfer minimum per station, and the other profile keeps its names."""
+    raw = yaml.safe_load(PROFILE)
+    first, second = raw["profiles"]
+    first.update(home_station="Home station", transfer_min={"Utrecht": 9})
+    first["outbound"]["transfers"] = ["Utrecht Centraal"]
+    first["location"] = {"source": "ha", "entity": "person.me"}
+    first["return"]["other_stations"] = ["Other station"]
+    second["work_station"] = "Rotterdam Centraal"
+    write_profiles(hass, yaml.safe_dump(raw, sort_keys=False))
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "k"},
+        options={"profiles_path": str(profiles_path(hass)), "notify_service": NOTIFY},
+    )
+    entry.add_to_hass(hass)
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    catalogue = Stations({**CATALOGUE.labels, "BBB": ["Other station"]})
+    with patch(CATALOGUE_CALL, return_value=catalogue):
+        flow = await hass.config_entries.options.async_configure(
+            flow["flow_id"], {"next_step_id": "profiles"}
+        )
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"profile": "edit:p1"}
+    )
+    defaults = shown(flow)
+    assert (defaults["home_station"], defaults["outbound_transfers"]) == ("AAA", ["UT"])
+    flow = await hass.config_entries.options.async_configure(flow["flow_id"], defaults)
+    assert flow["step_id"] == "profile_details", flow.get("errors")
+    defaults = shown(flow)
+    assert defaults["minimum_UT"] == 9 and defaults["return_other_stations"] == ["BBB"]
+    flow = await hass.config_entries.options.async_configure(flow["flow_id"], defaults)
+    assert flow["type"] is FlowResultType.ABORT and flow["reason"] == "profile_saved"
+    saved = yaml.safe_load(profiles_path(hass).read_text())["profiles"]
+    assert saved[0]["home_station"] == "AAA" and saved[0]["transfer_min"] == {"UT": 9}
+    assert saved[0]["outbound"]["transfers"] == ["UT"]
+    assert saved[0]["return"]["other_stations"] == ["BBB"]
+    assert saved[1] == second

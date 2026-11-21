@@ -13,6 +13,7 @@ from custom_components.train_commute_companion.profile_editor import (
     read_document,
     save_document,
 )
+from train_commute_companion.model import Stations
 from train_commute_companion.profile import parse_profiles
 
 KNOWN = frozenset({"AAA", "UT", "RTD", "BBB"})
@@ -491,3 +492,19 @@ def test_other_stations_and_their_settings_are_written_only_when_set(tmp_path):
     assert isinstance(
         yaml.safe_load(text)["profiles"][0]["location"]["other_station_radius_m"], int
     )
+
+
+def test_a_named_profile_is_edited_into_codes_without_touching_the_others(tmp_path):
+    known = Stations({"AAA": ["Home"], "UT": ["Utrecht Centraal", "Utrecht"], "RTD": [], "BBB": []})
+    raw = yaml.safe_load(PROFILE)
+    raw["profiles"][0].update(home_station="Home", transfer_min={"Utrecht": 6})
+    raw["profiles"][0]["outbound"]["transfers"] = ["Utrecht Centraal"]
+    raw["profiles"][1]["home_station"] = "Home"
+    path = tmp_path / "profiles.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    doc = read_document(path, (tmp_path,), known, TODAY)
+    changed = yaml.safe_load(
+        edit_profile(doc, "p1", {**VALUES, "home_station": "AAA"}, known, TODAY)
+    )
+    assert changed["profiles"][0]["transfer_min"] == {"UT": 6}  # one key, the saved minimum kept
+    assert changed["profiles"][1] == raw["profiles"][1]

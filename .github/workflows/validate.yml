@@ -33,6 +33,25 @@ jobs:
     permissions:
       contents: read
 
+  image:
+    # builds both release platforms without pushing, so a broken Dockerfile shows before a release
+    name: Docker image
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   ha-latest:
     # the integration calls private mobile_app code, so a new HA release can break it unannounced
     name: Newest Home Assistant

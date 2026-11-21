@@ -1,0 +1,173 @@
+{
+ "payload": [
+  {
+   "code": "KKDGL",
+   "UICCode": "8015032",
+   "land": "D",
+   "namen": {
+    "lang": "Köln Messe/De Gl.11-12",
+    "middel": "Köln Messe/Deutz",
+    "kort": "Köln Messe"
+   },
+   "synoniemen": []
+  },
+  {
+   "code": "KOLN",
+   "UICCode": "8015458",
+   "land": "D",
+   "namen": {
+    "lang": "Köln Hbf",
+    "middel": "Köln Hbf",
+    "kort": "Köln Hbf"
+   },
+   "synoniemen": [
+    "Koln",
+    "Koln Hbf",
+    "Keulen"
+   ]
+  },
+  {
+   "code": "KKD",
+   "UICCode": "8015561",
+   "land": "D",
+   "namen": {
+    "lang": "Köln Messe/Deutz",
+    "middel": "Köln Messe/Deutz",
+    "kort": "Köln Messe"
+   },
+   "synoniemen": [
+    "Koln Deutz"
+   ]
+  },
+  {
+   "code": "BUENDE",
+   "UICCode": "8021173",
+   "land": "D",
+   "namen": {
+    "lang": "Bünde (Westf)",
+    "middel": "Bünde (Westf)",
+    "kort": "Bünde (W)"
+   },
+   "synoniemen": [
+    "Bunde"
+   ]
+  },
+  {
+   "code": "BUNDE",
+   "UICCode": "8021241",
+   "land": "D",
+   "namen": {
+    "lang": "Bunde (D)",
+    "middel": "Bunde",
+    "kort": "Bunde"
+   },
+   "synoniemen": []
+  },
+  {
+   "code": "BERHBT",
+   "UICCode": "8031922",
+   "land": "D",
+   "namen": {
+    "lang": "Berlin Hbf",
+    "middel": "Berlin Hbf",
+    "kort": "Berlin Hbf"
+   },
+   "synoniemen": []
+  },
+  {
+   "code": "BERHBL",
+   "UICCode": "8065969",
+   "land": "D",
+   "namen": {
+    "lang": "Berlin Hbf",
+    "middel": "Berlin Hbf",
+    "kort": "Berlin Hbf"
+   },
+   "synoniemen": [
+    "Berlijn"
+   ]
+  },
+  {
+   "code": "ASD",
+   "UICCode": "8400058",
+   "land": "NL",
+   "namen": {
+    "lang": "Amsterdam Centraal",
+    "middel": "Amsterdam C.",
+    "kort": "Amsterdm C"
+   },
+   "synoniemen": [
+    "Amsterdam CS",
+    "Amsterdam"
+   ]
+  },
+  {
+   "code": "BDE",
+   "UICCode": "8400140",
+   "land": "NL",
+   "namen": {
+    "lang": "Bunde",
+    "middel": "Bunde",
+    "kort": "Bunde"
+   },
+   "synoniemen": []
+  },
+  {
+   "code": "GV",
+   "UICCode": "8400280",
+   "land": "NL",
+   "namen": {
+    "lang": "Den Haag HS",
+    "middel": "Den Haag HS",
+    "kort": "Dn Haag HS"
+   },
+   "synoniemen": [
+    "Den Haag Hollands Spoor",
+    "Hollands Spoor"
+   ]
+  },
+  {
+   "code": "GVC",
+   "UICCode": "8400282",
+   "land": "NL",
+   "namen": {
+    "lang": "Den Haag Centraal",
+    "middel": "Den Haag C.",
+    "kort": "Den Haag C"
+   },
+   "synoniemen": [
+    "Den Haag CS",
+    "Den Haag",
+    "'s-Gravenhage"
+   ]
+  },
+  {
+   "code": "RTD",
+   "UICCode": "8400530",
+   "land": "NL",
+   "namen": {
+    "lang": "Rotterdam Centraal",
+    "middel": "Rotterdam C.",
+    "kort": "Rotterdm C"
+   },
+   "synoniemen": [
+    "Rotterdam CS",
+    "Rotterdam"
+   ]
+  },
+  {
+   "code": "UT",
+   "UICCode": "8400621",
+   "land": "NL",
+   "namen": {
+    "lang": "Utrecht Centraal",
+    "middel": "Utrecht C.",
+    "kort": "Utrecht C"
+   },
+   "synoniemen": [
+    "Utrecht CS",
+    "Utrecht"
+   ]
+  }
+ ]
+}
