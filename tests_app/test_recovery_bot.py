@@ -101,7 +101,8 @@ async def test_follow_on_status_removes_only_its_own_button(app):
     assert tg.edits == [without(markup, follow)]  # journey and other recovery buttons stay
 
 
-async def test_recovery_step_on_status_removes_only_its_own_button(app):
+@pytest.mark.parametrize("action", ["progress", "stop"])
+async def test_recovery_step_on_status_removes_obsolete_step_controls(app, action):
     rig, tg, bot = app
     await start(app)
     selected = occurrence(rig).selected_recovery
@@ -110,10 +111,16 @@ async def test_recovery_step_on_status_removes_only_its_own_button(app):
     [boarded], [stop] = recovery_progress_buttons(selected)["inline_keyboard"]
     tags = [b["callback_data"].split("|")[0] for row in markup["inline_keyboard"] for b in row]
     assert tags[:2] == ["l", "s"] and boarded in markup["inline_keyboard"][-2]
-    await bot.handle(on_status(boarded["callback_data"], markup, 10))
+    used, obsolete = (boarded, stop) if action == "progress" else (stop, boarded)
+    await bot.handle(on_status(used["callback_data"], markup, 10))
     assert occurrence(rig).selected_recovery.revision == selected.revision + 1
     expected = without(markup, boarded["callback_data"])
-    assert tg.edits == [expected] and [stop] in expected["reply_markup"]["inline_keyboard"]
+    expected = without(expected["reply_markup"], stop["callback_data"])
+    assert tg.edits == [expected]
+    after = occurrence(rig).selected_recovery
+    await bot.handle(on_status(obsolete["callback_data"], markup, 11))
+    assert "button is old" in tg.sent[-1]["text"]
+    assert occurrence(rig).selected_recovery == after
 
 
 async def test_bus_walk_metro_manual_journey_duplicate_and_stale_callbacks(app):

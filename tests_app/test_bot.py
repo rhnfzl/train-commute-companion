@@ -321,6 +321,40 @@ async def test_used_alert_button_goes_and_its_sibling_stays(app):
     assert app.rig.occ(OUT).not_travelling and app.tg.edits[-1] == CLEARED
 
 
+async def test_concurrent_sibling_taps_cannot_restore_used_buttons(app, monkeypatch):
+    app.rig.clock.set("08:00")
+    markup = status_buttons(app.rt.view())
+    leaving, skip = (f"{tag}|p1|outbound|2026-10-27" for tag in ("l", "s"))
+    entered, release = asyncio.Event(), asyncio.Event()
+    call = app.bot._api.call
+
+    async def gated(method, params, **kwargs):
+        if method == "editMessageReplyMarkup" and not entered.is_set():
+            entered.set()
+            await release.wait()
+        return await call(method, params, **kwargs)
+
+    monkeypatch.setattr(app.bot._api, "call", gated)
+    first = asyncio.create_task(app.bot.handle(tap(leaving, markup=markup)))
+    await asyncio.wait_for(entered.wait(), 5)
+    second = asyncio.create_task(app.bot.handle(tap(skip, 2, markup=markup)))
+    try:
+        await until(lambda: app.rig.occ(OUT).not_travelling)
+    finally:
+        release.set()
+        await asyncio.gather(first, second)
+    final = app.tg.edits[-1]["reply_markup"]["inline_keyboard"]
+    assert all(b["callback_data"] not in {leaving, skip} for row in final for b in row)
+
+
+async def test_failed_outcome_reply_keeps_buttons_after_action(app):
+    app.rig.clock.set("08:00")
+    app.tg.fail = lambda method: error(400, "send failed") if method == "sendMessage" else None
+    await app.bot.handle(tap("l|p1|outbound|2026-10-27", markup=status_buttons(app.rt.view())))
+    assert app.rig.occ(OUT).tap_at == app.rt.now()
+    assert app.tg.sent == [] and "editMessageReplyMarkup" not in app.tg.calls
+
+
 @pytest.mark.parametrize("tag", ["l", "s", "c"])
 async def test_used_status_button_goes_and_every_other_stays(app, tag):
     app.rig.clock.set("08:00")

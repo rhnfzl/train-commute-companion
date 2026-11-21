@@ -192,6 +192,8 @@ class Bot:
         self._arrival_drafts: dict[str, ArrivalDraft] = {}
         self._save_phase = SavePhase.READY
         self._save_lock = asyncio.Lock()  # one save at a time: no shared .tmp, the newest wins
+        self._keyboard_lock = asyncio.Lock()
+        self._retired: dict[int, set[str] | None] = {}
         # saves: drained by close(), never cancelled (serve's cleanup leaves them out too)
         self.writes: set[asyncio.Task[bool]] = set()
         self._tasks: set[asyncio.Task[None]] = set()  # handlers, cancelled by close()
@@ -425,35 +427,38 @@ class Bot:
             out = Outcome(FAILED)
         label = _label(message, data)
         text = out.text if out.text.startswith(label + ":") else f"{label}: {out.text}"
-        await self._reply(text, out.markup)
-        if out.done:
+        replied = await self._reply(text, out.markup)
+        if out.done and replied:
             tag = data.split("|", 1)[0] if isinstance(data, str) else ""
             await self._retire(message, None if tag in WHOLE_KEYBOARD else data)
 
     async def _retire(self, message: dict[str, Any], data: str | None) -> None:
-        """Removes the button with `data` from the message's own keyboard, keeping every other
-        button as it is; `data` None removes the whole keyboard. Logged only: a failed edit
-        changes neither the reply nor the action."""
+        # Callback snapshots can predate another tap's edit, so edits share retired controls.
+        async with self._keyboard_lock:
+            await self._retire_locked(message, data)
+
+    async def _retire_locked(self, message: dict[str, Any], data: str | None) -> None:
         mid = message.get("message_id")
         if type(mid) is not int or self._cursor.closed:
             log.info("no Telegram message to remove the used button from")
             return
         rows: list[Any] = []
-        if data is not None:
-            # shortcut: two taps on one message before either edit lands can bring the first
-            # button back; it is reusable and a refused tap says so, so add a per-message
-            # keyboard cache only if that shows up in use
+        retired = self._retired.setdefault(mid, set())
+        if data is not None and retired is not None:
+            retired.add(_button_key(data))
             old = _obj(message.get("reply_markup")).get("inline_keyboard")
             old = old if isinstance(old, list) else []
             rows = [
                 kept
                 for row in old
                 if isinstance(row, list)
-                and (kept := [b for b in row if _obj(b).get("callback_data") != data])
+                and (kept := [b for b in row if _button_key(_obj(b).get("callback_data")) not in retired])
             ]
             if rows == old:  # no keyboard, or the button is not on it: wiping it would lose others
                 log.info("the used button is not on its Telegram message's keyboard")
                 return
+        else:
+            self._retired[mid] = None
         try:  # handle() checked this message's chat is self._chat
             await self._api.call(
                 "editMessageReplyMarkup",
@@ -804,7 +809,7 @@ class Bot:
         if self._proof is proof:
             proof.arm()
 
-    async def _reply(self, text: str, markup: dict[str, Any] | None = None) -> None:
+    async def _reply(self, text: str, markup: dict[str, Any] | None = None) -> bool:
         parts = split_text(text)
         try:
             for i, part in enumerate(parts):
@@ -812,6 +817,8 @@ class Bot:
                 await self._send(part, **extra)
         except TelegramError as e:
             log.warning("Telegram reply failed (%s: %s)", e.code, e)
+            return False
+        return not self._cursor.closed
 
     async def _send(self, text: str, **params: Any) -> None:
         if self._cursor.phase is CursorPhase.CLOSED:
@@ -821,6 +828,11 @@ class Bot:
 
 def _nothing(refused: Refused) -> str:
     return f"Nothing to act on: {refused.text}."
+
+
+def _button_key(data: Any) -> Any:
+    # A recovery action invalidates every control for the same selection, revision and step.
+    return data.rsplit("|", 1)[0] if isinstance(data, str) and data.startswith("rc|") else data
 
 
 def _label(message: dict[str, Any], data: Any) -> str:
