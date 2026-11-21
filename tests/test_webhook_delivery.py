@@ -38,6 +38,7 @@ from runtime_rig import (
 from webhook_receiver import Receiver
 
 from train_commute_companion import webhook_send
+from train_commute_companion.ledger import LiveLedger
 from train_commute_companion.lookahead import render_message
 from train_commute_companion.lookahead_probe import signature_of
 from train_commute_companion.model import (
@@ -185,6 +186,7 @@ class WRig(Rig):
             clock=self.clock,
             require_stations=settings.get("require_stations", False),
             webhooks=self.poster,
+            primary_destination=settings.get("primary_destination"),
         )
 
     async def restart(self) -> Runtime:
@@ -217,6 +219,102 @@ def copies(rig: Rig, kind: EventKind | None = None) -> list[WebhookCopy]:
 
 def stored_copies(rig: Rig) -> tuple[WebhookCopy, ...]:
     return loads(PersistedState, rig.store.text).webhook_copies
+
+
+async def history_rig(tmp_path, monkeypatch):
+    text = P1.replace("    outbound:", "    alerts: {alert_history: true}\n    outbound:")
+    rig = WRig(tmp_path, text=text, sync=False)
+    rig.rt = rig.new(primary_destination=lambda: "test-phone")
+    await rig.rt.start()
+    await rig.rt.poll_once()
+    await rig.rt.webhooks_idle()
+
+    current = LiveLedger.current
+
+    def rendered(self, obligation, destination=None, *, for_copy=False):
+        event = current(self, obligation, destination, for_copy=for_copy)
+        if event is not None and event.kind is EventKind.CANCELLED and for_copy:
+            return replace(event, text=event.text + " Webhook copy.")
+        return event
+
+    monkeypatch.setattr(LiveLedger, "current", rendered)
+    return rig
+
+
+@pytest.mark.parametrize("save_fails", [False, True])
+async def test_history_keeps_first_acceptance_while_next_phone_send_waits(
+    tmp_path, monkeypatch, save_fails
+):
+    rig = await history_rig(tmp_path, monkeypatch)
+    rig.notifier.fails = lambda event: event.kind is EventKind.CANCELLED
+    webhook = asyncio.Event()
+    rig.end.gate = webhook
+    rig.end.gate_if = lambda message: message["kind"] == EventKind.CANCELLED.value
+    await cancel(rig)
+    await asyncio.wait_for(rig.end.entered.wait(), 2)
+
+    alert(rig, "later")
+    obligations = tuple(
+        replace(o, target_ids=frozenset({"test-phone"}))
+        if o.event.kind is EventKind.KEY_REJECTED
+        else o
+        for o in rig.rt.state.obligations
+    )
+    seam.seed_state(rig.rt, obligations=obligations)
+    seam.save_state(rig.rt)
+    send = rig.notifier.send
+    phone = asyncio.Event()
+    entered = asyncio.Event()
+    rig.notifier.fails = lambda event: False
+
+    async def held(event):
+        if event.kind is EventKind.KEY_REJECTED:
+            entered.set()
+            await phone.wait()
+        return await send(event)
+
+    monkeypatch.setattr(rig.notifier, "send", held)
+    rig.store.fail = save_fails
+    run = asyncio.create_task(seam.deliver(rig.rt))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        (accepted,) = [e for e in rig.rt.events_log if e.kind is EventKind.CANCELLED]
+        rig.store.fail = False
+        webhook.set()
+        await asyncio.wait_for(rig.rt.webhooks_idle(), 2)
+        (copy,) = rig.end.of(EventKind.CANCELLED)
+        assert copy["text"] != accepted.text
+    finally:
+        webhook.set()
+        phone.set()
+        await asyncio.wait_for(run, 2)
+    (row,) = [row for row in rig.rt.recent_alerts() if row.kind is EventKind.CANCELLED]
+    assert row.text == accepted.text
+
+
+@pytest.mark.parametrize("clock_change", [-0.5, 0, 0.5])
+async def test_history_keeps_webhook_receipt_when_its_save_failed(
+    tmp_path, monkeypatch, clock_change
+):
+    rig = await history_rig(tmp_path, monkeypatch)
+    rig.notifier.fails = lambda event: event.kind is EventKind.CANCELLED
+    gate = asyncio.Event()
+    rig.end.gate = gate
+    rig.end.gate_if = lambda message: message["kind"] == EventKind.CANCELLED.value
+    await cancel(rig)
+    await asyncio.wait_for(rig.end.entered.wait(), 2)
+    rig.store.fail = True
+    gate.set()
+    await rig.rt.webhooks_idle()
+    (copy,) = rig.end.of(EventKind.CANCELLED)
+    assert not any(row.kind is EventKind.CANCELLED for row in rig.rt.recent_alerts())
+
+    rig.store.fail = False
+    rig.clock.jump(clock_change)
+    rig.notifier.fails = lambda event: False
+    await seam.deliver(rig.rt)
+    (row,) = [row for row in rig.rt.recent_alerts() if row.kind is EventKind.CANCELLED]
+    assert row.text == copy["text"]
 
 
 def logged(caplog, level: int, text: str) -> list[logging.LogRecord]:
@@ -737,12 +835,19 @@ class Mixed(Provider):
         return ProviderAnswer(q, tuple(make_connection(x) for x in legs), self.clock.now())
 
 
-async def mixed_rig(tmp: Path, urls: tuple[str, ...] = (URL,), sync: bool = True) -> WRig:
+async def mixed_rig(
+    tmp: Path, urls: tuple[str, ...] = (URL,), sync: bool = True, *, history: bool = False
+) -> WRig:
     """05:40 on DAY, a confirmed baseline at 08:12; the next look-ahead run tells tomorrow's
     adoption bundled with a works warning."""
-    rig = WRig(tmp, "05:40", urls=urls, text=P1, sync=sync)
+    text = (
+        P1.replace("    outbound:", "    alerts: {alert_history: true}\n    outbound:")
+        if history
+        else P1
+    )
+    rig = WRig(tmp, "05:40", urls=urls, text=text, sync=sync)
     rig.provider = Mixed(rig.clock, [])
-    rig.rt = rig.new()
+    rig.rt = rig.new(primary_destination=(lambda: "test-phone") if history else None)
     await rig.rt.start()
     a = make_leg("AAA", "UT", "08:12", "08:40", number="1000")
     b = make_leg("UT", "RTD", "08:46", "09:24", number="2000")
@@ -1222,7 +1327,7 @@ async def test_failed_look_ahead_write_keeps_the_changed_copy(tmp_path, branch):
 
 
 async def test_carried_bundle_keeps_an_acceptance_the_store_missed(tmp_path):  # rule 22
-    rig = await mixed_rig(tmp_path)
+    rig = await mixed_rig(tmp_path, history=True)
     rig.notifier.fails = lambda e: True  # the bundle stays phone-pending
     await seam.lookahead_direction(
         rig.rt, rig.rt.config.profiles[0], OUT, PlannedWorks((), "complete")
@@ -1234,6 +1339,7 @@ async def test_carried_bundle_keeps_an_acceptance_the_store_missed(tmp_path):  #
     await tick(rig)  # The pinned receiver takes the bundle; its receipt write fails.
     o = bundle_of(rig)
     assert [i for i, _ in wed_posts(rig.end)] == [event_id(o.id)] and seam.owed_copies(rig.rt) == {}
+    assert not rig.rt.recent_alerts()
     rig.store.fail = False
     await withdraw(rig)  # retire carries the warning into a new message
     (n,) = [
@@ -1246,6 +1352,8 @@ async def test_carried_bundle_keeps_an_acceptance_the_store_missed(tmp_path):  #
     await tick(rig)
     assert [e.key for e in rig.rt.events_log].count(n.event.key) == 1  # the phone, once
     assert_adoption_and_correction_once(rig.end, o)
+    (row,) = [r for r in rig.rt.recent_alerts() if r.id in {event_id(o.id), event_id(n.id)}]
+    assert row.id == event_id(o.id) and row.text == wed_posts(rig.end)[0][1]
 
 
 async def test_background_write_keeps_the_mark_of_an_in_flight_phone_send(tmp_path):  # rule 22

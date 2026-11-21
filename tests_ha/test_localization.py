@@ -86,6 +86,8 @@ async def test_releases_keep_saved_entity_ids_in_both_languages(hass, language):
     entry = (await setup_tcc(hass, profile)).entry
     expected = {
         "p1_health",
+        "p1_commute_on_time_30d",
+        "p1_commute_delay_30d",
         "p1_not_travelling_today",
         "p1_outbound_status",
         "p1_outbound_lock",

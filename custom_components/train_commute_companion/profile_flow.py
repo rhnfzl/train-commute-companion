@@ -565,11 +565,16 @@ class ProfileEditorFlow:
             "weather",
             "leave_by",
             "weather_allowance",
+            "commute_stats",
+            "weekly_recap",
+            "after_trip_note",
             "custom_timetable_horizon",
             "live_today",
             "telegram_status_pin",
             "ntfy_enabled",
             "arrive_by",
+            "alert_history",
+            "calendar_feed",
         ):
             fields[
                 vol.Optional(key, default=values.get(key, alerts.get(key, getattr(defaults, key))))

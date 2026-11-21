@@ -69,12 +69,17 @@ With fresh departure-station weather, `weather_allowance` suggests extra minutes
 Set `alerts.weather_allowance: false` to keep the usual leave-by time. See the [minute table and limits](weather.md#suggested-extra-time-before-departure).
 
 Docker profiles also accept `alerts.live_today` and `alerts.telegram_status_pin`. Both default to `true`. These settings control [Today refresh and the home screen shortcut](docker.md#today-web-status) and [the Telegram status pin](docker.md#pinned-telegram-status).
+
 The HA profile details form has the same **Show leave-by time** switch. It does not change notification timing.
 Use per-direction `active_lead_min` for check-in timing. Its default is `buffer_min + 15` when omitted.
 
 System health, missing train data, stopped monitoring, invalid configuration, rejected credentials and command feedback remain enabled. These messages explain when the companion cannot follow a journey reliably.
 
 A train missing from NS data is reported after two polls in a row miss it while you follow the same train, so switching to another train never warns on its own. A stale or failing NS board is reported at once. "Visible again" follows only a "cannot see" message you actually received.
+
+## Sent alert history
+
+`alerts.alert_history` defaults to `false`. Set it to `true` to save recent accepted alerts locally. [View history and retention details](docker.md#recent-alerts)
 
 ## Repeated missed trains
 

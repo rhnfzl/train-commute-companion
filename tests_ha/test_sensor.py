@@ -13,14 +13,20 @@ from lifecycle_fixtures import journey, occ
 from runtime_rig import at, every_day, returns_every_day
 
 from custom_components.train_commute_companion.const import DOMAIN
-from custom_components.train_commute_companion.entity import health_state, shown_and_others
+from custom_components.train_commute_companion.entity import (
+    health_state,
+    shown_and_others,
+    unique_id,
+)
 from train_commute_companion.health import BoardHealth
+from train_commute_companion.history import JourneyHistory
 from train_commute_companion.model import (
     Direction,
     DirectionState,
     LegState,
     NotTravelling,
     OccurrenceKey,
+    okey,
 )
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.view import DirectionInfo, OccurrenceView, RuntimeView
@@ -57,6 +63,26 @@ async def test_status_sensor_leave_by_uses_shared_view(hass, enabled):
         assert datetime.fromisoformat(value) == at("08:02")
     else:
         assert value is None
+
+
+async def test_commute_statistics_use_measurement_sensors(hass):
+    h = await setup_tcc(hass, PROFILE)
+    key = OccurrenceKey("p1", Direction.OUTBOUND, at("08:00").date())
+    row = JourneyHistory(key, at("08:12"), at("09:20"), at("09:28"), False, False, False)
+
+    def publish(runtime):
+        seam.seed_state(runtime, commute_history={okey(key): row})
+        seam.save_state(runtime)
+
+    await h.host.run(publish)
+    await h.entry.runtime_data.coordinator.async_refresh()
+    await hass.async_block_till_done()
+    ids = {uid: entity for entity, uid in registry_ids(hass).items()}
+    on_time = hass.states.get(ids[unique_id("p1", "commute_on_time_30d")])
+    delay = hass.states.get(ids[unique_id("p1", "commute_delay_30d")])
+    assert float(on_time.state) == 0
+    assert float(delay.state) == 8
+    assert on_time.attributes["state_class"] == delay.attributes["state_class"] == "measurement"
 
 
 def profile(name: str) -> str:

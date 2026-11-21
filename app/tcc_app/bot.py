@@ -12,7 +12,7 @@ import stat
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, date, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from io import StringIO
 from pathlib import Path
 from typing import Any, TypeVar
@@ -21,6 +21,7 @@ import segno
 
 from train_commute_companion.compensation import ArrivalError, arrival_text
 from train_commute_companion.compensation import confirm as check_arrival
+from train_commute_companion.history import STATS_PERIODS, stats_text
 from train_commute_companion.location import Fix, number
 from train_commute_companion.messages import RefusalKind, Refused
 from train_commute_companion.model import Direction, display_name
@@ -79,6 +80,8 @@ SILENT_TEST = "Train Commute Companion: test alert, silent. This one should arri
 USAGE_CHOOSE = "Usage: /choose [profile] [outbound|return] HH:MM [train number] [YYYY-MM-DD]"
 HELP = (
     "/status: the journeys being followed now\n"
+    "/stats [week|month|year]: your recorded commute statistics\n"
+    "/clearstats: review clearing your local commute statistics\n"
     "/plan: set up a one-off or repeating trip\n"
     "/plans: view, edit or cancel saved trips\n"
     "/agents: choose which agents can change plans\n"
@@ -257,6 +260,7 @@ class Bot:
         self._claim: SetupClaim | None = None
         self._proof: DeliveryProof | None = None
         self._arrival_drafts: dict[str, ArrivalDraft] = {}
+        self._stats_clear: tuple[str, datetime, frozenset[str]] | None = None
         self.travel_actions = travel_actions or TravelActions(
             rt, {}, state_path.with_name("travel-agent-access.json")
         )
@@ -587,6 +591,8 @@ class Bot:
             )
         elif word == "/arrived":
             await self._arrival_review(args)
+        elif word in ("/stats", "/clearstats"):
+            await self._statistics(word, args)
         elif word == "/stations":
             await self._reply(stations_text(self._rt.view()))
         elif word == "/forget":
@@ -625,6 +631,41 @@ class Bot:
         reply = self._travel_chat.memory_suggestion(check=check)
         if reply is not None and await self._reply(reply.text, reply.markup):
             self._travel_chat.suggestion_delivered()
+
+    async def _statistics(self, word: str, args: Sequence[str]) -> None:
+        if not self.confirmed:
+            await self._reply("Confirm phone delivery with /test before using commute statistics.")
+            return
+        if word == "/clearstats":
+            token = secrets.token_hex(12)
+            keys = frozenset(self._rt.state.commute_history)
+            self._stats_clear = (token, self._rt.now().astimezone(UTC), keys)
+            await self._reply(
+                f"Delete all {len(keys)} local commute statistics rows and any queued recaps or trip notes?",
+                buttons((("Delete these statistics", f"stats|{token}"),)),
+            )
+            return
+        days = STATS_PERIODS.get(args[0].lower() if args else "month")
+        if days is None or len(args) > 1:
+            await self._reply("Use /stats week, /stats month, or /stats year.")
+            return
+        await self._reply(f"Last {days} days\n{stats_text(self._rt.commute_stats(days))}")
+
+    def _statistics_delete(self, token: str) -> Outcome:
+        draft = self._stats_clear
+        if (
+            not self.confirmed
+            or draft is None
+            or token != draft[0]
+            or self._rt.now().astimezone(UTC) - draft[1] > MAX_AGE
+        ):
+            return Outcome(INVALID)
+        self._stats_clear = None
+        if self._rt.state.commute_history.keys() != draft[2]:
+            return Outcome("Statistics changed. Use /clearstats to review the current rows.")
+        if not self._rt.clear_commute_history():
+            return Outcome("Statistics could not be cleared. Use /clearstats to retry.")
+        return Outcome("Local commute statistics and their queued notes were deleted.", done=True)
 
     def _agent_access(self) -> TravelReply:
         policies = self.travel_actions.policies()
@@ -770,6 +811,8 @@ class Bot:
             return Outcome(travel.text, travel.markup, travel.done)
         if parts[:1] == ["av"] and len(parts) == 2:
             return await self._arrival_confirm(parts[1])
+        if parts[:1] == ["stats"] and len(parts) == 2:
+            return self._statistics_delete(parts[1])
         if parts[:1] == ["q"] and len(parts) == 3:
             return await self._answer(parts[1], parts[2])
         if parts[:1] == ["ok"] and len(parts) == 2:

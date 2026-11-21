@@ -8,6 +8,7 @@ from enum import Enum, StrEnum, auto
 from typing import Any
 
 from train_commute_companion.model import (
+    EventKind,
     Obligation,
     OccurrenceKey,
     Severity,
@@ -321,7 +322,11 @@ class StateWriter:
         )
 
     def commit_strict(
-        self, state: PersistedState, *, discard_copies: Collection[OccurrenceKey] = ()
+        self,
+        state: PersistedState,
+        *,
+        discard_copies: Collection[OccurrenceKey] = (),
+        discard_copy_kinds: Collection[EventKind] = (),
     ) -> bool:
         """Recovery actions apply only after a write. A failed action is never queued for replay."""
         if self.phase is WritePhase.PENDING:
@@ -329,7 +334,10 @@ class StateWriter:
         try:
             written = self._outbox.with_copies(state)
             discarded = {
-                c.id for c in written.webhook_copies if c.obligation.occurrence in discard_copies
+                c.id
+                for c in written.webhook_copies
+                if c.obligation.occurrence in discard_copies
+                or c.obligation.event.kind in discard_copy_kinds
             }
             if discarded:
                 written = replace(
@@ -464,7 +472,11 @@ class StateWriter:
         base = self._durable
         if op is not None:
             self._journal.ops.append(op)
-        if stage or self._journal.base is None:
+        has_archive = any(
+            k in base.occurrences and k not in cand.occurrences
+            for k in cand.commute_history.keys() - base.commute_history.keys()
+        )
+        if stage or self._journal.base is None or has_archive:
             self._journal.base = self._restage(base, cand)
         known = {o.id for o in base.obligations}
         taken = {_held_id(o) for o in self._journal.held.values()} | self._journal.told
@@ -535,4 +547,10 @@ class StateWriter:
                 occs[k] = c
             elif o is not None:
                 occs[k] = o
-        return replace(cand, occurrences=occs)
+        # A pending archive must keep its row if its occurrence removal lands.
+        history = {
+            k: row
+            for k, row in old.commute_history.items()
+            if k in base.occurrences and k not in occs and k not in base.commute_history
+        }
+        return replace(cand, occurrences=occs, commute_history={**history, **cand.commute_history})

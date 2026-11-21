@@ -132,6 +132,14 @@ async def test_old_pending_digest_survives_upgrade_to_recurring_profiles(tmp_pat
     (queued,) = [o for o in rig.rt.state.obligations if o.event.kind is EventKind.WORKS_DIGEST]
     legacy = encode(profile())
     legacy.pop("repeat")
+    for key in (
+        "commute_stats",
+        "weekly_recap",
+        "after_trip_note",
+        "alert_history",
+        "calendar_feed",
+    ):
+        legacy["alerts"].pop(key)
     token = hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
     obligations = tuple(
         replace(o, digest_token=token) if o.id == queued.id else o for o in rig.rt.state.obligations

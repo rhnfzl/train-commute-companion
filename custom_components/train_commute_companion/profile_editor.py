@@ -160,6 +160,7 @@ def edit_profile(
             alerts = copy.deepcopy(profile.get("alerts", {}))
             if value != 3 or key in alerts:
                 profile["alerts"] = {**alerts, key: value}
+    defaults = AlertSettings()
     for key in (
         "compensation_reminder",
         "quiet_repeat_misses",
@@ -170,31 +171,20 @@ def edit_profile(
         "telegram_status_pin",
         "ntfy_enabled",
         "arrive_by",
+        "commute_stats",
+        "weekly_recap",
+        "after_trip_note",
+        "alert_history",
+        "calendar_feed",
     ):
         if key not in values:
             continue
         if type(values[key]) is not bool:
             raise EditorError("invalid_profile")
         alerts = copy.deepcopy(profile.get("alerts", {}))
-        if (
-            values[key]
-            != (
-                key
-                in (
-                    "leave_by",
-                    "weather_allowance",
-                    "live_today",
-                    "telegram_status_pin",
-                    "ntfy_enabled",
-                    "arrive_by",
-                )
-            )
-            or key in alerts
-            or key == "weather"
-        ):
+        if values[key] != getattr(defaults, key) or key in alerts or key == "weather":
             alerts[key] = values[key]
             profile["alerts"] = alerts
-    defaults = AlertSettings()
     for key in ("custom_timetable_horizon", "timetable_horizon_unit", "timetable_horizon_count"):
         if key in values:
             value = values[key]

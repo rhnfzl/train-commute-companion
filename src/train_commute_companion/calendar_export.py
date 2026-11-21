@@ -1,4 +1,4 @@
-"""Save one selected journey as a tentative calendar plan, without recording attendance.
+"""Show planned journeys in a calendar without recording attendance.
 
 Serialization follows RFC 5545 sections 3.1, 3.3.11 and 3.6.1:
 https://www.rfc-editor.org/rfc/rfc5545.txt
@@ -6,10 +6,28 @@ https://www.rfc-editor.org/rfc/rfc5545.txt
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from train_commute_companion.model import LegKind, LegState, Observation, OccurrenceKey, present
-from train_commute_companion.view import OccurrenceView
+from train_commute_companion.calendar import TZ, resolve_local
+from train_commute_companion.lookahead_probe import service_date
+from train_commute_companion.model import (
+    DatedSchedule,
+    Direction,
+    LegKind,
+    LegState,
+    Observation,
+    OccurrenceKey,
+    Profile,
+    Signature,
+    direction_key,
+    okey,
+    present,
+)
+from train_commute_companion.revisions import find_profile, signature_for
+from train_commute_companion.schedule import dated_schedule
+from train_commute_companion.store import PersistedState
+from train_commute_companion.travel_plans import plan_suppresses
+from train_commute_companion.view import OccurrenceView, works_ahead
 
 PLANNER_URL = "https://www.ns.nl/reisplanner/"
 
@@ -124,6 +142,102 @@ def export_ics(occurrence: OccurrenceView, *, exported_at: datetime) -> bytes:
         "DESCRIPTION:" + _text(description),
         "URL:" + PLANNER_URL,
         "END:VEVENT",
+        "END:VCALENDAR",
+    )
+    return b"".join(_fold(line) for line in lines)
+
+
+def calendar_feed(st: PersistedState, now: datetime) -> bytes:
+    """Fourteen local service dates from the saved plan, with no provider requests."""
+    today = now.astimezone(TZ).date()
+    end = today + timedelta(days=14)
+    instant = _utc(now)
+    profiles = () if st.config is None else st.config.profiles
+    travel = tuple(st.travel_plans.values())
+    works = {
+        key: {w.service_date for w in works_ahead(ledger, today)}
+        for key, ledger in st.lookahead.items()
+    }
+    rows: list[tuple[Profile, DatedSchedule, Signature | None]] = []
+    for offset in range(-1, 14):  # yesterday's next-day return can run today
+        day = today + timedelta(days=offset)
+        for profile in profiles:
+            if (
+                not profile.alerts.calendar_feed
+                or profile.home_station == profile.work_station
+                or not profile.commutes_on(day)
+            ):
+                continue
+            for direction in Direction:
+                sd = service_date(profile, direction, day)
+                signature = signature_for(st, profile, direction, sd)
+                first = None if signature is None else signature.legs[0].departure
+                schedule = dated_schedule(profile, direction, day, first)
+                if not plan_suppresses(schedule, profile, travel):
+                    rows.append((profile, schedule, signature))
+        for plan in travel:
+            source = (
+                plan.profile if plan.inherits is None else find_profile(st.config, plan.inherits)
+            )
+            if source is not None and source.alerts.calendar_feed:
+                rows.extend(
+                    (plan.profile, schedule, None)
+                    for schedule in plan.schedules(day)
+                    if not plan_suppresses(schedule, plan.profile, travel)
+                )
+
+    events: list[str] = []
+    for profile, schedule, signature in sorted(rows, key=lambda row: _utc(row[1].first_departure)):
+        key = schedule.key
+        active = st.occurrences.get(okey(key))
+        if (
+            not today <= key.service_date < end
+            or _utc(schedule.last_departure or schedule.first_departure) < instant
+            or profile.paused_on(key.service_date)
+            or (active is not None and active.not_travelling)
+        ):
+            continue
+        route = f"{profile.origin(key.direction)} to {profile.destination(key.direction)}"
+        start = schedule.first_departure
+        end_time = schedule.last_departure
+        label = "Departure window" if schedule.mode == "window" else "Planned departure"
+        if signature is not None and schedule.mode == "fixed":
+            last = signature.legs[-1]
+            last_day = key.service_date + timedelta(days=last.day_offset)
+            end_time = _utc(resolve_local(last_day, last.departure, edge="start")) + timedelta(
+                minutes=last.duration_min
+            )
+        description = f"{label}. Check NS before you travel."
+        if key.service_date in works.get(direction_key(key.profile_id, key.direction), ()):
+            description += "\nNS timetable warning recorded for this service date."
+        events.extend(
+            (
+                "BEGIN:VEVENT",
+                f"UID:{export_id(key)}@train-commute-companion.invalid",
+                "DTSTAMP:" + _date(now),
+                "DTSTART:" + _date(start),
+            )
+        )
+        if end_time is not None and _utc(end_time) > _utc(start):
+            events.append("DTEND:" + _date(end_time))
+        events.extend(
+            (
+                "STATUS:TENTATIVE",
+                "TRANSP:TRANSPARENT",
+                "SUMMARY:" + _text(f"{profile.name}: {route}"),
+                "DESCRIPTION:" + _text(description),
+                "URL:" + PLANNER_URL,
+                "END:VEVENT",
+            )
+        )
+    if not events:  # RFC 5545 requires a component even when no trips remain.
+        events.extend(("BEGIN:X-TCC-EMPTY", "COMMENT:No planned journeys", "END:X-TCC-EMPTY"))
+    lines = (
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Train Commute Companion//Commute Calendar//EN",
+        "CALSCALE:GREGORIAN",
+        *events,
         "END:VCALENDAR",
     )
     return b"".join(_fold(line) for line in lines)

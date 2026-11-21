@@ -52,10 +52,14 @@ A delayed train never moves leave-by later. The followed train determines this t
 Turn off **Show leave-by time** to hide leave-by text and the status sensor's timestamp. Other check-in and advice wording stays available.
 
 **Suggest extra time for weather** controls `alerts.weather_allowance` and defaults to on.
-
-**Automatically refresh Today** and **Pin journey status in Telegram** edit `alerts.live_today` and `alerts.telegram_status_pin`. Both default to on and apply when the profiles file runs in Docker.
 It adjusts leave-by text only when weather and leave-by text are enabled. See the [weather allowance table](weather.md#suggested-extra-time-before-departure).
 See [Notification preferences](notification-preferences.md).
+
+**Automatically refresh Today** and **Pin journey status in Telegram** edit `alerts.live_today` and `alerts.telegram_status_pin`. Both default to on and apply when the profiles file runs in Docker.
+
+**Keep sent alert history** edits `alerts.alert_history` and defaults to off. When enabled, the companion keeps recent accepted alerts in local state. The private Docker Today page shows the history. [Retention and visibility](docker.md#recent-alerts)
+
+**Include this commute in the private calendar** edits `alerts.calendar_feed`, which defaults to on. The [Docker subscription](docker.md#subscribe-to-planned-commutes) requires a separate token.
 
 Docker and Telegram profiles use the same per-direction `active_lead_min` setting in YAML.
 

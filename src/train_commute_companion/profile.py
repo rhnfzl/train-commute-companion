@@ -496,10 +496,19 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
             "telegram_status_pin",
             "ntfy_enabled",
             "arrive_by",
+            "commute_stats",
+            "weekly_recap",
+            "after_trip_note",
+            "alert_history",
+            "calendar_feed",
         ),
         "alerts",
     )
     d = AlertSettings()
+    history_switches = {
+        key: c.boolean(raw.get(key, getattr(d, key)), f"alerts.{key}")
+        for key in ("commute_stats", "weekly_recap", "after_trip_note")
+    }
     custom_horizon = c.boolean(
         raw.get("custom_timetable_horizon", d.custom_timetable_horizon),
         "alerts.custom_timetable_horizon",
@@ -533,6 +542,8 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
     )
     ntfy = c.boolean(raw.get("ntfy_enabled", d.ntfy_enabled), "alerts.ntfy_enabled")
     arrive = c.boolean(raw.get("arrive_by", d.arrive_by), "alerts.arrive_by")
+    history = c.boolean(raw.get("alert_history", d.alert_history), "alerts.alert_history")
+    calendar_feed = c.boolean(raw.get("calendar_feed", d.calendar_feed), "alerts.calendar_feed")
     compensation = raw.get("compensation_reminder", False)
     if not isinstance(compensation, bool):
         c.err("alerts.compensation_reminder", "must be true or false")
@@ -601,6 +612,8 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         or pin is None
         or ntfy is None
         or arrive is None
+        or history is None
+        or calendar_feed is None
     ):
         return None
     return AlertSettings(
@@ -624,6 +637,11 @@ def _alerts(c: _ProfileErrors, raw: object) -> AlertSettings | None:
         telegram_status_pin=pin,
         ntfy_enabled=ntfy,
         arrive_by=arrive,
+        commute_stats=cast(bool, history_switches["commute_stats"]),
+        weekly_recap=cast(bool, history_switches["weekly_recap"]),
+        after_trip_note=cast(bool, history_switches["after_trip_note"]),
+        alert_history=history,
+        calendar_feed=calendar_feed,
     )
 
 

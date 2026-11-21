@@ -8,6 +8,7 @@ from lifecycle_fixtures import full_state
 from test_delivery import ob
 
 from train_commute_companion.calendar import TZ
+from train_commute_companion.history import JourneyHistory
 from train_commute_companion.model import EventKind
 from train_commute_companion.replay import MemoryStore
 from train_commute_companion.state_writer import Change, StateWriter
@@ -45,6 +46,30 @@ def test_pending_action_cannot_be_discarded_by_starting_again():
     w.retry()
     assert not w.waiting
     assert store.load().started_before is False
+
+
+@pytest.mark.parametrize("already_pending", [False, True])
+def test_unwritten_archive_keeps_history_when_another_change_lands(already_pending):
+    w, store = writer()
+    w.begin(full_state())
+    key, occurrence = next(iter(w.st.occurrences.items()))
+    row = JourneyHistory(occurrence.key, None, None, None, True, False, False)
+    store.failing = True
+    if already_pending:
+        w.commit(replace(w.st, started_before=not w.st.started_before), Change.RECOMPUTED)
+    w.commit(
+        replace(
+            w.st,
+            occurrences={k: v for k, v in w.st.occurrences.items() if k != key},
+            commute_history={key: row},
+        ),
+        Change.TICK,
+    )
+    assert w.waiting
+    store.failing = False
+    w.commit(w.st, Change.LOOKAHEAD)
+    assert key not in store.load().occurrences
+    assert store.load().commute_history[key] == row
 
 
 def test_writer_phase_is_transactional_and_strict_failure_is_not_replayed():
@@ -91,6 +116,7 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
         if isinstance(value, dict):
             if {"fact_key", "event", "target_ids"} <= value.keys():
                 value["primary_suppressed"] = False
+                value["alert_history_origin"] = None
             for child in value.values():
                 obligation_defaults(child)
         elif isinstance(value, list):
@@ -104,6 +130,7 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
         occurrence["wifi_reports"] = {}
         occurrence["released"] = False  # 2026-11-18 defaults for an older store
         occurrence["missed_from_origin"] = False
+        occurrence["history_flags"] = []
         occurrence |= {  # 0.3.0 other boarding station defaults
             "boarding_station": None,
             "prompt": None,
@@ -117,6 +144,9 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
             if journey is not None:
                 journey["unproven"] = False  # 0.3.0 other-station guess default
     raw["state"]["remembered_stations"] = {}
+    raw["state"]["commute_history"] = {}
+    raw["state"]["commute_recap_weeks"] = {}
+    raw["state"]["alert_history"] = []
     raw["state"] |= {"travel_plans": {}, "travel_receipts": {}, "travel_revision": 0}
     for cfg in (raw["state"]["config"], *raw["state"]["config_snapshots"].values()):
         for profile in cfg["profiles"]:
@@ -141,6 +171,11 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
             profile["alerts"]["leave_by"] = True
             profile["alerts"]["weather_allowance"] = True
             profile["alerts"] |= {
+                "commute_stats": True,
+                "weekly_recap": True,
+                "after_trip_note": True,
+            }
+            profile["alerts"] |= {
                 "custom_timetable_horizon": True,
                 "timetable_horizon_unit": "calendar_days",
                 "timetable_horizon_count": 7,
@@ -148,6 +183,8 @@ def test_pre_refactor_state_load_save_read_preserves_fields_and_adds_resume_defa
             profile["alerts"] |= {"live_today": True, "telegram_status_pin": True}
             profile["alerts"]["ntfy_enabled"] = True
             profile["alerts"]["arrive_by"] = True
+            profile["alerts"]["alert_history"] = False
+            profile["alerts"]["calendar_feed"] = True
             if profile["location"] is not None:  # Q12 defaults
                 profile["location"] |= {"wifi": {}, "activity_entity": None}
                 profile["location"] |= {  # 0.3.0 other boarding station defaults
