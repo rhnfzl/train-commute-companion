@@ -35,6 +35,38 @@ def test_owner_replay(name, capsys):
     assert out.rstrip().endswith("Data: NS")
 
 
+def test_arrive_by_replay_filters_late_arrivals_and_replaces_a_cancelled_train(tmp_path, capsys):
+    (tmp_path / "profile.yaml").write_text(
+        (REPLAYS / "profiles" / "direct.yaml")
+        .read_text()
+        .replace(
+            '{first_train: "08:12", transfers: [], buffer_min: 10}',
+            '{mode: window, window: ["08:00", "09:00"], pick: arrive_by, '
+            'arrive_by: "09:00", walk_after_min: 10, buffer_min: 10}',
+        )
+    )
+    first = (
+        "trips:\n"
+        '  - legs: [{from: AAA, to: RTD, dep: "08:12", arr: "08:43", number: "1111"}]\n'
+        '  - legs: [{from: AAA, to: RTD, dep: "08:24", arr: "08:50", number: "2222"}]\n'
+        '  - legs: [{from: AAA, to: RTD, dep: "08:29", arr: "08:53", number: "3333"}]\n'
+    )
+    (tmp_path / "first.yaml").write_text(first)
+    (tmp_path / "failed.yaml").write_text(
+        first.replace('number: "2222"', 'number: "2222", cancelled: true')
+    )
+    script = tmp_path / "replay.yaml"
+    script.write_text(
+        'profile: profile.yaml\nnow: "2026-10-27 07:50"\nuntil: "07:57"\nqueries:\n'
+        '  - {at: "07:50", query: "AAA>RTD", answer_file: first.yaml}\n'
+        '  - {at: "07:54", query: "AAA>RTD", answer_file: failed.yaml}\n'
+    )
+    output = replay_output(script, capsys)
+    assert "08:24 AAA to RTD train is cancelled" in output
+    assert "Take the earlier train at 08:12 from AAA" in output
+    assert "08:29" not in output
+
+
 def test_replay_names_a_bad_file(tmp_path, capsys):
     f = tmp_path / "r.yaml"
     f.write_text('profile: p.yaml\nnow: "2026-10-27 07:50"\nuntil: 0950\n')

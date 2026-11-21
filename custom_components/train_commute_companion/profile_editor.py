@@ -14,7 +14,12 @@ from uuid import uuid4
 
 import yaml
 
-from train_commute_companion.model import AlertSettings, NotificationChannel
+from train_commute_companion.calendar import WEEKDAYS
+from train_commute_companion.model import (
+    DEFAULT_PREFER_DIRECT_MIN,
+    AlertSettings,
+    NotificationChannel,
+)
 from train_commute_companion.notification_policy import CATEGORIES
 from train_commute_companion.profile import load_config, station_code
 from train_commute_companion.transfer import FALLBACK_MIN
@@ -23,9 +28,11 @@ from .store import file_lock
 
 
 class EditorError(ValueError):
-    def __init__(self, code: str, report: str = "") -> None:
+    def __init__(
+        self, code: str, report: str = "", override_days: frozenset[tuple[str, str]] = frozenset()
+    ) -> None:
         super().__init__(code)
-        self.code, self.report = code, report
+        self.code, self.report, self.override_days = code, report, override_days
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,10 +58,27 @@ def validate_text(
     known: frozenset[str],
     today: date,
     available_channels: frozenset[NotificationChannel] | None = None,
+    *,
+    profile_index: int | None = None,
 ) -> None:
     config, errors = load_config(text, known, None, today, available_channels=available_channels)
     if config is None or errors:
-        raise EditorError("invalid_profile", "\n".join(f"{e.path}: {e.message}" for e in errors))
+        paths = [error.path.split(".") for error in errors]
+        override_days: frozenset[tuple[str, str]] = frozenset()
+        if profile_index is not None and all(
+            len(path) >= 4
+            and path[0] == f"profiles[{profile_index}]"
+            and path[1] in ("outbound", "return")
+            and path[2] == "by_weekday"
+            and path[3] in WEEKDAYS
+            for path in paths
+        ):
+            override_days = frozenset((path[1], path[3]) for path in paths)
+        raise EditorError(
+            "invalid_profile",
+            "\n".join(f"{e.path}: {e.message}" for e in errors),
+            override_days,
+        )
 
 
 def read_document(
@@ -90,7 +114,9 @@ def edit_profile(
     available_channels: frozenset[NotificationChannel] | None = None,
 ) -> str:
     data = copy.deepcopy(document.data)
+    index: int | None
     if profile_id is None:
+        index = len(data["profiles"])
         profile: dict[str, Any] = {"id": uuid4().hex}
         data["profiles"].append(profile)
     else:
@@ -129,6 +155,7 @@ def edit_profile(
         "live_today",
         "telegram_status_pin",
         "ntfy_enabled",
+        "arrive_by",
     ):
         if key not in values:
             continue
@@ -145,6 +172,7 @@ def edit_profile(
                     "live_today",
                     "telegram_status_pin",
                     "ntfy_enabled",
+                    "arrive_by",
                 )
             )
             or key in alerts
@@ -236,7 +264,7 @@ def edit_profile(
             {"start": values.get("pause_start"), "end": values.get("pause_end")}
         )
     text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
-    validate_text(text, known, today, available_channels)
+    validate_text(text, known, today, available_channels, profile_index=index)
     return text
 
 
@@ -298,6 +326,37 @@ def _write_schedule(journey: dict[str, Any], direction: str, values: Mapping[str
             journey["min_stay_min"] = stay
         else:
             journey.pop("min_stay_min", None)
+    _write_arrival(journey, values, f"{direction}_")
+
+
+def _write_arrival(journey: dict[str, Any], values: Mapping[str, Any], prefix: str) -> None:
+    fields = ("arrive_by", "walk_after_min", "prefer_direct_min")
+    if not any(f"{prefix}{key}" in values for key in fields):
+        return
+    days = values.get(f"{prefix}by_weekday", journey.get("by_weekday", {}))
+    uses_target = journey.get("pick") == "arrive_by" or any(
+        isinstance(day, dict) and day.get("pick") == "arrive_by"
+        for day in (days.values() if isinstance(days, dict) else ())
+    )
+    if not uses_target:
+        for key in fields:
+            journey.pop(key, None)
+        return
+    key = f"{prefix}arrive_by"
+    if key in values:
+        target = _text(values[key])
+        if target:
+            journey["arrive_by"] = target
+        else:
+            journey.pop("arrive_by", None)
+    for key, default in (("walk_after_min", 0), ("prefer_direct_min", DEFAULT_PREFER_DIRECT_MIN)):
+        field = f"{prefix}{key}"
+        if field in values:
+            value = values[field]
+            if isinstance(value, float) and value.is_integer():
+                value = int(value)
+            if value is not None and (type(value) is not int or value != default or key in journey):
+                journey[key] = value
 
 
 OTHER_STATION_DEFAULTS = {

@@ -14,6 +14,8 @@ The default relay offers three read-only tools. Each takes a profile ID or name.
 
 Every answer carries a `text` field with the same wording as Telegram, ending with `Data: NS`. A leg reads "on time per NS", and a warning that `/status` shows is in every answer. Use Telegram to choose a train already being followed, say you are leaving, or skip a day.
 
+`get_status` shows the active arrival target and the station deadline for an [arrive-by trip](weekday-schedules.md#arrive-by-a-set-time). It also shows when the train misses the target or the data cannot confirm it.
+
 ## How it runs
 
 The app listens on a private socket, `mcp.sock`, in its data volume (`/data`). The MCP client starts the `mcp` Compose service in its own short-lived container. Its data volume is read-only and its only default setting is `TCC_STATE_DIR`. The relay calls the running app for every answer. If the app stops, the relay reports that it cannot reach the app.

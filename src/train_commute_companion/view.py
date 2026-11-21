@@ -10,10 +10,11 @@ from datetime import date, datetime, timedelta
 from itertools import pairwise
 from typing import Literal
 
+from train_commute_companion.arrival import ArrivalStatus, arrival_status
 from train_commute_companion.calendar import TZ, hhmm, to_utc
 from train_commute_companion.classify import pair_transfer
 from train_commute_companion.disruptions import disruptions_fresh
-from train_commute_companion.health import BoardHealth, board_health
+from train_commute_companion.health import FRESH_FOR, BoardHealth, board_health
 from train_commute_companion.lifecycle import (
     MISSED_CONFIRM,
     find_next_good,
@@ -65,6 +66,7 @@ from train_commute_companion.model import (
     TimeObs,
     TransferState,
     direction_key,
+    present,
 )
 from train_commute_companion.providers.base import ActiveDisruption, ProviderAnswer, Query
 from train_commute_companion.providers.weather import WeatherView
@@ -132,11 +134,13 @@ class RecoveryPlanView:
     @property
     def proposal_id(self) -> str:
         query = self.source_query
-        anchors = (
+        anchors: tuple[object, ...] | None = (
             None
             if query is None
             else (query.origin, query.destination, query.via, query.require_accessible)
         )
+        if query is not None and query.search_for_arrival:
+            anchors = (*present(anchors), "arrival")
         services = [
             step.service_key
             or (
@@ -211,6 +215,9 @@ class OccurrenceView:
     boarding_station: str | None = None
     leave_by: datetime | None = None
     weather_allowance: WeatherAllowance | None = None
+    arrive_by: datetime | None = None
+    station_arrival_deadline: datetime | None = None
+    arrival_target_status: ArrivalStatus | Literal["no_train"] | None = None
 
     @property
     def leave_by_text(self) -> str | None:
@@ -537,8 +544,12 @@ def occurrence_view(
     resolved = is_resolved(s) and not (
         s.selected_recovery is not None and s.selected_recovery.status == "active"
     )
+    deadline = ctx.schedule.arrival_deadline
+    fresh = deadline is not None and any(
+        timedelta() <= to_utc(ctx.now) - to_utc(a.fetched_at) < FRESH_FOR for a in answers
+    )
     next_good = None
-    if pool is not None and not resolved:
+    if pool is not None and not resolved and (deadline is None or fresh):
         x = None if s.lock is None else unfinished_leg(s.lock)
         if s.lock is None:
             next_good = find_next_good(s, ctx, pool)
@@ -556,6 +567,26 @@ def occurrence_view(
 
     coverage = "complete" if disruptions_fresh(s, ctx.now) else "unknown"
     shown_legs = legs(lock)
+    recovering = s.selected_recovery is not None and s.selected_recovery.status == "active"
+    if recovering:
+        deadline = None
+    target_status: ArrivalStatus | Literal["no_train"] | None = None
+    if deadline is not None:
+        if any(x.progress is LegState.MISSED for x in shown_legs):
+            target_status = "no_train"
+        elif shown_legs:
+            last = shown_legs[-1]
+            target_status = (
+                arrival_status(deadline, last.planned_arrival, last.arrival) if fresh else "unknown"
+            )
+            if target_status == "on_target" and (
+                last.alight != ctx.profile.destination(ctx.direction)
+                or any(x.state not in (LegKind.OK, LegKind.DELAYED) for x in shown_legs)
+                or any(t.state is not TransferState.OK for t in transfers)
+            ):
+                target_status = "unknown"
+        elif s.missing_sent:
+            target_status = "no_train"
     return OccurrenceView(
         key=s.key,
         selected_recovery=s.selected_recovery,
@@ -575,6 +606,9 @@ def occurrence_view(
         lock_source=s.lock.source if s.lock else None,
         commitment=s.lock.commitment if s.lock else None,
         legs=shown_legs,
+        arrive_by=None if recovering else ctx.schedule.arrive_by,
+        station_arrival_deadline=deadline,
+        arrival_target_status=target_status,
         leave_by=leave_by(
             shown_legs[0].planned_departure,
             shown_legs[0].departure,

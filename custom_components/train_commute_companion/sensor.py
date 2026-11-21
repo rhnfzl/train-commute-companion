@@ -164,6 +164,10 @@ def _lock_attrs(view: RuntimeView, pid: str, d: Direction) -> Attrs:
         attrs["usual_departure"] = f"{occ.usual_departure:%H:%M}"
     if occ.window is not None:  # a window day has no usual train
         attrs["window"] = [f"{t:%H:%M}" for t in occ.window]
+    if occ.arrive_by is not None:
+        attrs["arrive_by"] = occ.arrive_by.isoformat()
+        attrs["station_arrival_deadline"] = _to_primitive(occ.station_arrival_deadline)
+        attrs["arrival_target_status"] = occ.arrival_target_status
     return attrs
 
 

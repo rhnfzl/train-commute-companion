@@ -56,6 +56,7 @@ PICK_OPTIONS: list[SelectOptionDict] = [
     {"value": "earliest", "label": "Earliest train, missed trains make a sound"},
     {"value": "earliest_silent", "label": "Earliest train, missed trains are silent"},
     {"value": "on_leave", "label": "Pick the train when I leave"},
+    {"value": "arrive_by", "label": "Arrive by a set time"},
 ]
 DAY_NAMES = dict(
     zip(WEEKDAYS, ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
@@ -69,6 +70,21 @@ class TimetableHorizonCountSelector(NumberSelector):
         if type(data) not in (int, float) or (isinstance(data, float) and not data.is_integer()):
             raise vol.Invalid("expected a whole number")
         return super().__call__(data)
+
+
+def _arrival_fields(values: Mapping[str, Any], prefix: str = "") -> dict[Any, Any]:
+    target = prefix + "arrive_by"
+    fields: dict[Any, Any] = {
+        vol.Optional(target, description={"suggested_value": values.get(target, "")}): str,
+    }
+    for field in ("walk_after_min", "prefer_direct_min"):
+        key = prefix + field
+        fields[vol.Optional(key, description={"suggested_value": values.get(key)})] = (
+            NumberSelector(
+                NumberSelectorConfig(min=0, max=1440, step=1, mode=NumberSelectorMode.BOX)
+            )
+        )
+    return fields
 
 
 CATEGORY_LABELS = {
@@ -279,6 +295,11 @@ class ProfileEditorFlow:
                 f"{direction}_window_end": window[1],
                 f"{direction}_pick": journey.get("pick", "earliest"),
                 f"{direction}_min_stay": journey.get("min_stay_min", 0),
+                **{
+                    f"{direction}_{field}": journey[field]
+                    for field in ("arrive_by", "walk_after_min", "prefer_direct_min")
+                    if field in journey
+                },
             }
         for direction in ("outbound", "return"):
             journey = profile.get(direction, {})
@@ -393,7 +414,34 @@ class ProfileEditorFlow:
             schema[vol.Optional(key, default=defaults.get(key, 0))] = NumberSelector(
                 NumberSelectorConfig(min=0, max=1440, step=1, mode=NumberSelectorMode.BOX)
             )
+            schema.update(_arrival_fields(defaults, f"{direction}_"))
         return vol.Schema(schema)
+
+    def _draft_profile(
+        self,
+        values: dict[str, Any],
+        *,
+        available_channels: frozenset[NotificationChannel] | None = None,
+        day: tuple[str, str] | None = None,
+        defer_days: bool = True,
+    ) -> None:
+        assert self._document is not None and self._catalogue is not None
+        try:
+            self._pending_profile = edit_profile(
+                self._document,
+                self._profile_id,
+                values,
+                self._catalogue,
+                datetime.now(TZ).date(),
+                available_channels=available_channels,
+            )
+        except EditorError as err:
+            if not defer_days or not err.override_days or day in err.override_days:
+                raise
+            # Changing a default can invalidate several saved overrides at once.
+            self._pending_profile = None
+            values["edit_day_overrides"] = True
+        self._editor_values = values
 
     async def async_step_profile(
         self, user_input: Mapping[str, Any] | None = None
@@ -427,17 +475,10 @@ class ProfileEditorFlow:
                 errors["name"] = "name_taken"
             if not errors:
                 try:
-                    self._pending_profile = edit_profile(
-                        self._document,
-                        self._profile_id,
-                        coded_values,
-                        self._catalogue,
-                        datetime.now(TZ).date(),
-                    )
+                    self._draft_profile(coded_values)
                 except EditorError as err:
                     errors["base"], report = err.code, err.report
                 else:
-                    self._editor_values = coded_values
                     return await self.async_step_profile_details()
         return self.async_show_form(
             step_id="profile",
@@ -474,24 +515,17 @@ class ProfileEditorFlow:
                 )
             details = {**self._editor_values, **user_input, "transfer_min": minimums}
             try:
-                self._pending_profile = edit_profile(
-                    self._document,
-                    self._profile_id,
-                    details,
-                    self._catalogue,
-                    datetime.now(TZ).date(),
-                    available_channels=self._profile_channels(),
-                )
+                self._draft_profile(details, available_channels=self._profile_channels())
             except EditorError as err:
                 errors["base"], report = err.code, err.report
             else:
-                self._editor_values = details
                 if user_input.get("edit_weekday_times", False):
                     return await self.async_step_profile_weekdays()
                 return await self._after_weekdays()
         fields: dict[Any, Any] = {}
         for key in ("edit_weekday_times", "edit_day_overrides"):
-            fields[vol.Optional(key, default=values.get(key, False))] = BooleanSelector()
+            default = values.get(key, self._editor_values.get(key, False))
+            fields[vol.Optional(key, default=default)] = BooleanSelector()
         for key in ("delay_min", "delay_step_min"):
             fields[
                 vol.Optional(key, default=values.get(key, existing.get("alerts", {}).get(key, 3)))
@@ -510,6 +544,7 @@ class ProfileEditorFlow:
             "live_today",
             "telegram_status_pin",
             "ntfy_enabled",
+            "arrive_by",
         ):
             fields[
                 vol.Optional(key, default=values.get(key, alerts.get(key, getattr(defaults, key))))
@@ -664,18 +699,10 @@ class ProfileEditorFlow:
                     if user_input.get(f"{direction}_{day}", "").strip()
                 }
             try:
-                self._pending_profile = edit_profile(
-                    self._document,
-                    self._profile_id,
-                    details,
-                    self._catalogue,
-                    datetime.now(TZ).date(),
-                    available_channels=self._profile_channels(),
-                )
+                self._draft_profile(details, available_channels=self._profile_channels())
             except EditorError as err:
                 errors["base"], report = err.code, err.report
             else:
-                self._editor_values = details
                 return await self._after_weekdays()
         fields: dict[Any, Any] = {}
         for direction in ("outbound", "return"):
@@ -729,16 +756,28 @@ class ProfileEditorFlow:
         """Day overrides, one day at a time: pick a day, edit it, come back, or finish."""
         if self._profile_phase is not ReviewPhase.EDITING or self._editor_values is None:
             return self._editor_error("invalid_profile")
+        errors: dict[str, str] = {}
+        report = ""
         if user_input is not None:
             target = user_input.get("day", "done")
             if target == "done":
-                self._profile_phase = ReviewPhase.REVIEWING
-                return await self._profile_ready()
-            direction, _, day = str(target).replace(":", "_").partition("_")
-            if direction not in ("outbound", "return") or day not in DAY_NAMES:
-                return self._editor_error("invalid_profile")
-            self._day_target = (direction, day)
-            return await self.async_step_profile_day()
+                try:
+                    self._draft_profile(
+                        self._editor_values,
+                        available_channels=self._profile_channels(),
+                        defer_days=False,
+                    )
+                except EditorError as err:
+                    errors["base"], report = err.code, err.report
+                else:
+                    self._profile_phase = ReviewPhase.REVIEWING
+                    return await self._profile_ready()
+            else:
+                direction, _, day = str(target).replace(":", "_").partition("_")
+                if direction not in ("outbound", "return") or day not in DAY_NAMES:
+                    return self._editor_error("invalid_profile")
+                self._day_target = (direction, day)
+                return await self.async_step_profile_day()
         options: list[SelectOptionDict] = [{"value": "done", "label": "Done"}]
         options += [
             {"value": f"{direction}_{day}", "label": f"{DAY_NAMES[day]} {direction}"}
@@ -758,7 +797,8 @@ class ProfileEditorFlow:
                     )
                 }
             ),
-            description_placeholders={"overrides": self._day_summary()},
+            errors=errors,
+            description_placeholders={"overrides": self._day_summary(), "report": report},
         )
 
     async def async_step_profile_day(
@@ -790,24 +830,28 @@ class ProfileEditorFlow:
                 stay = int(stay)
             if stay is not None:  # 0 turns off the stay this day would inherit
                 override["min_stay_min"] = stay
+            if override.get("pick", self._editor_values.get(f"{direction}_pick")) == "arrive_by":
+                target = str(user_input.get("arrive_by") or "").strip()
+                if target:
+                    override["arrive_by"] = target
+                for field in ("walk_after_min", "prefer_direct_min"):
+                    value = user_input.get(field)
+                    if value is not None:
+                        override[field] = (
+                            int(value) if isinstance(value, float) and value.is_integer() else value
+                        )
             days = {k: v for k, v in self._editor_values[key].items() if k != day}
             if override:
                 days[day] = override
             details = {**self._editor_values, key: days}
             try:
-                self._pending_profile = edit_profile(
-                    self._document,
-                    self._profile_id,
-                    details,
-                    self._catalogue,
-                    datetime.now(TZ).date(),
-                    available_channels=self._profile_channels(),
+                self._draft_profile(
+                    details, available_channels=self._profile_channels(), day=(direction, day)
                 )
             except EditorError as err:
                 errors["base"], report = err.code, err.report
                 saved = override
             else:
-                self._editor_values = details
                 return await self.async_step_profile_day_pick()
         window = saved.get("window")
         window = window if isinstance(window, list) and len(window) == 2 else ["", ""]
@@ -834,6 +878,7 @@ class ProfileEditorFlow:
             ): NumberSelector(
                 NumberSelectorConfig(min=0, max=1440, step=1, mode=NumberSelectorMode.BOX)
             ),
+            **_arrival_fields(saved),
         }
         return self.async_show_form(
             step_id="profile_day",

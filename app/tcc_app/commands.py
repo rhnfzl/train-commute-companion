@@ -180,6 +180,18 @@ def _occurrence(o: OccurrenceView, *, for_pin: bool = False) -> list[str]:
     if o.route_changed:
         head += " (route changed)"
     out = [head]
+    if o.arrive_by is not None and o.station_arrival_deadline is not None:
+        out.append(
+            f"  Arrival target {hhmm(o.arrive_by)}. Reach the destination station by "
+            f"{hhmm(o.station_arrival_deadline)}."
+        )
+        arrival_message = {
+            "late": "The current train does not meet the arrival target in NS data.",
+            "unknown": "The arrival target cannot be checked from current train data.",
+            "no_train": "No train you can catch was found for this arrival target.",
+        }.get(o.arrival_target_status or "")
+        if arrival_message:
+            out.append(f"  {arrival_message}")
     if o.leave_by_text is not None:
         out.append(f"  {o.leave_by_text}.")
     if recovering:
