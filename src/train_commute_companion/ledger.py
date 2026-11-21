@@ -449,6 +449,16 @@ class LiveLedger:
         return s is not None and s.not_travelling
 
     def fact_holds(self, o: Obligation) -> bool:
+        if o.event.kind in (EventKind.AFTER_TRIP_NOTE, EventKind.WEEKLY_RECAP):
+            profile = routing_profile(self._state, o.event.profile_id)
+            if profile is None or not profile.alerts.commute_stats:
+                return False
+            if o.event.kind is EventKind.AFTER_TRIP_NOTE:
+                return profile.alerts.after_trip_note and o.fact_key in self._state.commute_history
+            return (
+                profile.alerts.weekly_recap
+                and self._state.commute_recap_weeks.get(profile.id) == o.event.service_date
+            )
         if o.event.kind is EventKind.COMPENSATION_REMINDER:
             facts = alert_facts(o.event)
             record = self._state.journey_records.get(facts.arrival_record)

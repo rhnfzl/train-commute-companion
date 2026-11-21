@@ -100,6 +100,8 @@ class EventKind(StrEnum):
     WORKS_AHEAD = "works_ahead"
     WORKS_DIGEST = "works_digest"
     COMPENSATION_REMINDER = "compensation_reminder"
+    WEEKLY_RECAP = "weekly_recap"
+    AFTER_TRIP_NOTE = "after_trip_note"
     TIMETABLE_ADOPTED = "timetable_adopted"
     EARLIER_TRAIN_WITHDRAWN = "earlier_train_withdrawn"
     OFFLINE = "offline"
@@ -534,6 +536,11 @@ class AlertSettings:
     telegram_status_pin: bool = True
     ntfy_enabled: bool = True
     arrive_by: bool = True
+    commute_stats: bool = True
+    weekly_recap: bool = True
+    after_trip_note: bool = True
+    alert_history: bool = False
+    calendar_feed: bool = True
 
 
 LocationSource = Literal["ha", "telegram", "owntracks"]
@@ -792,6 +799,17 @@ class Obligation:
     primary_target_pending: bool = False
     digest_token: str | None = None
     primary_suppressed: bool = False
+    alert_history_origin: tuple[str, datetime] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SentAlert:
+    id: str
+    profile_id: str
+    kind: EventKind
+    created_at: datetime
+    accepted_at: datetime
+    text: str
 
 
 @dataclass(frozen=True, slots=True)

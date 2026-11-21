@@ -27,6 +27,7 @@ from train_commute_companion.classify import current_run, evidence, find_leg
 from train_commute_companion.compensation import ArrivalError, arrival_text, confirm
 from train_commute_companion.compensation_state import JourneyRecord
 from train_commute_companion.delivery import (
+    APP_WARNINGS,
     BindingPhase,
     DeliveryVerdict,
     binding_phase,
@@ -50,6 +51,16 @@ from train_commute_companion.health import (
     board_blind,
     board_health,
     offline,
+)
+from train_commute_companion.history import (
+    HISTORY_ALERTS,
+    STATS_PERIODS,
+    CommuteStats,
+    HistoryFlag,
+    commute_stats,
+    history_row,
+    retained_history,
+    stats_text,
 )
 from train_commute_companion.ledger import (
     OBSERVED,
@@ -126,6 +137,7 @@ from train_commute_companion.model import (
     Profile,
     ProfileProblem,
     Provenance,
+    SentAlert,
     Severity,
     TrainId,
     alert_facts,
@@ -135,7 +147,7 @@ from train_commute_companion.model import (
     present,
 )
 from train_commute_companion.news import all_good, forget_ended, news_of, severity
-from train_commute_companion.notification_policy import channels_for, routing_ready
+from train_commute_companion.notification_policy import channels_for, enabled, routing_ready
 from train_commute_companion.notify import (
     NotificationPaused,
     NotificationSuppressed,
@@ -183,6 +195,7 @@ from train_commute_companion.schedule import schedules_active
 from train_commute_companion.state import (
     BaselineHistory,
     Commitment,
+    LockSource,
     LookAheadLedger,
     OccurrenceState,
     PollFailure,
@@ -213,6 +226,7 @@ from train_commute_companion.vehicle import VehicleProvider, VehicleWatch
 from train_commute_companion.vehicle_monitor import VehicleMonitor
 from train_commute_companion.view import OccurrenceView, RuntimeView, runtime_view
 from train_commute_companion.weather_allowance import WeatherAllowance, weather_allowance
+from train_commute_companion.webhook import event_id
 from train_commute_companion.webhook_queue import CopyQueue
 
 log = logging.getLogger(__name__)
@@ -222,6 +236,31 @@ FILE_EVERY_S = 10
 LOOKAHEAD_AT = time(6, 0)
 LOOKAHEAD_TRIP_INTERVAL = timedelta(seconds=2)
 _APP = "app"  # profile name on application warnings, which belong to no profile
+_HISTORY_AGE = timedelta(days=30)
+_HISTORY_LIMIT = 100
+_NO_HISTORY = (
+    APP_WARNINGS
+    | HISTORY_ALERTS
+    | {
+        EventKind.AT_STATION,
+        EventKind.STATION_ASK,
+        EventKind.STATION_REMEMBER,
+    }
+)
+
+
+def _retained_alerts(rows: Iterable[SentAlert], now: datetime) -> tuple[SentAlert, ...]:
+    by_id: dict[str, SentAlert] = {}
+    for row in rows:
+        if to_utc(now) - to_utc(row.created_at) >= _HISTORY_AGE:
+            continue
+        by_id.setdefault(row.id, row)
+    # Rank by creation so another receipt cannot move an old alert back into the cap.
+    return tuple(
+        sorted(by_id.values(), key=lambda row: (to_utc(row.created_at), row.id), reverse=True)[
+            :_HISTORY_LIMIT
+        ]
+    )
 
 
 class _ObsoleteLookahead(Exception):
@@ -440,9 +479,7 @@ class Runtime:
             self._storage_note,
             self._suppress_primary,
             self._latch_optout,
-            prune=lambda st: prune_adoptions(
-                st, clock.now().astimezone(TZ).date(), self._primary_in_flight
-            ),
+            prune=self._prune_for_write,
         )
         self._lookahead_at = lookahead_at
         self._reload = ReloadControl()
@@ -557,6 +594,30 @@ class Runtime:
     def now(self) -> datetime:
         return self._clock.now()
 
+    def commute_stats(self, days: int = 30, profile_id: str | None = None) -> CommuteStats:
+        st = self._writer.st
+        today = self.now().astimezone(TZ).date()
+        rows = (
+            row
+            for row in st.commute_history.values()
+            if (profile_id is None or row.key.profile_id == profile_id)
+            and (p := routing_profile(st, row.key.profile_id)) is not None
+            and p.alerts.commute_stats
+        )
+        return commute_stats(rows, today - timedelta(days=days - 1), today)
+
+    def clear_commute_history(self) -> bool:
+        st = self._writer.st
+        return self._writer.commit_strict(
+            replace(
+                st,
+                commute_history={},
+                commute_recap_weeks={},
+                obligations=tuple(o for o in st.obligations if o.event.kind not in HISTORY_ALERTS),
+            ),
+            discard_copy_kinds=HISTORY_ALERTS,
+        )
+
     def list_travel_plans(self) -> dict[str, Any]:
         return {
             "plans": [
@@ -617,6 +678,17 @@ class Runtime:
             return None
         return occurrence_ctx(self._writer.st, s, now)
 
+    def recent_alerts(self) -> tuple[SentAlert, ...]:
+        """The private Today page reads only history for profiles that currently allow it."""
+        enabled = {
+            p.id for p in (self.config.profiles if self.config else ()) if p.alerts.alert_history
+        }
+        return tuple(
+            row
+            for row in _retained_alerts(self.state.alert_history, self._clock.now())
+            if row.profile_id in enabled
+        )
+
     def view(self) -> RuntimeView:
         """A frozen snapshot for shells (5.4): nothing in it changes as the runtime goes on. It
         shows the written state (rule 22); an unsent alert counts whether written or not."""
@@ -636,6 +708,14 @@ class Runtime:
         )
         snapshot = replace(
             snapshot,
+            commute_statistics={
+                p.id: self.commute_stats(30, p.id)
+                for p in snapshot.profiles
+                if p.alerts.commute_stats
+            },
+            commute_totals={days: self.commute_stats(days) for days in STATS_PERIODS.values()}
+            if any(p.alerts.commute_stats for p in snapshot.profiles)
+            else {},
             occurrences=tuple(
                 self._with_weather(
                     replace(
@@ -1107,6 +1187,21 @@ class Runtime:
         `polled`: the events are everything a healthy poll reports, so a reported fact it no
         longer reports has ended and leaves the ledger (a recurrence is news again).
         `occs`: the occurrences its alerts are told beside."""
+        profile = routing_profile(self._writer.st, s.key.profile_id, s.route_revision)
+        flags: set[HistoryFlag] = set()
+        if profile is not None and profile.alerts.commute_stats:
+            flags.update(s.history_flags)
+            kinds = {event.kind for event in events}
+            if kinds & {EventKind.CANCELLED, EventKind.CUT_SHORT}:
+                flags.add("cancelled")
+            if kinds & {EventKind.MISSED_FIRST_TRAIN, EventKind.MISSED_TRANSFER}:
+                flags.add("missed")
+            if EventKind.ROUTE_CHANGED in kinds or (
+                s.lock is not None and s.lock.source in (LockSource.RELOCK, LockSource.MISSED)
+            ):
+                flags.add("moved")
+        if flags != s.history_flags:
+            s = replace(s, history_flags=frozenset(flags))
         if s.selected_recovery is not None and s.selected_recovery.status == "active":
             events = tuple(e for e in events if e.kind not in ORIGINAL_ROUTINE)
         keys = dict(s.alert_keys)
@@ -1179,12 +1274,60 @@ class Runtime:
     def _archived(self, st: PersistedState, now: datetime) -> PersistedState:
         """Rule 6: an occurrence leaves the store once it ended and its pending journey warnings
         were delivered; it stays until its window closed so it is not created again."""
+        if self._writer.waiting:
+            return st  # A newer poll can have reopened an arrival while the store is down.
         occs = {}
+        today = now.astimezone(TZ).date()
+        history = dict(st.commute_history)
+        notes = []
         for k, s in st.occurrences.items():
             ctx = occurrence_ctx(st, s, now)
             closed = ctx is None or to_utc(now) >= to_utc(ctx.schedule.window_end)
             if closed and may_archive(s, now, pending_journey_warnings(st.obligations, s.key)):
                 self._memory.forget(k)
+                profile = routing_profile(st, s.key.profile_id, s.route_revision)
+                record = st.journey_records.get(k)
+                last = s.lock.legs[-1] if s.lock is not None else None
+                arrival = (
+                    last.accept_value
+                    if last is not None
+                    and record is not None
+                    and last.state is LegState.DONE
+                    and last.alight_stop == record.destination
+                    else None
+                )
+                if (
+                    profile is not None
+                    and profile.alerts.commute_stats
+                    and not s.not_travelling
+                    and record is not None
+                    and (row := history_row(record, s.history_flags, arrival)) is not None
+                ):
+                    if (
+                        k not in history
+                        and profile.alerts.after_trip_note
+                        and arrival is not None
+                        and arrival.astimezone(TZ).date() == today
+                        and enabled(profile.alerts, EventKind.AFTER_TRIP_NOTE)
+                    ):
+                        body = f"NS recorded arrival at {hhmm(arrival.astimezone(TZ))}."
+                        delay = row.delay_seconds
+                        if delay == 0:
+                            body += " No delay against the saved plan."
+                        elif delay is not None:
+                            body += f" {delay / 60:g} minutes after the saved arrival time."
+                        notes.append(
+                            self._history_alert(
+                                profile,
+                                EventKind.AFTER_TRIP_NOTE,
+                                row.key.service_date,
+                                k,
+                                body,
+                                now,
+                                row.key.direction,
+                            )
+                        )
+                    history[k] = row
                 continue
             occs[k] = s
         # snapshots are pruned on write
@@ -1195,11 +1338,80 @@ class Runtime:
         records = {
             key: record
             for key, record in st.journey_records.items()
-            if key in occs
-            or key in held
-            or (now.astimezone(TZ).date() - record.key.service_date).days <= 120
+            if key in occs or key in held or (today - record.key.service_date).days <= 120
         }
-        return replace(st, occurrences=occs, journey_records=records)
+        retained = {okey(row.key): row for row in retained_history(history.values(), today)}
+        return replace(
+            st,
+            occurrences=occs,
+            journey_records=records,
+            commute_history=retained,
+            obligations=(*st.obligations, *notes),
+        )
+
+    def _history_alert(
+        self,
+        profile: Profile,
+        kind: EventKind,
+        day: date,
+        key: str,
+        text: str,
+        now: datetime,
+        direction: Direction | None = None,
+    ) -> Obligation:
+        event = AlertEvent(
+            profile.id,
+            profile.name,
+            direction,
+            day,
+            None,
+            kind,
+            Severity.SILENT,
+            None,
+            f"{display_name(profile.name)}: {text}",
+            key,
+            now,
+        )
+        closing = resolve_local(
+            now.astimezone(TZ).date() + timedelta(days=1), time.min, edge="start"
+        )
+        return replace(self._obligation(event, None, now), expires_at=closing)
+
+    def _commute_recaps(self, now: datetime) -> None:
+        local = now.astimezone(TZ)
+        if local.weekday() != 6 or local.hour < 19 or self._writer.waiting:
+            return
+        st = self._writer.st
+        if st.config is None:
+            return
+        today = local.date()
+        marks = dict(st.commute_recap_weeks)
+        queued = []
+        for p in st.config.profiles:
+            if (
+                not p.alerts.commute_stats
+                or not p.alerts.weekly_recap
+                or marks.get(p.id) == today
+                or not enabled(p.alerts, EventKind.WEEKLY_RECAP)
+            ):
+                continue
+            stats = self.commute_stats(7, p.id)
+            if stats.journeys:
+                marks[p.id] = today
+                queued.append(
+                    self._history_alert(
+                        p,
+                        EventKind.WEEKLY_RECAP,
+                        today,
+                        f"commute-recap:{today}",
+                        "This week. " + stats_text(stats),
+                        now,
+                    )
+                )
+        if queued:
+            self._writer.commit_strict(
+                replace(st, commute_recap_weeks=marks, obligations=(*st.obligations, *queued))
+            )
 
     async def _deliver(self) -> None:
         """Every pending obligation, revalidated right before sending (rule 5). Merges by id,
@@ -1219,16 +1431,38 @@ class Runtime:
             "",
         )
 
-    def _save_rest(self, accepted: Sequence[tuple[Obligation, str]] = ()) -> None:
+    def _prune_for_write(self, st: PersistedState) -> PersistedState:
+        now = self._clock.now()
+        st = prune_adoptions(st, now.astimezone(TZ).date(), self._primary_in_flight)
+        rows = _retained_alerts(st.alert_history, now)
+        return st if rows == st.alert_history else replace(st, alert_history=rows)
+
+    def _history_row(self, o: Obligation, event: AlertEvent) -> SentAlert | None:
+        # Station check-ins and prompts can name a station detected from the phone.
+        if event.kind in _NO_HISTORY or not event.profile_id:
+            return None
+        profile = find_profile(self.config, event.profile_id)
+        if profile is None or not profile.alerts.alert_history:
+            return None
+        identity, created = o.alert_history_origin or (event_id(o.id), o.event.created_at)
+        # An earlier receipt can still be waiting for the next successful state write.
+        if any(row.id == identity for row in self._writer.judged_state().alert_history):
+            return None
+        return SentAlert(
+            identity, event.profile_id, event.kind, created, self._clock.now(), event.text
+        )
+
+    def _save_rest(self, received: Sequence[tuple[Obligation, str, AlertEvent]] = ()) -> None:
         """Writes the webhook rests now, synchronously, before a try's request leaves (rule 22:
         a failed write takes the same path as any other)."""
         accepted = tuple(
             (o, target)
-            for o, target in accepted
+            for o, target, _ in received
             if o.event.kind in (EventKind.DISRUPTION, EventKind.DISRUPTION_CLEARED)
             or adoption_correction(o) is not None
         )
-        self._record_delivery(set(), {}, (), True, accepted=accepted)
+        history = tuple(row for o, _, event in received if (row := self._history_row(o, event)))
+        self._record_delivery(set(), {}, (), True, accepted=accepted, history=history)
 
     async def webhooks_idle(self) -> None:
         """Waits until no webhook pass runs (a clean shutdown, tests)."""
@@ -1307,6 +1541,7 @@ class Runtime:
         kept: dict[str, Obligation] = {}
         told: list[tuple[Obligation, bool]] = []  # finished advice/context, sent (else dropped)
         accepted: list[tuple[Obligation, str]] = []
+        history: list[SentAlert] = []
         copies = False  # the webhook copies changed
 
         try:
@@ -1322,12 +1557,18 @@ class Runtime:
                     self._writer.settle(o, o, False)
                     # Persist the audience before a request can disclose the alert to a recipient.
                     self._record_delivery(
-                        finished, {**kept, o.id: o}, told, copies, accepted=accepted
+                        finished,
+                        {**kept, o.id: o},
+                        told,
+                        copies,
+                        accepted=accepted,
+                        history=history,
                     )
                     finished.clear()
                     kept.clear()
                     told.clear()
                     accepted.clear()
+                    history.clear()
                     copies = False
                 # a fresh clock per message: a slow send must not leave the next one judged early
                 destination = self._primary_destination()
@@ -1340,6 +1581,18 @@ class Runtime:
                 ):
                     r, sent = o, False
                 else:
+
+                    def remember(
+                        event: AlertEvent,
+                        obligation: Obligation = o,
+                        receiver: str | None = destination,
+                    ) -> None:
+                        # The legacy destination also covers stdout and replays.
+                        if receiver != LEGACY_PRIMARY and (
+                            row := self._history_row(obligation, event)
+                        ):
+                            history.append(row)
+
                     self._primary_in_flight = o
                     self._in_flight_opted_out = False
                     try:
@@ -1350,6 +1603,7 @@ class Runtime:
                             now,
                             destination,
                             audience_written=self._writer.audience_written(o),
+                            on_accepted=remember,
                         )
                     finally:
                         self._primary_in_flight = None
@@ -1378,15 +1632,18 @@ class Runtime:
                         finished.add(o.id)
                     elif r != o:
                         kept[o.id] = r
-                if adoption_accepted:
-                    self._record_delivery(finished, kept, told, copies, accepted=accepted)
+                if adoption_accepted or history:
+                    self._record_delivery(
+                        finished, kept, told, copies, accepted=accepted, history=history
+                    )
                     finished.clear()
                     kept.clear()
                     told.clear()
                     accepted.clear()
+                    history.clear()
                     copies = False
         finally:  # each acknowledged send is recorded, also when shutdown cancels the pass
-            self._record_delivery(finished, kept, told, copies, accepted=accepted)
+            self._record_delivery(finished, kept, told, copies, accepted=accepted, history=history)
 
     def _record_delivery(
         self,
@@ -1396,12 +1653,14 @@ class Runtime:
         copies: bool = False,
         *,
         accepted: Sequence[tuple[Obligation, str]] = (),
+        history: Sequence[SentAlert] = (),
     ) -> None:
-        if not finished and not kept and not told and not copies and not accepted:
+        if not (finished or kept or told or copies or accepted or history):
             return
 
         # Failed writes replay this outcome after the caller resumes and changes its accumulators.
         finished, kept, told, accepted = set(finished), dict(kept), tuple(told), tuple(accepted)
+        history = tuple(history)
         receipt_time = self._clock.now()
         marks = set(self._queue.copied)  # written too: a phone send in flight is not in `kept` yet
 
@@ -1417,6 +1676,10 @@ class Runtime:
             ledgers = lookahead_received(ledgers, accepted)
             obligations = _survivors(st.obligations, finished, kept, marks)
             st = replace(st, obligations=obligations, lookahead=ledgers)
+            if history:
+                st = replace(
+                    st, alert_history=_retained_alerts((*st.alert_history, *history), receipt_time)
+                )
             if any(o.occurrence is not None for o, _ in accepted):
                 return self._receipt_followups(st, receipt_time)
             return st
@@ -1849,13 +2112,16 @@ class Runtime:
                 events += self._health_events(k, t.state, ctx, now)
             if t.state != s or events:
                 changes[k] = (t.state, events)
-        before = self._writer.st.occurrences
+        before = self._writer.st
         # a window closing is itself no change
         self._writer.propose(self._archived(self._writer.st, now))
         if changes:
             self._apply(changes, kind=Change.TICK)
-        elif self._writer.st.occurrences != before:
+        elif self._writer.st != before or any(
+            to_utc(now) - to_utc(row.created_at) >= _HISTORY_AGE for row in before.alert_history
+        ):
             self._writer.commit(self._writer.st, Change.TICK)
+        self._commute_recaps(now)
         await self._deliver()
 
     def _recovery_notice(

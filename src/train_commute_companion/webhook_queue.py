@@ -17,7 +17,13 @@ from train_commute_companion.delivery import (
     post_copy,
     same_disruption_revision,
 )
-from train_commute_companion.model import Obligation, OccurrenceKey, WebhookCopy, alert_facts
+from train_commute_companion.model import (
+    AlertEvent,
+    Obligation,
+    OccurrenceKey,
+    WebhookCopy,
+    alert_facts,
+)
 from train_commute_companion.notify import WebhookPort, destination_id
 from train_commute_companion.store import PersistedState
 from train_commute_companion.webhook import event_id
@@ -48,7 +54,7 @@ class CopyQueue:
         self,
         port: WebhookPort | None,
         now: Callable[[], datetime],
-        record: Callable[[Sequence[tuple[Obligation, str]]], None],
+        record: Callable[[Sequence[tuple[Obligation, str, AlertEvent]]], None],
         waits: Callable[[Obligation], bool],
         ledger: Callable[[bool], Ledger],
         audience_written: Callable[[WebhookCopy], bool] = lambda c: True,
@@ -274,16 +280,16 @@ class CopyQueue:
             v = self._ledger(c.id in self.held)
             cur = c
 
-            def started(x: WebhookCopy) -> None:  # the first try is written before it goes out
+            def progress(x: WebhookCopy, event: AlertEvent | None) -> None:
                 nonlocal cur
                 accepted = tuple(
-                    (x.obligation, destination)
+                    (x.obligation, destination, event)
                     for destination in x.done
-                    if destination not in cur.done
+                    if event is not None and destination not in cur.done
                 )
                 self._merge(port, cur, x)
                 cur = x
                 self._record(accepted)
 
-            r = await post_copy(c, v, port, now, started, audience_written=self._audience_written)
+            r = await post_copy(c, v, port, now, progress, audience_written=self._audience_written)
             self._merge(port, cur, r)

@@ -259,5 +259,33 @@ async def test_legacy_copy_cannot_acquire_unknown_webhook_or_email_destination()
     port = Port((A, "email:opaque"), set())
     port.channels["email:opaque"] = "email"
     progress = []
-    result = await post_copy(c, View(), port, NOW, progress.append)
+    result = await post_copy(c, View(), port, NOW, lambda copy, event: progress.append(copy))
     assert result is None and port.calls == [] and progress == []
+
+
+async def test_post_copy_reports_each_rendered_text_in_acceptance_order():
+    o = ob(EventKind.DELAYED)
+    c = WebhookCopy(event_id(o.id), o, target_ids=frozenset({url_id(A), url_id(B)}))
+    accepted = []
+    recorded = []
+    second_accepts = asyncio.Event()
+
+    class Current(View):
+        def current(self, o, destination=None, *, for_copy=False):
+            return replace(o.event, text=destination)
+
+    class RacingPort(Port):
+        async def post(self, event, msg_id, urls):
+            if urls == (A,):
+                await second_accepts.wait()
+            else:
+                second_accepts.set()
+            accepted.append(event.text)
+            return await super().post(event, msg_id, urls)
+
+    def progress(copy, event):
+        if event is not None:
+            recorded.append(event.text)
+
+    assert await post_copy(c, Current(), RacingPort((A, B), {A, B}), NOW, progress) is None
+    assert accepted == recorded == [url_id(B), url_id(A)]

@@ -11,6 +11,7 @@ import voluptuous as vol
 from homeassistant.core import Event, HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.service import async_register_admin_service
 
 from train_commute_companion.messages import RefusalKind, Refused, no_journey_text
 from train_commute_companion.model import Direction
@@ -270,6 +271,17 @@ async def _handle_reload_profiles(call: ServiceCall) -> None:
     await _refresh_or_refuse(data, refused)
 
 
+async def _handle_clear_commute_history(call: ServiceCall) -> None:
+    data = loaded(call.hass)
+
+    async def clear(runtime: Runtime) -> bool:
+        return runtime.clear_commute_history()
+
+    if not await _call_runtime(data, clear):
+        raise HomeAssistantError("Local commute history could not be cleared. Try again.")
+    await data.coordinator.async_request_refresh()
+
+
 def async_setup_services(hass: HomeAssistant) -> None:
     from .arrival_controls import async_setup_arrival_services
     from .recovery_controls import async_setup_recovery_services
@@ -288,5 +300,12 @@ def async_setup_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN, "forget_station", _handle_forget_station, FORGET_STATION_SCHEMA
+    )
+    async_register_admin_service(
+        hass,
+        DOMAIN,
+        "clear_commute_history",
+        _handle_clear_commute_history,
+        vol.Schema({vol.Required("confirm"): vol.All(bool, vol.In([True]))}),
     )
     hass.bus.async_listen(MOBILE_ACTION, partial(_on_mobile_action, hass))

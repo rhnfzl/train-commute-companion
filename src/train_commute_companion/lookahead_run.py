@@ -31,6 +31,7 @@ from train_commute_companion.timetable_receipts import (
     adoption_correction,
     merge_adoption_receipts,
 )
+from train_commute_companion.webhook import event_id
 from train_commute_companion.webhook_queue import CopyQueue
 
 log = logging.getLogger(__name__)
@@ -214,6 +215,8 @@ def _carry_copies(
             primary_target_pending=prior.primary_target_pending,
             primary_suppressed=prior.primary_suppressed,
             webhook_copied=c is not None or prior.webhook_copied or old in queue.copied,
+            alert_history_origin=prior.alert_history_origin
+            or (event_id(prior.id), prior.event.created_at),
         )
         if c is not None:  # the same copy: its webhook-id, receipts and tries stay
             queue.rewrite(c, n)

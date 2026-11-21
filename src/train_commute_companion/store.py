@@ -16,10 +16,12 @@ from typing import Any, Protocol
 
 from train_commute_companion.calendar import to_utc
 from train_commute_companion.compensation_state import JourneyRecord
+from train_commute_companion.history import JourneyHistory
 from train_commute_companion.model import (
     Config,
     EventKind,
     Obligation,
+    SentAlert,
     WebhookCopy,
     okey,
 )
@@ -98,6 +100,9 @@ class PersistedState:
     travel_plans: Mapping[str, TravelPlan] = field(default_factory=dict)
     travel_receipts: Mapping[str, PlanReceipt] = field(default_factory=dict)
     travel_revision: int = 0
+    commute_history: Mapping[str, JourneyHistory] = field(default_factory=dict)
+    commute_recap_weeks: Mapping[str, date] = field(default_factory=dict)
+    alert_history: tuple[SentAlert, ...] = ()
 
 
 class Store(Protocol):

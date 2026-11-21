@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from train_commute_companion.calendar_export import CalendarExportError, export_ics, export_id
+from train_commute_companion.model import SentAlert
 from train_commute_companion.route_export import export_preview
 from train_commute_companion.view import RuntimeView
 
@@ -33,6 +34,7 @@ MCP_REPLY_MAX = 1_048_576
 MCP_TIMEOUT_S = 5.0
 MCP_ACTION_TIMEOUT_S = 20.0
 MCP_ACTION_MAX = 32 * 1024
+CALENDAR_SUBSCRIPTION = "/calendar/subscription/"
 TODAY_HEADERS = (
     "Cache-Control: no-store\r\n"
     "Referrer-Policy: no-referrer\r\n"
@@ -151,7 +153,12 @@ def _today_authorized(header: str | None, token: str) -> bool:
 
 
 def _response(
-    status: int, body: bytes = b"", content_type: str = "application/json", extra: str = ""
+    status: int,
+    body: bytes = b"",
+    content_type: str = "application/json",
+    extra: str = "",
+    *,
+    head_only: bool = False,
 ) -> bytes:
     head = [
         f"HTTP/1.1 {status} {HTTPStatus(status).phrase}",
@@ -160,7 +167,7 @@ def _response(
         *([extra] if extra else []),
         "Connection: close",
     ]
-    return ("\r\n".join(head) + "\r\n\r\n").encode() + body
+    return ("\r\n".join(head) + "\r\n\r\n").encode() + (b"" if head_only else body)
 
 
 def health_for(
@@ -182,6 +189,9 @@ async def start_web(
     host: str = "0.0.0.0",
     health_token: str | None = None,
     today: Callable[[], tuple[RuntimeView, bool]] | None = None,
+    recent_alerts: Callable[[], tuple[SentAlert, ...]] = lambda: (),
+    calendar_token: str | None = None,
+    calendar: Callable[[], bytes] | None = None,
     delivery: NtfyProof | None = None,
 ) -> asyncio.Server:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -191,7 +201,27 @@ async def start_web(
             except _Refused as e:
                 writer.write(_response(e.status))
             else:
-                if method == "GET" and (path == MANIFEST_PATH or path in ICONS):
+                if method in ("GET", "HEAD") and path.startswith(CALENDAR_SUBSCRIPTION):
+                    supplied = path.removeprefix(CALENDAR_SUBSCRIPTION)
+                    if (
+                        calendar is None
+                        or not calendar_token
+                        or not hmac.compare_digest(
+                            supplied.encode(), f"{calendar_token}.ics".encode()
+                        )
+                    ):
+                        writer.write(_response(404, extra=TODAY_HEADERS))
+                    else:
+                        writer.write(
+                            _response(
+                                200,
+                                calendar(),
+                                "text/calendar; charset=utf-8",
+                                TODAY_HEADERS,
+                                head_only=method == "HEAD",
+                            )
+                        )
+                elif method == "GET" and (path == MANIFEST_PATH or path in ICONS):
                     if not health_token or today is None:
                         writer.write(_response(404, extra=TODAY_HEADERS))
                     elif path == MANIFEST_PATH:
@@ -229,7 +259,10 @@ async def start_web(
                                 _response(
                                     200,
                                     render_today(
-                                        view, confirmed, paused=path == PAUSED_PATH
+                                        view,
+                                        confirmed,
+                                        paused=path == PAUSED_PATH,
+                                        alerts=recent_alerts(),
                                     ).encode(),
                                     "text/html; charset=utf-8",
                                     TODAY_PAGE_HEADERS,
@@ -251,7 +284,7 @@ async def start_web(
                             try:
                                 if occurrence is None:
                                     raise CalendarExportError("unknown journey")
-                                calendar = (
+                                exported = (
                                     export_preview(occurrence, exported_at=view.at)
                                     if preview
                                     else export_ics(occurrence, exported_at=view.at)
@@ -263,7 +296,7 @@ async def start_web(
                                 writer.write(
                                     _response(
                                         200,
-                                        calendar,
+                                        exported,
                                         "text/html; charset=utf-8"
                                         if preview
                                         else "text/calendar; charset=utf-8",

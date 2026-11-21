@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 
 from train_commute_companion.calendar import Clock, SystemClock
+from train_commute_companion.calendar_export import calendar_feed
 from train_commute_companion.email import EmailPoster, EmailSettings
 from train_commute_companion.model import present
 from train_commute_companion.providers.base import Provider
@@ -106,6 +107,7 @@ class Settings:
     mcp_remote_hosts: tuple[str, ...] = ()
     travel_language: LanguageSettings | None = None
     ntfy: NtfySettings | None = None
+    calendar_token: str | None = field(default=None, repr=False)
 
     @staticmethod
     def from_env(env: Mapping[str, str]) -> "Settings":
@@ -120,6 +122,11 @@ class Settings:
             raise ValueError("TELEGRAM_CHAT_ID requires TELEGRAM_BOT_TOKEN")
         lookahead_at = _lookahead_at(env)
         health_token = _optional(env, "TCC_HEALTH_TOKEN")
+        calendar_token = _optional(env, "TCC_CALENDAR_TOKEN")
+        if calendar_token is not None and not re.fullmatch("[0-9a-f]{64}", calendar_token):
+            raise ValueError("TCC_CALENDAR_TOKEN must contain 64 lowercase hex characters")
+        if calendar_token is not None and calendar_token == health_token:
+            raise ValueError("TCC_CALENDAR_TOKEN must differ from TCC_HEALTH_TOKEN")
         try:
             webhook_urls = parse_urls(env.get("TCC_WEBHOOK_URLS", ""))
         except ValueError as e:
@@ -163,6 +170,7 @@ class Settings:
             remote_hosts,
             language_settings(env),
             ntfy,
+            calendar_token,
         )
 
 
@@ -377,6 +385,9 @@ async def serve(app: App, port: int) -> int:
             secret=secret,
             health_token=app.settings.health_token,
             today=lambda: (app.rt.view(), app.confirmed),
+            recent_alerts=app.rt.recent_alerts,
+            calendar_token=app.settings.calendar_token,
+            calendar=lambda: calendar_feed(app.rt.state, app.rt.now()),
             delivery=app.ntfy_proof,
         )
         if app.settings.mcp_socket is not None:

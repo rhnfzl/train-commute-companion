@@ -225,6 +225,7 @@ async def deliver(
     destination: str | None = "legacy-primary",
     *,
     audience_written: bool = True,
+    on_accepted: Callable[[AlertEvent], None] = lambda event: None,
 ) -> tuple[Obligation | None, bool]:
     """One watchdog attempt: the obligation to keep (None: finished) and whether it was sent."""
     verdict = primary_delivery_verdict(o, ledger, now, destination, audience_written)
@@ -237,6 +238,7 @@ async def deliver(
         if event is None:
             return None, False
         if await notifier.send(event):
+            on_accepted(event)
             return None, True
     except NotificationPaused:
         return o, False
@@ -257,7 +259,7 @@ async def post_copy(
     ledger: Ledger,
     port: WebhookPort,
     now: datetime,
-    started: Callable[[WebhookCopy], None] = lambda c: None,
+    progress: Callable[[WebhookCopy, AlertEvent | None], None] = lambda c, event: None,
     *,
     audience_written: Callable[[WebhookCopy], bool] = lambda c: True,
 ) -> WebhookCopy | None:
@@ -300,35 +302,27 @@ async def post_copy(
     if not due.intersection(events):
         return c
     c = start_copy(c, now)
-    started(c)
-    pending = {
-        asyncio.create_task(port.post(event, c.id, (u,))) for u, event in events.items() if u in due
-    }
+    progress(c, None)
 
-    def received(task: asyncio.Task[tuple[frozenset[str], frozenset[str]]]) -> None:
+    async def post(u: str, event: AlertEvent) -> None:
         nonlocal c
-        tried, ok = task.result()
+        tried, ok = await port.post(event, c.id, (u,))
         if tried:
+            before = c.done
             c = receive_copy(
                 c,
                 {destination_id(port, u) for u in todo if u in ok and u in tried},
                 now,
             )
-            started(c)
+            progress(c, event if c.done != before else None)
 
+    tasks = [asyncio.create_task(post(u, event)) for u, event in events.items() if u in due]
     try:
-        while pending:
-            done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                pending.remove(task)
-                received(task)
+        await asyncio.gather(*tasks)
     finally:
-        # A result may finish in the same loop turn that delivers cancellation. Keep it too.
-        for task in pending:
-            if task.done() and not task.cancelled() and task.exception() is None:
-                received(task)
-            else:
-                task.cancel()
+        pending = [task for task in tasks if not task.done()]
         if pending:
+            for task in pending:
+                task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
     return None if all(destination_id(port, u) in c.done for u in events) else c

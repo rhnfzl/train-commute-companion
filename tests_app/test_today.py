@@ -6,9 +6,12 @@ from dataclasses import replace
 
 import pytest
 from app_rig import ONE_PROFILE, occ, view
+from runtime_rig import at
+from tcc_app.commands import answer
 from tcc_app.today import render
-from tcc_app.web import start_web
+from tcc_app.web import health_report, start_web
 
+from train_commute_companion.model import EventKind, SentAlert
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.base import ActiveDisruption
 
@@ -75,7 +78,7 @@ async def request(port, path="/today", authorization=None, method="GET"):
 
 
 @asynccontextmanager
-async def served(token=TOKEN, *, snapshot=None):
+async def served(token=TOKEN, *, snapshot=None, recent_alerts=lambda: (), **settings):
     calls = []
 
     def today():
@@ -83,13 +86,47 @@ async def served(token=TOKEN, *, snapshot=None):
         return snapshot if snapshot is not None else view(occ()), True
 
     server = await start_web(
-        0, health=lambda: (200, {"ok": True}), host="127.0.0.1", health_token=token, today=today
+        0,
+        health=lambda: health_report(snapshot or view(occ()), True, True),
+        host="127.0.0.1",
+        health_token=token,
+        today=today,
+        recent_alerts=recent_alerts,
+        **settings,
     )
     try:
         yield server.sockets[0].getsockname()[1], calls
     finally:
         server.close()
         await server.wait_closed()
+
+
+async def test_calendar_subscription_has_its_own_token_and_stays_private():
+    token = "a" * 64
+    calendars = []
+
+    def calendar():
+        calendars.append(True)
+        return b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n"
+
+    async with served(calendar_token=token, calendar=calendar) as (port, calls):
+        assert (await request(port, "/calendar/subscription/wrong.ics"))[0] == 404
+        assert (await request(port, f"/calendar/subscription/{TOKEN}.ics"))[0] == 404
+        assert (await request(port, "/today", f"Bearer {token}"))[0] == 401
+        assert calls == calendars == []
+        status, headers, body = await request(port, f"/calendar/subscription/{token}.ics")
+        assert status == 200 and calendars == [True]
+        assert headers["Content-Type"] == "text/calendar; charset=utf-8"
+        assert headers["Cache-Control"] == "no-store"
+        assert headers["Referrer-Policy"] == "no-referrer"
+        assert body.endswith("END:VCALENDAR\r\n") and token not in body
+        status, headers, head = await request(
+            port, f"/calendar/subscription/{token}.ics", method="HEAD"
+        )
+        assert status == 200 and head == "" and int(headers["Content-Length"]) == len(body)
+    async with served(calendar=calendar) as (port, _):
+        assert (await request(port, f"/calendar/subscription/{token}.ics"))[0] == 404
+        assert calendars == [True, True]
 
 
 @pytest.mark.parametrize("authorization", [None, "Bearer wrong", "Basic !!!"])
@@ -101,6 +138,45 @@ async def test_today_requires_auth_before_reading_private_view(authorization):
         assert body == "Authentication required."
         assert "office" not in body and TOKEN not in body
         assert headers["Cache-Control"] == "no-store"
+
+
+async def test_only_authenticated_today_reads_and_escapes_alert_history():
+    profiles, errors = parse_profiles(ONE_PROFILE, None)
+    assert not errors
+    profile = profiles[0]
+    enabled = replace(profile, alerts=replace(profile.alerts, alert_history=True))
+    snapshot = view(occ(), profiles=(enabled,))
+    marker = "private-history-marker"
+    text = f"{marker}<script>private payload</script>"
+    row = SentAlert("row-id", enabled.id, EventKind.CANCELLED, at("07:45"), at("07:46"), text)
+    reads = []
+
+    def history():
+        reads.append(True)
+        return (row,)
+
+    auth = "Bearer " + TOKEN
+    async with served(snapshot=snapshot, recent_alerts=history) as (port, calls):
+        for path, authorization, expected in (
+            ("/today", None, 401),
+            ("/today/paused", "Bearer wrong", 401),
+            ("/health", None, 200),
+            ("/health", auth, 200),
+            ("/today/manifest.webmanifest", None, 200),
+        ):
+            status, _, body = await request(port, path, authorization)
+            assert status == expected and marker not in body
+        assert reads == calls == []
+        for path in ("/today", "/today/paused"):
+            status, headers, body = await request(port, path, auth)
+            assert status == 200 and headers["Cache-Control"] == "no-store"
+            assert "Recent alerts" in body and "07:46" in body
+            assert marker in body and text not in body and "row-id" not in body
+            assert "&lt;script&gt;private payload&lt;/script&gt;" in body
+        assert reads == calls == [True, True]
+    assert marker not in json.dumps(answer(snapshot, True, {"tool": "get_status", "profile": "p1"}))
+    assert "No recent alerts saved." in render(snapshot, True)
+    assert "Recent alerts" not in render(view(occ(), profiles=(profile,)), True, alerts=(row,))
 
 
 @pytest.mark.parametrize(

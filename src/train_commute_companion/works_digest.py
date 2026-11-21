@@ -42,6 +42,14 @@ def profile_token(profile: Profile) -> str:
         profile, alerts=replace(profile.alerts, channels={}, disabled_categories=frozenset())
     )
     data = encode(route)
+    for key in (
+        "commute_stats",
+        "weekly_recap",
+        "after_trip_note",
+        "alert_history",
+        "calendar_feed",
+    ):
+        data["alerts"].pop(key)
     if profile.repeat is None:
         data.pop("repeat")
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
