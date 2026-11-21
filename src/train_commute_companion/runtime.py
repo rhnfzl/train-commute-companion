@@ -412,6 +412,7 @@ class Runtime:
         primary_destination_scope: Callable[[str], bool] = lambda destination: False,
         park_primary_pin: Callable[[str], bool] = lambda destination: False,
         legacy_adoption_destination: Callable[[], str | None] = lambda: LEGACY_PRIMARY,
+        profile_setup: bool = False,
     ) -> None:
         # Omitted only for legacy clients and replay rigs. Shells supply actual recipient IDs.
         self._primary_destination = primary_destination or (lambda: LEGACY_PRIMARY)
@@ -422,6 +423,7 @@ class Runtime:
         self._in_flight_opted_out = False
         self._target_pins: dict[str, Obligation] = {}
         self._path = profile_path
+        self._profile_setup = profile_setup
         self._queue = CopyQueue(
             webhooks,
             clock.now,
@@ -2511,7 +2513,18 @@ class Runtime:
                 return Refused(
                     "Another profile reload replaced this request. Try again.", RefusalKind.RETRY
                 )
-            self._refuse(f"cannot read {self._path.name} ({e})", now)
+            if isinstance(e, FileNotFoundError) and self._profile_setup and self.config is None:
+                await self._fetch_stations()
+                if not self._reload.current(request):
+                    return Refused(
+                        "Another profile reload replaced this request. Try again.",
+                        RefusalKind.RETRY,
+                    )
+                self._reload.refusal = None
+                self._reload.phase = ReloadPhase.READY
+                self._reload.pending = PendingEditPhase.NONE
+            else:
+                self._refuse(f"cannot read {self._path.name} ({e})", now)
         else:
             if not self._reload.current(request):
                 return Refused(
@@ -2692,6 +2705,13 @@ class Runtime:
         refuses or the request fails."""
         got = await self._listing(self._provider.stations, "stations")
         return None if isinstance(got, str) else got
+
+    async def preview_setup(self, outbound: Query, return_: Query) -> tuple[ProviderAnswer, ...]:
+        """Use the same request budget as the running companion for a setup preview."""
+        now = self._clock.now()
+        got = await self._gate.all_trips((outbound, return_), False, None)
+        self._track_key_rejection(got if isinstance(got, str) else None, "setup", now)
+        return () if isinstance(got, str) else got
 
     async def _lookahead_direction(self, p: Profile, d: Direction, works: PlannedWorks) -> None:
         start = self._clock.now()

@@ -270,6 +270,9 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
     if s.email is not None:
         email = EmailPoster(s.email, clock.now)
         webhooks = CopyPorts(webhooks, email) if webhooks is not None else email
+    setup_path = (
+        s.profiles if api is not None and s.profiles == s.state_dir / "profiles.yaml" else None
+    )
     rt = Runtime(
         profile_path=s.profiles,
         store=JsonFileStore(s.state_dir / "tcc-state.json"),
@@ -294,6 +297,7 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
             if s.ntfy is not None
             else destination.startswith(NTFY_DESTINATION_PREFIX)
         ),
+        profile_setup=setup_path is not None,
     )
     follower = Follower(rt)
     preferences = TravelPreferences(s.state_dir / "travel-preferences.json", rt.now)
@@ -321,6 +325,7 @@ def build(s: Settings, *, clock: Clock, provider: Provider, client: httpx.AsyncC
             telegram.bind_chat if telegram is not None else None,
             travel_actions=actions,
             travel_language=TravelLanguage(language, client) if language is not None else None,
+            setup_path=setup_path,
         )
         if api is not None
         else None
