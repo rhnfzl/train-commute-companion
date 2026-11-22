@@ -502,6 +502,7 @@ def _status_journey(occurrence: OccurrenceView, at: datetime) -> dict[str, Any]:
         "not_travelling": o.not_travelling,
         **_board_status(o),
         "legs": [] if recovering else encode(o.legs),
+        "transfers": [] if recovering else encode(o.transfers),
         "original_legs": encode(o.legs) if recovering else [],
         "selected_recovery": o.selected_recovery.fields(at) if o.selected_recovery else None,
         "leave_by": None if recovering else encode(o.leave_by),

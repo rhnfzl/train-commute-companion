@@ -72,6 +72,7 @@ def test_status_separates_snapshot_time_from_the_checked_journey():
     assert journey["timetable_health"] == "healthy"
     assert journey["direction"] == "outbound"
     assert journey["legs"][0]["board"] == "AAA"
+    assert journey["transfers"] == [{"station": "UT", "state": "ok", "margin_min": 6, "minimum": 4}]
 
 
 async def test_tool_says_the_app_is_not_running(sock):  # Review Focus 1
