@@ -483,8 +483,8 @@ _MESSAGES = {
         "Gebruik: /choose [profiel] [outbound|return] UU:MM [treinnummer] [JJJJ-MM-DD]",
     ),
     "command.trip_usage": (
-        "Use /trip UT RTD, /trip Utrecht Centraal -> Rotterdam Centraal, or /trip saved NAME.",
-        "Gebruik /trip UT RTD, /trip Utrecht Centraal -> Rotterdam Centraal of /trip saved NAAM.",
+        "Use /trip UT RTD, /trip Utrecht Centraal -> Rotterdam Centraal, /trip saved NAME, or /trip reverse NAME.",
+        "Gebruik /trip UT RTD, /trip Utrecht Centraal -> Rotterdam Centraal, /trip saved NAAM of /trip reverse NAAM.",
     ),
     "trip.saved_missing": (
         "No saved travel preference by that name. See /preferences.",

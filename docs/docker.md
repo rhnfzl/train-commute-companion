@@ -151,6 +151,7 @@ A recovery step removes both old progress and stop controls for that step. The r
 Use `/trip UT RTD` or `/trip Utrecht Centraal -> Rotterdam Centraal` in your bound private chat.
 Use `->` between station names with spaces. If a name matches more than one station, use a code from the reply.
 After saving a route with `/remember` and confirming it, use `/trip saved NAME`. The check uses the saved station pair and searches from now. Saved arrival and return preferences apply when planning trips.
+Use `/trip reverse NAME` to check the same pair in the other direction. The saved route stays as it was.
 
 The reply shows up to three train options by departure time, including changes. It labels timetable and NS-reported times and shows boarding platforms and crowd forecasts when available. If NS data is stale or unavailable, the reply asks you to try again.
 
