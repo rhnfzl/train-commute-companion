@@ -3,6 +3,8 @@ through the runtime, the Bot answering Telegram `/status`, `mcp_answer`, the Uni
 SDK client, and after every 30 s step each tool's answer agrees with `/status`. It imports the SDK
 directly, so a run without the `app` extra fails instead of skipping this gate."""
 
+import asyncio
+
 import pytest
 from app_rig import REPLAYS, build_from_replay, drive_replay, msg
 from mcp import Client
@@ -44,8 +46,19 @@ async def test_mcp_reads_agree_with_status(tmp_path, tg, sock, name):  # 10.4
             ]
             lines = set(shown)
             pids = [p.id for p in app.rt.view().profiles]
-            for pid in pids:
-                st = (await c.call_tool("get_status", {"profile": pid})).structured_content
+
+            # All tools read the same state while the replay clock waits here.
+            async def read_profile(pid):
+                results = await asyncio.gather(
+                    c.call_tool("get_status", {"profile": pid}),
+                    c.call_tool("get_next_connections", {"profile": pid, "direction": "outbound"}),
+                    c.call_tool("get_next_connections", {"profile": pid, "direction": "return"}),
+                    c.call_tool("get_works_ahead", {"profile": pid}),
+                )
+                return tuple(result.structured_content for result in results)
+
+            snapshots = await asyncio.gather(*(read_profile(pid) for pid in pids))
+            for st, outbound, inbound, wa in snapshots:
                 warns = {x for x in st["text"].splitlines() if _is_warning(x)}
                 if len(pids) == 1:
                     assert st["text"].splitlines() == shown
@@ -53,10 +66,7 @@ async def test_mcp_reads_agree_with_status(tmp_path, tg, sock, name):  # 10.4
                     assert set(st["text"].splitlines()) <= lines | {
                         "No journey is being followed now."
                     }
-                for d in ("outbound", "return"):
-                    nc = (
-                        await c.call_tool("get_next_connections", {"profile": pid, "direction": d})
-                    ).structured_content
+                for nc in (outbound, inbound):
                     assert warns <= set(nc["text"].splitlines())  # every warning, not a subset
                     assert set(nc["text"].splitlines()) <= lines | {
                         "No journey is being followed now.",
@@ -68,7 +78,6 @@ async def test_mcp_reads_agree_with_status(tmp_path, tg, sock, name):  # 10.4
                                 f"  next good connection: {g['departure']} from {g['from']}"
                                 in lines
                             )
-                wa = (await c.call_tool("get_works_ahead", {"profile": pid})).structured_content
                 assert warns <= set(wa["text"].splitlines())
                 assert set(wa["text"].splitlines()) <= lines | {
                     NO_WORKS,

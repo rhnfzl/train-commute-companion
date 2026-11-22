@@ -128,20 +128,32 @@ tcc check-profile profiles.yaml
 
 ## Development
 
+For a quick check, run the same Ruff rules as CI. You can add this command to a local pre-commit hook.
+
 ```bash
-uv run --extra app pytest -q        # core and app tests (the extra installs the MCP SDK)
-uv run --extra app mypy src app/tcc_app
+uv run --locked --extra app ruff check src tests tests_ha tests_app tests_live custom_components app
+```
+
+Run the full Python checks before a batch PR. The dependency floors and Home Assistant use separate environments.
+
+```bash
+uv run --locked --extra app pytest -q -n 4 --dist worksteal
+uv run --locked --extra app mypy src app/tcc_app
 # the published floors: Python 3.12, httpx 0.27, PyYAML 6.0.1 and mcp 2.3
-uv run --no-cache --isolated --no-project --python 3.12 --with '.[app]' --with httpx==0.27.0 --with PyYAML==6.0.1 --with mcp==2.3.0 --with pytest --with pytest-asyncio pytest -q tests tests_app
-uv run ruff check src tests tests_ha tests_app tests_live custom_components app
+uv run --no-cache --isolated --no-project --python 3.12 --with '.[app]' --with httpx==0.27.0 \
+  --with PyYAML==6.0.1 --with mcp==2.3.0 --with pytest --with pytest-asyncio \
+  --with pytest-xdist==3.8.0 pytest -q -n 4 --dist worksteal tests tests_app
 
 # Home Assistant integration: Python 3.14.2+, in its own environment
 export UV_PROJECT_ENVIRONMENT=.venv-ha
-uv run --python 3.14 --group ha pytest tests_ha -q
-uv run --python 3.14 --group ha mypy --explicit-package-bases --namespace-packages -p custom_components.train_commute_companion
+uv run --locked --python 3.14 --group ha pytest tests_ha -q -n 4 --dist worksteal
+uv run --locked --python 3.14 --group ha mypy --explicit-package-bases \
+  --namespace-packages -p custom_components.train_commute_companion
 ```
 
-The [Validate workflow](.github/workflows/validate.yml) runs these same commands, and a release runs them before it publishes. Each night it also runs `tests_ha` against the newest Home Assistant test package, because the integration calls private `mobile_app` code.
+The [Validate workflow](.github/workflows/validate.yml) runs the full checks on every PR, including documentation changes. It cancels older runs for the same PR. Push validation runs on `main` and tags.
+
+Release tests use the same suites and run pytest serially within each job so a release dispatch can still check older tags. The nightly workflow also tests the newest Home Assistant package because the integration calls private `mobile_app` code.
 
 [Live NS checks](docs/live-testing.md) run separately with your own key and capture alerts locally.
 
