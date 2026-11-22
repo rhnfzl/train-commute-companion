@@ -2,8 +2,8 @@ name: Validate
 
 on:
   push:
-    # Rehan checks these branches locally. The batch runs the full suite on its PR.
-    branches-ignore: ["batch/rhnfzl-*", "work/rhnfzl/**"]
+    # Validate feature changes once, on the PR. Keep checks on merged commits and tags.
+    branches: [main]
     tags: ["**"]
   pull_request:
   schedule:
@@ -11,6 +11,10 @@ on:
   workflow_dispatch:
 
 permissions: {}
+
+concurrency:
+  group: validate-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   hacs:
@@ -33,6 +37,8 @@ jobs:
     uses: ./.github/workflows/tests.yml
     permissions:
       contents: read
+    with:
+      parallel: true
 
   image:
     # builds both release platforms without pushing, so a broken Dockerfile shows before a release
