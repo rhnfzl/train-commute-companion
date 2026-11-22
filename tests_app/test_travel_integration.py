@@ -7,6 +7,7 @@ import httpx2
 import pytest
 from app_rig import CHAT, CODES, TickClock, free_port, make_app, msg, until
 from app_rig import TOKEN as BOT_TOKEN
+from builders import make_connection, make_leg
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from runtime_rig import DAY, Provider, StationsProvider, at
@@ -17,6 +18,7 @@ from tcc_app.travel_language import LanguageSettings
 from tcc_app.web import start_readout
 from test_travel_actions import TOKEN, Plans
 
+from train_commute_companion.messages import Refused
 from train_commute_companion.providers.base import ProviderError
 
 
@@ -50,6 +52,38 @@ async def test_mcp_change_applies_only_after_private_telegram_approval(tmp_path,
         assert fake.changes == 1
         receipt = await client.call_tool("get_travel_change", {"request_id": "utterance-1"})
         assert receipt.structured_content["status"] == "saved"
+
+
+async def test_mcp_quick_trip_requires_a_token_and_shares_the_runtime_limit(tmp_path, tg, sock):
+    clock = TickClock(at("06:00"))
+    provider = Provider(clock, [make_connection([make_leg("AAA", "UT", "08:12", "08:40")])])
+    app = make_app(
+        tmp_path, tg, clock, StationsProvider(provider, CODES), mcp_agents={"desktop": TOKEN}
+    )
+    await app.rt.start()
+    before = app.rt.state
+    args = {"origin": "AAA", "destination": "UT"}
+    request = {"tool": "check_trip", **args}
+    for token in (None, "wrong"):
+        assert (await dispatch_mcp(app, request, token))["status"] == "denied"
+    assert (await dispatch_mcp(app, {**request, "origin": {}}, TOKEN))["status"] == "invalid"
+    assert not provider.calls
+
+    server = await start_readout(
+        sock, mcp_answer(app), actions=lambda req, token: dispatch_mcp(app, req, token)
+    )
+    async with server, Client(mcp_build(sock, token=TOKEN)) as client:
+        tool = next(tool for tool in (await client.list_tools()).tools if tool.name == "check_trip")
+        assert tool.annotations.read_only_hint and tool.annotations.open_world_hint
+        reply = (await client.call_tool("check_trip", args)).structured_content
+        assert reply["status"] == "ok"
+        assert reply["checked_at"] == clock.now().isoformat()
+        assert reply["destination"]["code"] == "UT" and len(reply["options"]) == 1
+        assert len(provider.calls) == 1
+        refused = await app.rt.check_trip(*args.values())
+        assert isinstance(refused, Refused) and "30 seconds" in refused.text
+        assert len(provider.calls) == 1 and not tg.sent
+        assert app.rt.state == before
 
 
 def test_remote_mcp_is_opt_in_and_credentials_are_not_in_repr(tmp_path):

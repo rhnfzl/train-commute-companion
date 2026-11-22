@@ -633,13 +633,14 @@ class Bot:
         language = shared_language(self._rt.view())
         raw = args[0] if args else ""
         words = raw.split(maxsplit=1)
-        if len(words) == 2 and words[0].casefold() == "saved":
+        mode = words[0].casefold() if words else ""
+        if len(words) == 2 and mode in ("saved", "reverse"):
             preferences = self.travel_actions.preferences
             saved = preferences.saved_route(words[1]) if preferences is not None else None
             if saved is None:
                 await self._reply(localized("trip.saved_missing", language))
                 return
-            pair = list(saved)
+            pair = list(reversed(saved) if mode == "reverse" else saved)
         else:
             pair = raw.split("->") if "->" in raw else raw.split()
         if len(pair) != 2 or not all(station.strip() for station in pair):

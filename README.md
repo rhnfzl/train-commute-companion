@@ -58,6 +58,13 @@ Data: NS. You bring your own [NS API key](docs/ns-api-key.md); none is bundled. 
 | Docker with Home Assistant | One Docker schedule with Home Assistant sensors, commute controls and phone location for connected profiles | [Shared schedule setup](docs/shared-schedule.md) |
 | ntfy | One-way phone push without Home Assistant or Telegram; your own private topic and access token | [docs/ntfy.md](docs/ntfy.md) |
 | Household | A separate Docker companion and private bot for each traveller | [docs/household.md](docs/household.md) |
+
+| How you connect | What it supports |
+| --- | --- |
+| Phone location | Use [Home Assistant](docs/location-ha.md) with optional motion and Wi-Fi, [Telegram live location](docs/location-telegram.md) or [OwnTracks](docs/location-owntracks.md). |
+| Today and Telegram | Open the [private Today page](docs/docker.md#today-web-status) or use a pinned status message. Save a journey to a calendar or share a static route snapshot. |
+| MCP | Read status and planned works from Docker. Connect a named agent to preview flexible trips and request schedule changes with Telegram approvals. [MCP setup](docs/mcp.md) |
+| Other alert channels | Send copies by [email](docs/email.md) or to [webhooks](docs/webhooks.md). Choose categories and destinations per profile. |
 | Webhooks | Each alert as signed JSON to your own URL, from Docker or Home Assistant | [docs/webhooks.md](docs/webhooks.md) |
 | Email | Optional encrypted SMTP copies alongside ntfy or Telegram in Docker | [docs/email.md](docs/email.md) |
 | Today | Private journey and service status with browser refresh, a home screen shortcut and optional sent-alert history | [docs/docker.md](docs/docker.md#today-web-status) |

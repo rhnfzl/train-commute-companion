@@ -1,8 +1,9 @@
 from dataclasses import replace
 
 from app_rig import ONE_PROFILE, occ, view
-from recovery_sample import NOW, answer
-from tcc_app.commands import connections_tool, render_status, status_buttons
+from recovery_sample import NOW, answer, selection
+from runtime_rig import at
+from tcc_app.commands import connections_tool, render_status, status_buttons, status_tool
 
 from train_commute_companion.model import Direction
 from train_commute_companion.profile import parse_profiles
@@ -48,3 +49,17 @@ def test_recovery_status_and_button_labels_follow_the_profile_language():
     en, nl = en_buttons["inline_keyboard"][0], nl_buttons["inline_keyboard"][0]
     assert [button["callback_data"] for button in en] == [button["callback_data"] for button in nl]
     assert [button["text"] for button in nl] == ["Ik vertrek", "Ik reis niet"]
+
+
+def test_mcp_status_reports_selected_recovery_without_original_leave_by():
+    current = view(occ(leave_by=at("08:02"), selected_recovery=selection()))
+    status = status_tool(current, True, "p1")
+    (journey,) = status["journeys"]
+    assert journey["state"] == "recovery_active"
+    assert journey["leave_by"] is None and journey["legs"] == []
+    assert journey["original_legs"][0]["board"] == "AAA"
+    result = connections_tool(current, True, "p1", Direction.OUTBOUND)
+    (connections,) = result["journeys"]
+    assert connections["leave_by"] is None
+    assert journey["selected_recovery"] == connections["selected_recovery"]
+    assert "Leave by 08:02" not in status["text"]

@@ -413,6 +413,8 @@ async def test_initial_setup_preview_reuses_its_cooldown(hass):
         "unreachable",
         "late_arrival",
         "meets_arrival",
+        "too_close",
+        "catchable_delayed",
         "recurring",
     ],
 )
@@ -422,6 +424,8 @@ async def test_preview_uses_only_current_dated_timetable_evidence(hass, monkeypa
     class PreviewClock(datetime):
         @classmethod
         def now(cls, tz=None):
+            if case in ("too_close", "catchable_delayed"):
+                return datetime(2026, 11, 23, 8, 6, tzinfo=TZ).astimezone(tz)
             return datetime(2026, 11, 20, 18, tzinfo=TZ).astimezone(tz)
 
     monkeypatch.setattr(
@@ -436,7 +440,8 @@ async def test_preview_uses_only_current_dated_timetable_evidence(hass, monkeypa
     day = 30 if case == "recurring" else 23
     if case == "recurring":
         values |= {"repeat_start_date": "2026-11-16", "repeat_every_weeks": 2}
-    is_window = case in ("planned_window", "late_arrival", "meets_arrival")
+    arrival_search = case in ("late_arrival", "meets_arrival", "too_close", "catchable_delayed")
+    is_window = case == "planned_window" or arrival_search
     if is_window:
         values |= {
             "outbound_mode": "window",
@@ -444,7 +449,7 @@ async def test_preview_uses_only_current_dated_timetable_evidence(hass, monkeypa
             "outbound_window_start": "08:00",
             "outbound_window_end": "09:00",
         }
-    if case in ("late_arrival", "meets_arrival"):
+    if arrival_search:
         values |= {
             "outbound_pick": "arrive_by",
             "outbound_arrive_by": "09:00",
@@ -454,34 +459,52 @@ async def test_preview_uses_only_current_dated_timetable_evidence(hass, monkeypa
 
     async def answer(query):
         assert (query.origin, query.destination, query.via) == ("AAA", "RTD", None)
-        assert query.at == datetime(2026, 11, day, 8, 0 if is_window else 12, tzinfo=TZ)
+        assert query.search_for_arrival is arrival_search
+        minute = 50 if arrival_search else 0 if is_window else 12
+        assert query.at == datetime(2026, 11, day, 8, minute, tzinfo=TZ)
         if case == "timeout":
             await asyncio.Future()
         leg = make_leg(
             "AAA",
             "RTD",
             "08:12",
-            "08:55" if case == "late_arrival" else "08:50" if case == "meets_arrival" else "09:12",
+            "08:55" if case == "late_arrival" else "08:50" if arrival_search else "09:12",
             day=date(2026, 11, 24 if case == "off_date" else day),
-            provenance=Provenance.PLANNED,
+            provenance=Provenance.REPORTED if case == "catchable_delayed" else Provenance.PLANNED,
+            delay_dep=13 if case == "catchable_delayed" else 0,
         )
         fetched = datetime(2026, 11, 19, tzinfo=TZ) if case == "stale" else PreviewClock.now(TZ)
         if case == "unreachable":
             leg = replace(leg, reachable=False)
         status = "CANCELLED" if case == "cancelled" else "NORMAL"
         connections = () if case == "empty" else (Connection((leg,), status, None),)
+        if case == "too_close":
+            travel_date = date(2026, 11, day)
+            connections += (
+                Connection(
+                    (
+                        make_leg("AAA", "UT", "08:20", "08:27", number="2345", day=travel_date),
+                        make_leg("UT", "RTD", "08:34", "08:50", number="2346", day=travel_date),
+                    ),
+                    "NORMAL",
+                    None,
+                ),
+            )
         return ProviderAnswer(query, connections, fetched)
 
     with patch(TRIPS, side_effect=answer) as trips:
         flow = await configure(hass, flow, {"pause_action": "keep"})
     assert trips.await_count == 1
     assert not profiles_path(hass).exists()
-    if case in ("planned_window", "meets_arrival", "recurring"):
+    if case in ("planned_window", "meets_arrival", "recurring", "too_close", "catchable_delayed"):
         assert flow["step_id"] == "profile_preview"
+        preview_minute = {"too_close": "20", "catchable_delayed": "25"}.get(case, "12")
         assert flow["description_placeholders"] == {
-            "departure": f"2026-11-{day} 08:12",
+            "departure": f"2026-11-{day} 08:{preview_minute}",
             "platform": "?",
-            "route": "Home station → Rotterdam Centraal",
+            "route": "Home station → Utrecht Centraal → Rotterdam Centraal"
+            if case == "too_close"
+            else "Home station → Rotterdam Centraal",
         }
     else:
         assert flow["step_id"] == "notify"

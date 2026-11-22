@@ -176,7 +176,10 @@ async def test_quick_trip_uses_confirmed_saved_pair_in_the_bound_private_chat(
     tick = 0
     monkeypatch.setattr("train_commute_companion.runtime.monotonic", lambda: tick)
     rig.rt.known_stations = Stations({"AAA": ("Alpha Central",), "RTD": ("Rotterdam Centraal",)})
-    rig.provider.world = [make_connection([make_leg("AAA", "RTD", "08:25", "09:05")])]
+    rig.provider.world = [
+        make_connection([make_leg("AAA", "RTD", "08:25", "09:05")]),
+        make_connection([make_leg("RTD", "AAA", "08:30", "09:10", number="2345")]),
+    ]
     preferences = TravelPreferences(tmp_path / "travel-preferences.json", rig.rt.now)
     actions = TravelActions(rig.rt, {}, tmp_path / "agents.json", preferences)
     path = tmp_path / "telegram.json"
@@ -209,6 +212,8 @@ async def test_quick_trip_uses_confirmed_saved_pair_in_the_bound_private_chat(
         assert not tg.sent and rig.provider.calls == calls
         await send("/trip saved Office run")
         assert "No saved travel preference" in a.texts()[-1]
+        await send("/trip reverse Office run")
+        assert "No saved travel preference" in a.texts()[-1]
         assert rig.provider.calls == calls
         assert preferences.save(change, review["review_token"], "confirm")["status"] == "saved"
         await send("/trip saved office RUN")
@@ -222,6 +227,16 @@ async def test_quick_trip_uses_confirmed_saved_pair_in_the_bound_private_chat(
         await send("/trip Alpha Central -> Rotterdam Centraal")
         assert "Alpha Central to Rotterdam Centraal" in a.texts()[-1]
         assert len(rig.provider.calls) == len(calls) + 2
+        await send("/trip reverse Office run")
+        assert "30 seconds" in a.texts()[-1]
+        tick += 30
+        await send("/trip reverse Office run")
+        assert "Rotterdam Centraal to Alpha Central" in a.texts()[-1]
+        assert "08:30" in a.texts()[-1]
+        assert len(rig.provider.calls) == len(calls) + 3
+        query = rig.provider.calls[-1]
+        assert (query.origin, query.destination) == ("RTD", "AAA")
+        assert preferences.saved_route("Office run") == ("Alpha Central", "Rotterdam Centraal")
     finally:
         await a.bot.close()
 

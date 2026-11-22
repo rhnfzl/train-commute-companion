@@ -16,6 +16,8 @@ Every answer carries a `text` field with the same wording as Telegram, ending wi
 
 `get_status` shows the active arrival target and the station deadline for an [arrive-by trip](weekday-schedules.md#arrive-by-a-set-time). It also shows when the train misses the target or the data cannot confirm it.
 
+`get_status` includes structured fields for the followed journeys, legs, leave-by and arrival targets. The `as_of` time describes the snapshot. `timetable_last_ok_at` describes the last successful timetable check for that journey. Both `get_status` and `get_next_connections` include the timetable health. A successful check time does not say when NS produced an individual observation.
+
 ## How it runs
 
 The app listens on a private socket, `mcp.sock`, in its data volume (`/data`). The MCP client starts the `mcp` Compose service in its own short-lived container. Its data volume is read-only and its only default setting is `TCC_STATE_DIR`. The relay calls the running app for every answer. If the app stops, the relay reports that it cannot reach the app.
@@ -66,6 +68,7 @@ docker compose -f /path/to/docker-compose.yml run --rm --no-deps -T -e TCC_MCP_A
 This is the command for the MCP client to start. With the Claude Desktop example above, put `"-e", "TCC_MCP_AGENT_TOKEN"` just before `"mcp"`. Set the variable in your client configuration or its launch environment. The relay gets only this agent's token and the state directory.
 
 - `list_travel_plans()` returns the regular commute profiles in `profiles` and the flexible trips in `plans`. Both come from the companion that the agent connects to.
+- `check_trip(origin, destination)` checks up to three upcoming train trips between any two NS stations. Use station names or codes. It returns the check time, scheduled and reported times, and platforms when known. It shares the 30-second limit and `alerts.quick_trip` switch with Telegram and Home Assistant. It leaves saved trips and preferences unchanged.
 - `get_next_connections(plan_id, direction, date)` checks departures for an approved flexible trip. Use the outbound trip date for either direction. The return uses its saved day offset. Leave out the date to check the next scheduled trip within 30 days. The result includes when the NS data was fetched and whether it came from a recent check or a new request.
 - `change_travel_plan(change, request_id)` proposes a create, edit, cancel or undo.
 - `get_travel_change(request_id)` checks a plan or preference change.

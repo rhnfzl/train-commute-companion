@@ -2573,7 +2573,7 @@ def _activity(ev: Evidence, at: datetime, kinds: frozenset[str]) -> datetime | N
     if ev.activity is None or ev.activity_at is None or ev.activity.casefold() not in kinds:
         return None
     t = to_utc(ev.activity_at)
-    return t if at - t <= ACTIVITY_FRESH else None
+    return t if timedelta() <= at - t <= ACTIVITY_FRESH else None
 
 
 def _note_evidence(s: OccurrenceState, event: LocationEvent) -> OccurrenceState:

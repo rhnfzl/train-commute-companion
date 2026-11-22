@@ -1,15 +1,17 @@
 """A private, read-only page showing the same journey information as Telegram status."""
 
-from datetime import datetime
+from datetime import date, datetime
 from functools import partial
 from html import escape
 from pathlib import Path
+from urllib.parse import parse_qs, urlencode
 
 from train_commute_companion.calendar import TZ
 from train_commute_companion.calendar_export import CalendarExportError, export_id, planned_bounds
-from train_commute_companion.catalogue import message, message_date
+from train_commute_companion.catalogue import MessageLanguage, message, message_date
 from train_commute_companion.history import stats_text
 from train_commute_companion.model import SentAlert, display_name
+from train_commute_companion.notification_policy import CATEGORIES, category_for
 from train_commute_companion.view import RuntimeView
 
 from .commands import profile_language, render_status, shared_language
@@ -47,6 +49,10 @@ section { background: white; border: 1px solid #ccd5e2; border-radius: .75rem;
 pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: 0; }
 li { margin-bottom: .5rem; overflow-wrap: anywhere; }
 footer { font-size: .9rem; }
+form { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; margin-bottom: 1rem; }
+label { display: grid; gap: .25rem; max-width: 100%; }
+input, select, button { font: inherit; }
+select { max-width: 100%; }
 @media (max-width: 35rem) { main { padding: 1rem; } section { padding: 1rem; } }
 @media (prefers-color-scheme: dark) {
   body { background: #111a29; color: #e7edf6; }
@@ -56,8 +62,74 @@ footer { font-size: .9rem; }
 """
 
 
+def _history(
+    view: RuntimeView,
+    alerts: tuple[SentAlert, ...],
+    language: MessageLanguage,
+    path: str,
+    query: str,
+) -> tuple[str, tuple[SentAlert, ...], str]:
+    profiles = {p.id: display_name(p.name) for p in view.profiles if p.alerts.alert_history}
+    if not profiles:
+        return "", (), ""
+    labels = {
+        category: message(f"today.history_{category}", language)
+        for category in (*CATEGORIES, "other")
+    }
+    try:
+        values = parse_qs(query, max_num_fields=12)
+    except ValueError:
+        values = {}
+    profile = values.get("profile", [""])[0]
+    profile = profile if profile in profiles else ""
+    category = values.get("category", [""])[0]
+    category = category if category in labels else ""
+    try:
+        since = date.fromisoformat(values.get("from", [""])[0])
+    except ValueError:
+        since = None
+    since_text = since.isoformat() if since is not None else ""
+
+    def select(name: str, options: dict[str, str], selected: str) -> str:
+        choices = [f'<option value="">{message("today.history_all", language)}</option>']
+        for key, label in options.items():
+            is_selected = " selected" if key == selected else ""
+            choices.append(f'<option value="{escape(key)}"{is_selected}>{escape(label)}</option>')
+        caption = message(f"today.history_{name}", language)
+        return f'<label>{caption}<select name="{name}">{"".join(choices)}</select></label>'
+
+    form = (
+        f'<form action="{path}" method="get">'
+        + select("profile", profiles, profile)
+        + select("category", labels, category)
+        + f"<label>{message('today.history_from', language)}"
+        f'<input name="from" type="date" value="{since_text}"></label>'
+        f'<button type="submit">{message("today.history_apply", language)}</button>'
+        f'<a href="{path}">{message("today.history_clear", language)}</a></form>'
+    )
+    selected = tuple(
+        alert
+        for alert in alerts
+        if alert.profile_id in profiles
+        and (not profile or alert.profile_id == profile)
+        and (not category or (category_for(alert.kind) or "other") == category)
+        and (since is None or alert.accepted_at.astimezone(TZ).date() >= since)
+    )
+    filters = {
+        key: value
+        for key, value in {"profile": profile, "category": category, "from": since_text}.items()
+        if value
+    }
+    return form, selected, "?" + escape(urlencode(filters)) if filters else ""
+
+
 def render(
-    view: RuntimeView, confirmed: bool, *, paused: bool = False, alerts: tuple[SentAlert, ...] = ()
+    view: RuntimeView,
+    confirmed: bool,
+    *,
+    paused: bool = False,
+    alerts: tuple[SentAlert, ...] = (),
+    history_query: str = "",
 ) -> str:
     """Escape every value from the read model. Download links use opaque occurrence hashes and contain no credentials."""
     language = shared_language(view)
@@ -114,9 +186,11 @@ def render(
         "<ul>" + "".join(freshness) + "</ul>" if freshness else f"<p>{page('today.no_checks')}</p>"
     )
     history = ""
-    if any(p.alerts.alert_history for p in view.profiles):
+    refresh_path = PAUSED_PATH if paused else TODAY_PATH
+    form, selected_alerts, filters = _history(view, alerts, language, refresh_path, history_query)
+    if form:
         items = []
-        for alert in alerts:
+        for alert in selected_alerts:
             sent = alert.accepted_at.astimezone(TZ)
             items.append(
                 f'<li><time datetime="{sent.isoformat(timespec="seconds")}">'
@@ -124,7 +198,12 @@ def render(
             )
         history = (
             f'<section aria-labelledby="history-heading"><h2 id="history-heading">{page("today.alerts")}</h2>'
-            + ("<ul>" + "".join(items) + "</ul>" if items else f"<p>{page('today.no_alerts')}</p>")
+            + form
+            + (
+                "<ul>" + "".join(items) + "</ul>"
+                if items
+                else f"<p>{page('today.history_no_match' if filters else 'today.no_alerts')}</p>"
+            )
             + "</section>"
         )
     snapshot = escape(stamp(view.at))
@@ -144,19 +223,17 @@ def render(
     delivery = page("today.confirmed" if confirmed else "today.unconfirmed")
     live = bool(view.profiles) and all(p.alerts.live_today for p in view.profiles)
     metadata = controls = ""
-    refresh_path = PAUSED_PATH if paused else TODAY_PATH
+    refresh_path += filters
     if live:
         metadata = (
             f'<link rel="manifest" href="{MANIFEST_PATH}">\n'
             '<link rel="apple-touch-icon" href="/today/icon-192.png">\n'
         )
         if paused:
-            controls = f' <a href="{TODAY_PATH}">{page("today.resume")}</a>.'
+            controls = f' <a href="{TODAY_PATH}{filters}">{page("today.resume")}</a>.'
         else:
-            metadata += f'<meta http-equiv="refresh" content="60; url={TODAY_PATH}">\n'
-            controls = (
-                f' {page("today.interval")} <a href="{PAUSED_PATH}">{page("today.pause")}</a>.'
-            )
+            metadata += f'<meta http-equiv="refresh" content="60; url={refresh_path}">\n'
+            controls = f' {page("today.interval")} <a href="{PAUSED_PATH}{filters}">{page("today.pause")}</a>.'
     link = (
         '<a href="https://www.ns.nl/en/travel/at-the-station/facilities" rel="noreferrer">'
         f"{page('today.facilities_label')}</a>"
