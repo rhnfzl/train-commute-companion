@@ -16,6 +16,8 @@ Every answer carries a `text` field with the same wording as Telegram, ending wi
 
 `get_status` shows the active arrival target and the station deadline for an [arrive-by trip](weekday-schedules.md#arrive-by-a-set-time). It also shows when the train misses the target or the data cannot confirm it.
 
+`get_status` includes structured fields for the followed journeys, legs, leave-by and arrival targets. The `as_of` time describes the snapshot. `timetable_last_ok_at` describes the last successful timetable check for that journey. Both `get_status` and `get_next_connections` include the timetable health. A successful check time does not say when NS produced an individual observation.
+
 ## How it runs
 
 The app listens on a private socket, `mcp.sock`, in its data volume (`/data`). The MCP client starts the `mcp` Compose service in its own short-lived container. Its data volume is read-only and its only default setting is `TCC_STATE_DIR`. The relay calls the running app for every answer. If the app stops, the relay reports that it cannot reach the app.

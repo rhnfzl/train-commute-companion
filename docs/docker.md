@@ -33,11 +33,11 @@ By default, the installer creates `train-commute-companion` in the current direc
 
 1. Run the log command printed for your traveller.
 2. Open the private claim link or scan the terminal QR. Press **Start** in Telegram.
-3. Send `/setup`. Choose your stations, commute days, and departure times. **Make this mine** previews a weekday sample for your stations.
+3. Send `/setup`. Choose your stations and commute days. Choose **Arrive by a set time** to enter your work arrival and walk from the station. Choose **Set times by departure** for a fixed commute. **Make this mine** previews a weekday sample for your stations.
 4. Review the next commute's trains, platforms and changes. Adjust check-in lead times and delay thresholds if needed. Tap **Save commute**.
 5. Confirm one loud and one silent test alert with **I got both**. Send `/test` to request another pair.
 
-The wizard creates `/data/profiles.yaml` inside the Docker data volume when that file is absent. It previews train-only trips within an hour of each requested departure. The profile starts on the date shown. If NS cannot supply both trips, change the times or try again.
+The wizard creates `/data/profiles.yaml` inside the Docker data volume when that file is absent. It previews train-only trips within an hour of each fixed departure. For an arrival target the search starts two hours before the station deadline on the local clock, or at midnight for an early target. It uses the [arrive-by rules](weekday-schedules.md#arrive-by-a-set-time), including the direct train preference. The return uses a fixed departure. The profile starts on the date shown. If NS cannot supply both trips, change the times or try again.
 
 Use manual setup for a night shift or an existing profiles file. Keep the generated `.env` files and logs private.
 Send `/cancel_setup` to close the wizard and discard the draft.
@@ -252,7 +252,7 @@ Set `alerts.alert_history` to `true` for a profile to see its sent alerts on Tod
 
 The companion adds one row when the phone, email server or configured webhook first accepts the alert while history is on. Each row keeps the message text, profile ID, alert type and timestamps. History excludes setup messages, app-wide warnings, phone-based station check-ins, station prompts, weekly recaps and after-trip notes. Access to Today grants access to history from all opted-in profiles on this installation.
 
-The local state keeps the 100 newest alerts across all profiles for up to 30 days from creation. Turning history off stops new rows and hides existing rows. Removing a profile also hides its rows. Rows can reappear if you enable history again for the same profile ID before they expire. History is read-only on Today. The companion removes expired rows from its saved state while it runs. Backups can retain older copies.
+The local state keeps the 100 newest alerts across all profiles for up to 30 days from creation. Turning history off stops new rows and hides existing rows. Removing a profile also hides its rows. Rows can reappear if you enable history again for the same profile ID before they expire. Filter the read-only history by profile, alert category or the date a channel accepted the alert. Filters use the saved history and make no NS requests. The companion removes expired rows from its saved state while it runs. Backups can retain older copies.
 
 ### Save one journey to a calendar
 

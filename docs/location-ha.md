@@ -34,6 +34,7 @@ location:
 - `station_radius_m` is the size of every station zone in metres. The default is 150.
 - `wifi` (optional) maps the roles `home` and `work` to a tracker that is `home` while the phone is on that place's Wi-Fi, for example a UniFi or router `device_tracker`. Such trackers say `not_home` a few minutes late, which is why a connected Wi-Fi proves a miss only when your `buffer_min` is longer than 5 minutes. The Companion app's SSID sensor is not a tracker and does not work here.
 - `activity_entity` (optional) is the phone's motion activity sensor, for example the Companion app's activity sensor on iOS (`Stationary`, `Walking`, `Automotive`) or on Android (`still`, `on_foot`, `in_vehicle`). It needs motion access, see [Phone setup](#phone-setup).
+- Motion helps when it is recent and agrees with the other evidence. The companion ignores low-confidence reports and a rest report that also indicates vehicle motion.
 - The speed of a fix is read from the tracker's `speed` attribute (metres per second), or for a `person` from its source tracker. Nothing needs to be set for it.
 
 ## Phone setup

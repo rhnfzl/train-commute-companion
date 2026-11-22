@@ -60,6 +60,20 @@ async def test_tools_return_the_readout(served, sock):
             assert result.structured_content["text"].endswith("Data: NS")
 
 
+def test_status_separates_snapshot_time_from_the_checked_journey():
+    from app_rig import occ, view
+    from tcc_app.commands import status_tool
+
+    snapshot = view(occ(), occ("p2"), occ(resolved=True), names=("office_a", "office_b"))
+    status = status_tool(snapshot, True, "p1")
+    assert status["as_of"] == at("07:55").isoformat()
+    (journey,) = status["journeys"]
+    assert journey["timetable_last_ok_at"] == at("07:50").isoformat()
+    assert journey["timetable_health"] == "healthy"
+    assert journey["direction"] == "outbound"
+    assert journey["legs"][0]["board"] == "AAA"
+
+
 async def test_tool_says_the_app_is_not_running(sock):  # Review Focus 1
     for stale in (False, True):
         if stale:

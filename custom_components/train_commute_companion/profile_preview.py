@@ -8,14 +8,15 @@ from datetime import datetime, timedelta
 from homeassistant.core import HomeAssistant
 
 from train_commute_companion.advice import is_unrideable
+from train_commute_companion.arrival import ArrivalChoice
 from train_commute_companion.calendar import TZ, to_utc
-from train_commute_companion.classify import current_connection, evidence
+from train_commute_companion.classify import current_connection, evidence, expected_departure
 from train_commute_companion.location import distance_m, number
 from train_commute_companion.lookahead_probe import COMMUTE_DATE_SEARCH_DAYS
 from train_commute_companion.match import current_arrival, planned_departure, usual_connection
 from train_commute_companion.model import DatedSchedule, Direction, Profile, Stations
 from train_commute_companion.providers.base import ProviderAnswer, Query
-from train_commute_companion.replacement import max_transfers
+from train_commute_companion.replacement import Catchability, choose_replacement, max_transfers
 from train_commute_companion.schedule import dated_schedule
 from train_commute_companion.state import PollFailure
 
@@ -54,7 +55,12 @@ def _upcoming(profile: Profile, start: datetime) -> Iterator[tuple[datetime, Dat
             first = to_utc(schedule.first_departure)
             if schedule.last_departure is not None:
                 first = max(first, now)
-                if first <= to_utc(schedule.last_departure):
+                latest = to_utc(schedule.last_departure)
+                if schedule.arrival_deadline is not None:
+                    buffer = profile.journey(direction).buffer_min
+                    first = max(first, now + timedelta(minutes=buffer))
+                    latest = min(latest, schedule.arrival_deadline)
+                if first <= latest:
                     yield first, schedule
             elif first >= now:
                 yield first, schedule
@@ -74,8 +80,16 @@ async def trip_preview(
     direction = schedule.key.direction
     origin, destination = profile.origin(direction), profile.destination(direction)
     transfers = profile.journey(direction).transfers
-    via = next(iter(transfers), None) if schedule.mode == "fixed" else None
-    query = Query.for_profile(profile, origin, destination, first.astimezone(TZ), via)
+    deadline = schedule.arrival_deadline
+    via = next(iter(transfers), None) if schedule.mode == "fixed" or deadline is not None else None
+    query = Query.for_profile(
+        profile,
+        origin,
+        destination,
+        (deadline or first).astimezone(TZ),
+        via,
+        search_for_arrival=deadline is not None,
+    )
     try:
         async with asyncio.timeout(PREVIEW_TIMEOUT_S):
             answer = await fetch(query)
@@ -91,24 +105,43 @@ async def trip_preview(
     ):
         return None
     profile_min = dict(profile.transfer_min)
-    deadline = schedule.arrival_deadline
     usable = tuple(
         c
         for c in answer.connections
-        if c.origin == origin
+        if c.legs
+        and c.origin == origin
         and c.destination == destination
         and c.status not in ("CANCELLED", "MAINTENANCE")
         and all(leg.reachable is not False for leg in c.legs)
         and not is_unrideable(c, answer, profile_min)
-        and (
-            deadline is None
-            or (arrival := c.legs[-1].alight.planned_arrival) is not None
-            and to_utc(arrival) <= deadline
-            and current_arrival(answer, c) <= deadline
-        )
     )
     if schedule.last_departure is None:
         trip = usual_connection(replace(answer, connections=usable), origin, first, transfers, None)
+    elif deadline is not None:
+        choice = ArrivalChoice(
+            deadline,
+            to_utc(schedule.first_departure),
+            to_utc(schedule.last_departure),
+            schedule.prefer_direct_min,
+            transfers,
+            stay_capped=schedule.stay_capped,
+        )
+        trip, _ = choose_replacement(
+            answer,
+            candidates=usable,
+            usual_remaining=None,
+            arrival=choice,
+            allow_planned=True,
+            board_station=origin,
+            destination=destination,
+            catch=Catchability(
+                max(first, to_utc(now()) + timedelta(minutes=profile.journey(direction).buffer_min))
+            ),
+            kept_incoming=None,
+            done_transfers=0,
+            max_transfers=max_transfers(transfers),
+            profile_min=profile_min,
+        )
     else:
         latest = to_utc(schedule.last_departure)
         # A dated timetable can have planned times only. Apply the shared rideability checks
@@ -125,9 +158,13 @@ async def trip_preview(
         )
     if trip is None:
         return None
-    board = current_connection(evidence(answer), trip).legs[0].board
+    current = current_connection(evidence(answer), trip)
+    board = current.legs[0].board
+    departure = (
+        expected_departure(current) if deadline is not None else planned_departure(trip.legs[0])
+    )
     return {
-        "departure": planned_departure(trip.legs[0]).astimezone(TZ).strftime("%Y-%m-%d %H:%M"),
+        "departure": departure.astimezone(TZ).strftime("%Y-%m-%d %H:%M"),
         "platform": board.actual_track or board.planned_track or "?",
         "route": " → ".join(
             stations.name(code) for code in (origin, *trip.transfer_stations, destination)

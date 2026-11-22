@@ -207,6 +207,7 @@ def test_at_rest_activity_needs_the_grace_and_a_report_after_departure():  # Q12
     assert told("08:15", "08:13")
     assert not told("08:14:59", "08:13")  # inside the grace
     assert not told("08:15", "08:11")  # reported before the departure
+    assert not told("08:15", "08:16")  # activity appears newer than the fix
     assert not told("08:20", "08:14:59")  # older than 5 min
 
 

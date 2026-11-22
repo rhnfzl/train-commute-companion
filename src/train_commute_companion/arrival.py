@@ -56,7 +56,7 @@ class ArrivalChoice:
     before: datetime | None = None
     stay_capped: bool = False
 
-    def accepts(self, c: Connection) -> bool:
+    def accepts(self, c: Connection, *, allow_planned: bool = False) -> bool:
         dep = expected_departure(c)
         planned_dep = to_utc(c.legs[0].train.planned_departure)
         if (
@@ -66,17 +66,21 @@ class ArrivalChoice:
             or (self.before is not None and max(dep, planned_dep) >= self.before)
         ):
             return False
-        return self.accepts_arrival(c.legs[-1].alight, c.transfer_stations)
+        return self.accepts_arrival(
+            c.legs[-1].alight, c.transfer_stations, allow_planned=allow_planned
+        )
 
-    def accepts_arrival(self, stop: Stop, transfers: tuple[str, ...] = ()) -> bool:
+    def accepts_arrival(
+        self, stop: Stop, transfers: tuple[str, ...] = (), *, allow_planned: bool = False
+    ) -> bool:
         if self.required and (*self.taken, *transfers) != self.required:
             return False
-        reported = present(stop.arrival).value if is_reported(stop.arrival) else None
+        reported = _preview_arrival(stop, allow_planned=allow_planned)
         return arrival_status(self.deadline, stop.planned_arrival, reported) == "on_target"
 
-    def pick(self, good: Sequence[Connection]) -> Connection | None:
+    def pick(self, good: Sequence[Connection], *, allow_planned: bool = False) -> Connection | None:
         def rank(c: Connection) -> tuple[datetime, int, float]:
-            arrival = present(present(c.legs[-1].alight.arrival).value)
+            arrival = present(_preview_arrival(c.legs[-1].alight, allow_planned=allow_planned))
             return expected_departure(c), -len(c.legs), -to_utc(arrival).timestamp()
 
         latest = max(good, key=rank, default=None)
@@ -88,3 +92,9 @@ class ArrivalChoice:
             key=rank,
             default=latest,
         )
+
+
+def _preview_arrival(stop: Stop, *, allow_planned: bool) -> datetime | None:
+    if is_reported(stop.arrival):
+        return present(stop.arrival).value
+    return stop.planned_arrival if allow_planned else None

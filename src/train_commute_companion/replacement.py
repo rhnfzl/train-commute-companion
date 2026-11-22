@@ -168,8 +168,14 @@ def choose_replacement(
         if check_good(c, answer, allow_planned=allow_planned, known_first=known_first, **kw).ok
     ]
     if arrival is not None:
-        eligible = [cur[id(c)] for c in good if arrival.accepts(cur[id(c)])]
-        choice = next(iter(eligible), None) if earliest else arrival.pick(eligible)
+        eligible = [
+            cur[id(c)] for c in good if arrival.accepts(cur[id(c)], allow_planned=allow_planned)
+        ]
+        choice = (
+            next(iter(eligible), None)
+            if earliest
+            else arrival.pick(eligible, allow_planned=allow_planned)
+        )
         return choice, "new_route" if choice is not None else "none"
     for c in good:
         if usual_remaining is not None and matches_pattern(c, usual_remaining):

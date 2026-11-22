@@ -46,7 +46,9 @@ TODAY_HEADERS = (
     "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; "
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
-TODAY_PAGE_HEADERS = TODAY_HEADERS + "; manifest-src 'self'; img-src 'self'"
+TODAY_PAGE_HEADERS = TODAY_HEADERS.replace("form-action 'none'", "form-action 'self'") + (
+    "; manifest-src 'self'; img-src 'self'"
+)
 
 
 def health_report(
@@ -104,7 +106,7 @@ class _Refused(Exception):
 
 
 async def _read(reader: asyncio.StreamReader) -> tuple[str, str, dict[str, str], bytes]:
-    """Method, path without the query string, headers (lower-case names), body. Raises
+    """Method, request target, headers (lower-case names), body. Raises
     `_Refused` with 400 or 413."""
     try:
         head = await reader.readuntil(b"\r\n\r\n")
@@ -131,7 +133,7 @@ async def _read(reader: asyncio.StreamReader) -> tuple[str, str, dict[str, str],
         body = await reader.readexactly(int(length))
     except asyncio.IncompleteReadError:
         raise _Refused(400) from None
-    return words[0], words[1].split("?", 1)[0], headers, body
+    return words[0], words[1], headers, body
 
 
 def _authorized(header: str | None, secret: str) -> bool:
@@ -203,10 +205,13 @@ async def start_web(
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             try:
-                method, path, headers, body = await asyncio.wait_for(_read(reader), READ_TIMEOUT_S)
+                method, target, headers, body = await asyncio.wait_for(
+                    _read(reader), READ_TIMEOUT_S
+                )
             except _Refused as e:
                 writer.write(_response(e.status))
             else:
+                path, _, query = target.partition("?")
                 if method in ("GET", "HEAD") and path.startswith(CALENDAR_SUBSCRIPTION):
                     supplied = path.removeprefix(CALENDAR_SUBSCRIPTION)
                     if (
@@ -269,6 +274,7 @@ async def start_web(
                                         confirmed,
                                         paused=path == PAUSED_PATH,
                                         alerts=recent_alerts(),
+                                        history_query=query,
                                     ).encode(),
                                     "text/html; charset=utf-8",
                                     TODAY_PAGE_HEADERS,

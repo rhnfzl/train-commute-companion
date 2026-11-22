@@ -4,7 +4,7 @@ Data: NS. You bring your own NS API key; none is bundled. This integration follo
 
 It needs Home Assistant 2026.10 or newer and the Home Assistant companion app on your phone.
 
-Setup forms and their choices use Dutch when your Home Assistant interface language is Dutch. Train alerts and validation reports still use English.
+Setup forms use Dutch when your Home Assistant interface language is Dutch. Set the alert language for each profile in the [profile editor](profile-editor.md). Validation reports use English.
 
 ## Install
 

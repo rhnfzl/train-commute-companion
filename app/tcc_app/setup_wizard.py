@@ -5,7 +5,7 @@ import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from secrets import token_urlsafe
 from tempfile import NamedTemporaryFile
@@ -15,10 +15,12 @@ from uuid import uuid4
 import yaml
 
 from train_commute_companion.advice import is_unrideable
+from train_commute_companion.arrival import ArrivalChoice
 from train_commute_companion.calendar import TZ, WEEKDAYS, is_commute_day, resolve_local, to_utc
-from train_commute_companion.model import Connection, Stations
+from train_commute_companion.model import DEFAULT_PREFER_DIRECT_MIN, Connection, Stations
 from train_commute_companion.profile import check_lines
 from train_commute_companion.providers.base import ProviderAnswer, Query
+from train_commute_companion.replacement import Catchability, choose_replacement, max_transfers
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.transfer import FALLBACK_MIN
 
@@ -27,6 +29,7 @@ from .telegram import callback_data
 LIFETIME = timedelta(minutes=15)
 MANUAL = "This profile file is already in use. Edit it on the Docker host."
 OUTBOUND_BUFFER, RETURN_BUFFER = 10, 5
+DEPARTURE_WINDOW_MIN = 120
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +47,8 @@ class Draft:
     days: set[int] = field(default_factory=lambda: {1, 2, 3, 4, 5})
     out: time = time(8)
     back: time = time(17)
+    arrive_by: bool = False
+    walk_after_min: int = 0
     lead_out: int | None = None
     lead_back: int | None = None
     delay_min: int = 3
@@ -57,22 +62,64 @@ def _departure(trip: Connection) -> str:
     return trip.legs[0].train.planned_departure.astimezone(TZ).strftime("%H:%M")
 
 
-def _pick(answer: ProviderAnswer) -> Connection | None:
+def _rideable(answer: ProviderAnswer) -> tuple[Connection, ...]:
     q = answer.query
-    start = to_utc(q.at)
-    eligible = (
+    return tuple(
         trip
         for trip in answer.connections
         if trip.legs
         and trip.origin == q.origin
         and trip.destination == q.destination
-        and trip.legs[0].train.planned_departure.astimezone(TZ).date() == q.at.astimezone(TZ).date()
-        and start <= to_utc(trip.legs[0].train.planned_departure) < start + timedelta(hours=1)
+        and trip.status not in ("CANCELLED", "MAINTENANCE")
+        and all(leg.reachable is not False for leg in trip.legs)
         and not is_unrideable(trip, answer, dict.fromkeys(trip.transfer_stations, FALLBACK_MIN))
     )
+
+
+def _pick(answer: ProviderAnswer) -> Connection | None:
+    start = to_utc(answer.query.at)
     return min(
-        eligible, key=lambda trip: to_utc(trip.legs[0].train.planned_departure), default=None
+        (
+            trip
+            for trip in _rideable(answer)
+            if start <= to_utc(trip.legs[0].train.planned_departure) < start + timedelta(hours=1)
+            and trip.legs[0].train.planned_departure.astimezone(TZ).date()
+            == answer.query.at.astimezone(TZ).date()
+        ),
+        key=lambda trip: to_utc(trip.legs[0].train.planned_departure),
+        default=None,
     )
+
+
+def _window_start(target: time, walk: int) -> time:
+    minute = max(0, target.hour * 60 + target.minute - walk - DEPARTURE_WINDOW_MIN)
+    return time(minute // 60, minute % 60)
+
+
+def _pick_arrival(answer: ProviderAnswer, first: datetime, deadline: datetime) -> Connection | None:
+    choice = ArrivalChoice(deadline, to_utc(first), deadline, DEFAULT_PREFER_DIRECT_MIN, ())
+    candidates = tuple(
+        trip
+        for trip in _rideable(answer)
+        if trip.legs[0].train.planned_departure.astimezone(TZ).date() == first.astimezone(TZ).date()
+    )
+    trip, _ = choose_replacement(
+        answer,
+        candidates=candidates,
+        usual_remaining=None,
+        arrival=choice,
+        allow_planned=True,
+        board_station=answer.query.origin,
+        destination=answer.query.destination,
+        catch=Catchability(to_utc(first)),
+        kept_incoming=None,
+        done_transfers=0,
+        max_transfers=max_transfers(()),
+        profile_min=dict.fromkeys(
+            (station for trip in candidates for station in trip.transfer_stations), FALLBACK_MIN
+        ),
+    )
+    return trip
 
 
 def _write_new(path: Path, content: str) -> None:
@@ -105,6 +152,19 @@ def _document(draft: Draft, out: Connection, back: Connection, today: date, firs
         }
         if lead is not None:
             trips[label]["active_lead_min"] = lead
+    if draft.arrive_by:
+        trips["outbound"].pop("first_train")
+        trips["outbound"].update(
+            mode="window",
+            pick="arrive_by",
+            window=[
+                _window_start(draft.out, draft.walk_after_min).strftime("%H:%M"),
+                draft.out.strftime("%H:%M"),
+            ],
+            arrive_by=draft.out.strftime("%H:%M"),
+            walk_after_min=draft.walk_after_min,
+            transfers=[],
+        )
     return yaml.safe_dump(
         {
             "profiles": [
@@ -234,7 +294,12 @@ class SetupWizard:
         ]
         return self._screen(
             "Choose your commute days. Or try the sample schedule, weekdays at 08:00 and 17:00.",
-            [*choices, ("Set times", "next"), ("Make this mine", "sample")],
+            [
+                *choices,
+                ("Arrive by a set time", "arrive"),
+                ("Set times by departure", "next"),
+                ("Make this mine", "sample"),
+            ],
             done=done,
         )
 
@@ -243,6 +308,15 @@ class SetupWizard:
         return self._screen(
             f"Choose the {'outbound' if direction == 'out' else 'return'} departure or type HH:MM.",
             [(t, t) for t in options],
+            done=True,
+        )
+
+    def _outbound_time(self, draft: Draft) -> SetupReply:
+        if not draft.arrive_by:
+            return self._time("out")
+        return self._screen(
+            "When do you need to arrive at work? Choose a time or type HH:MM.",
+            [(t, t) for t in ("08:00", "09:00", "10:00")],
             done=True,
         )
 
@@ -257,28 +331,49 @@ class SetupWizard:
             if value == "sample":
                 draft.days = {1, 2, 3, 4, 5}
                 return await self._probe(draft)
-            if value == "next":
+            if value in {"next", "arrive"}:
                 if not draft.days:
                     return SetupReply("Choose at least one commute day.")
                 draft.step = "out"
-                return self._time("out")
+                draft.arrive_by = value == "arrive"
+                return self._outbound_time(draft)
             draft.days.symmetric_difference_update({int(value)})
             return self._days(draft, done=True)
         if draft.step in {"out", "back"}:
             if re.fullmatch(r"(?:0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]", value) is None:
-                return SetupReply("Type a departure time in HH:MM, for example 08:15.")
+                return SetupReply("Type a time in HH:MM, for example 08:15.")
             when = time.fromisoformat(value)
             if draft.step == "out":
-                draft.out, draft.step = when, "back"
+                if draft.arrive_by and when == time.min:
+                    return SetupReply("Choose an arrival after midnight for a same-day commute.")
+                draft.out = when
+                if draft.arrive_by:
+                    draft.step = "walk"
+                    return self._screen(
+                        "How many minutes do you walk from the station to work?",
+                        [(f"{n} minutes", str(n)) for n in (0, 5, 10, 15)],
+                        done=True,
+                    )
+                draft.step = "back"
                 return self._time("back")
             if when <= draft.out:
                 return SetupReply("Choose a return time after your outbound time.")
             draft.back = when
             return await self._probe(draft)
+        if draft.step == "walk":
+            if (
+                not re.fullmatch(r"[0-9]{1,4}", value)
+                or int(value) >= draft.out.hour * 60 + draft.out.minute
+            ):
+                return SetupReply(
+                    "Type a whole number of minutes that leaves time for a train that day."
+                )
+            draft.walk_after_min, draft.step = int(value), "back"
+            return self._time("back")
         if draft.step == "retry" and clicked:
             if value == "times":
                 draft.step = "out"
-                return self._time("out")
+                return self._outbound_time(draft)
             return await self._probe(draft)
         if draft.step == "tune" and not clicked:
             return self._tune(draft, value)
@@ -300,12 +395,31 @@ class SetupWizard:
         day = today + timedelta(days=1)
         while not is_commute_day(day, days, frozenset(), True):
             day += timedelta(days=1)
-        answers = await self._rt.preview_setup(
-            Query(draft.home, draft.work, resolve_local(day, draft.out, edge="start")),
-            Query(draft.work, draft.home, resolve_local(day, draft.back, edge="start")),
+        deadline = to_utc(resolve_local(day, draft.out, edge="end")) - timedelta(
+            minutes=draft.walk_after_min
         )
-        out, back = (_pick(a) for a in answers) if len(answers) == 2 else (None, None)
+        first = resolve_local(day, _window_start(draft.out, draft.walk_after_min), edge="start")
+        outbound = Query(
+            draft.home,
+            draft.work,
+            deadline.astimezone(TZ)
+            if draft.arrive_by
+            else resolve_local(day, draft.out, edge="start"),
+            search_for_arrival=draft.arrive_by,
+        )
+        returning = Query(draft.work, draft.home, resolve_local(day, draft.back, edge="start"))
+        answers = await self._rt.preview_setup(outbound, returning)
+        out = back = None
+        if len(answers) == 2 and (answers[0].query, answers[1].query) == (outbound, returning):
+            out = (
+                _pick_arrival(answers[0], first, deadline) if draft.arrive_by else _pick(answers[0])
+            )
+            back = _pick(answers[1])
         if out is None or back is None:
+            if draft.arrive_by:
+                return self._retry(
+                    draft, "NS did not return a usable train for both trips at these times."
+                )
             return self._retry(
                 draft,
                 "NS did not return a usable train for both trips within an hour of your times.",
@@ -362,6 +476,10 @@ class SetupWizard:
             return SetupReply("Check your setup settings.\n" + "\n".join(problems))
         draft.document, draft.step = text, "review"
         lines = [f"Next commute: {draft.day:%a %d %b}"]
+        if draft.arrive_by:
+            lines.append(
+                f"Arrive by {draft.out:%H:%M}, including {draft.walk_after_min} minutes of walking."
+            )
         for trip in (out, back):
             board = trip.legs[0].board
             platform = board.actual_track or board.planned_track
