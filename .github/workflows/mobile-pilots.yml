@@ -34,7 +34,7 @@ jobs:
 
   android:
     name: Android pilot
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: mobile/android
@@ -44,5 +44,4 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
       - run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
