@@ -99,6 +99,20 @@ def build_tools(read: Dispatch, travel: Dispatch | None = None) -> MCPServer:
 def add_travel_tools(server: MCPServer, dispatch: Dispatch) -> None:
     @server.tool(
         description=(
+            "Check up to three upcoming train trips between two NS stations. Use station names "
+            "or codes. This contacts NS and reports when it checked. It does not save or change "
+            "any travel plan. Make one check per request and wait at least 30 seconds before retrying."
+        ),
+        annotations=READ_ONLY.model_copy(update={"open_world_hint": True}),
+        structured_output=True,
+    )
+    async def check_trip(origin: str, destination: str) -> dict[str, Any]:
+        return await _call(
+            dispatch, {"tool": "check_trip", "origin": origin, "destination": destination}
+        )
+
+    @server.tool(
+        description=(
             "List regular commute profiles and saved one-off, temporary and ongoing travel plans. "
             "Use profile_id for a regular commute or plan_id for a saved plan in get_next_connections."
         ),
