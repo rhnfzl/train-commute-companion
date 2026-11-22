@@ -1,0 +1,10 @@
+<resources>
+    <style name="PilotTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorAccent">#176456</item>
+        <item name="android:windowBackground">#EFF4F2</item>
+        <item name="android:statusBarColor">#EFF4F2</item>
+        <item name="android:navigationBarColor">#EFF4F2</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

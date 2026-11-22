@@ -1,0 +1,56 @@
+name: TrainCommute
+options:
+  minimumXcodeGenVersion: 2.44.0
+  deploymentTarget:
+    iOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+targets:
+  TrainCommute:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - Sources/CommuteCore
+      - Shared
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Train Commute
+        LSRequiresIPhoneOS: true
+        NSAlarmKitUsageDescription: Allow Train Commute to schedule the wake alarms you set.
+        NSLocalNetworkUsageDescription: Connect to your private Train Commute Companion to read your timetable.
+        NSSupportsLiveActivities: true
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rhnfzl.TrainCommuteCompanion
+    dependencies:
+      - target: CommuteWidgets
+        embed: true
+  CommuteWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Widgets
+      - Shared
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Train Commute
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rhnfzl.TrainCommuteCompanion.Widgets
+        APPLICATION_EXTENSION_API_ONLY: true
+schemes:
+  TrainCommute:
+    build:
+      targets:
+        TrainCommute: all
