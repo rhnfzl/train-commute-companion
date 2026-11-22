@@ -27,6 +27,7 @@ from train_commute_companion.calendar import Clock, SystemClock
 from train_commute_companion.calendar_export import calendar_feed
 from train_commute_companion.email import EmailPoster, EmailSettings
 from train_commute_companion.home_assistant_bridge import dispatch as dispatch_home_assistant
+from train_commute_companion.messages import Refused
 from train_commute_companion.model import present
 from train_commute_companion.providers.base import Provider
 from train_commute_companion.providers.ns import NsProvider
@@ -336,7 +337,10 @@ def build(
     )
     ha_delivery = (
         HaDelivery(
-            s.home_assistant_delivery, present(s.home_assistant_token), ha_client or client, notifier
+            s.home_assistant_delivery,
+            present(s.home_assistant_token),
+            ha_client or client,
+            notifier,
         )
         if s.home_assistant_delivery is not None
         else None
@@ -418,6 +422,16 @@ def mcp_answer(app: App) -> Callable[[object], dict[str, Any]]:
 async def dispatch_mcp(app: App, request: dict[str, Any], token: str | None) -> dict[str, Any]:
     tool = request.get("tool")
     actions = app.travel_actions
+    if tool == "check_trip":
+        if actions is None or actions.agent(token) is None:
+            return {"status": "denied", "text": "Use a named agent token to check a train trip."}
+        origin, destination = request.get("origin"), request.get("destination")
+        if not isinstance(origin, str) or not isinstance(destination, str):
+            return {"status": "invalid", "text": "Enter two station names or NS codes."}
+        result = await app.rt.check_trip(origin, destination)
+        if isinstance(result, Refused):
+            return {"status": result.kind.name.lower(), "text": result.text}
+        return result
     if (
         tool in ("list_travel_plans", "get_next_connections")
         and actions is not None
