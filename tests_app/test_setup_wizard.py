@@ -9,7 +9,7 @@ from runtime_rig import FakeClock, Provider, StationsProvider, at, usual_on
 from tcc_app.bot import ShellState, save_state
 from tcc_app.main import Settings, build
 
-from train_commute_companion.model import Direction, Stations
+from train_commute_companion.model import Direction, Provenance, Stations
 
 
 @pytest.fixture
@@ -109,6 +109,42 @@ async def test_confirmed_private_claim_can_save_a_checked_preview(setup):
     assert not app.bot.confirmed
     assert len(provider.calls) == 2
     assert telegram.edits[-1]["reply_markup"] == {"inline_keyboard": []}
+
+
+async def test_arrival_setup_previews_and_saves_the_same_window(setup):
+    app, provider, telegram, path, send, tap = setup
+    day = app.rt.now().date() + timedelta(days=1)
+    provider.world.extend(
+        make_connection([leg])
+        for leg in (
+            make_leg(
+                "AAA", "RTD", "08:00", "08:48", number="101", day=day, provenance=Provenance.PLANNED
+            ),
+            make_leg("AAA", "RTD", "08:15", "08:48", number="102", day=day, delay_arr=4),
+            make_leg("AAA", "RTD", "08:21", "08:49", number="103", day=day, cancelled=True),
+        )
+    )
+    await draft(send, tap)
+    await tap("Arrive by a set time")
+    await send("00:00")
+    assert "Choose an arrival after midnight" in telegram.sent[-1]["text"]
+    await send("09:00")
+    await tap("10 minutes")
+    await send("17:00")
+    preview = telegram.sent[-1]["text"]
+    assert "Arrive by 09:00, including 10 minutes" in preview
+    assert "08:00 AAA to RTD" in preview and "08:15" not in preview
+    assert not path.exists()
+    outbound, returning = provider.calls
+    assert outbound.search_for_arrival and outbound.at.strftime("%H:%M") == "08:50"
+    assert not returning.search_for_arrival
+    await tap("Save commute")
+    assert app.rt.config is not None
+    journey = app.rt.config.profiles[0].journey(Direction.OUTBOUND)
+    assert journey.pick == "arrive_by" and not journey.first_train_set
+    assert journey.arrive_by.strftime("%H:%M") == "09:00"
+    assert journey.walk_after_min == 10 and not journey.transfers
+    assert [when.strftime("%H:%M") for when in journey.window] == ["06:50", "09:00"]
 
 
 async def test_setup_cannot_reuse_buttons_or_replace_a_file_created_after_preview(setup):

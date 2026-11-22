@@ -475,10 +475,39 @@ def _name(view: RuntimeView, profile_id: str) -> str:
 
 
 def status_tool(view: RuntimeView, confirmed: bool, profile_id: str) -> dict[str, Any]:
+    scoped = view_for_profile(view, profile_id)
     return {
         "profile": profile_id,
         "name": display_name(_name(view, profile_id)),
-        "text": render_status(view_for_profile(view, profile_id), confirmed),
+        "as_of": scoped.at.isoformat(),
+        "journeys": [_status_journey(o, scoped.at) for o in scoped.occurrences if not o.resolved],
+        "text": render_status(scoped, confirmed),
+    }
+
+
+def _board_status(occurrence: OccurrenceView) -> dict[str, Any]:
+    return {
+        "timetable_last_ok_at": encode(occurrence.health.last_ok_at),
+        "timetable_health": occurrence.health.phase.value,
+    }
+
+
+def _status_journey(occurrence: OccurrenceView, at: datetime) -> dict[str, Any]:
+    o = occurrence
+    recovering = _recovery_active(o)
+    return {
+        "direction": o.key.direction.value,
+        "service_date": o.key.service_date.isoformat(),
+        "state": "recovery_active" if recovering else o.direction_state.value,
+        "not_travelling": o.not_travelling,
+        **_board_status(o),
+        "legs": [] if recovering else encode(o.legs),
+        "original_legs": encode(o.legs) if recovering else [],
+        "selected_recovery": o.selected_recovery.fields(at) if o.selected_recovery else None,
+        "leave_by": None if recovering else encode(o.leave_by),
+        "arrive_by": encode(o.arrive_by),
+        "station_arrival_deadline": encode(o.station_arrival_deadline),
+        "arrival_target_status": o.arrival_target_status,
     }
 
 
@@ -525,6 +554,7 @@ def connections_tool(
             "service_date": o.key.service_date.isoformat(),
             "state": "recovery_active" if _recovery_active(o) else o.direction_state.value,
             "original_train_state": o.direction_state.value,
+            **_board_status(o),
             "next_good": None
             if o.next_good is None or _recovery_active(o)
             else _connection(o.next_good),
@@ -535,7 +565,7 @@ def connections_tool(
             else o.selected_recovery.fields(v.at),
             "train_context": None if o.train_context is None else snapshot_payload(o.train_context),
             "weather": [{**encode(w), "text": weather_text(w, language)} for w in o.weather],
-            "leave_by": encode(o.leave_by),
+            "leave_by": None if _recovery_active(o) else encode(o.leave_by),
             "weather_allowance": encode(o.weather_allowance),
         }
         for o in occs

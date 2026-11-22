@@ -48,6 +48,30 @@ class TrackerPhase(StrEnum):
     TRACKING = "tracking"
 
 
+def _trusted_activity(state: State) -> bool:
+    attrs = {key.casefold(): value for key, value in state.attributes.items()}
+    confidence = attrs.get("confidence")
+    if isinstance(confidence, str) and confidence.casefold() == "low":
+        return False
+    activity = state.state.casefold()
+    android_confidence = number(attrs.get(activity))
+    if android_confidence is not None and not 50 <= android_confidence <= 100:
+        return False
+    # iOS can report stationary and automotive at the same time, for example on a stopped train.
+    types = attrs.get("types")
+    if (
+        activity in ("stationary", "walking")
+        and isinstance(types, (tuple, list))
+        and any(isinstance(kind, str) and kind.casefold() == "automotive" for kind in types)
+    ):
+        return False
+    if activity in ("still", "on_foot", "walking"):
+        vehicle = number(attrs.get("in_vehicle"))
+        if vehicle is not None and 50 <= vehicle <= 100:
+            return False
+    return True
+
+
 def _fix(state: State) -> tuple[float, float] | None:
     """The coordinates of a state; None for unavailable, unknown or a tracker with no GPS, and
     for a malformed accuracy: that is not "accuracy unknown" (a null is), the fix is not trusted."""
@@ -90,6 +114,7 @@ def evidence(
         st is not None
         and st.state not in ("unavailable", "unknown")
         and st.last_reported >= since + ACTIVITY_FRESH
+        and _trusted_activity(st)
     ):
         activity, activity_at = st.state, st.last_reported
     wifi = None

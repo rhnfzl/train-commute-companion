@@ -193,6 +193,47 @@ async def test_only_authenticated_today_reads_and_escapes_alert_history():
     assert "Recent alerts" not in render(view(occ(), profiles=(profile,)), True, alerts=(row,))
 
 
+async def test_today_filters_only_visible_history_and_preserves_filters_on_refresh():
+    profiles, errors = parse_profiles(ONE_PROFILE, None)
+    assert not errors
+    first = replace(profiles[0], alerts=replace(profiles[0].alerts, alert_history=True))
+    second = replace(first, id="p2", name="Second traveller")
+    hidden = replace(first, id="p3", alerts=replace(first.alerts, alert_history=False))
+    snapshot = view(occ(), profiles=(first, second, hidden))
+    sent = at("07:46")
+    rows = (
+        SentAlert("1", first.id, EventKind.DELAYED, sent, sent, "target delay"),
+        SentAlert(
+            "2", first.id, EventKind.DELAYED, sent, sent.replace(day=sent.day - 1), "older delay"
+        ),
+        SentAlert("3", first.id, EventKind.CANCELLED, sent, sent, "other category"),
+        SentAlert("4", second.id, EventKind.DELAYED, sent, sent, "other traveller delay"),
+        SentAlert("5", hidden.id, EventKind.DELAYED, sent, sent, "disabled history delay"),
+    )
+    date = sent.date().isoformat()
+    query = f"profile={first.id}&category=delays&from={date}"
+    async with served(snapshot=snapshot, recent_alerts=lambda: rows) as (port, calls):
+        assert (await request(port, f"/today?{query}"))[0] == 401
+        assert calls == []
+        auth = "Bearer " + TOKEN
+        status, headers, body = await request(port, f"/today?{query}", auth)
+        html_query = query.replace("&", "&amp;")
+        assert status == 200 and "form-action 'self'" in headers["Content-Security-Policy"]
+        assert f'content="60; url=/today?{html_query}"' in body
+        assert f'href="/today/paused?{html_query}"' in body
+        assert "target delay" in body
+        for text in (
+            "older delay",
+            "other category",
+            "other traveller delay",
+            "disabled history delay",
+        ):
+            assert text not in body
+        _, _, body = await request(port, "/today/paused?category=platforms", auth)
+        assert "No alerts match these filters." in body
+        assert 'href="/today?category=platforms"' in body
+
+
 @pytest.mark.parametrize(
     "authorization",
     [

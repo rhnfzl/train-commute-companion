@@ -321,19 +321,34 @@ async def test_home_wifi_at_departure_is_an_immediate_miss(hass):  # Q12 rule 3a
     assert loud(missed[0])
 
 
-async def test_resting_phone_at_the_station_is_missed_three_minutes_after(hass):  # Q12 3b
+@pytest.mark.parametrize(
+    ("activity", "attrs", "proves_miss"),
+    [
+        ("Stationary", {}, True),
+        ("Stationary", {"confidence": "Low"}, False),
+        ("Stationary", {"Confidence": "Low", "Types": ["Stationary"]}, False),
+        ("Stationary", {"types": ["Stationary", "Automotive"]}, False),
+        ("Stationary", {"Confidence": "High", "Types": ["Stationary", "Automotive"]}, False),
+        ("still", {"still": 80, "in_vehicle": 10}, True),
+        ("still", {"still": 42}, False),
+        ("still", {"still": 80, "in_vehicle": 70}, False),
+    ],
+)
+async def test_resting_phone_at_the_station_is_missed_three_minutes_after(
+    hass, activity, attrs, proves_miss
+):
     h = await setup_tcc(hass, SIGNALS, now="08:00")
     set_person(hass, *FAR)
     await start_tracker(h)
     await drive(h, "08:05")
     set_person(hass, 52.0, 5.0)  # waits at AAA for the 08:12
     await drive(h, "08:14")
-    hass.states.async_set("sensor.phone_activity", "Stationary")  # reported after it left
+    hass.states.async_set("sensor.phone_activity", activity, attrs)  # reported after it left
     await drive(h, "08:15")
     set_person(hass, 52.00001, 5.0)
     await drive(h, "08:16")
     assert await spied(h) == [("AAA", "enter"), ("AAA", "report")]
-    assert any("missed" in c.data["message"] and loud(c) for c in h.pushes), texts(h)
+    assert any("missed" in c.data["message"] and loud(c) for c in h.pushes) == proves_miss, texts(h)
 
 
 async def test_fast_fix_after_departure_keeps_the_train(hass):  # Q12 rule 2
