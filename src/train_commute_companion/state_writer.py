@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, fields, replace
 from enum import Enum, StrEnum, auto
 from typing import Any
 
+from train_commute_companion.history import JourneyHistory
 from train_commute_companion.model import (
     EventKind,
     Obligation,
@@ -116,7 +117,6 @@ class _Delta:
                 continue
             current = st.lookahead.get(k)
             if current is not None:
-                # Delivery can have recorded acceptance while this run waited to be saved.
                 v = replace(
                     v,
                     adoption_receipts=merge_adoption_receipts(v, current),
@@ -143,6 +143,18 @@ def _prune(st: PersistedState) -> PersistedState:
     return st if snaps == st.config_snapshots else replace(st, config_snapshots=snaps)
 
 
+def _pending_archives(
+    durable: PersistedState,
+    history: Mapping[str, JourneyHistory],
+    remaining: Collection[str],
+) -> dict[str, JourneyHistory]:
+    return {
+        key: row
+        for key, row in history.items()
+        if key in durable.occurrences and key not in remaining and key not in durable.commute_history
+    }
+
+
 class WritePhase(StrEnum):
     DURABLE = "durable"
     PROPOSED = "proposed"
@@ -166,17 +178,10 @@ class _WriteJournal:
 
 
 class StateWriter:
-    """`st` is what everything runs from, read-only: the last written (or loaded) state, plus a
-    candidate proposed since the last commit. Only a commit decides a candidate's fate: written,
-    it is applied; failed, `st` falls back to the written state, which while writes fail only
-    gains what unwritten changes observed and told (poll records, the delivery ledger in
-    `_marks`), never their decisions. `_durable` is that written state as written. Pending until
-    one write lands: `_base` the newest change, retried by the watchdog (a poll's is recomputed
-    anyway); `_ops` the changes nothing recomputes (a user action, a look-ahead run, delivery
-    outcomes), replayed onto whatever is written next; `_held` their new alerts, held until recipient pins are durable
-    and judged on `_shadow` (the last state a write tried); `_gone` obligations finished
-    meanwhile; `_told` alerts sent from memory. `_notes`: `storage_failed`, which never uses the
-    store. `outbox`: the webhook copies a write takes along, which live apart from the state."""
+    """Apply commute decisions after saving them. Keep failed changes available for retry.
+
+    Observations can advance during an outage. Private alerts require a saved recipient.
+    """
 
     def __init__(
         self,
@@ -268,7 +273,7 @@ class StateWriter:
     def retry(self) -> None:
         """The waiting changes, written again."""
         if self._journal.base is not None:
-            self._write(self._journal.base, stage=False)
+            self._write(self._prepare(self._journal.base, self._st), stage=False)
 
     def undelivered(self) -> int:
         """Alerts with a failed send, written or not (rule 22)."""
@@ -286,7 +291,7 @@ class StateWriter:
         write landing during an earlier send may have written it, ended it or removed it."""
         for o in (*self._st.obligations, *self._journal.held.values(), *self._notes.values()):
             if o.id in self._journal.gone:
-                continue  # finished while the store was down (rule 22)
+                continue
             held = self._journal.held.get(o.id)
             current = (
                 held
@@ -315,11 +320,13 @@ class StateWriter:
         """Rule 22: writes the candidate `st` with every change still waiting."""
         st = self._prepare(st, self._st)
         self._st = st
-        self._write(
-            st,
-            keep=kind in (Change.ACTION, Change.LOOKAHEAD),
-            stage=kind in (Change.RECOMPUTED, Change.ACTION),
-        )
+        proposal = self._prepare(st, self._st)
+        change = _Delta(self._durable, proposal) if kind in (Change.ACTION, Change.LOOKAHEAD) else None
+        if change is not None:
+            for prior in self._journal.ops:
+                if isinstance(prior, _Delta):
+                    prior.supersede(change)
+        self._write(proposal, stage=kind in (Change.RECOMPUTED, Change.ACTION), op=change)
 
     def commit_strict(
         self,
@@ -373,41 +380,26 @@ class StateWriter:
         st = self._prepare(st, self._st)
         self._st = st
         self._journal.gone |= set(finished)
-        mem = set(self._journal.held) | set(
-            self._notes
-        )  # read before a landed write empties `_held`
-        if self._write(st, stage=False, op=outcome):
-            self._outbox.delivery_written(mem)
+        memory_ids = self._journal.held.keys() | self._notes.keys()
+        if self._write(self._prepare(st, self._st), stage=False, op=outcome):
+            self._outbox.delivery_written(memory_ids)
 
     def _write(
         self,
-        cand: PersistedState,
+        proposal: PersistedState,
         *,
-        keep: bool = False,
-        stage: bool = True,
+        stage: bool,
         op: Callable[[PersistedState], PersistedState] | None = None,
     ) -> bool:
-        """Rule 22: writes `cand` as one with every change still waiting; only once written is
-        it applied. A failed write leaves the last written state running and keeps the change:
-        as the newest to retry (`stage`), and when nothing recomputes it (`keep`, or its own
-        `op`) to replay onto whatever is written next. Its new alerts go from memory. A first
-        configuration runs anyway: nothing else could."""
-        cand = self._prepare(cand, self._st)
-        # only what this change did: restaging carries other waiting changes it must not replace
-        mine = _Delta(self._durable, cand) if op is None and keep else None
-        if self._journal.base is not None and cand is not self._journal.base:
-            cand = self._restage(self._durable, cand)  # what waits on other occurrences too
-        if mine is not None:
-            op = mine
-            for x in self._journal.ops:  # a newer action supersedes an older one (rule 22)
-                if isinstance(x, _Delta):
-                    x.supersede(mine)
+        staged = proposal
+        if self._journal.base is not None and proposal is not self._journal.base:
+            staged = self._restage(self._durable, proposal)
         try:
-            write = self._prepare(self._outbox.with_copies(self._compose(cand)), self._st)
+            write = self._prepare(self._outbox.with_copies(self._compose(staged)), self._st)
             write = self._prune(_prune(write))
             self._store.save(write)
         except StorageError as e:
-            self._pend(cand, stage, op)
+            self._pend(staged, stage, op)
             if self.store_ok:  # one loud storage_failed per outage, held in memory only
                 self.store_ok = False
                 log.error("store write failed: %s", e)
@@ -472,11 +464,11 @@ class StateWriter:
         base = self._durable
         if op is not None:
             self._journal.ops.append(op)
-        has_archive = any(
-            k in base.occurrences and k not in cand.occurrences
-            for k in cand.commute_history.keys() - base.commute_history.keys()
-        )
-        if stage or self._journal.base is None or has_archive:
+        if (
+            stage
+            or self._journal.base is None
+            or _pending_archives(base, cand.commute_history, cand.occurrences)
+        ):
             self._journal.base = self._restage(base, cand)
         known = {o.id for o in base.obligations}
         taken = {_held_id(o) for o in self._journal.held.values()} | self._journal.told
@@ -490,7 +482,7 @@ class StateWriter:
                 continue  # a recomputed alert already held or sent from memory is not again
             self._journal.held[o.id] = o
             taken.add(_held_id(o))
-        for k, x in self._st.occurrences.items():  # the newest ledger, computed on the marks
+        for k, x in self._st.occurrences.items():
             was = base.occurrences.get(k)
             if k in self._journal.marks or was is None or was.alert_keys != x.alert_keys:
                 self._journal.marks[k] = x.alert_keys
@@ -537,20 +529,15 @@ class StateWriter:
         for k in old.occurrences.keys() | cand.occurrences.keys():
             c, o, w = cand.occurrences.get(k), old.occurrences.get(k), base.occurrences.get(k)
             if c is None and w is not None:
-                continue  # ended by `cand`
+                continue
             if stale and w is not None and revs(o) != revs(w):
                 if c is not None:
-                    occs[k] = c  # computed on the written configuration
+                    occs[k] = c
             elif c is not None and (
                 w is None and o is None or w is not None and bare(c) != bare(w)
             ):
                 occs[k] = c
             elif o is not None:
                 occs[k] = o
-        # A pending archive must keep its row if its occurrence removal lands.
-        history = {
-            k: row
-            for k, row in old.commute_history.items()
-            if k in base.occurrences and k not in occs and k not in base.commute_history
-        }
+        history = _pending_archives(base, old.commute_history, occs)
         return replace(cand, occurrences=occs, commute_history={**history, **cand.commute_history})

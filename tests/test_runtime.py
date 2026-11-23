@@ -14,6 +14,7 @@ from runtime_rig import (
     PROFILE,
     PROFILES_DIR,
     USUAL,
+    InterruptedFileStore,
     Rig,
     at,
     bump_mtime,
@@ -52,7 +53,7 @@ from train_commute_companion.providers.base import (
 )
 from train_commute_companion.runtime import Runtime, fresh_state
 from train_commute_companion.state import BaselineHistory, LockSource
-from train_commute_companion.store import PersistedState, StorageError
+from train_commute_companion.store import JsonFileStore, PersistedState, StorageError
 
 
 async def test_same_station_profile_is_skipped_until_corrected(tmp_path, caplog):
@@ -872,19 +873,25 @@ async def test_choice_after_an_unwritten_skip_is_travelling(tmp_path):
 
 
 async def test_lookahead_written_after_a_failed_poll_keeps_an_unwritten_skip(tmp_path):
-    rig = await started(tmp_path)  # rule 22: a look-ahead write replaces no user action
-    rig.store.fail = True
+    rig = Rig(tmp_path)
+    path = tmp_path / "state.json"
+    store = rig.store = InterruptedFileStore(path)
+    await rig.restart()
+    await rig.rt.poll_once()
+
+    store.fail = True
     await rig.rt.act("p1", NotTravelling(None, False))
+    assert not rig.occ().not_travelling
     rig.clock.set("07:52")
     rig.provider.world = [make_connection([L1X, L2]), LATER]
-    await rig.rt.poll_once()  # fails too, staging a replacement journey
-    rig.store.fail = False
-    await rig.rt.lookahead_once()  # storage is back through a look-ahead write
-    assert rig.store.load().occurrences["p1|outbound|2026-10-27"].not_travelling
+    await rig.rt.poll_once()
+
+    store.fail = False
+    await rig.rt.lookahead_once()
     assert rig.occ().not_travelling
+    rig.store = JsonFileStore(path)
     await rig.restart()
     assert rig.occ().not_travelling
-
 
 async def _three_lookahead_days(rig: Rig, fail_third: bool) -> None:
     rig.provider.world = every_day()

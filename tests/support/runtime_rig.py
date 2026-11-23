@@ -29,7 +29,13 @@ from train_commute_companion.providers.base import (
 from train_commute_companion.providers.base import Provider as ProviderPort
 from train_commute_companion.runtime import Runtime
 from train_commute_companion.serde import dumps
-from train_commute_companion.store import VERSION, PersistedState, StorageError, read_state
+from train_commute_companion.store import (
+    VERSION,
+    JsonFileStore,
+    PersistedState,
+    StorageError,
+    read_state,
+)
 
 DAY = date(2026, 10, 27)  # a Tuesday
 
@@ -95,6 +101,15 @@ class MemoryStore:
         self.text = dumps(s)
         self.version = VERSION
         self.writes += 1
+
+
+class InterruptedFileStore(JsonFileStore):
+    fail = False
+
+    def save(self, state: PersistedState) -> None:
+        if self.fail:
+            raise StorageError("disk full")
+        super().save(state)
 
 
 class Notifier:
