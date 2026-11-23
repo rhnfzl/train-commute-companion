@@ -431,15 +431,17 @@ async def test_concurrent_sibling_taps_cannot_restore_used_buttons(app, monkeypa
     markup = status_buttons(app.rt.view())
     leaving, skip = (f"{tag}|p1|outbound|2026-10-27" for tag in ("l", "s"))
     entered, release = asyncio.Event(), asyncio.Event()
-    call = app.bot._api.call
+    handle_request = app.tg.handler
 
-    async def gated(method, params, **kwargs):
-        if method == "editMessageReplyMarkup" and not entered.is_set():
+    async def gated(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/editMessageReplyMarkup") and not entered.is_set():
             entered.set()
             await release.wait()
-        return await call(method, params, **kwargs)
+        return await handle_request(request)
 
-    monkeypatch.setattr(app.bot._api, "call", gated)
+    monkeypatch.setattr(app.tg, "handler", gated)
+    await app.bot.close()
+    app.bot = app.new_bot()
     first = asyncio.create_task(app.bot.handle(tap(leaving, markup=markup)))
     await asyncio.wait_for(entered.wait(), 5)
     second = asyncio.create_task(app.bot.handle(tap(skip, 2, markup=markup)))
