@@ -15,6 +15,7 @@ import httpx
 from train_commute_companion.model import AlertEvent, EventKind, Severity, alert_facts
 from train_commute_companion.navigation import MAP_LABELS
 from train_commute_companion.notify import NotificationPaused
+from train_commute_companion.retry_delay import retry_delay_seconds
 
 log = logging.getLogger(__name__)
 
@@ -65,9 +66,9 @@ class DestinationPhase(StrEnum):
 class TelegramError(Exception):
     """`code`: Telegram's `error_code`, 0 for a transport error. The message never holds a URL."""
 
-    def __init__(self, code: int, retry_after: int | None, message: str) -> None:
+    def __init__(self, code: int, retry_after: object, message: str) -> None:
         super().__init__(message)
-        self.code, self.retry_after = code, retry_after
+        self.code, self.retry_after = code, retry_delay_seconds(retry_after)
 
 
 class TelegramApi:
@@ -96,7 +97,7 @@ class TelegramApi:
         retry = extra.get("retry_after") if isinstance(extra, dict) else None
         raise TelegramError(
             code if isinstance(code, int) else r.status_code,
-            retry if isinstance(retry, int) else None,
+            retry,
             str(body.get("description", "")),
         )
 
