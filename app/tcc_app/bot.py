@@ -60,6 +60,7 @@ from .commands import (
     view_for_profiles,
 )
 from .follow import FUTURE_LIMIT, Follower, stamp
+from .keyboards import TelegramKeyboards
 from .setup_wizard import SetupWizard
 from .status_pin import INTERVAL_S, StatusPin, StatusPins, load_pins
 from .telegram import TelegramApi, TelegramError, split_text, telegram_recipient
@@ -85,8 +86,7 @@ HELP = localized("command.help", "en")
 TIMED_OUT = "NS did not answer in time; try again."
 FAILED = "That failed; see the app log."
 INVALID = "That button is no longer valid."
-# the reply names the tapped button; these stand in when its message or keyboard is missing
-BUTTON_LABELS = {
+FALLBACK_BUTTON_LABELS = {
     "av": "Confirm arrival",
     "q": "Answer",
     "ok": "I got both",
@@ -99,8 +99,6 @@ BUTTON_LABELS = {
     "ag": "Agent access",
     "tm": "Travel preference",
 }
-# exclusive one-time choices: a used one takes its whole keyboard; any other used button goes alone
-WHOLE_KEYBOARD = frozenset({"ok", "av", "ap", "q", "ra", "tp", "ta", "ag", "tm", "setup"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,8 +251,7 @@ class Bot:
         self._travel_lock = asyncio.Lock()
         self._save_phase = SavePhase.READY
         self._save_lock = asyncio.Lock()  # one save at a time: no shared .tmp, the newest wins
-        self._keyboard_lock = asyncio.Lock()
-        self._retired: dict[int, set[str] | None] = {}
+        self._keyboards = TelegramKeyboards(api, lambda: self._cursor.closed)
         # saves: drained by close(), never cancelled (serve's cleanup leaves them out too)
         self.writes: set[asyncio.Task[bool]] = set()
         self._tasks: set[asyncio.Task[None]] = set()  # handlers, cancelled by close()
@@ -745,9 +742,6 @@ class Bot:
             )
 
     async def _button(self, cb: dict[str, Any]) -> None:
-        """Every tap is answered with the tapped button's label and what it led to. A tap that
-        took effect also removes the used button from its message (a one-time choice: the whole
-        keyboard); a refused or failed tap leaves the keyboard as it was."""
         try:
             await self._api.call("answerCallbackQuery", {"callback_query_id": cb.get("id")})
         except TelegramError as e:
@@ -774,58 +768,15 @@ class Bot:
         except Exception:
             log.exception("Telegram button failed")
             out = Outcome(FAILED)
-        label = _label(message, data)
+        label = _callback_label(message, data)
         text = out.text if out.text.startswith(label + ":") else f"{label}: {out.text}"
         replied = await self._reply(text, out.markup)
-        if out.done and replied:
-            tag = data.split("|", 1)[0] if isinstance(data, str) else ""
-            await self._retire(message, None if tag in WHOLE_KEYBOARD else data)
+        if out.done and replied and isinstance(data, str) and self._chat is not None:
+            tag = data.partition("|")[0]
+            await self._keyboards.retire(self._chat, message, data)
             if tag in ("ta", "tp"):
                 async with self._travel_lock:
                     await self._offer_travel_memory(check=tag == "ta" and out.markup is not None)
-
-    async def _retire(self, message: dict[str, Any], data: str | None) -> None:
-        # Callback snapshots can predate another tap's edit, so edits share retired controls.
-        async with self._keyboard_lock:
-            await self._retire_locked(message, data)
-
-    async def _retire_locked(self, message: dict[str, Any], data: str | None) -> None:
-        mid = message.get("message_id")
-        if type(mid) is not int or self._cursor.closed:
-            log.info("no Telegram message to remove the used button from")
-            return
-        rows: list[Any] = []
-        retired = self._retired.setdefault(mid, set())
-        if data is not None and retired is not None:
-            retired.add(_button_key(data))
-            old = _obj(message.get("reply_markup")).get("inline_keyboard")
-            old = old if isinstance(old, list) else []
-            rows = [
-                kept
-                for row in old
-                if isinstance(row, list)
-                and (
-                    kept := [
-                        b for b in row if _button_key(_obj(b).get("callback_data")) not in retired
-                    ]
-                )
-            ]
-            if rows == old:  # no keyboard, or the button is not on it: wiping it would lose others
-                log.info("the used button is not on its Telegram message's keyboard")
-                return
-        else:
-            self._retired[mid] = None
-        try:  # handle() checked this message's chat is self._chat
-            await self._api.call(
-                "editMessageReplyMarkup",
-                {
-                    "chat_id": self._chat,
-                    "message_id": mid,
-                    "reply_markup": {"inline_keyboard": rows},
-                },
-            )
-        except TelegramError as e:
-            log.info("Telegram keyboard removal failed (%s: %s)", e.code, e)
 
     async def _dispatch(self, data: Any, action_id: Any) -> Outcome:
         parts = data.split("|") if isinstance(data, str) else []
@@ -1279,13 +1230,7 @@ def _nothing(refused: Refused) -> str:
     return f"Nothing to act on: {refused.text}."
 
 
-def _button_key(data: Any) -> Any:
-    # A recovery action invalidates every control for the same selection, revision and step.
-    return data.rsplit("|", 1)[0] if isinstance(data, str) and data.startswith("rc|") else data
-
-
-def _label(message: dict[str, Any], data: Any) -> str:
-    """The tapped button's own text from its message's keyboard, else a short one for its tag."""
+def _callback_label(message: dict[str, Any], data: Any) -> str:
     rows = _obj(message.get("reply_markup")).get("inline_keyboard")
     for row in rows if isinstance(rows, list) else []:
         for button in row if isinstance(row, list) else []:
@@ -1293,7 +1238,7 @@ def _label(message: dict[str, Any], data: Any) -> str:
             if _obj(button).get("callback_data") == data and isinstance(text, str) and text:
                 return text
     tag = data.split("|", 1)[0] if isinstance(data, str) else ""
-    return BUTTON_LABELS.get(tag, "Button")
+    return FALLBACK_BUTTON_LABELS.get(tag, "Button")
 
 
 def _obj(v: Any) -> dict[str, Any]:
