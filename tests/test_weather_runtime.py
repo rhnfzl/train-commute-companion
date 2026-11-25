@@ -11,7 +11,7 @@ from runtime_rig import PROFILE, Rig
 from test_runtime_recovery import PROFILE as RECOVERY_PROFILE
 from test_runtime_recovery import follow, occurrence
 
-from train_commute_companion.model import EventKind
+from train_commute_companion.model import EventKind, Stations
 from train_commute_companion.profile import parse_profiles
 from train_commute_companion.providers.weather import WeatherProvider
 from train_commute_companion.runtime import Runtime
@@ -170,7 +170,11 @@ async def test_endpoint_times_tips_freshness_and_switch_edits_are_shared_by_cons
 
     def respond(request):
         calls.append(request)
-        return httpx.Response(200, json=forecast_for(rig.clock.now()))
+        forecast = forecast_for(rig.clock.now())
+        forecast["hourly"].update(precipitation=[0] * 24, weather_code=[0] * 24)
+        if request.url.params["latitude"] == "51.9":
+            forecast["hourly"]["temperature_2m"] = [0] * 24
+        return httpx.Response(200, json=forecast)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         rig.rt = Runtime(
@@ -180,6 +184,9 @@ async def test_endpoint_times_tips_freshness_and_switch_edits_are_shared_by_cons
             notifier=rig.notifier,
             clock=rig.clock,
             require_stations=False,
+            known_stations=Stations(
+                {"AAA": ["Alpha"], "RTD": ["Rotterdam Centraal"], "UT": ["Utrecht"]}
+            ),
             weather=WeatherProvider(client, rig.clock.now),
         )
         await rig.rt.start()
@@ -193,13 +200,17 @@ async def test_endpoint_times_tips_freshness_and_switch_edits_are_shared_by_cons
         ]
         assert all(w.forecast is not None for w in endpoint)
         assert len(calls) == 2  # transfer station UT is not an endpoint
-        assert "Bring a raincoat" in render_status(view, True)
+        status = render_status(view, True)
+        assert "Frost possible" in status
+        assert status.count("Retrieved") == status.count("KNMI warnings unavailable") == 2
         rig.clock.set("07:50")
         await rig.rt.poll_once()
         await rig.rt.weather_idle()
         routine = [e for e in rig.notifier.attempts if e.kind is EventKind.ALL_GOOD]
-        assert routine and "Open-Meteo" in routine[-1].text
-        assert "raincoat" in routine[-1].text
+        assert routine
+        train, weather = routine[-1].text.splitlines()
+        assert "on time per NS" in train and "Leave by 08:02." in train
+        assert weather == "Rotterdam Centraal: ❄️ Frost possible. Watch your step."
         assert rig.occ().lock == original and len(calls) == 2
         assert "52.1" not in rig.store.text and "temperature_c" not in rig.store.text
         rig.clock.jump(31)

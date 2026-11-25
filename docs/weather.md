@@ -32,7 +32,8 @@ Precipitation at 1°C or below also prompts a possible-ice tip.
 These thresholds do not predict actual surface conditions.
 
 Telegram `/status`, MCP journey status and Home Assistant's status sensor attributes expose the same weather view.
-Fresh weather also accompanies routine on-time and at-station phone messages when already available.
+Routine on-time and at-station messages use icons for weather tips and active warnings.
+Open status for forecast values, timestamps, warning coverage and source links.
 The initial message can precede the first weather response.
 Weather adds no separate notification and does not change train selection, schedules or travel buffers.
 Selected recovery journeys use the accepted itinerary's departure and arrival endpoints and times. An endpoint without a known station coordinate has no weather context. Street or phone coordinates are never substituted.
@@ -135,7 +136,7 @@ The free service limits calls to 600 per minute, 5,000 per hour and 10,000 per d
 Commercial hosting requires separate terms. This setup is a personal application, not a hosted weather service.
 
 Weather data use [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-Each display credits [Open-Meteo](https://open-meteo.com/) and the KNMI model, links the licence, and identifies the companion's adapted tips.
+The detailed weather report credits [Open-Meteo](https://open-meteo.com/) and the KNMI model, links the licence and identifies the companion's adapted tips.
 Official warnings credit [KNMI](https://www.knmi.nl/nederland-nu/weer/waarschuwingen/).
 See [Open-Meteo's attribution requirements](https://open-meteo.com/en/licence) and [KNMI's snapshot documentation](https://dataplatform.knmi.nl/dataset/docs/knmi-public-weather-warnings-1-0).
 Source contracts were checked on 21 November 2026.
