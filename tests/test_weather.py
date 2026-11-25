@@ -4,15 +4,34 @@ import httpx
 import pytest
 
 from train_commute_companion.providers.weather import (
+    WarningView,
+    WeatherHour,
     WeatherProvider,
+    WeatherView,
     parse_forecast,
     parse_warnings,
+    weather_alert_lines,
     weather_text,
 )
 
 NOW = datetime(2026, 11, 21, 7, tzinfo=UTC)
 AT = NOW + timedelta(hours=1, minutes=12)
 POSITION = (52.1, 5.1)
+
+
+@pytest.mark.parametrize("has_forecast", [True, False])
+def test_weather_alert_keeps_active_warnings_with_or_without_forecast(has_forecast):
+    hour = WeatherHour(AT, 8, 2, 0, 61) if has_forecast else None
+    warning = WarningView("yellow", "Gladheid", NOW, AT + timedelta(hours=1))
+    views = tuple(
+        WeatherView(station, AT, hour, NOW if hour else None, (warning,), NOW, NOW)
+        for station in ("AAA", "RTD")
+    )
+
+    departure, arrival = weather_alert_lines(views, "nl", None)
+    for station, line in (("AAA", departure), ("RTD", arrival)):
+        assert line.startswith(f"{station}: ⚠️ KNMI code yellow: Gladheid")
+        assert ("🌧️ Neem een regenjas mee." in line) is has_forecast
 
 
 def forecast(temp=8, rain=2, snow=0, code=61):

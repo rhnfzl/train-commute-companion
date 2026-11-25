@@ -6,7 +6,7 @@ Forecast tips are derived estimates. Only KNMI's operational warning snapshot su
 import asyncio
 import json
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
@@ -17,12 +17,15 @@ import httpx
 
 from train_commute_companion.calendar import hhmm
 from train_commute_companion.catalogue import MessageLanguage, message
+from train_commute_companion.model import Stations
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 WARNINGS_URL = (
     "https://api.dataplatform.knmi.nl/open-data/v1/datasets/"
     "KNMI-public-weather-warnings/versions/1.0/files"
 )
+WARNINGS_PAGE = "https://www.knmi.nl/nederland-nu/weer/waarschuwingen/"
+WEATHER_LICENCE = "CC BY 4.0 https://creativecommons.org/licenses/by/4.0/"
 FORECAST_TTL = timedelta(hours=1)
 WARNING_TTL = timedelta(minutes=10)
 RETRY_AFTER = timedelta(minutes=5)
@@ -46,20 +49,21 @@ class WeatherHour:
     def tips(self) -> tuple[str, ...]:
         return self.tips_in("en")
 
-    def tips_in(self, language: MessageLanguage) -> tuple[str, ...]:
+    def tips_in(self, language: MessageLanguage, *, compact: bool = False) -> tuple[str, ...]:
+        prefix = "weather.alert_tip" if compact else "weather.tip"
         tips = []
         if self.precipitation_mm >= 0.2:
-            tips.append(message("weather.tip_rain", language))
+            tips.append(message(f"{prefix}_rain", language))
         if self.snowfall_cm > 0 or self.weather_code in (71, 73, 75, 77, 85, 86):
-            tips.append(message("weather.tip_snow", language))
+            tips.append(message(f"{prefix}_snow", language))
         if self.temperature_c >= 28:
-            tips.append(message("weather.tip_heat", language))
+            tips.append(message(f"{prefix}_heat", language))
         if self.temperature_c <= 0:
-            tips.append(message("weather.tip_frost", language))
+            tips.append(message(f"{prefix}_frost", language))
         if self.weather_code in (56, 57, 66, 67) or (
             self.temperature_c <= 1 and self.precipitation_mm >= 0.2
         ):
-            tips.append(message("weather.tip_ice", language))
+            tips.append(message(f"{prefix}_ice", language))
         return tuple(tips)
 
 
@@ -493,6 +497,22 @@ class WeatherProvider:
         )
 
 
+def weather_alert_lines(
+    views: Sequence[WeatherView],
+    language: MessageLanguage,
+    stations: Stations | None,
+) -> list[str]:
+    """Show short advice and active warnings. Status carries the source details."""
+    lines = []
+    for view in views:
+        tips = view.forecast.tips_in(language, compact=True) if view.forecast else ()
+        warnings = tuple(f"⚠️ KNMI code {w.color}: {w.headline}" for w in view.warnings)
+        if tips or warnings:
+            station = stations.name(view.station) if stations is not None else view.station
+            lines.append(f"{station}: " + " ".join((*warnings, *tips)))
+    return lines
+
+
 def weather_text(view: WeatherView, language: MessageLanguage = "en") -> str:
     text = message("weather.station", language, station=view.station, time=hhmm(view.when))
     unknown = message("shared.unknown", language)
@@ -516,11 +536,11 @@ def weather_text(view: WeatherView, language: MessageLanguage = "en") -> str:
                 stamp=view.fetched_at.isoformat() if view.fetched_at else unknown,
             )
             + message("weather.credit", language)
-            + "CC BY 4.0 https://creativecommons.org/licenses/by/4.0/."
+            + WEATHER_LICENCE
+            + "."
         )
-    url = "https://www.knmi.nl/nederland-nu/weer/waarschuwingen/"
     if view.warnings_checked_at is None:
-        return text + message("weather.warning_missing", language, url=url)
+        return text + message("weather.warning_missing", language, url=WARNINGS_PAGE)
     warnings = "; ".join(f"code {w.color}: {w.headline}" for w in view.warnings)
     status = warnings or message("weather.warning_clear", language)
     return text + (
@@ -533,5 +553,5 @@ def weather_text(view: WeatherView, language: MessageLanguage = "en") -> str:
             if view.warnings_generated_at
             else unknown,
         )
-        + f"{url} CC BY 4.0 https://creativecommons.org/licenses/by/4.0/."
+        + f"{WARNINGS_PAGE} {WEATHER_LICENCE}."
     )

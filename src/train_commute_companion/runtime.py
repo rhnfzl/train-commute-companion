@@ -195,7 +195,11 @@ from train_commute_companion.providers.base import (
     ProviderAnswer,
     Query,
 )
-from train_commute_companion.providers.weather import WeatherProvider, WeatherView, weather_text
+from train_commute_companion.providers.weather import (
+    WeatherProvider,
+    WeatherView,
+    weather_alert_lines,
+)
 from train_commute_companion.quick_trip import resolve_station, trip_result
 from train_commute_companion.recovery_runtime import RecoveryController
 from train_commute_companion.recovery_state import (
@@ -1185,9 +1189,12 @@ class Runtime:
                     if target not in text:  # queued alerts may predate the language setting
                         target = message("leave_by", "en", time=hhmm(base))
                     text = text.replace(target, allowance.format(language), 1)
+                stations = self.known_stations
                 lines = (
-                    [weather_text(w, language) for w in weather if w.forecast or w.warnings]
-                    if (routine or text != event.text)
+                    weather_alert_lines(
+                        weather, language, stations if isinstance(stations, Stations) else None
+                    )
+                    if routine or text != event.text
                     else []
                 )
                 return replace(event, text="\n".join((text, *lines)))

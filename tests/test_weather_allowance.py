@@ -264,7 +264,7 @@ async def test_selected_train_and_held_messages_use_current_forecast_without_dou
             assert "Leave by 07:55 (+5 min suggested for forecast snow)" in delivered.text
             assert delivered.text.count("Leave by") == 1 and "+2 min" not in delivered.text
             assert "platform" in delivered.text and "on time per NS" in delivered.text
-            assert "https://open-meteo.com/" in delivered.text
+            assert "❄️ Snow expected" in delivered.text
             assert await rig.rt.choose_at("p1", time(8, 25)) is None
             selected = shown(rig)
             assert hhmm(selected.leave_by) == "08:15"
@@ -406,7 +406,7 @@ async def test_earlier_advice_uses_its_own_hour_and_the_return_buffer(tmp_path):
             event = next(e for e in rig.rt.events_log if e.kind is EventKind.LEAVE_NOW)
             assert "Leave by 17:12 (+5 min suggested for forecast snow)" in event.text
             assert event.text.count("Leave by") == 1
-            assert "forecast hour 17:00" in event.text and "https://open-meteo.com/" in event.text
+            assert "❄️ Snow expected" in event.text
             assert rig.occ("p1|return|2026-10-27").lock.legs[0].train.train_number == "7952"
         finally:
             await rig.rt.stop_weather()
