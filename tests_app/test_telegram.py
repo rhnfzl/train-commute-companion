@@ -166,6 +166,21 @@ async def test_failure_is_not_delivered_and_backs_off(tg, clock, failure, wait_s
     assert await n.send(event())
 
 
+@pytest.mark.parametrize("delay", [True, -1, 10**20])
+async def test_invalid_retry_delay_uses_default_wait(tg, clock, delay):
+    telegram = notifier(tg, clock)
+    tg.fail = lambda _: error(429, "Too many requests", retry_after=delay)
+    assert not await telegram.send(event())
+
+    tg.fail = lambda _: None
+    await clock.sleep(59)
+    assert not await telegram.send(event())
+    assert tg.calls == ["sendMessage"]
+
+    await clock.sleep(1)
+    assert await telegram.send(event())
+
+
 async def test_backoff_holds_across_the_autumn_repeat_hour(tg):
     t = datetime(2026, 10, 25, 2, 59, 30, tzinfo=AMS)
     assert t.astimezone(UTC).hour == 0

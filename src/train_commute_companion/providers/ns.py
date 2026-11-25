@@ -50,6 +50,7 @@ from train_commute_companion.providers.ns_vehicle import (
     map_positions,
     map_train_context,
 )
+from train_commute_companion.retry_delay import retry_delay_header
 from train_commute_companion.vehicle import TrainContext, VehiclePositions
 
 
@@ -653,10 +654,7 @@ def _raise_for_status(r: httpx.Response) -> None:
     if code in (401, 403):
         raise AuthError(f"NS rejected the API key (HTTP {code})")
     if code == 429:
-        ra = r.headers.get("Retry-After", "").strip()
-        # a longer value is no real wait, and int() refuses one over its digit limit
-        seconds = int(ra) if ra.isascii() and ra.isdigit() and len(ra) <= 9 else None
-        raise RateLimited("NS rate limited", seconds)
+        raise RateLimited("NS rate limited", retry_delay_header(r.headers.get("Retry-After", "")))
     if code >= 500:
         raise ServerError(f"NS answered HTTP {code}")
     if code >= 400:
