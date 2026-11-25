@@ -23,6 +23,7 @@ _METHODS: dict[str, Callable[..., Any]] = {
         Runtime.not_travelling,
         Runtime.answer_prompt,
         Runtime.check_trip,
+        Runtime.check_commute,
         Runtime.forget_station,
         Runtime.clear_commute_history,
         Runtime.arrival_records,

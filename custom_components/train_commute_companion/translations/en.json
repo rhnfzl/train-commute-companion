@@ -1526,6 +1526,15 @@
         }
       }
     },
+    "check_commute": {
+      "name": "Check tomorrow's commute",
+      "description": "Check the NS timetable for a saved commute tomorrow.",
+      "fields": {
+        "profile": {"name": "Profile"},
+        "direction": {"name": "Direction"},
+        "date": {"name": "Date"}
+      }
+    },
     "sync_schedule": {
       "name": "Sync travel schedule",
       "description": "Send extra travel dates and departure buffers to a profile in the connected Docker companion.",

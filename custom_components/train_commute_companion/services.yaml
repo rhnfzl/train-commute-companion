@@ -8,6 +8,11 @@ check_trip:
   fields:
     origin: {required: true, selector: {text: {}}}
     destination: {required: true, selector: {text: {}}}
+check_commute:
+  fields:
+    profile: {required: true, selector: {text: {}}}
+    direction: {required: true, selector: {select: {options: [outbound, return]}}}
+    date: {required: true, selector: {date: {}}}
 choose:
   fields:
     profile:
