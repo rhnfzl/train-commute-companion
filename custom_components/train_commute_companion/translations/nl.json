@@ -1218,6 +1218,15 @@
         }
       }
     },
+    "check_commute": {
+      "name": "Controleer de reis van morgen",
+      "description": "Controleer de NS-dienstregeling voor een opgeslagen woon-werkreis van morgen.",
+      "fields": {
+        "profile": {"name": "Profiel"},
+        "direction": {"name": "Richting"},
+        "date": {"name": "Datum"}
+      }
+    },
     "sync_schedule": {
       "name": "Synchroniseer reisschema",
       "description": "Stuur extra reisdagen en vertrekbuffers naar een profiel in de verbonden Docker-companion.",

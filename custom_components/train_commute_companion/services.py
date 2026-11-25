@@ -46,6 +46,13 @@ CHOOSE_SCHEMA = vol.Schema(
 )
 LEAVING_SCHEMA = vol.Schema(BASE)
 CHECK_TRIP_SCHEMA = vol.Schema({vol.Required("origin"): str, vol.Required("destination"): str})
+CHECK_COMMUTE_SCHEMA = vol.Schema(
+    {
+        vol.Required("profile"): cv.string,
+        vol.Required("direction"): vol.Coerce(Direction),
+        vol.Required("date"): cv.date,
+    }
+)
 NOT_TRAVELLING_SCHEMA = vol.Schema({**BASE, vol.Optional("whole_day", default=False): cv.boolean})
 ANSWER_PROMPT_SCHEMA = vol.Schema(
     {vol.Required("prompt_id"): cv.string, vol.Required("answer"): cv.string}
@@ -305,6 +312,21 @@ async def _handle_check_trip(call: ServiceCall) -> ServiceResponse:
     return cast(ServiceResponse, result)
 
 
+async def _handle_check_commute(call: ServiceCall) -> ServiceResponse:
+    request = call.data
+    data, profile_id, _ = resolve_profile(call.hass, request["profile"])
+    result = await _await_action(
+        invoke(
+            data.host,
+            Runtime.check_commute,
+            profile_id=profile_id,
+            direction=request["direction"],
+            day=request["date"],
+        )
+    )
+    return cast(ServiceResponse, result)
+
+
 async def _handle_answer_prompt(call: ServiceCall) -> None:
     d = call.data
     await do_answer_prompt(loaded(call.hass), d["prompt_id"], d["answer"])
@@ -435,6 +457,13 @@ def async_setup_services(hass: HomeAssistant) -> None:
         "check_trip",
         _handle_check_trip,
         CHECK_TRIP_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "check_commute",
+        _handle_check_commute,
+        CHECK_COMMUTE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(DOMAIN, "leaving", _handle_leaving, LEAVING_SCHEMA)
