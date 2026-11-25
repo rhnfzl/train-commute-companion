@@ -156,6 +156,23 @@ _MESSAGES = {
         "Ice possible; paths and platforms may be slippery.",
         "Er is kans op gladheid op paden en perrons.",
     ),
+    "weather.alert_tip_rain": ("🌧️ Bring a raincoat.", "🌧️ Neem een regenjas mee."),
+    "weather.alert_tip_snow": (
+        "❄️ Snow expected. Wear shoes with grip.",
+        "❄️ Sneeuw verwacht. Draag schoenen met grip.",
+    ),
+    "weather.alert_tip_heat": (
+        "☀️ Heat expected. Bring water.",
+        "☀️ Hitte verwacht. Neem water mee.",
+    ),
+    "weather.alert_tip_frost": (
+        "❄️ Frost possible. Watch your step.",
+        "❄️ Kans op vorst. Let op waar je loopt.",
+    ),
+    "weather.alert_tip_ice": (
+        "⚠️ Possible ice. Watch your step.",
+        "⚠️ Kans op gladheid. Let op waar je loopt.",
+    ),
     "weather.station": (
         "Weather at {station} around {time}: ",
         "Weer bij {station} rond {time}: ",
