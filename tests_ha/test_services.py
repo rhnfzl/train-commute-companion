@@ -1,14 +1,14 @@
 import asyncio
 import threading
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 import runtime_seam as seam
 from builders import ONE_TRANSFER, make_connection, make_leg, only_occurrence
 from ha_rig import B_ONLY, PROFILE, drive, setup_tcc, write_profiles
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from runtime_rig import at
+from runtime_rig import at, usual_on
 
 from custom_components.train_commute_companion import services
 from custom_components.train_commute_companion.const import DOMAIN
@@ -78,6 +78,23 @@ async def test_check_trip_responds_without_changing_the_active_plan(hass, with_p
     assert response["options"][0]["legs"][1]["origin"]["code"] == "UT"
     assert await h.host.run(lambda rt: rt.state) == before
     assert len(h.pushes) == pushes
+
+
+async def test_check_commute_returns_tomorrows_timetable(hass):
+    tomorrow = TUE + timedelta(days=1)
+    await setup_tcc(hass, PROFILE, now="21:00", world=[usual_on(tomorrow)])
+    response = await hass.services.async_call(
+        DOMAIN,
+        "check_commute",
+        {"profile": "office_a", "direction": "outbound", "date": tomorrow.isoformat()},
+        blocking=True,
+        return_response=True,
+    )
+    assert response == {
+        "date": tomorrow.isoformat(),
+        "service_date": tomorrow.isoformat(),
+        "details": "08:12 train 1234",
+    }
 
 
 async def test_choose_retained_remainder_the_user_rides(hass):  # review-codex-rev11 N3, required

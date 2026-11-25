@@ -108,6 +108,21 @@ In a script, `trip.text` is the readable reply and `trip.options` holds the trai
 
 Checks share the NS request budget and a 30-second limit per running companion. They leave travel plans untouched. Turn off **Allow quick trip checks** in any profile to disable the action for the whole companion. [Quick trip settings](notification-preferences.md#quick-trip-checks)
 
+#### Tomorrow's timetable
+
+Use **Check tomorrow's commute** to add a departure to an evening reminder. The action reads the NS timetable for the saved commute without choosing or following a train.
+
+```yaml
+action: train_commute_companion.check_commute
+data:
+  profile: office_a
+  direction: outbound
+  date: "{{ (now() + timedelta(days=1)).date().isoformat() }}"
+response_variable: timetable
+```
+
+Use `timetable.details` for the departure, a timetable warning, or a message that the train details are unavailable. An empty response means the requested commute was ineligible for the check. Check again on the day for live delays and cancellations.
+
 #### Commute actions
 
 All four take `profile` (the profile `id` or `name`) and optionally `direction` and `service_date`.

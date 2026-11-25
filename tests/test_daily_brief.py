@@ -51,6 +51,42 @@ async def run_at(rig, clock, day=DAY):
     await rig.rt.scheduled_lookahead_once()
 
 
+@pytest.mark.parametrize(
+    ("status", "details"),
+    [
+        ("listed", "08:12 train "),
+        ("cancelled", "08:12 train 1234: cancelled"),
+        ("missing", "NS train details unavailable"),
+    ],
+)
+async def test_commute_check_reads_tomorrows_ns_timetable_without_following(
+    tmp_path, status, details
+):
+    rig = await setup(tmp_path, at_time="21:00")
+    if status != "listed":
+        rig.provider.world = [
+            c for c in world() if c.legs[0].train.planned_departure.date() != NEXT
+        ]
+    if status == "cancelled":
+        trip = usual_on(NEXT)
+        rig.provider.world.append(
+            make_connection(
+                [
+                    make_leg("AAA", "UT", "08:12", "08:40", day=NEXT, cancelled=True),
+                    trip.legs[1],
+                ]
+            )
+        )
+    before = rig.rt.state
+
+    result = await rig.rt.check_commute("p1", OUT, NEXT)
+
+    assert result["service_date"] == NEXT.isoformat()
+    assert {q.at.date() for q in rig.provider.calls} == {NEXT}
+    assert details in result["details"]
+    assert rig.rt.state == before
+
+
 async def test_dutch_brief_retries_with_its_original_language_and_key(tmp_path):
     text = YAML + "    alerts: {language: nl}\n"
     rig = await setup(tmp_path, text=text)

@@ -709,6 +709,47 @@ class Runtime:
     async def preview_trip(self, query: Query) -> ProviderAnswer | PollFailure:
         return await self._gate.trips(query, live=False, window_end=None)
 
+    async def check_commute(
+        self, profile_id: str, direction: Direction, day: date
+    ) -> dict[str, str]:
+        """Read the next day's timetable for a regular commute."""
+        state, now = self.state, self.now()
+        profile = find_profile(state.config, profile_id)
+        if (
+            day != now.astimezone(TZ).date() + timedelta(days=1)
+            or profile is None
+            or direction not in daily_brief.directions_on(state, profile, day)
+        ):
+            return {}
+        works = await self._fetch_works() or PlannedWorks((), "unknown")
+        run = await self._probe_lookahead(profile, direction, works, day=day)
+        current, checked = self.state, self.now()
+        if (
+            current.config != state.config
+            or current.travel_revision != state.travel_revision
+            or direction not in daily_brief.directions_on(current, profile, day)
+            or day != checked.astimezone(TZ).date() + timedelta(days=1)
+        ):
+            return {}
+        row = daily_brief.build_row(
+            profile,
+            direction,
+            day,
+            daily_brief.schedule(state, profile, direction, day).first_departure,
+            None,
+            () if run is None else run.results,
+            False,
+            works,
+            None,
+            None,
+            checked,
+        )
+        return {
+            "date": day.isoformat(),
+            "service_date": row.service_date.isoformat(),
+            "details": row.details,
+        }
+
     def list_travel_plans(self) -> dict[str, Any]:
         return {
             "plans": [
