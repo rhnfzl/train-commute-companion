@@ -893,6 +893,7 @@ async def test_lookahead_written_after_a_failed_poll_keeps_an_unwritten_skip(tmp
     await rig.restart()
     assert rig.occ().not_travelling
 
+
 async def _three_lookahead_days(rig: Rig, fail_third: bool) -> None:
     rig.provider.world = every_day()
     await rig.rt.start()
@@ -1791,7 +1792,7 @@ async def test_home_vouches_give_a_hedge_then_one_missed_message(tmp_path):  # Q
     await rig.rt.report_location("p1", LocationEvent("home", "still", at("08:24")))
     missed = [e for e in rig.rt.events_log if e.kind is EventKind.MISSED_FIRST_TRAIN]
     assert [e.text for e in missed] == [
-        "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34. NS checked just now: runs."
+        "Office A: Missed 08:12\nNext train 08:44\nLeave by 08:34\nNS checked just now: runs"
     ]
     s = only_occurrence(rig.rt)
     assert s.lock.source is LockSource.MISSED

@@ -111,7 +111,9 @@ async def test_station_zone_report_after_departure_is_missed_first_train(hass): 
     assert not any("missed" in t.lower() for t in texts(h)), texts(h)  # only suspect
     await drive(h, "08:26")  # the tracker still sits there 12 min after the departure
     assert await spied(h) == [("AAA", "enter"), ("AAA", "still")]
-    assert any("missed" in c.data["message"].lower() and loud(c) for c in h.pushes), texts(h)
+    assert any("missed" in c.data["message"].lower().lower() and loud(c) for c in h.pushes), texts(
+        h
+    )
 
 
 async def test_station_list_down_at_restart_recovers_station_zones(hass):  # 8, 7.11
@@ -212,13 +214,15 @@ async def test_a_fix_inside_the_report_timer_is_dropped_not_deferred(hass):
     set_person(hass, 52.00001, 5.0, battery_level=50)  # a still phone: no new fix
     await drive(h, "08:18")
     assert await spied(h) == [("AAA", "enter")]
-    assert not any("missed" in c.data["message"].lower() for c in h.pushes), texts(h)
+    assert not any("missed" in c.data["message"].lower().lower() for c in h.pushes), texts(h)
     set_person(hass, 52.00002, 5.0)  # only the next moved fix reports
     await drive(h, "08:20")
     assert await spied(h) == [("AAA", "enter"), ("AAA", "report")]
     await drive(h, "08:26")  # Q12: the vouch 12 min after the departure confirms the miss
     assert await spied(h) == [("AAA", "enter"), ("AAA", "report"), ("AAA", "still")]
-    assert any("missed" in c.data["message"].lower() and loud(c) for c in h.pushes), texts(h)
+    assert any("missed" in c.data["message"].lower().lower() and loud(c) for c in h.pushes), texts(
+        h
+    )
 
 
 async def test_a_failed_enter_starts_no_report_timer(hass):
@@ -291,13 +295,15 @@ async def test_home_vouches_before_and_twelve_minutes_after_departure(hass):  # 
     assert await spied(h) == [("home", "still")]  # 5 min before the 08:12
     await drive(h, "08:16")
     assert await spied(h) == [("home", "still")]  # once per train and stage
-    assert not any("missed" in t for t in texts(h)), texts(h)  # presence is no proof (rule 6)
+    assert not any("missed" in t.lower() for t in texts(h)), texts(
+        h
+    )  # presence is no proof (rule 6)
     assert any("has left" in t for t in texts(h)), texts(h)  # the silent hedge (rule 5)
     await drive(h, "08:30")
     assert await spied(h) == [("home", "still")] * 2  # the 08:24 vouch, once
-    missed = [c for c in h.pushes if "missed" in c.data["message"]]
+    missed = [c for c in h.pushes if "missed" in c.data["message"].lower()]
     assert [c.data["message"] for c in missed] == [
-        "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34. NS checked just now: runs."
+        "Office A: Missed 08:12\nNext train 08:44\nLeave by 08:34\nNS checked just now: runs"
     ]
     assert loud(missed[0])
 
@@ -314,9 +320,9 @@ async def test_home_wifi_at_departure_is_an_immediate_miss(hass):  # Q12 rule 3a
     await start_tracker(h)
     await drive(h, "08:14")
     assert await spied(h) == [("home", "still")] * 2  # before, then at the departure with Wi-Fi
-    missed = [c for c in h.pushes if "missed" in c.data["message"]]
+    missed = [c for c in h.pushes if "missed" in c.data["message"].lower()]
     assert [c.data["message"] for c in missed] == [
-        "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:34. NS checked just now: runs."
+        "Office A: Missed 08:12\nNext train 08:44\nLeave by 08:34\nNS checked just now: runs"
     ]
     assert loud(missed[0])
 
@@ -348,7 +354,9 @@ async def test_resting_phone_at_the_station_is_missed_three_minutes_after(
     set_person(hass, 52.00001, 5.0)
     await drive(h, "08:16")
     assert await spied(h) == [("AAA", "enter"), ("AAA", "report")]
-    assert any("missed" in c.data["message"] and loud(c) for c in h.pushes) == proves_miss, texts(h)
+    assert (
+        any("missed" in c.data["message"].lower() and loud(c) for c in h.pushes) == proves_miss
+    ), texts(h)
 
 
 async def test_fast_fix_after_departure_keeps_the_train(hass):  # Q12 rule 2
@@ -363,7 +371,7 @@ async def test_fast_fix_after_departure_keeps_the_train(hass):  # Q12 rule 2
     set_person(hass, 52.00001, 5.0, source="device_tracker.phone")  # pulling out, still in zone
     await drive(h, "08:30")
     assert await spied(h) == [("AAA", "enter"), ("AAA", "report"), ("AAA", "still")]
-    assert not any("missed" in t for t in texts(h)), texts(h)
+    assert not any("missed" in t.lower() for t in texts(h)), texts(h)
 
 
 async def test_station_confirm_vouch_judged_without_ns_is_sent_again(hass):  # Q12 rule 4
@@ -375,12 +383,12 @@ async def test_station_confirm_vouch_judged_without_ns_is_sent_again(hass):  # Q
     await drive(h, "08:23:30")
     h.provider.error = lambda q: ProviderError("down")
     await drive(h, "08:24")  # the +12 vouch meets an NS failure
-    assert not any("missed" in t for t in texts(h)), texts(h)
+    assert not any("missed" in t.lower() for t in texts(h)), texts(h)
     h.provider.error = lambda q: None
     await drive(h, "08:26")  # owed again while its stage lasts, and now answered
     assert (await spied(h))[:2] == [("AAA", "enter"), ("AAA", "still")]
     assert set((await spied(h))[2:]) == {("AAA", "still")}
-    assert any("missed" in c.data["message"] and loud(c) for c in h.pushes), texts(h)
+    assert any("missed" in c.data["message"].lower() and loud(c) for c in h.pushes), texts(h)
 
 
 async def test_activity_restamped_by_a_start_is_not_fresh(hass):  # Q12 3b
@@ -394,7 +402,7 @@ async def test_activity_restamped_by_a_start_is_not_fresh(hass):  # Q12 3b
     set_person(hass, 52.00001, 5.0)  # a lagging station fix while the user rides
     await drive(h, "08:16")
     assert await spied(h) == [("AAA", "report")]
-    assert not any("missed" in t for t in texts(h)), texts(h)
+    assert not any("missed" in t.lower() for t in texts(h)), texts(h)
 
 
 async def test_coarse_fix_clear_of_every_zone_is_a_leave(hass):  # Q12 rule 2

@@ -92,8 +92,8 @@ async def test_true_miss_with_the_phone_at_rest_is_one_loud_miss_at_twelve_minut
     assert missed(rig) == [
         (
             (
-                "Office A: you missed the 08:12. Next: 08:44 to RTD, change at UT, on time per NS,"
-                " arrives 09:50. NS checked just now: runs."
+                "Office A: Missed 08:12\nNext: 08:44 to RTD, change at UT, on time per NS,"
+                " arrives 09:50\nNS checked just now: runs"
             ),
             Severity.LOUD,
         )
@@ -106,14 +106,24 @@ async def test_home_wifi_at_departure_is_an_immediate_miss_with_leave_by(tmp_pat
     rig = await started(tmp_path)
     rig.write(text=PROFILE.replace("NAME", "office_a").replace("buffer_min: 10", "buffer_min: 20"))
     await rig.rt.reload_if_changed()
-    rig.provider.world = list(ONE_TRANSFER)
+    usual, later = ONE_TRANSFER
+    first = later.legs[0]
+    replacement = replace(
+        first,
+        stops=(replace(first.board, actual_track="6"), *first.stops[1:]),
+        crowd_forecast="medium",
+    )
+    rig.provider.world = [usual, make_connection([replacement, *later.legs[1:]])]
     await rig.run_until("08:05")
     await report(rig, "home", "report", "08:05")
     await rig.run_until("08:12")
     await report(rig, "home", "still", "08:12:10", Evidence(wifi=True))  # connected at departure
     assert missed(rig) == [
         (
-            "Office A: you missed the 08:12. Next you can catch: 08:44. Leave by 08:24. NS checked just now: runs.",
+            (
+                "Office A: Missed 08:12\nNext train 08:44 · platform 6\n"
+                "Leave by 08:24\nNS checked just now: runs"
+            ),
             Severity.LOUD,
         )
     ]
@@ -130,7 +140,7 @@ async def test_delayed_replacement_does_not_move_leave_by_later(tmp_path):
     await rig.run_until("08:12")
     await report(rig, "home", "still", "08:12:10", Evidence(wifi=True))
     text, _ = missed(rig)[0]
-    assert "Next you can catch: 08:49" in text and "Leave by 08:34" in text
+    assert "Next train 08:49" in text and "Leave by 08:34" in text
 
 
 async def test_station_bounce_after_departure_is_still_a_miss_at_twelve_minutes(tmp_path):

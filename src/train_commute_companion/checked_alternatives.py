@@ -20,7 +20,7 @@ from train_commute_companion.lifecycle import (
     origin_answer,
     progress_route,
 )
-from train_commute_companion.messages import crowd_text, leave_by_text, status_text
+from train_commute_companion.messages import crowd_text, leave_by_text, missed_heading, status_text
 from train_commute_companion.model import (
     FOLLOW_LIMIT,
     AlertEvent,
@@ -502,11 +502,42 @@ def checked_text(event: AlertEvent, check: Check, c: Connection, fetched_at: dat
             if not option.prior and not state.travelling and not state.at_station
             else ""
         )
+        if event.kind is EventKind.MISSED_FIRST_TRAIN and event.train is not None:
+            next_train = message("missed.next", language, time=dep, route=route)
+            if track:
+                next_train += f" · {track}"
+            crowd = (
+                crowd_text(c.legs, language).lstrip(", ")
+                if any(leg.crowd_forecast == "high" for leg in c.legs)
+                else ""
+            )
+            verified = _check_note(ctx.now, fetched_at, "", language).rstrip(".")
+            return (
+                "\n".join(
+                    filter(
+                        None,
+                        (
+                            missed_heading(event, language),
+                            next_train,
+                            leave.strip(),
+                            " · ".join(filter(None, (verified, crowd))),
+                        ),
+                    )
+                )
+                + facts.twin_note
+            )
         clause = (
             message(key, language, time=dep, route=route).lstrip()
             + ("." + leave if leave else "")
             + crowd_text(c.legs, language)
             + "."
+        )
+    if event.kind is EventKind.MISSED_FIRST_TRAIN and event.train is not None:
+        return (
+            "\n".join(
+                (missed_heading(event, language), clause.strip().rstrip("."), note.rstrip("."))
+            )
+            + facts.twin_note
         )
     return f"{head} {clause} {note}{facts.twin_note}"
 

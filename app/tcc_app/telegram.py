@@ -228,6 +228,8 @@ class TelegramNotifier:
             params: dict[str, Any] = {
                 "chat_id": self._chat, "text": parts[i], "disable_notification": silent
             }  # fmt: skip
+            if event.kind is EventKind.DAILY_BRIEF:
+                params["link_preview_options"] = {"is_disabled": True}
             if markup is not None and i == len(parts) - 1:
                 params["reply_markup"] = markup
             try:

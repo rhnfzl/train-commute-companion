@@ -99,7 +99,7 @@ async def test_window_earliest_locks_first_train_from_window_start_loud_miss(tmp
     await rig.run_until("07:12")
     await report(rig, "still", "07:12")  # still home 12 min after the 07:00 left
     (miss,) = told(rig, EventKind.MISSED_FIRST_TRAIN)
-    assert miss[1] is Severity.LOUD and miss[0].startswith("you missed the 07:00")
+    assert miss[1] is Severity.LOUD and miss[0].startswith("Missed 07:00")
     assert "Leave by" in miss[0]
     assert first_train(rig) == "07:30"
 

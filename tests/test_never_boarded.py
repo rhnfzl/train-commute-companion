@@ -92,7 +92,7 @@ def loud_after(rig: Rig, hhmm: str) -> list[tuple[EventKind, str]]:
 
 def misses(rig: Rig) -> list[tuple[str, Severity]]:
     return [
-        (e.body[:21], e.severity)
+        (e.body.splitlines()[0], e.severity)
         for e in rig.rt.events_log
         if e.kind is EventKind.MISSED_FIRST_TRAIN
     ]
@@ -102,8 +102,8 @@ async def test_a_train_never_boarded_ends_quietly_and_keeps_the_window_open(tmp_
     rig = await rig_for(tmp_path)
     await replay_to_departure(rig)
     assert misses(rig) == [
-        ("you missed the 16:36.", Severity.LOUD),
-        ("you missed the 17:06.", Severity.LOUD),  # loud again by default (2026-11-18 decision)
+        ("Missed 16:36", Severity.LOUD),
+        ("Missed 17:06", Severity.LOUD),  # loud again by default (2026-11-18 decision)
     ]
     await rig.run_until("19:25")  # the 17:36 arrived 18:39; its last watch ended about 19:19
     assert loud_after(rig, "17:21:30") == []
@@ -143,8 +143,8 @@ async def test_quiet_repeat_misses_makes_the_second_miss_from_work_silent(tmp_pa
     rig = await rig_for(tmp_path, extra="    alerts: {quiet_repeat_misses: true}\n")
     await replay_to_departure(rig)
     assert misses(rig) == [
-        ("you missed the 16:36.", Severity.LOUD),
-        ("you missed the 17:06.", Severity.SILENT),
+        ("Missed 16:36", Severity.LOUD),
+        ("Missed 17:06", Severity.SILENT),
     ]
 
 
@@ -163,8 +163,8 @@ async def test_a_cancelled_replacement_does_not_reset_the_repeat_miss(tmp_path, 
     await rig.run_until("17:55")
     await report(rig, "still", "17:55")  # the 17:36 left at 17:42: missed too
     assert misses(rig) == [
-        ("you missed the 16:36.", Severity.LOUD),
-        ("you missed the 17:36.", second),
+        ("Missed 16:36", Severity.LOUD),
+        ("Missed 17:36", second),
     ]
 
 

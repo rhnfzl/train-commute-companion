@@ -150,7 +150,7 @@ async def test_known_station_fix_inside_the_circle_commits_and_q12_applies(tmp_p
     still = Evidence(activity="Stationary", activity_at=at("20:18"))
     await phone.fix(VL, "20:18", ev=still)  # still at Venlo 12 min after the 20:06 left
     (miss,) = [e for e in of(rig, EventKind.MISSED_FIRST_TRAIN) if e.created_at > at("19:49")]
-    assert "you missed the 20:06" in miss.text
+    assert "Missed 20:06" in miss.text
 
 
 async def test_riding_an_untracked_train_through_stations_asks_once(tmp_path):
