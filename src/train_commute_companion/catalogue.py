@@ -916,16 +916,6 @@ _MESSAGES = {
     ),
     "brief.works_unknown": ("Planned works data unavailable", "Werkzaamheden niet beschikbaar"),
     "brief.disruption": ("NS disruption: {title}", "Storing bij NS: {title}"),
-    "brief.forecast": (
-        (
-            "{station} forecast {temp}°C, {rain} mm precipitation"
-            " (Open-Meteo https://open-meteo.com/, CC BY 4.0)"
-        ),
-        (
-            "Verwachting bij {station}: {temp} °C, {rain} mm neerslag"
-            " (Open-Meteo https://open-meteo.com/, CC BY 4.0)"
-        ),
-    ),
     "digest.title": (
         "{name}: weekly planned-works digest {first} to {last}.",
         "{name}: weekoverzicht werkzaamheden van {first} tot {last}.",
@@ -1139,6 +1129,8 @@ _MESSAGES = {
     "train.follow_via": (" via {via}, following it.", " om via {via}. Ik volg deze reis."),
     "train.via_prefix": (" via ", " om via "),
     "train.missed": ("you missed the {time}", "je hebt de trein van {time} gemist"),
+    "missed.heading": ("Missed {time}", "Trein van {time} gemist"),
+    "missed.next": ("Next train {time}{route}", "Volgende trein {time}{route}"),
     "train.missed_change": (
         "you missed your change at {station} to the {train} train",
         "je hebt op {station} je aansluiting op de trein van {train} gemist",

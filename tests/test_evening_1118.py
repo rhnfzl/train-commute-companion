@@ -175,8 +175,8 @@ async def ride_home(rig: Rig, phone: Phone, zone_event: bool, between=None) -> N
 
 def assert_quiet_end(rig: Rig) -> None:
     assert misses(rig) == [
-        ("you missed the 16:36.", Severity.LOUD),
-        ("you missed the 17:06.", Severity.LOUD),
+        ("Missed 16:36", Severity.LOUD),
+        ("Missed 17:06", Severity.LOUD),
     ]
     assert loud_after(rig, "17:21:30") == []
     s = rig.occ(KEY)

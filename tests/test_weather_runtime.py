@@ -210,7 +210,7 @@ async def test_endpoint_times_tips_freshness_and_switch_edits_are_shared_by_cons
         assert routine
         train, weather = routine[-1].text.splitlines()
         assert "on time per NS" in train and "Leave by 08:02." in train
-        assert weather == "Rotterdam Centraal: ❄️ Frost possible. Watch your step."
+        assert weather == "Rotterdam Centraal · ❄️ Frost possible. Watch your step."
         assert rig.occ().lock == original and len(calls) == 2
         assert "52.1" not in rig.store.text and "temperature_c" not in rig.store.text
         rig.clock.jump(31)

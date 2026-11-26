@@ -8,7 +8,14 @@ from enum import Enum, auto
 
 from train_commute_companion.calendar import hhmm, to_utc
 from train_commute_companion.catalogue import MessageLanguage, message
-from train_commute_companion.model import Leg, Provenance
+from train_commute_companion.model import (
+    AlertEvent,
+    EventKind,
+    Leg,
+    Provenance,
+    alert_facts,
+    display_name,
+)
 
 ATTRIBUTION = "Data: NS"
 CHECK_APP = "check the NS app"
@@ -22,6 +29,32 @@ def name_stations(text: str, labels: Mapping[str, str]) -> str:
     """`text` with each station number the catalogue knows shown by its name: NS gives some
     stops by number only, and a message never shows one."""
     return _STATION_NUMBER.sub(lambda m: labels.get(m[0], m[0]), text)
+
+
+def missed_heading(event: AlertEvent, language: MessageLanguage) -> str:
+    assert event.train is not None
+    label = message("missed.heading", language, time=hhmm(event.train.planned_departure))
+    return f"{display_name(event.profile_name)}: {label}"
+
+
+def compact_missed_text(event: AlertEvent) -> str:
+    if event.kind is not EventKind.MISSED_FIRST_TRAIN or event.train is None:
+        return event.text
+    facts = alert_facts(event)
+    language = facts.language
+    prefix = message("train.missed", language, time=hhmm(event.train.planned_departure))
+    if not event.body.startswith(prefix):
+        return event.text
+    body = event.body.removeprefix(prefix).removesuffix(facts.twin_note).lstrip(". ")
+    next_train, sep, leave = (
+        body.partition(facts.leave_note) if facts.leave_note else (body, "", "")
+    )
+    lines = [missed_heading(event, language)]
+    if next_train:
+        lines.append(next_train.rstrip("."))
+    if sep:
+        lines.append((sep.lstrip(". ") + leave).rstrip("."))
+    return "\n".join(lines) + facts.twin_note
 
 
 class RefusalKind(Enum):

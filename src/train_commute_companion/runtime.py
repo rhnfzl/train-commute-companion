@@ -129,6 +129,7 @@ from train_commute_companion.match import usual_connection
 from train_commute_companion.messages import (
     RefusalKind,
     Refused,
+    compact_missed_text,
     leave_by,
     name_stations,
     no_journey,
@@ -1096,7 +1097,7 @@ class Runtime:
         )
 
     def _notification_event(self, event: AlertEvent, connection: Connection | None) -> AlertEvent:
-        event = self._weather_event(event, connection)
+        event = self._with_notification_text(event, connection)
         if (
             event.kind
             not in (
@@ -1194,10 +1195,14 @@ class Runtime:
             labels: Mapping[str, str] = getattr(self._provider, "station_labels", {})
             event = replace(event, text=name_stations(text, labels))
             if connection is None:
-                return self._weather_event(event)
+                return self._with_notification_text(event)
         return self._notification_event(event, connection)
 
-    def _weather_event(self, event: AlertEvent, connection: Connection | None = None) -> AlertEvent:
+    def _with_notification_text(
+        self, event: AlertEvent, connection: Connection | None = None
+    ) -> AlertEvent:
+        if event.kind is EventKind.MISSED_FIRST_TRAIN:
+            event = replace(event, text=compact_missed_text(event))
         routine = event.kind in (EventKind.ALL_GOOD, EventKind.AT_STATION)
         language = alert_facts(event).language
         leave_prefix = message("leave_by", language, time="")
@@ -4484,6 +4489,7 @@ class Runtime:
             weather,
             disruptions,
             now,
+            self.known_stations if isinstance(self.known_stations, Stations) else None,
         )
 
     async def _morning_brief(

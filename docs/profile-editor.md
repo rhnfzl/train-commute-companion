@@ -103,7 +103,7 @@ Docker and Telegram profiles use the same per-direction `active_lead_min` settin
 
 ## Daily commute brief
 
-On travel days, a silent morning brief lists today's outbound and return trips. The brief shows the train, departure and leave-by time when available. It also includes known crowd forecasts, works, route disruptions and station weather.
+On travel days, a silent morning brief gives outbound and return their own blocks. It shows the train and leave-by time when available. It highlights high crowd forecasts, planned works, disruptions and weather tips. A disruption that affects both trips appears once below them. Open the detailed status for forecasts and source links.
 
 The evening check looks at tomorrow's fixed journeys. It sends the usual dated warnings when a journey needs attention. Normal trips and missing data alone produce no evening message. A failed check retries up to twice before midnight.
 

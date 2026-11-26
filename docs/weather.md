@@ -33,6 +33,7 @@ These thresholds do not predict actual surface conditions.
 
 Telegram `/status`, MCP journey status and Home Assistant's status sensor attributes expose the same weather view.
 Routine on-time and at-station messages use icons for weather tips and active warnings.
+Identical advice at both stations appears once with both station names.
 Open status for forecast values, timestamps, warning coverage and source links.
 The initial message can precede the first weather response.
 Weather adds no separate notification and does not change train selection, schedules or travel buffers.

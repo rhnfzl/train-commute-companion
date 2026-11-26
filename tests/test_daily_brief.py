@@ -207,8 +207,8 @@ async def test_mock_daily_request_budget(tmp_path, enabled):
     morning = tells(rig, MORNING)
     assert len(morning) == int(enabled)
     if morning:
-        assert "Outbound: 08:12 train 1234. Leave by 08:02." in morning[0].text
-        assert "Return: 17:52 train 600. Leave by 17:47." in morning[0].text
+        assert "Outbound: 08:12 train 1234\nLeave by 08:02" in morning[0].text
+        assert "Return: 17:52 train 600\nLeave by 17:47" in morning[0].text
     await run_at(rig, "19:59")
     before = len(rig.provider.calls)
     await run_at(rig, "20:00")
@@ -306,7 +306,8 @@ async def test_only_if_something_reuses_routed_disruption_evidence(tmp_path):
     assert not tells(rig, MORNING)
     rig.provider.disruptions = ActiveDisruptions(
         (
-            ActiveDisruption("relevant", "Signal failure", frozenset({"UT"}), None),
+            ActiveDisruption("both", "Signal failure.", frozenset({"AAA"}), None),
+            ActiveDisruption("outbound", "Points failure", frozenset({"UT"}), None),
             ActiveDisruption("wrong-route", "Other route", frozenset({"OTHER"}), None),
             ActiveDisruption(
                 "ends-early", "Ends early", frozenset({"UT"}), None, end=at("07:30", NEXT)
@@ -316,7 +317,10 @@ async def test_only_if_something_reuses_routed_disruption_evidence(tmp_path):
     )
     await run_at(rig, "06:00", NEXT)
     (brief,) = tells(rig, MORNING)
-    assert "Signal failure" in brief.text
+    _, outbound, back, shared = brief.text.split("\n\n")
+    assert "Points failure" in outbound and "Points failure" not in back
+    assert shared == "NS disruption: Signal failure"
+    assert brief.text.count("Signal failure") == 1
     assert "Other route" not in brief.text
     assert "Ends early" not in brief.text
     assert rig.provider.disruption_calls == 2
@@ -422,7 +426,8 @@ async def test_brief_uses_mocked_weather_and_crowd_and_routes_to_aux(tmp_path):
     (brief,) = [e for e in world_.records[EMAIL] if e.kind is MORNING]
     assert "AAA-UT high" in brief.text
     assert "Leave by 08:00 (+2 min suggested for forecast rain)" in brief.text
-    assert "AAA forecast 8°C, 2 mm precipitation" in brief.text
+    assert "AAA · 🌧️ Bring a raincoat" in brief.text
+    assert "https://" not in brief.text and "CC BY" not in brief.text
     assert set(weather.stations) == {"AAA", "RTD"}
     assert not tells(rig, MORNING)
     assert not [e for e in world_.records[OTHER] if e.kind is MORNING]
@@ -457,7 +462,7 @@ async def test_overnight_return_is_labelled_with_its_service_date(tmp_path):
     )
     await run_at(rig, "06:00")
     (brief,) = tells(rig, MORNING)
-    assert "Return (Wed 28 Oct): 00:30 train 601. Leave by 00:25." in brief.text
+    assert "Return (Wed 28 Oct): 00:30 train 601\nLeave by 00:25" in brief.text
 
 
 async def test_normal_evening_start_does_not_send_an_expired_morning_brief(tmp_path):
@@ -615,7 +620,7 @@ async def test_brief_retry_rechecks_advice_and_windows_for_all_destinations(tmp_
     (brief,) = primary
     assert "Leave by 08:02" not in brief.text
     assert ("Outbound:" in brief.text) == (retry_at == "08:05")
-    assert "Return: 17:52 train 600. Leave by 17:47." in brief.text
+    assert "Return: 17:52 train 600\nLeave by 17:47" in brief.text
 
 
 @pytest.mark.parametrize(
