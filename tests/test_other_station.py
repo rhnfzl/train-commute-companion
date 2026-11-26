@@ -320,7 +320,7 @@ async def test_q12_miss_at_other_station(tmp_path):
     assert s.lock.legs[-1].train.train_number == "6096"  # the 20:36 from Venlo
     assert s.lock.legs[-1].board_station == "VL"
     (miss,) = [e for e in of(rig, EventKind.MISSED_FIRST_TRAIN) if e.created_at > at("19:49")]
-    assert miss.text.split(": ", 1)[1].startswith("you missed the 20:06")
+    assert miss.text.split(": ", 1)[1].startswith("Missed 20:06")
 
 
 async def test_work_wifi_proves_no_miss_at_other_station(tmp_path):

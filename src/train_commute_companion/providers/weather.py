@@ -503,14 +503,16 @@ def weather_alert_lines(
     stations: Stations | None,
 ) -> list[str]:
     """Show short advice and active warnings. Status carries the source details."""
-    lines = []
+    by_advice: dict[tuple[str, ...], list[str]] = {}
     for view in views:
         tips = view.forecast.tips_in(language, compact=True) if view.forecast else ()
         warnings = tuple(f"⚠️ KNMI code {w.color}: {w.headline}" for w in view.warnings)
         if tips or warnings:
             station = stations.name(view.station) if stations is not None else view.station
-            lines.append(f"{station}: " + " ".join((*warnings, *tips)))
-    return lines
+            places = by_advice.setdefault((*warnings, *tips), [])
+            if station not in places:
+                places.append(station)
+    return [f"{' + '.join(places)} · {' '.join(advice)}" for advice, places in by_advice.items()]
 
 
 def weather_text(view: WeatherView, language: MessageLanguage = "en") -> str:

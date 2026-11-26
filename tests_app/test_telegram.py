@@ -75,6 +75,15 @@ async def test_station_navigation_sends_url_buttons(tg, clock):
     }
 
 
+async def test_daily_brief_suppresses_link_preview_cards(tg, clock):
+    brief = replace(
+        event(Severity.SILENT), kind=EventKind.DAILY_BRIEF, text="Brief\nhttps://example.com/"
+    )
+    assert await notifier(tg, clock).send(brief)
+    assert tg.sent[-1]["text"] == brief.text
+    assert tg.sent[-1]["link_preview_options"] == {"is_disabled": True}
+
+
 async def test_notifier_has_only_one_in_flight_send_owner(clock):
     entered, release = asyncio.Event(), asyncio.Event()
     active = peak = 0

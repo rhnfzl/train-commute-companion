@@ -30,13 +30,14 @@ from train_commute_companion.model import (
     Profile,
     Provenance,
     Severity,
+    Stations,
     TransferState,
     direction_key,
     display_name,
 )
 from train_commute_companion.notification_policy import enabled
 from train_commute_companion.providers.base import ActiveDisruptions, PlannedWorks
-from train_commute_companion.providers.weather import WeatherView
+from train_commute_companion.providers.weather import WeatherView, weather_alert_lines
 from train_commute_companion.revisions import (
     find_profile,
     route_geometry_same,
@@ -50,6 +51,7 @@ from train_commute_companion.weather_allowance import weather_allowance
 
 ONE_DAY = timedelta(days=1)
 EVENING_RETRY = (timedelta(minutes=15), timedelta(minutes=30))
+LEGACY_FORECAST_CREDIT = " (Open-Meteo https://open-meteo.com/, CC BY 4.0)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,7 +200,7 @@ def _train_row(
         ):
             text = message("brief.train", language, time=hhmm(departure), number=first.train_number)
             crowd = first.crowd_forecast if crowd_enabled else None
-            if crowd:
+            if crowd == "high":
                 text += message("leg.crowd", language, level=crowd)
             actionable = crowd == "high" or (first.departure_delay_min or 0) >= p.alerts.delay_min
             advice = observed.format_leave_by(language) if buffer is not None else None
@@ -241,7 +243,8 @@ def _train_row(
                         True,
                     )
             return BriefRow(d, sd, message("brief.listed", language, train=text), True)
-        if crowd_enabled:
+        crowded = crowd_enabled and any(x.crowd_forecast == "high" for x in legs)
+        if crowded:
             text += crowd_text(legs, language)
         base = None if buffer is None else leave_by(scheduled, expected, buffer)
         allowance = (
@@ -253,7 +256,6 @@ def _train_row(
             else None
         )
         moved = abs(to_utc(departure) - to_utc(planned)) >= timedelta(minutes=p.alerts.delay_min)
-        crowded = crowd_enabled and any(x.crowd_forecast == "high" for x in legs)
         return BriefRow(
             d,
             sd,
@@ -288,6 +290,7 @@ def build_row(
     weather: WeatherView | None,
     disruptions: ActiveDisruptions | None,
     now: datetime,
+    stations: Stations | None = None,
 ) -> BriefRow:
     whole = next((r for r in results if r.leg_index is None), None)
     row = _train_row(p, d, day, planned, observed, whole, weather, now)
@@ -310,18 +313,7 @@ def build_row(
         notes.extend(message("brief.disruption", language, title=title) for title in incidents)
         actionable |= bool(incidents)
     if weather is not None:
-        if hour := weather.forecast:
-            notes.append(
-                message(
-                    "brief.forecast",
-                    language,
-                    station=weather.station,
-                    temp=f"{hour.temperature_c:g}",
-                    rain=f"{hour.precipitation_mm:g}",
-                )
-            )
-        for warning in weather.warnings:
-            notes.append(f"KNMI code {warning.color}: {warning.headline} (CC BY 4.0)")
+        notes.extend(weather_alert_lines((weather,), language, stations))
         actionable |= bool(weather.warnings)
     return replace(row, notes=tuple(notes), actionable=actionable)
 
@@ -356,8 +348,23 @@ def _render(
         return f"{d:%a %d %b}" if language == "en" else message_date(d, language)
 
     lines = [message("brief.heading", language, name=display_name(p.name), date=label_date(day))]
+    disruption_prefix = message("brief.disruption", language, title="")
+    notes_by_row = [
+        tuple(
+            dict.fromkeys(
+                note.removesuffix(" (CC BY 4.0)").rstrip(".")
+                for note in row.notes
+                if not note.endswith(LEGACY_FORECAST_CREDIT)
+            )
+        )
+        for row in rows
+    ]
+    incidents = [
+        {note for note in notes if note.startswith(disruption_prefix)} for notes in notes_by_row
+    ]
+    shared = set.intersection(*incidents) if len(incidents) > 1 else set()
     actionable = False
-    for row in rows:
+    for row, notes in zip(rows, notes_by_row, strict=True):
         label = message(f"direction.{row.direction.value}", language).title()
         if row.service_date != day:
             label += f" ({label_date(row.service_date)})"
@@ -371,9 +378,11 @@ def _render(
             else ()
         )
         actionable |= row.actionable or (bool(advice) and row.advice_actionable)
-        details = ". ".join((row.details, *advice, *row.notes)).rstrip(".")
-        lines.append(f"{label}: {details}.")
-    return "\n".join(lines) if actionable or not p.brief.only_if_something else None
+        local_notes = (note for note in notes if note not in shared)
+        lines.append("\n".join((f"{label}: {row.details.rstrip('.')}", *advice, *local_notes)))
+    if shared:
+        lines.append("\n".join(note for note in notes_by_row[0] if note in shared))
+    return "\n\n".join(lines) if actionable or not p.brief.only_if_something else None
 
 
 def obligation(

@@ -28,10 +28,9 @@ def test_weather_alert_keeps_active_warnings_with_or_without_forecast(has_foreca
         for station in ("AAA", "RTD")
     )
 
-    departure, arrival = weather_alert_lines(views, "nl", None)
-    for station, line in (("AAA", departure), ("RTD", arrival)):
-        assert line.startswith(f"{station}: ⚠️ KNMI code yellow: Gladheid")
-        assert ("🌧️ Neem een regenjas mee." in line) is has_forecast
+    (line,) = weather_alert_lines(views, "nl", None)
+    assert line.startswith("AAA + RTD · ⚠️ KNMI code yellow: Gladheid")
+    assert ("🌧️ Neem een regenjas mee." in line) is has_forecast
 
 
 def forecast(temp=8, rain=2, snow=0, code=61):
